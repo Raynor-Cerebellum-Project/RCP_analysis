@@ -1,0 +1,77 @@
+% This script adds indexes that relate to intan data in .bin files, allowing to align the neural data from intan
+% with the kinematic data from blackrock
+
+%Instructions to run, change the session name to the appropriate session and run
+% result will be the addition of a Data.Intan_idx structure in the .mat file containing kinematic data
+
+clear 
+session_name = 'BL_RW_003_Session_1';
+% Path = '\\10.16.59.34\CullenLab_Server\Current-Members\Thomas\Example_data_Intan\';
+% Path = '\\10.16.59.34\cullenlab_server\Current-Members\Robyn\rFN & Cerebellum\Daphne\Neuropixel\';
+
+%Path = '\\10.16.59.34\cullenlab_server\Current-Members\Robyn\rFN & Cerebellum\Nodulus_Uvula\Daphne_Data\';
+
+Path = '\\10.16.59.34\cullenlab_server\Current Project Databases - NHP\2025 Cerebellum prosthesis\Bryan\Data\';
+
+
+DIR_calibrated = [Path session_name '\Calibrated\IntanFile_1']; %CHANGE each run
+F = dir(DIR_calibrated);
+F = struct2cell(F);
+F = F(1,3:end);
+F = F(contains(F,'_Cal.mat'));
+F_calibrated = sort(F); 
+
+Intan_file = 'BL_closed_loop_STIM_003_250528_140952';   %CHANGE each run
+load([Path session_name '\Intan\' Intan_file '\session_triger.mat'], 'session_triger') %loads session triger file from this session (created when rhs was converted to .bin)
+load('\\10.16.59.34\cullenlab_server\___The ANALYSIS Code\Analysis_16APR2021_2pm\Functions\multiple_pert\template.mat','template')
+lock = session_triger(2,:);
+key = template;
+[C,LAGS] = xcorr(lock,key);
+C = C/max(C);
+[pks,locs] = findpeaks(C,LAGS,'MinPeakHeight',.95);
+             
+triger_intan_total = session_triger(1,:);
+locs = locs; %******* Insert manually identified locs if not properly identified
+N = 500;
+if length(locs) ~= length(F_calibrated)
+    disp('Missing Data!')  %This error will appear if there is a mismatch between number of blackrock files and sync pulses, e.g., if blackrock file quits or was not organized properly
+% figure;plot(session_triger(2,:))  %***this is helpful for troubleshooting  missing locs, marks where the locs are
+% hold on
+% y = zeros(length(locs));
+% y=y(1,:);
+% plot(locs,y,'rs')
+else
+    for file_index = 1:length(F_calibrated)
+        filename = F_calibrated{file_index};
+        load([DIR_calibrated '/' filename],'Data')
+        disp(filename)
+        triger = Data.Neural(:,2);            %channel with synch triangle pulses **SOMETIMES channel 2!
+        triger = (triger-mean(triger))/range(triger);
+        L = length(triger);
+        res = zeros(2*N-1,1);
+        for n = -N:N
+            triger_intan = triger_intan_total(locs(file_index)+n:locs(file_index)+n+length(triger)-1)';
+            triger_intan = (triger_intan-mean(triger_intan))/range(triger_intan);
+            res(n+N+1) = rms(triger-triger_intan); 
+        end
+        
+        [~,imin] = min(res);
+        n = imin - N;
+        locs(file_index) = locs(file_index)+n;
+        idx = locs(file_index):locs(file_index)+L-1;
+        figure
+        hold on
+        plot(triger)
+        triger_intan = triger_intan_total(idx);
+        triger_intan = (triger_intan-mean(triger_intan))/range(triger_intan);
+        plot(triger_intan)
+        title(filename,'Interpreter','none')
+        pause(.1)
+        if locs(file_index)+L-1>length(triger_intan_total)
+            disp([filename ' - long file: ' num2str(locs(file_index)+L-1-length(triger_intan_total)/30000) ])
+        end
+        Data.Intan_idx = idx;
+        save([DIR_calibrated '/' filename],'Data','-v7.3')
+
+    end
+end

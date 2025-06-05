@@ -1,0 +1,50 @@
+F = dir('*.mat'); %** run to filter kinematic signals at 10 Hz LP
+F = struct2cell(F);
+F = F(1,:);
+
+signal_names = {'headYawVel' 'headYawPos'};
+
+%added 1-axis (y axis, hbd channel) accelerometer for 3rd NPXL recording. 
+%added a second axis (z axis, tsy channels) after the 2nd NPXL recording. 
+   
+for file_index = 1:length(F)
+   filename = F{file_index};
+   clear Data
+   load(filename);
+   for signal_index = 1:length(signal_names)
+        signal_name = signal_names{signal_index};
+        sig = Data.(signal_name);
+        nan_index=find(isnan(sig));
+        tin=find(~isnan(sig));
+        tout=(1:length(sig))';
+        sig=interp1(tin,sig(tin),tout,'pchip');
+        [b,a] = butter(4,10/(1000/2),'low'); %low pass at 10
+        filt_sig=filtfilt(b,a,sig);
+        filt_sig(nan_index)=nan;
+        Data.(signal_name) = filt_sig;
+       
+%         Data.headYawPos = Data.headYawPos/-84;  %***Calibrate position signal if you haven't already! mistake
+        
+        stim_trig = downsample(Data.Neural(:,3),30);
+        Data.stim_trig = stim_trig;
+%         
+            if ~sum(strcmp('stim_trig',Data.ChannelList))
+                Data.ChannelList(end+1) = {'stim_trig'};
+
+                try
+                    Data.ChNumbers(end+1)={'0'};
+                catch
+                end
+
+                Data.adfreq(end+1) = 1000;
+                Data.samples(end+1) = Data.samples(1);
+                Data.SampleCounts = Data.samples;
+                Data.NumberOfChannels = length(Data.ChannelList);
+                Data.NumberOfSignals = length(Data.ChannelList);
+                Data.Definitions(Data.NumberOfSignals) = {['Data.stim_trig(1+lat:N)']};
+            end
+             
+    end
+   save(filename,'Data','-v7.3')
+    
+end

@@ -1,0 +1,199 @@
+clear all
+close all
+clc
+%% reading file
+% file_name = '001-16channels-50ms-200hz-80uA';
+% file_name = '001-16channels-50ms-200hz-80uA';
+% file_directory = uigetdir('\\10.16.59.34\cullenlab_server\Current Project Databases - NHP\2021 Abducens Stimulation (Neuropixel)\Data\Project 1 - Occulomotor Kinematics\Caesar_Session_2 - Copy\Renamed\', 'select the file that contains the raw _neural.mat data');
+file_directory = uigetdir("D:\neuraldata\Caesar_002\seperate_cells\Kilosort4\Project 1 - Occulomotor Kinematics_CELL_29_kilo_46_good", 'select the file that contains the raw _neural.mat data');
+
+outputfolder = uigetdir("D:\neuraldata\CRR_002_ERAASR_rev", 'select output folder');
+%%
+if ~exist([outputfolder '\filtered'], 'dir')
+    mkdir(fullfile(outputfolder, 'filtered'))
+end
+%%
+file_names = dir(fullfile(file_directory, '*_Neural.mat'));
+
+file_names = struct2cell(file_names);
+file_names = file_names(1,:);
+
+file_names = strrep(file_names, '_Neural.mat', '');
+
+t_count = zeros(1, length(file_names));
+
+%% start of loop
+h = waitbar(0, 'Processing...'); % Initialize the progress bar
+for file_index =1:length(file_names)
+
+file_name = file_names{file_index};
+% file_directory = '\\10.16.59.34\cullenlab_server\Current Project Databases - NHP\2021 Abducens Stimulation (Neuropixel)\Data\Project 1 - Occulomotor Kinematics\Caesar_Session_2 - Copy\Renamed\';
+
+load([file_directory,'\', file_name, '_Neural.mat']); % matlab file
+metaChannelData = Data.Neural(:, 129:131);
+totalDataLen = size(metaChannelData, 1);
+dataFileDir = [file_directory,'\', file_name, '.bin'];
+% read_Intan_RHS2000_file("D:\neuraldata\Caesar_002\Intan_Sorted\CRR_NPXL_STIM_002_023\CRR_NPXL_STIM_002__210507_183327.rhs")
+% neuropixel_index = [    18, 19, 20, 21, 22, 23, 24, 25, ...
+%    26, 27, 29, 17, 2,  32, 1,  30, ...
+%     31, 39, 3,  36, 38, 28, 35, 37, ...
+%     4,  34, 16, 33, 15, 14, 13, 12, ...
+%     11, 10, 9,  8,  7,  6,  5,  63, ...
+%     59, 56, 64, 58, 55, 40, 57, 54, ...                                                                                               
+%     41, 60, 53, 43, 61, 52, 44, 62, ...
+%     51, 42, 47, 50, 45, 48, 49, 46, ...
+%     65, 96, 69, 66, 95, 68, 67, 94, ...
+%     70, 83, 93, 72, 84, 92, 71, 85, ...
+%     91, 73, 88, 90, 81, 87, 89, 82, ...
+%     86, 108, 107, 106,105,104,103,102,...
+%     101,100,99, 98, 80, 97, 79, 109,...
+%     76, 78, 117,75, 77, 110,74, 114,...
+%     115,112,113,111,128,116,118,119,...
+%     120,121,122,123,124,125,126,127];
+% rawData = amplifier_data(neuropixel_index, :)';
+rawData = Data.Neural(:, 1:128);
+% rawData = ERASER.ReadBin(dataFileDir , 128, [1:128], [1:30*Data.N]);
+%% extract trial by time by channel data
+% first extract segments
+TRIGDAT =Data.Neural(:, 131);
+% STIM_CHANS = find(any(stim_data~=0, 2));
+% TRIGDAT = stim_data(STIM_CHANS(1),:)';
+trigs1 = find(diff(TRIGDAT) < 0); 
+trigs2 = find(diff(TRIGDAT) > 0);
+if length(trigs1) > length(trigs2)
+    trigs  = trigs1;
+else
+    trigs = trigs2;
+end
+trigs = trigs(1:2:end);
+period = trigs(2) - trigs(1);
+
+NSTIM = length(trigs);
+
+segments_aligned = [];
+time_diffs = diff(trigs);
+repeat_gap_threshold = period*2;
+repeat_boundaries = [0; find(time_diffs > repeat_gap_threshold); numel(trigs)];
+num_repeats = numel(repeat_boundaries) - 1;
+num_pulse = NSTIM/num_repeats;
+
+
+for i = 1:NSTIM
+    segment = (1 + trigs(i) ):(period+ trigs(i)); 
+    segments_aligned = [segments_aligned; segment];  
+end
+stim_chans =Data.stim_channels;
+%% generate tensor
+fs = 30000; % samplig rate at 30kHz
+fc = 300; % highpass at 300 Hz
+sample_chans = 1:128;
+sample_trials = 1:num_repeats;
+prebuffer = 100*30;
+postbuffer =100*30;
+raw_signal_segs = zeros(length(sample_trials), prebuffer+num_pulse*period+postbuffer, length(sample_chans));
+
+for i = 1:length(sample_trials)
+    sample_trial = sample_trials(i);
+    for j = 1:length(sample_chans)
+        sample_chan = sample_chans(j);
+        sample_pulses = (1+(sample_trial-1)*num_pulse:sample_trial*num_pulse);
+        train_seg = reshape(segments_aligned(sample_pulses, :)', 1, []);
+        prebuffer_seg = -prebuffer+train_seg(1):train_seg(1)-1;
+        postbuffer_seg = train_seg(end)+1:postbuffer+train_seg(end);
+        segment = [prebuffer_seg, train_seg, postbuffer_seg];
+        raw_signal_segs(i, :, j) = rawData(segment, sample_chan);
+    end
+
+end
+
+%% Setup ERAASR Parameters
+
+opts = ERAASR.Parameters();
+opts.Fs = 30000; % samples per second
+Fms = opts.Fs / 1000; % multiply to convert ms to samples
+
+opts.thresholdHPCornerHz = 250;
+opts.thresholdChannel = 1;
+opts.thresholdValue = -500;
+
+opts.alignChannel = 1;
+opts.alignUpsampleBy = 10;
+opts.alignWindowPre = Fms * 0.5;
+opts.alignWindowDuration = Fms * 20;
+
+% 60 ms stim, align using 20 ms pre start to 110 post
+opts.extractWindowPre = 20*Fms;
+opts.extractWindowDuration = num_pulse*period + 30*Fms;
+opts.cleanStartSamplesPreThreshold = Fms * 0.5;
+        
+opts.cleanHPCornerHz = 10; % light high pass filtering at the start of cleaning
+opts.cleanHPOrder = 4; % high pass filter order 
+opts.cleanUpsampleBy = 1; % upsample by this ratio during cleaning
+opts.samplesPerPulse = period; % 3 ms pulses
+opts.nPulses = num_pulse;
+
+opts.nPC_channels = 12;
+opts.nPC_trials = 2;
+opts.nPC_pulses = 6;
+
+opts.omit_bandwidth_channels = 0;
+opts.omit_bandwidth_trials = 1;
+opts.omit_bandwidth_pulses = 1;
+
+opts.alignPulsesOverTrain = true; % do a secondary alignment within each train, in case you think there is pulse to pulse jitter. Works best with upsampling
+opts.pcaOnlyOmitted = true; % if true, build PCs only from non-omitted channels/trials/pulses. if false, build PCs from all but set coefficients to zero post hoc
+
+opts.cleanOverChannelsIndividualTrials = false;
+opts.cleanOverPulsesIndividualChannels = false;
+opts.cleanOverTrialsIndividualChannels = false;
+
+opts.cleanPostStim = false; % clean the post stim window using a single PCR over channels
+
+opts.showFigures = false; % useful for debugging and seeing well how the cleaning works
+opts.plotTrials = [2, 12]; % which trials to plot in figures, can be vector
+opts.plotPulses = [1, 5, 10]; % which pulses to plot in figures, can be vector
+opts.figurePath = outputfolder; % folder to save the figures
+opts.saveFigures = true; % whether to save the figures
+% opts.saveFigureCommand = @(filepath) print('-dpng', '-r300', [filepath '.png']); % specify a custom command to save the figure
+
+
+%% Clean Data
+tic
+[dataCleaned, extract] = ERAASR.cleanTrials(raw_signal_segs, opts);
+
+t_count(i) = toc;
+
+%% stitch the filtered back to the raw data
+filteredData= rawData;
+for i = 1:length(sample_trials)
+    sample_trial = sample_trials(i);
+    for j = 1:length(sample_chans)
+        sample_chan = sample_chans(j);
+        sample_pulses = (1+(sample_trial-1)*num_pulse:sample_trial*num_pulse);
+        train_seg = reshape(segments_aligned(sample_pulses, :)', 1, []);
+        prebuffer_seg = -prebuffer+train_seg(1):train_seg(1)-1;
+        postbuffer_seg = train_seg(end)+1:postbuffer+train_seg(end);
+        segment = [prebuffer_seg, train_seg, postbuffer_seg];
+        filteredData(segment, sample_chan) =  dataCleaned(i, :, j);
+    end
+
+end
+% %% HPF for cleaned data
+% dataCleanedHP = ERAASR.highPassFilter(dataCleanByChannel, opts.Fs, 'cornerHz', 250, 'order', 4, ...
+%     'subtractFirstSample', true, 'filtfilt', true, 'showProgress', true);
+% 
+% %% For Display Only: HPF for un-cleaned data
+% dataByTrialChannelHP = ERAASR.highPassFilter(dataByTrialChannel, opts.Fs, 'cornerHz', 40, 'order', 4, ...
+%     'subtractFirstSample', true, 'filtfilt', true, 'showProgress', true);
+%%
+% Z = ZoomPlot([ Data.Neural(:, 131)*500,dataCleanByChannel(:, 78) ]);
+%%
+Data_back = Data;
+Data = Data_back;
+Data.opts = opts;
+Data.Neural(:, 1:128) = filteredData;
+save([outputfolder '\filtered\' file_name '_filtered.mat'], 'Data', '-v7.3');
+
+waitbar(file_index/length(file_names), h, sprintf('Prosessed %s %d%%', file_name, round(file_index/length(file_names)*100)));
+
+end
