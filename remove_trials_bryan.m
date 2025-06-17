@@ -1,8 +1,8 @@
 clear all; close all; clc;
 
 % File paths
-filename_old = '/Volumes/CullenLab_Server/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/Data/BL_RW_003_Session_1/Calibrated/IntanFile_16/BL_closed_loop_STIM_003_018_Cal1.mat';
-filename_new = '/Volumes/CullenLab_Server/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/Data/BL_RW_003_Session_1/Calibrated/IntanFile_16/BL_closed_loop_STIM_003_018_Cal2.mat';
+filename_old = '/Volumes/CullenLab_Server/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/Data/BL_RW_003_Session_1/Calibrated/IntanFile_3/BL_closed_loop_STIM_003_006_Cal_stim.mat';
+filename_new = '/Volumes/CullenLab_Server/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/Data/BL_RW_003_Session_1/Calibrated/IntanFile_3/BL_closed_loop_STIM_003_006_Cal_stim2.mat';
 
 % Load data
 load(filename_old);  % loads variable `Data`
@@ -10,8 +10,8 @@ load(filename_old);  % loads variable `Data`
 %%
 close all;
 % Settings
-fieldname = 'active_like_stim_neg';
-highlight_idx = [5, 12, 21, 19];  % Trials to highlight and remove
+fieldname = 'active_like_stim_pos_nan';
+highlight_idx = [5];  % Trials to highlight and remove
 %
 %
 segment = Data.segments.(fieldname);

@@ -1,49 +1,55 @@
-%% initialize
-folder_dir = uigetdir(pwd,'choose a root folder for all filtered neural files');
-[datafolder, F] = readfolder(folder_dir, "*_filtered.mat");
-outputfolder = uigetdir(pwd, "select folder to store the output");
-prompt = {'name session .bin file: '};
-dlgtitle = 'bin file naming';
-fieldsize = [1 45];
-definput = {'all_files_'};
-temp = inputdlg(prompt,dlgtitle,fieldsize,definput);
-temp = cell2mat(temp);
-temp(isspace(temp)) = '_';
-trial_number = [];
-file_indices = [];
-%% sort the folder names with respect to the 5th character 
-fileNumberlist = [];
-for i = 1:length(F)
-        % Extract the number from the filename
-        filename = F{i};
-        fileidx = split(filename, ["_",".", "-"]);
-        fileNumber = str2double(fileidx(1));
-        fileNumberlist = [fileNumberlist fileNumber];
+%% === Setup root path using machine-aware logic ===
+base_root = set_paths();  % e.g., returns '/Volumes/CullenLab_Server/...' or prompts via uigetdir
+
+%% === Define artifact root and output folder ===
+artifact_root = fullfile(base_root, 'Current Project Databases - NHP', ...
+    '2025 Cerebellum prosthesis', 'Bryan', 'Data');
+
+% Change to artifact root temporarily to set the uigetdir start point
+original_dir = pwd;
+cd(artifact_root);
+artifact_folder = uigetdir(pwd, 'Select Artifact_Corrected folder');
+cd(original_dir);
+
+if isequal(artifact_folder, 0)
+    error('No folder selected. Exiting.');
 end
 
-[~, sorted_idx] = sort(fileNumberlist);
-F = F(sorted_idx);
-%% read files
-if ~isempty(trial_number)
-for i = 1:length(F)
-    % Extract the number from the filename
-    filename = F{i};
-    fileidx = split(filename, ["-","."]);
-    fileNumber = str2double(fileidx(1));
-    % Check if the file number is in the selected ranges
-    if any(fileNumber == trial_number)
-        file_indices = [file_indices, i]; % Add the index to the list
+bin_output_dir = fullfile(artifact_folder, 'binFiles');
+if ~exist(bin_output_dir, 'dir'); mkdir(bin_output_dir); end
+
+%% === Find all artifact-corrected .mat files ===
+mat_files = dir(fullfile(artifact_folder, '*_artifact_removed.mat'));
+fprintf('Found %d artifact-corrected MAT files.\n', numel(mat_files));
+
+%% === Convert each .mat to .bin ===
+for i = 1:length(mat_files)
+    mat_path = fullfile(artifact_folder, mat_files(i).name);
+    fprintf('Processing %s\n', mat_files(i).name);
+
+    % Load MAT file
+    S = load(mat_path);
+    if isfield(S, 'artifact_removed_data')
+        data = S.artifact_removed_data;
+    else
+        warning('Missing field "artifact_removed_data" in %s. Skipping.', mat_files(i).name);
+        continue;
     end
+
+    if isempty(data)
+        warning('Empty data in %s. Skipping.', mat_files(i).name);
+        continue;
+    end
+
+    % Transpose to [time x channels], only first 128 channels
+    data_to_write = int16(data(1:128, :)');  % Transpose to [time x channels]
+
+    % Write to .bin file
+    [~, base_name, ~] = fileparts(mat_files(i).name);
+    bin_path = fullfile(bin_output_dir, [base_name '.bin']);
+    fileID = fopen(bin_path, 'w');
+    fwrite(fileID, data_to_write, 'int16');
+    fclose(fileID);
+
+    fprintf('Saved: %s (%d bytes)\n', bin_path, dir(bin_path).bytes);
 end
-else 
-    file_indices = 1:length(F);
-end
-%% save filtered result to bin
-fileID = fopen(fullfile(outputfolder, ['all_files_' temp '.bin']),'w');
-for trial_index = file_indices
-    neural_path = fullfile(datafolder, F{trial_index});
-    load(neural_path);
-    fwrite(fileID,int16(Data.Neural(:, 1:128)'),'int16');
-end
-  
-fclose(fileID);

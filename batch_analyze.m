@@ -1,18 +1,61 @@
 clear all; close all; clc;
 addpath(genpath('functions'));
-session = 'BL_RW_003_Session_1';
 
-%% --- Setup Paths ---
-base_folder = fullfile(['/Volumes/CullenLab_Server/Current Project Databases - NHP' ...
-    '/2025 Cerebellum prosthesis/Bryan/Data'], session);
-search_folder = fullfile(base_folder, 'Calibrated');
-trial_mat_files = dir(fullfile(search_folder, 'IntanFile_*', '*_Cal.mat'));
-save_figs = true;  % Set to false to skip saving .fig files
-show_figs = true;
+%% --- Setup Paths and Define session
+session = 'BL_RW_001_Session_1';
+% Get machine-specific root path
+base_root = set_paths();
+relative_path = fullfile('Current Project Databases - NHP', ...
+                         '2025 Cerebellum prosthesis', 'Bryan', 'Data', session);
+base_folder = fullfile(base_root, relative_path);
+%%
+search_folder      = fullfile(base_folder, 'Calibrated');
+fig_folder         = fullfile(base_folder, 'Figures');
+metadata_csv_path  = fullfile(base_folder, [session, '_metadata.csv']);
+raw_metrics_path   = fullfile(base_folder, [session, '_raw_metrics_all.mat']);
+summary_path       = fullfile(base_folder, [session, '_summarized_metrics.mat']);
+merged_baseline_path = fullfile(base_folder, [session, '_merged_baseline.mat']);
+
+% List all Cal and Cal_stim files
+stim_files = dir(fullfile(search_folder, '**', '*_Cal_stim.mat'));
+nonstim_files = dir(fullfile(search_folder, '**', '*_Cal.mat'));
+
+file_map = containers.Map('KeyType', 'double', 'ValueType', 'char');
+extract_br = @(name) str2double(regexp(name, 'STIM_\d+_(\d+)_Cal', 'tokens', 'once'));
+
+% First add stim files
+for i = 1:numel(stim_files)
+    br = double(extract_br(stim_files(i).name));
+    if ~isnan(br)
+        file_map(br) = fullfile(stim_files(i).folder, stim_files(i).name);
+    end
+end
+
+% Add non-stim files only if not already included
+for i = 1:numel(nonstim_files)
+    br = double(extract_br(nonstim_files(i).name));
+    if ~isnan(br) && ~isKey(file_map, br)
+        file_map(br) = fullfile(nonstim_files(i).folder, nonstim_files(i).name);
+    end
+end
+
+% Reconstruct sorted struct array
+all_br = sort(cell2mat(keys(file_map)));
+trial_mat_files = struct('name', {}, 'folder', {});
+for i = 1:numel(all_br)
+    fpath = file_map(all_br(i));
+    [fldr, fname, ext] = fileparts(fpath);
+    trial_mat_files(i).folder = fldr;
+    trial_mat_files(i).name = [fname, ext];
+end
+
+save_figs = false;  % Set to false to skip saving .fig files
+show_figs = false;
+trace_analysis_plot = false;
 % --- Sort trial_mat_files by BR_File number extracted from filename ---
 br_nums = zeros(length(trial_mat_files), 1);
 for i = 1:length(trial_mat_files)
-    tokens = regexp(trial_mat_files(i).name, 'STIM_\d+_(\d+)_Cal\.mat', 'tokens');
+    tokens = regexp(trial_mat_files(i).name, 'STIM_\d+_(\d+)_Cal(?:_stim)?\.mat', 'tokens');
     if ~isempty(tokens)
         br_nums(i) = str2double(tokens{1}{1});
     else
@@ -28,8 +71,12 @@ switch session
         EndPoint_pos = 32; EndPoint_neg = -26;
         search_folder = fullfile(base_folder, 'Renamed2');
         trial_mat_files = dir(fullfile(search_folder, '*_Cal.mat'));
+        baseline_file_nums = [26];
+        trial_indices = [20, 21];
     case 'BL_RW_002_Session_1'
         EndPoint_pos = 49.5857; EndPoint_neg = -34.4605;
+        baseline_file_nums = [4, 27];
+        trial_indices = [21];
     case 'BL_RW_003_Session_1'
         EndPoint_pos = 41; EndPoint_neg = -33;
         segment_fields_random = {'active_like_stim_pos_nan', 'active_like_stim_pos_0', ...
@@ -37,19 +84,19 @@ switch session
             'active_like_stim_neg_nan', 'active_like_stim_neg_0', ...
             'active_like_stim_neg_100', 'active_like_stim_neg_200'};
         baseline_file_nums = [4, 11, 16];
-        trial_indices = [6, 7, 8, 9, 12, 13, 14, 18];
+        trial_indices = [6, 7, 8, 9, 12, 13, 14, 18]; %9 should have stim but doesn't
     otherwise
         EndPoint_pos = 30; EndPoint_neg = -30;
 end
 %% --- Load Metadata ---
-T = readtable(fullfile(base_folder, [session, '_metadata.csv']));
+T = readtable(metadata_csv_path);
 %% --- Loop over each trial and analyze ---
 raw_metrics_all = cell(height(T), 1);  % Save all raw metrics (from analyze_metrics)
 all_trial_indices = sort([baseline_file_nums, trial_indices]);
 
 for i = all_trial_indices
     fname = trial_mat_files(i).name;
-    tokens = regexp(fname, 'STIM_\d+_(\d+)_Cal\.mat', 'tokens');
+    tokens = regexp(fname, 'STIM_\d+_(\d+)_Cal(?:_stim)?\.mat', 'tokens');
     if isempty(tokens), warning("Couldn't parse file: %s", fname); continue; end
     br_id = str2double(tokens{1}{1});
     row_idx = find(T.BR_File == br_id);
@@ -82,19 +129,18 @@ for i = all_trial_indices
         end
 
         raw_metrics = analyze_metrics(filename, EndPoint_pos, EndPoint_neg, ...
-            metadata_row, segment_fields);
+            metadata_row, segment_fields, trace_analysis_plot);
         raw_metrics_all{row_idx} = raw_metrics;
     catch ME
         warning("Error in trial %d: %s", br_id, ME.message);
     end
 end
 
-
 % Save all raw data
-save(fullfile(base_folder, [session '_raw_metrics_all.mat']), ...
+save(raw_metrics_path, ...
     'raw_metrics_all', 'T', 'segment_fields', 'EndPoint_pos', 'EndPoint_neg');
 %% Merging baselines and calculating mean/var
-load(fullfile(base_folder, [session '_raw_metrics_all.mat']));
+load(raw_metrics_path);
 %% Merge
 % Initialize merged baseline struct
 merged_baseline = raw_metrics_all{baseline_file_nums(1)};
@@ -135,8 +181,7 @@ for s = fieldnames(summary_contra)'
 end
 
 % Save for later access (e.g., in plotting)
-save(fullfile(base_folder, [session '_merged_baseline.mat']), 'merged_baseline_summary');
-
+save(merged_baseline_path, 'merged_baseline_summary');
 %% Add baseline to random trial baselines
 summary_struct = struct();
 
@@ -202,27 +247,35 @@ end
 
 
 %% Save summarized metrics
-save(fullfile(base_folder, [session '_summarized_metrics.mat']), 'summary_struct', 'merged_baseline_summary');
+save(summary_path, 'summary_struct', 'merged_baseline_summary');
 %% --- Compare Traces ---
-save_dir = fullfile(base_folder, 'Figures');
-if ~exist(save_dir, 'dir'), mkdir(save_dir); end
-% Ensure save directories exist in the correct hierarchy
-base_dirs = {'vsBaselineTraces', 'ComparisonTraces'};
-sub_dirs = {'figFigs', 'pngFigs'};
+% Ensure save_dir exists
+if ~exist(fig_folder, 'dir')
+    mkdir(fig_folder);
+end
 
-for b = 1:length(base_dirs)
-    for s = 1:length(sub_dirs)
-        out_path = fullfile(save_dir, base_dirs{b}, sub_dirs{s});
-        if ~exist(out_path, 'dir')
-            mkdir(out_path);
-        end
+% Define required subdirectories
+subfolders = {
+    'vsBaselineTraces/figFigs', ...
+    'vsBaselineTraces/pngFigs', ...
+    'vsBaselineTraces/svgFigs', ...
+    'ComparisonTraces/figFigs', ...
+    'ComparisonTraces/pngFigs', ...
+    'ComparisonTraces/svgFigs'
+};
+
+% Create subdirectories if they do not exist
+for k = 1:length(subfolders)
+    folder_path = fullfile(fig_folder, subfolders{k});
+    if ~exist(folder_path, 'dir')
+        mkdir(folder_path);
     end
 end
 
-load(fullfile(base_folder, [session '_summarized_metrics.mat']), 'summary_struct', 'merged_baseline_summary');
+load(summary_path, 'summary_struct', 'merged_baseline_summary');
 
-% Loop over condition trials
-for i = 18
+%% Loop over condition trials
+for i = trial_indices
     cond_struct = summary_struct(i);
     if isempty(cond_struct.merged_with_summary), continue; end
 
@@ -273,12 +326,16 @@ for i = 18
                         stim_str_for_file, cond_br, side_short);
                     if save_figs
                         % Save .fig
-                        fig_save_path = fullfile(save_dir, 'vsBaselineTraces', 'figFigs', [save_filename_base, '.fig']);
+                        fig_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'figFigs', [save_filename_base, '.fig']);
                         savefig(fig, fig_save_path);
                     end
                     % Save .png
-                    png_save_path = fullfile(save_dir, 'vsBaselineTraces', 'pngFigs', [save_filename_base, '.png']);
+                    png_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'pngFigs', [save_filename_base, '.png']);
                     print(fig, png_save_path, '-dpng', '-r300');
+                    % Save .svg
+                    set(fig, 'Renderer', 'painters');
+                    svg_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'svgFigs', [save_filename_base, '.svg']);
+                    print(fig, svg_save_path, '-dsvg', '-r300');
 
                     close(fig);
                     fprintf('Saved Random Delay Comparison: %s\n', save_filename_base);
@@ -313,12 +370,16 @@ for i = 18
 
                 if save_figs
                     % Save .fig
-                    fig_save_path = fullfile(save_dir, 'ComparisonTraces', 'figFigs', [save_filename_base, '.fig']);
+                    fig_save_path = fullfile(fig_folder, 'ComparisonTraces', 'figFigs', [save_filename_base, '.fig']);
                     savefig(fig, fig_save_path);
                 end
                 % Save .png
-                png_save_path = fullfile(save_dir, 'ComparisonTraces', 'pngFigs', [save_filename_base, '.png']);
+                png_save_path = fullfile(fig_folder, 'ComparisonTraces', 'pngFigs', [save_filename_base, '.png']);
                 print(fig, png_save_path, '-dpng', '-r300');
+                % Save .svg
+                set(fig, 'Renderer', 'painters');
+                svg_save_path = fullfile(fig_folder, 'ComparisonTraces', 'svgFigs', [save_filename_base, '.svg']);
+                print(fig, svg_save_path, '-dsvg', '-r300');
 
                 close(fig);
                 fprintf('Saved Random Delay Comparison: %s\n', save_filename_base);
@@ -358,12 +419,18 @@ for i = 18
                 stim_str_for_file, cond_br, side_short);
             if save_figs
                 % Save .fig
-                fig_save_path = fullfile(save_dir, 'vsBaselineTraces', 'figFigs', [save_filename_base, '.fig']);
+                fig_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'figFigs', [save_filename_base, '.fig']);
                 savefig(fig, fig_save_path);
             end
             % Save .png
-            png_save_path = fullfile(save_dir, 'vsBaselineTraces', 'pngFigs', [save_filename_base, '.png']);
+            png_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'pngFigs', [save_filename_base, '.png']);
             print(fig, png_save_path, '-dpng', '-r300');
+
+            % Save .svg
+            set(fig, 'Renderer', 'painters');
+            svg_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'svgFigs', [save_filename_base, '.svg']);
+            print(fig, svg_save_path, '-dsvg', '-r300');
+
 
             close(fig);
             fprintf('Saved: %s\n', save_filename_base);

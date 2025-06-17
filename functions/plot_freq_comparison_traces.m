@@ -490,7 +490,32 @@ annotation('textbox', [0.35, 0.01, 0.3, 0.08], ...
     'EdgeColor', 'k', 'HorizontalAlignment', 'center', ...
     'VerticalAlignment', 'middle', 'FontSize', 11, ...
     'FitBoxToText', 'on', 'BackgroundColor', 'white');
+%% === Save Figure in Multiple Formats ===
+% Construct save directory and filename
+save_base = sprintf('%dCh_Condition_%03d_%03d_%s_FrequencyComparison', ...
+    meta_cond1.Channels, trial_num1, trial_num2, polarity);
+save_root = fullfile(base_folder, 'Figures', 'FrequencyComparison');
 
+% Ensure subfolders exist
+subfolders = {'pngFigs', 'svgFigs', 'figFigs'};
+for k = 1:numel(subfolders)
+    subfolder_path = fullfile(save_root, subfolders{k});
+    if ~exist(subfolder_path, 'dir')
+        mkdir(subfolder_path);
+    end
+end
+
+% Filepaths
+png_path = fullfile(save_root, 'pngFigs', [save_base '.png']);
+svg_path = fullfile(save_root, 'svgFigs', [save_base '.svg']);
+fig_path = fullfile(save_root, 'figFigs', [save_base '.fig']);
+
+% Save
+print(fig, png_path, '-dpng', '-r300');
+set(fig, 'Renderer', 'painters');  % Ensure vector rendering
+print(fig, svg_path, '-dsvg', '-painters');
+savefig(fig, fig_path);
+close(fig);
 %% === Significance helper ===
     function label = significance_label(p)
         if p < 0.001, label = '***';

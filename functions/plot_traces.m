@@ -69,9 +69,16 @@ end
 base_summary_field = [suffix '_' strrep(base_side_label, 'active_like_stim_', '') '_summary'];
 cond_summary_field = [suffix '_' strrep(side_label, 'active_like_stim_', '') '_summary'];
 
-% Extract and align segments
+% === Baseline ===
 baseline_segment = base_data.(base_side_label).segments3;
-condition_segment = cond_data.(side_label).segments3;
+
+% === Condition ===
+if isfield(cond_data.(side_label), 'segments3_from_stim') && ...
+        ~all(isnan(cond_data.(side_label).segments3_from_stim), 'all')
+    condition_segment = cond_data.(side_label).segments3_from_stim;
+else
+    condition_segment = cond_data.(side_label).segments3;
+end
 
 if strcmp(meta_cond.Movement_Trigger{1}, 'End')
     baseline_window = [baseline_segment(:,2), baseline_segment(:,2)];
@@ -169,14 +176,21 @@ duration = meta_cond.Stim_Duration_ms;
 linkaxes([ax_vel_baseline, ax_vel_condition, ax_vel_overlay], 'y');
 shared_yl = ylim(ax_vel_overlay);
 
-% Redraw fill boxes after axis limits are linked
 for ax = [ax_vel_baseline, ax_vel_condition, ax_vel_overlay]
-    axes(ax);  % make current
-    fill([delay delay+duration delay+duration delay], ...
-         [shared_yl(1) shared_yl(1) shared_yl(2) shared_yl(2)], ...
-         [0.8 0.1 0.1], 'FaceAlpha', 0.2, 'EdgeColor', 'none');
+    hold(ax, 'on');
+    fill(ax, ...
+        [delay delay+duration delay+duration delay], ...
+        [shared_yl(1) shared_yl(1) shared_yl(2) shared_yl(2)], ...
+        [0.8 0.1 0.1], 'FaceAlpha', 0.2, 'EdgeColor', 'none');
 end
 
+%
+% for ax = [ax_vel_baseline, ax_vel_condition, ax_vel_overlay]
+%     fill(ax, ...
+%         [delay delay+duration delay+duration delay], ...
+%         [shared_yl(1) shared_yl(1) shared_yl(2) shared_yl(2)], ...
+%         [0.8 0.1 0.1], 'FaceAlpha', 0.2, 'EdgeColor', 'none');
+% end
 
 %% --- Baseline Position ---
 ax_pos_baseline = nexttile(7, [1 2]); hold on;
@@ -259,8 +273,9 @@ linkaxes([ax_pos_baseline, ax_pos_condition, ax_pos_overlay], 'y');
 shared_yl = ylim(ax_pos_overlay);
 
 for ax = [ax_pos_baseline, ax_pos_condition, ax_pos_overlay]
-    axes(ax);
-    fill([delay delay+duration delay+duration delay], ...
+    hold(ax, 'on');
+    fill(ax, ...
+         [delay delay+duration delay+duration delay], ...
          [shared_yl(1) shared_yl(1) shared_yl(2) shared_yl(2)], ...
          [0.8 0.1 0.1], 'FaceAlpha', 0.2, 'EdgeColor', 'none');
 end

@@ -22,8 +22,14 @@ for i = 1:length(segment_fields)
 
     for f = fieldnames(M)'
         name = f{1};
-        if strcmp(name, 'n_trials') || strcmp(name, 'segments3')
-            continue;  % Skip n_trials (handled separately) and segments3 (not relevant here)
+        % Skip non-scalar fields
+        skip_fields = {'n_trials', 'segments3', 'velocity_traces', ...
+            'position_traces', 'acceleration_traces', ...
+            'velocity_filtered_traces', 'stim_idx', ...
+            'vel_thresh_idx', 'segments3_from_stim'};
+
+        if any(strcmp(name, skip_fields))
+            continue;
         end
 
         v = M.(name);
@@ -37,7 +43,7 @@ for i = 1:length(segment_fields)
     end
 
     if startsWith(field, 'catch_')
-    % Field like 'catch_pos' or 'catch_neg' → becomes 'ipsi_catch_summary'
+        % Field like 'catch_pos' or 'catch_neg' → becomes 'ipsi_catch_summary'
         Summary.([side '_catch_summary']) = S;
     else
         % General case: extract after 'stim_' (e.g., 'pos_first10', etc.)

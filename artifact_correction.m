@@ -5,13 +5,13 @@ clc;
 
 %% Loading data
 % Define base project path
-base_folder = '/Volumes/CullenLab_Server/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/Data/BL_RW_001_Session_1';
+base_folder = '/Volumes/CullenLab_Server/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/Data/BL_RW_003_Session_1';
 
 % Define subfolders based on base path
 session_folder = fullfile(base_folder);  % Could also just use base_folder directly
 outputfolder = fullfile(base_folder, 'Artifact_Corrected');
 fig_folder = fullfile(base_folder, 'Figures');
-addpath('//Volumes/CullenLab_Server/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/Data/BL_RW_001_Session_1/Intan');
+addpath('//Volumes/CullenLab_Server/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/Data/BL_RW_003_Session_1/Intan');
 addpath('//Volumes/CullenLab_Server/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/Analysis Codes/Oculomotor_Pipeline-main/Neural Pipeline');
 
 % Ensure figure folder exists
@@ -43,6 +43,20 @@ template_params = struct( 'NSTIM', 0, ...  % number of stim pulses
 artifact_removed_data = artifact_Removal(neural_data, stim_data, template_params);
 
 STIM_CHANS = find(any(stim_data_scaled~=0, 2));
+%%
+fixed_params = struct( ...
+    'NSTIM', 0, ...
+    'isstim', true, ...
+    'start', 1, ...
+    'buffer', 30, ...
+    'period_avg', 30, ...
+    'skip_n', 0, ...
+    'movmean_window', 3, ...
+    'pca_components', 3 ...
+);
+
+sweep_template_param(neural_data, stim_data, 16, 'movmean_window', [1, 3, 5], fixed_params);
+
 %% Filtering for spikes
 fs = 30000;  % Sampling rate in Hz
 spike_data = zeros(128, size(NA_data, 2));
