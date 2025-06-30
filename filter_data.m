@@ -41,7 +41,8 @@ for file_index = 1:length(F)
                 Data.SampleCounts = Data.samples;
                 Data.NumberOfChannels = length(Data.ChannelList);
                 Data.NumberOfSignals = length(Data.ChannelList);
-                Data.Definitions(Data.NumberOfSignals) = {['Data.stim_trig(1+lat:N)']};
+%                 Data.Definitions(Data.NumberOfSignals) = {['Data.stim_trig(1+lat:N)']};
+                Data.Definitions(end+1) = {['Data.stim_trig(1+lat:N)']};
             end
              
     end

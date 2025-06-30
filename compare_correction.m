@@ -1,17 +1,26 @@
 %% Clearing workspace
 clear all; close all; clc;
+addpath(genpath('functions'));
 
-%% Loading data
-session = 'BL_RW_003_Session_1';
-base_folder = fullfile('/Volumes/CullenLab_Server/Current Project Databases - NHP', ...
-    '2025 Cerebellum prosthesis/Bryan/Data', session);
-intan_folder = fullfile(base_folder, 'Intan');
+%% Session and Path Setup
+session = 'BL_RW_001_Session_1';
 
+% Get base root using set_paths
+base_root = set_paths();  % Prompts if on unknown machine
+
+% Build base_folder
+base_folder = fullfile(base_root, 'Current Project Databases - NHP', '2025 Cerebellum prosthesis', 'Bryan', 'Data', session);
+
+% Construct folder paths
+intan_folder   = fullfile(base_folder, 'Intan');
+outputfolder   = fullfile(base_folder, 'Artifact_Corrected');
+fig_folder     = fullfile(base_folder, 'Figures');
+
+% Add analysis paths
 addpath(genpath(fullfile(base_folder, 'Intan')));
-addpath('/Volumes/CullenLab_Server/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/Analysis Codes/Oculomotor_Pipeline-main/Neural Pipeline');
+addpath(fullfile(base_root, 'Current Project Databases - NHP', '2025 Cerebellum prosthesis', 'Bryan', 'Analysis Codes', 'Oculomotor_Pipeline-main', 'Neural Pipeline'));
 
-outputfolder = fullfile(base_folder, 'Artifact_Corrected');
-fig_folder = fullfile(base_folder, 'Figures');
+% Create output folders if needed
 if ~exist(fig_folder, 'dir'), mkdir(fig_folder); end
 if ~exist(outputfolder, 'dir'), mkdir(outputfolder); end
 
@@ -33,31 +42,64 @@ end
 
 fprintf('Found %d valid trials with all required files.\n', numel(valid_trials));
 
-%% Load one of them
-if ~isempty(valid_trials)
-    trial = valid_trials{5};  % Or loop through them
-    trial_path = fullfile(intan_folder, trial);
-
-    load(fullfile(trial_path, 'neural_data.mat'));
-    load(fullfile(trial_path, 'stim_data.mat'));
-
-    fprintf('Loaded data from: %s\n', trial);
-end
-
-%% Artifact removal
-NA_data = neural_data;
-stim_data_scaled = stim_data .* 5000;
-
+%% Parameters
+fs = 30000;  % Hz
 fixed_params = struct( ...
     'NSTIM', 0, ...
-    'isstim', true, ...
-    'start', 1, ... % 1, 10, 20, 30, 40 all seem fine
-    'buffer', 30, ... % 10, 20, 30, or 40 are all fine
-    'period_avg', 30, ... % 20, 30, or 40
-    'skip_n', 2, ... % Should be fine
+    'buffer', 25, ... % 10, 20, 30, or 40 are all fine
+    'template_leeway', 15, ... % 10, 20, 25
+    'stim_neural_delay', 13, ... 
+    'period_avg', 25, ... % 20, 30, or 40
     'movmean_window', 3, ... % greater than 3
-    'pca_components', 3 ...
+    'pca_components', 3, ...
+    'minus_decay', false, ...
+    'med_filt_range', 25, ...
+    'gauss_filt_range', 25 ...
 );
 
-template_modes = {'local', 'carryover'};
-artifact_removed_data = sweep_template_param(neural_data, stim_data, 16, 'start', [1], fixed_params, template_modes);
+template_modes = {'local_drift_corr'};%'exponential'
+%% Loop through trials
+skip_ids = [];  % Large file size; skip for now
+
+for i = 5
+    if ismember(i, skip_ids)
+        fprintf('Skipping trial %d: %s\n', i, valid_trials{i});
+        continue;
+    end
+    trial = valid_trials{i};
+    trial_path = fullfile(intan_folder, trial);
+    
+    fprintf('\nProcessing trial: %s\n', trial);
+
+    % Load stim_data robustly
+    % stim_struct = load(fullfile(trial_path, 'stim_data.mat'));
+    if isfield(stim_struct, 'Stim_data')
+        Stim_data = stim_struct.Stim_data;
+    elseif isfield(stim_struct, 'stim_data')
+        Stim_data = stim_struct.stim_data;
+    else
+        warning('No recognized stim_data field in %s. Skipping.', trial);
+        continue;
+    end
+
+    % Detect stim channels
+    STIM_CHANS = find(any(Stim_data ~= 0, 2));
+    if isempty(STIM_CHANS)
+        warning('No stim signal detected in %s. Skipping.', trial);
+        continue;
+    end
+
+    % Artifact removal
+    compare_plot = true;
+    plot_chan = 1;
+    % load(fullfile(trial_path, 'neural_data.mat'));
+    [cleaned_all, trigs, stim_drift_all]= compare_template_modes(neural_data, Stim_data, fixed_params, plot_chan, template_modes, compare_plot);
+    % clear neural_data Stim_data;a
+    artifact_removed_data = squeeze(cleaned_all(:, 1, :));  % [nChans x time]
+
+    % Save cleaned data
+    % save_path = fullfile(outputfolder, [trial '_artifact_removed.mat']);
+    % save(save_path, 'artifact_removed_data', 'trigs', '-v7.3');
+    clear artifact_removed_data cleaned_all;
+    % fprintf('Saved cleaned data for %s\n', trial);
+end

@@ -1,4 +1,6 @@
+clear all; close all; clc;
 %% === Setup root path using machine-aware logic ===
+addpath(genpath('functions'));
 base_root = set_paths();  % e.g., returns '/Volumes/CullenLab_Server/...' or prompts via uigetdir
 
 %% === Define artifact root and output folder ===
@@ -25,7 +27,7 @@ fprintf('Found %d artifact-corrected MAT files.\n', numel(mat_files));
 %% === Convert each .mat to .bin ===
 for i = 1:length(mat_files)
     mat_path = fullfile(artifact_folder, mat_files(i).name);
-    fprintf('Processing %s\n', mat_files(i).name);
+    fprintf('Converting %s to .bin\n', mat_files(i).name);
 
     % Load MAT file
     S = load(mat_path);
@@ -52,4 +54,5 @@ for i = 1:length(mat_files)
     fclose(fileID);
 
     fprintf('Saved: %s (%d bytes)\n', bin_path, dir(bin_path).bytes);
+    clear data data_to_write;
 end

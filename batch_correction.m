@@ -1,18 +1,27 @@
 %% Clearing workspace
 clear all; close all; clc;
+profile on -memory
+addpath(genpath('functions'));
 
 %% Session and Path Setup
 session = 'BL_RW_003_Session_1';
-base_folder = fullfile('/Volumes/CullenLab_Server/Current Project Databases - NHP', ...
-    '2025 Cerebellum prosthesis/Bryan/Data', session);
-intan_folder = fullfile(base_folder, 'Intan');
 
-addpath('functions');
+% Get base root using set_paths
+base_root = set_paths();  % Prompts if on unknown machine
+
+% Build base_folder
+base_folder = fullfile(base_root, 'Current Project Databases - NHP', '2025 Cerebellum prosthesis', 'Bryan', 'Data', session);
+
+% Construct folder paths
+intan_folder   = fullfile(base_folder, 'Intan');
+outputfolder   = fullfile(base_folder, 'Artifact_Corrected');
+fig_folder     = fullfile(base_folder, 'Figures');
+
+% Add analysis paths
 addpath(genpath(fullfile(base_folder, 'Intan')));
-addpath('/Volumes/CullenLab_Server/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/Analysis Codes/Oculomotor_Pipeline-main/Neural Pipeline');
+addpath(fullfile(base_root, 'Current Project Databases - NHP', '2025 Cerebellum prosthesis', 'Bryan', 'Analysis Codes', 'Oculomotor_Pipeline-main', 'Neural Pipeline'));
 
-outputfolder = fullfile(base_folder, 'Artifact_Corrected');
-fig_folder = fullfile(base_folder, 'Figures');
+% Create output folders if needed
 if ~exist(fig_folder, 'dir'), mkdir(fig_folder); end
 if ~exist(outputfolder, 'dir'), mkdir(outputfolder); end
 
@@ -38,20 +47,24 @@ fprintf('Found %d valid Intan folders with required files.\n', numel(valid_trial
 fs = 30000;  % Hz
 fixed_params = struct( ...
     'NSTIM', 0, ...
-    'isstim', true, ...
-    'start', 1, ... % 1, 10, 20, 30, 40 all seem fine
-    'buffer', 30, ... % 10, 20, 30, or 40 are all fine
-    'period_avg', 30, ... % 20, 30, or 40
-    'skip_n', 2, ... % Should be fine
+    'buffer', 25, ... % 10, 20, 30, or 40 are all fine
+    'template_leeway', 15, ... % 10, 20, 25
+    'stim_neural_delay', 13, ... 
+    'period_avg', 25, ... % 20, 30, or 40
     'movmean_window', 3, ... % greater than 3
-    'pca_components', 3 ...
+    'pca_components', 3, ...
+    'minus_decay', false, ...
+    'med_filt_range', 25, ...
+    'gauss_filt_range', 25 ...
 );
-template_modes = {'local'};
+
+template_modes = {'local_drift_corr'};
 
 %% Loop through trials
-skip_ids = [11, 12]; % Large file size, try individually
+skip_ids = [];  % Large file size; skip for now
 
-for i = 7%length(valid_trials);
+ %[3, 5, 10, 11, 12]
+for i = 5%1:length(valid_trials)
     if ismember(i, skip_ids)
         fprintf('Skipping trial %d: %s\n', i, valid_trials{i});
         continue;
@@ -60,7 +73,7 @@ for i = 7%length(valid_trials);
     trial_path = fullfile(intan_folder, trial);
     
     fprintf('\nProcessing trial: %s\n', trial);
-    
+
     % Load stim_data robustly
     stim_struct = load(fullfile(trial_path, 'stim_data.mat'));
     if isfield(stim_struct, 'Stim_data')
@@ -72,9 +85,6 @@ for i = 7%length(valid_trials);
         continue;
     end
 
-    % Load data
-    load(fullfile(trial_path, 'stim_data.mat'));
-    
     % Detect stim channels
     STIM_CHANS = find(any(Stim_data ~= 0, 2));
     if isempty(STIM_CHANS)
@@ -87,50 +97,50 @@ for i = 7%length(valid_trials);
     plot_chan = false;
     load(fullfile(trial_path, 'neural_data.mat'));
     [cleaned_all, trigs] = compare_template_modes(neural_data, Stim_data, fixed_params, plot_chan, template_modes, compare_plot);
-    clear neural_data;
+    clear neural_data Stim_data;
     artifact_removed_data = squeeze(cleaned_all(:, 1, :));  % [nChans x time]
 
-    % Save only the cleaned data, stim, and trigs
+    % Save cleaned data
     save_path = fullfile(outputfolder, [trial '_artifact_removed.mat']);
-    save(save_path, 'artifact_removed_data', 'Stim_data', 'trigs', '-v7.3');
-    clear Stim_data artifact_removed_data neural_data;
+    save(save_path, 'artifact_removed_data', 'trigs', '-v7.3');
+    clear artifact_removed_data;
     fprintf('Saved cleaned data for %s\n', trial);
-
-    % % Filtering
-    % spike_data = zeros(size(neural_data));
-    % lfp_data = zeros(size(neural_data));
-    % for chan = 1:size(neural_data, 1)
-    %     temp = artifact_removed_data(chan, :);
-    % 
-    %     % LFP < 250 Hz
-    %     [b_lfp, a_lfp] = butter(4, 250/(fs/2), 'low');
-    %     lfp_data(chan, :) = filtfilt(b_lfp, a_lfp, temp);
-    % 
-    %     % Spikes > 250 Hz
-    %     [b_spk, a_spk] = butter(4, 250/(fs/2), 'high');
-    %     spike_data(chan, :) = filtfilt(b_spk, a_spk, temp);
-    % end
-    % 
-    % % Plotting
-    % figure;
-    % hold on; box off;
-    % N = size(neural_data, 2);
-    % time_ms = (0:N-1) / fs * 1000;
-    % 
-    % plot(time_ms, stim_data_scaled(STIM_CHANS(1), :), 'k', 'LineWidth', 1.5);
-    % plot(time_ms, neural_data(100, :), 'r', 'LineWidth', 1.5);
-    % plot(time_ms, artifact_removed_data(100, :)', 'b', 'LineWidth', 1.5);
-    % xlabel('Time (ms)'); ylabel('Amplitude (µV)');
-    % legend({'Stim', 'Raw', 'Cleaned'}, 'Location', 'best');
-    % title(sprintf('Artifact Removal: %s', trial), 'Interpreter', 'none');
-    % set(gca, 'TickDir', 'out');
-    % 
-    % % Save outputs
-    % data_filename = fullfile(outputfolder, ['artifact_removed_' trial '.mat']);
-    % save(data_filename, 'artifact_removed_data', 'lfp_data', 'spike_data', '-v7.3');
-    % 
-    % fig_base = fullfile(fig_folder, ['artifact_removal_plot_' trial '_full']);
-    % saveas(gcf, [fig_base, '.png']);
-    % savefig([fig_base, '.fig']);
-    % close(gcf);
 end
+% % Filtering
+% spike_data = zeros(size(neural_data));
+% lfp_data = zeros(size(neural_data));
+% for chan = 1:size(neural_data, 1)
+%     temp = artifact_removed_data(chan, :);
+% 
+%     % LFP < 250 Hz
+%     [b_lfp, a_lfp] = butter(4, 250/(fs/2), 'low');
+%     lfp_data(chan, :) = filtfilt(b_lfp, a_lfp, temp);
+% 
+%     % Spikes > 250 Hz
+%     [b_spk, a_spk] = butter(4, 250/(fs/2), 'high');
+%     spike_data(chan, :) = filtfilt(b_spk, a_spk, temp);
+% end
+% 
+% % Plotting
+% figure;
+% hold on; box off;
+% N = size(neural_data, 2);
+% time_ms = (0:N-1) / fs * 1000;
+% 
+% plot(time_ms, stim_data_scaled(STIM_CHANS(1), :), 'k', 'LineWidth', 1.5);
+% plot(time_ms, neural_data(100, :), 'r', 'LineWidth', 1.5);
+% plot(time_ms, artifact_removed_data(100, :)', 'b', 'LineWidth', 1.5);
+% xlabel('Time (ms)'); ylabel('Amplitude (µV)');
+% legend({'Stim', 'Raw', 'Cleaned'}, 'Location', 'best');
+% title(sprintf('Artifact Removal: %s', trial), 'Interpreter', 'none');
+% set(gca, 'TickDir', 'out');
+% 
+% % Save outputs
+% data_filename = fullfile(outputfolder, ['artifact_removed_' trial '.mat']);
+% save(data_filename, 'artifact_removed_data', 'lfp_data', 'spike_data', '-v7.3');
+% 
+% fig_base = fullfile(fig_folder, ['artifact_removal_plot_' trial '_full']);
+% saveas(gcf, [fig_base, '.png']);
+% savefig([fig_base, '.fig']);
+% close(gcf);
+profile viewer
