@@ -13,7 +13,6 @@ base_folder = fullfile(base_root, 'Current Project Databases - NHP', '2025 Cereb
 
 % Analysis subfolders
 intan_folder = fullfile(base_folder, 'Intan');
-outputfolder = fullfile(base_folder, 'Artifact_Corrected');
 fig_folder   = fullfile(base_folder, 'Figures');
 
 %% Add relevant analysis paths
@@ -21,7 +20,6 @@ addpath(genpath(fullfile(code_root, '..', 'functions')));  % assumes functions i
 addpath(genpath(intan_folder));
 %% Create output folders if needed
 if ~exist(fig_folder, 'dir'), mkdir(fig_folder); end
-if ~exist(outputfolder, 'dir'), mkdir(outputfolder); end
 
 %% Find valid trials
 trial_dirs = dir(fullfile(intan_folder, 'BL_closed_loop_STIM_*'));
@@ -99,7 +97,7 @@ for i = [3, 10, 11, 12]%1:length(valid_trials)
     artifact_removed_data = squeeze(cleaned_all(:, 1, :));  % [nChans x time]
 
     % Save cleaned data
-    save_path = fullfile(outputfolder, [trial '_artifact_removed.mat']);
+    save_path = fullfile(trial_path, 'neural_data_artifact_removed.mat');
     save(save_path, 'artifact_removed_data', 'trigs', '-v7.3');
     clear artifact_removed_data;
     fprintf('Saved cleaned data for %s\n', trial);
