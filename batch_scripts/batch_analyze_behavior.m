@@ -12,9 +12,9 @@ base_folder = fullfile(base_root, relative_path);
 search_folder      = fullfile(base_folder, 'Calibrated');
 fig_folder         = fullfile(base_folder, 'Figures');
 metadata_csv_path  = fullfile(base_folder, [session, '_metadata.csv']);
-raw_metrics_path   = fullfile(base_folder, [session, '_raw_metrics_all.mat']);
-summary_path       = fullfile(base_folder, [session, '_summarized_metrics.mat']);
-merged_baseline_path = fullfile(base_folder, [session, '_merged_baseline.mat']);
+raw_metrics_path   = fullfile(base_folder, 'Checkpoints', [session, '_raw_metrics_all.mat']);
+summary_path       = fullfile(base_folder, 'Checkpoints', [session, '_summarized_metrics.mat']);
+merged_baseline_path = fullfile(base_folder, 'Checkpoints', [session, '_merged_baseline.mat']);
 
 % List all Cal and Cal_stim files
 stim_files = dir(fullfile(search_folder, '**', '*_Cal_stim.mat'));

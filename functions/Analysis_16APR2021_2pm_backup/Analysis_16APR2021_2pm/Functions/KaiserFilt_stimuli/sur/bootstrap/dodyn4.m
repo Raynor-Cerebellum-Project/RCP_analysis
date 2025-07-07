@@ -1,0 +1,237 @@
+function [x,se,error_sim,VAF,BIC,est,Others] = dodyn3(M,ns,lat,out1,in1to4,mode_flag)
+%Run Dynamic Analysis on MNs
+%
+%Must be used through dynatwo.m
+%
+%Mode_FLag: 0 or [] = simple estimate
+%                 1 = prediction
+%                 2 = bootstrap
+%
+%Output formatted in plotdyn.m
+%
+%NOTE: "Others" is a cool structure in which any additional information can be stored
+%
+%PAS, 2000
+
+warning off 
+
+tic;
+
+x0 = [100 0 0 0 0 0 0];  %default initial conditions
+
+
+if (nargin == 5),               %default estimate if flag not specified
+    pred_flag = 0;
+elseif (size(mode_flag,2) > 1) & (mode_flag(1) == 8888), %for estimation in bootstrap or latency estimation, where mode_flag == [8888 x0_modified]
+    x0 = mode_flag(2:6);
+    pred_flag = 0;
+elseif (size(mode_flag,2) > 1) & (mode_flag(1) ~= 8888), %for predictions, where mode_flag == x_pred
+    x = mode_flag;
+    pred_flag = 1;
+elseif (size(mode_flag,2) > 1) & (mode_flag(2) == 5678)  %for multi-units
+    mode_flag = mode_flag;
+    pred_flag = 0;
+elseif (mode_flag == 9999),     %if the initial conditions need to be changed, with single estimation
+    x0 = getini(x0);   
+    pred_flag = 0;
+elseif (mode_flag == 0) | (mode_flag == 1234),        %if flag already set to estimate
+    pred_flag = 0;
+else                            %default estimate if anything else
+    pred_flag = 0;
+end
+
+
+%prepare the signals for the analysis process, i.e. only keep the valuable data
+
+cut = [];
+for i = 1:size(ns,2),
+    cut = [cut M(ns(i),1):M(ns(i),2)];
+end
+
+t_in = [in1to4(cut+lat,1) in1to4(cut+lat,2) in1to4(cut+lat,3) in1to4(cut+lat,4) in1to4(cut+lat,5) in1to4(cut+lat,6)];
+if (mode_flag(1) == 1234), %i.e. output signal is not FR
+    t_out = out1(cut);
+    %t_out = out1(cut+lat);
+else
+    t_out = out1(cut);
+end
+ 
+if (mode_flag(1) ~= 1234), %i.e. output signal is FR
+   FR_threshold = 20; %threshold for FR to be modeled
+   cut1 = find(t_out <= FR_threshold); 
+ 
+%      FR_threshold_dn=70; %threshold for FR to be modeled
+%      FR_threshold_up=105 ; %threshold for FR to be modeled
+%      cut1 = find(t_out <= FR_threshold_dn | t_out>FR_threshold_up); 
+
+    t_in(cut1,:) = [];
+    t_out(cut1) = [];
+    cut(cut1) = [];
+
+%added by SSG for estimating the corrected fr (for ehpos in PVPs
+%plotted in pvg
+elseif (mode_flag(1) == 8888), %i.e. output signal is FR
+    FR_threshold = 20; %threshold for FR to be modeled
+    cut1 = find(t_out <= FR_threshold); 
+    t_in(cut1,:) = [];
+    t_out(cut1) = [];
+    cut(cut1) = [];
+end
+
+
+
+%define and initialize the "Others" output structure
+Others = struct('n_imp',[],'x0',[],'NN',[],'time_array',[]);
+
+Others.n_imp = [(sum(in1to4(:,1)) ~= 0) (sum(in1to4(:,2)) ~= 0) (sum(in1to4(:,3)) ~= 0) (sum(in1to4(:,4)) ~= 0) (sum(in1to4(:,5)) ~= 0) (sum(in1to4(:,6)) ~= 0)];
+Others.time_array = cut; 
+
+%Evaluate/Predict the dynamic models%
+if (pred_flag ~= 1) & (out1(1) ~= 9999),
+    %options = optimset('display','off','MaxFunEvals',[25000],'MaxIter',[15000]);  %,'DiffMinChange',[1e-6]'TolFun',[1e-15],
+    %[x,RESNORM,RESIDUAL,EXITFLAG] = lsqnonlin('errmdyn2',x0,[],[],options,t_out,t_in);  
+    %Others.exit = EXITFLAG;
+
+    x = [([ones(length(t_in),1) t_in] \ t_out)'];  %Jay's code, see bottom
+    est = x(1) + x(2).*t_in(:,1) + x(3).*t_in(:,2) + x(4).*t_in(:,3) + x(5).*t_in(:,4 )+ x(6).*t_in(:,5 )+ x(7).*t_in(:,5 ); 
+    se = sd_err(t_out,t_in,est,Others); %sub-function
+    Others.exit = 111111;
+    Others.x0 = x0;
+    
+elseif (pred_flag ~= 1),
+    %options = optimset('display','off');
+    %[x,RESNORM,RESIDUAL,EXITFLAG] = lsqnonlin('errmdyn2nb',x0,[],[],options,t_out,t_in);  
+    %Others.exit = EXITFLAG;
+
+    x0(1) = [0];
+    x = [([t_in] \ t_out)'];  %Jay's code, see bottom
+    x = [0 x];
+    est = x(1) + x(2).*t_in(:,1) + x(3).*t_in(:,2) + x(4).*t_in(:,3) + x(5).*t_in(:,4 )+x(6).*t_in(:,5 )+ x(7).*t_in(:,6 ); 
+    se = sd_err(t_out,t_in,est,Others); %sub-function
+    Others.exit = 111111;
+    Others.x0 = x0;
+    
+else        % prediction
+    est = x(1) + x(2).*t_in(:,1) + x(3).*t_in(:,2) + x(4).*t_in(:,3) + x(5).*t_in(:,4 )+ x(6).*t_in(:,5)+ x(7).*t_in(:,6);   
+    se = [0 0 0 0 0 0 0];
+    Others.exit = 9999;
+    Others.x0 = [9999 9999 9999 9999 9999];
+    
+end
+
+error_sim = mean(t_out-est);
+NN=length(t_out);
+BIC = log(1/NN*(sum((t_out - est).^2))) + sum(Others.n_imp)/2*(log(NN))/NN;
+VAF = 1 - (var(t_out - est)/var(t_out));
+
+Others.timeit = toc;
+Others.NN = NN;
+
+
+
+%%%%%%%%%%%%%%%%%%%%%
+%  Subfunction #1
+%%%%%%%%%%%%%%%%%%%%%
+
+function [SE_out] = sd_err(Y,X,Yhat,Others)
+
+n = max(size(Y));
+k = sum(Others.n_imp);
+
+y = Y - mean(Y);
+yhat = Yhat - mean(Y);
+R2 = sum(yhat.^2) ./ sum(y.^2);
+sy = sqrt( ( (1-R2).*sum(y.^2) ) ./ (n - k - 1) );
+
+X1 = X;
+z = find(Others.n_imp == 0);
+X1(:,z) = [];
+X1 = [X1 ones(size(X1(:,1)))];
+c = inv(X1'*X1);
+
+V = []; SE = [];
+
+%Get bias first
+for i = 1:k+1,
+    V(i)  = (c(i,i)).*sy.^2;
+    SE(i) = sqrt(c(i,i)).*sy;
+end
+
+%Get the other parameters
+z = find(Others.n_imp == 1);
+SE_out = [SE(i) 0 0 0 0 0 0];
+for j = 1:sum(Others.n_imp)
+    SE_out(z(j)+1) = SE(j);
+end
+
+
+
+
+
+%From: "Jaypath" <jaypath@neuron.uchc.edu>
+%
+%Heheh,
+% 
+%Hope that subject header caught your eye. Well, let me apologize in advance for (another) long email, but I think you will really appreciate this. I had this idea after visiting your poster and after hearing about your bootstrap parameter confidence interval method. As you may recall, I asked if the analysis took a long time, and you said that it did. After all, you said you had to run the linear optimization 2000 times on 2000 subsampled data sets. For some reason, that must have fired one of those neurons I never use, because I was reminded of a linear systems theory class I took last year. It's funny that when I took that class, I had no idea how I could apply any of it to real data. But it kept bugging me, so I came back from Orlando and looked through some notes. In fact, this idea is really just an extension of a very basic concept from linear algebra, linear optimization to find the least-squares fit!
+% 
+%OK, so what's the idea? (you may want a basic linear algebra book to follow along, alot of this comes from my book... "Elementary Linear Algebra: Applications Edition" by Anton and Rorres)
+% 
+%Well, you already know that the dynamic analysis routine is attempting to find the coefficients a0, a1, a2, ... that minimize an equation like the following...
+% 
+%FR(actual) - FR(estimated)
+%and  FR(estimated) = a0 + a1 * P1 + a2 * P2 + ...
+%where P1, P2, ... are known scalar vectors such as eye position, gaze velocity, motor error, etc and FR(actual) is the known scalar vector containing actual firing rate.
+% 
+%To determine the a0, a1, a2, etc parameters, the LSQNONLIN (or equivalently, the LEASTSQ) function is used. This function uses some complex algorithm to (essentially) guess values for the coefficients until the difference equation is minimized near the initial condition. That has a number of disadvantages for us... it's SLOW; it's accuracy is determined by parameters like the iteration step size, tolerance, and maximum number of function evaluations; and increasing those parameters or adding more terms exponentially increases the processing time. The benefits of this approach are that it can be used on singular data sets (more on that later) and sets in which the P1, P2, ... vectors are non constant, and it can find a local minimum. But these conditions wouldn't apply to us, so using LSQNONLIN is a little bit of overkill.
+% 
+%There's a much easier way to find the coefficients a0, a1, a2... and this easier method is better because the values are precise (or at least as precise as Matlab's numerical methods can be). To illustrate the method, take an example neuron whose discharge is related to eye velocity and acceleration...
+% 
+%FR = a0 + a1 * dE + a2 + ddE
+%where FR, dE, and ddE are known and are scalar vectors of length N. Then, we could create N linear equations for the N data points...
+%FR1 = a0 + a1 * dE1 + a2 * ddE1;
+%FR2 = a0 + a1 * dE2 + a2 * ddE2;
+%...
+%FRN = a0 + a1 * dEN + a2* ddEN;
+% 
+%These N equations are summarized by the matrix equation...
+% 
+%FR = [1 dE ddE] * [A]
+% 
+%where the multiplication sign is matrix multiplication; FR = [FR1 FR2 ... FRN]' ; dE = [dE1 dE2 ... dEN]'  ;  and  A = [a0 a1 a2 ... aN]'  (all vertical vectors)
+% 
+%let M = [1 dE ddE]  so that
+% 
+%FR = M*A
+% 
+%then, from linear algebra it is known that any such linear system has an associated "normal" system  ( M' * FR = M' * M * A)  whose exact solutions are least squares solutions of FR = M*A. If the N systems do not have a perfect least squares fit (ie, if the VAF is not 100%) then there is only one unique solution to the normal system, in fact the exact same solution that LSQNONLIN is trying to guess. This solution can simply be calculated in Matlab as...
+% 
+%A = (M' * M)^-1 * M' * FR   
+%where M' is the transpose of M and ^-1 is the matrix inverse and A is the vector of coefficients. (This can all be found in a linear algebra or linear systems text under the section on "normal equations"). Since Matlab is designed for such matrix arithmatic, it is much, much, much faster than using LSQNONLIN. And the results should be the same (I've found that the difference is on the order of 10^-15, but the 15th decimal place is probably not significant anyway...). In fact, this solution should, in theory, be MORE precise than LSQNONLIN because it is the exact solution to the least squares fit (in practice though, LSQNONLIN is very accurate if you do not get the "MAXFUNEVAL exceeded" warning).
+% 
+%BUT WAIT!!! it gets easier!! It turns out that Matlab is designed for exactly this type of application!! if you type "help slash" and read the part about the backslash operator, you'll see why. Since M is an m by n matrix, we can short-hand the above equation as...
+%A = M\FR;
+% 
+%So the bottom line is, try this...
+% 
+%In your code, you probably have an equation like...
+%   x = leastsq('lat_func',[5 1 1 1 1]);
+%replace that with the following code...
+% 
+%check that this method is faster and accurate...
+%tic; x = leastsq('lat_func',[5 1 1 1 1]); t1 = toc;  %the original method to determine the x vector, timed using tic and toc
+% 
+%%now the easy way
+%tic; xx = [([ones(length(d_in),1) d_in(:,find(n_imp))] \ d_out)' 0 0 0]; t2 = toc;  %the inner square brackets defines M. The zeros ensure that xx is at least 5 elements
+%xx = xx(1:5);
+ 
+%now check and see if these results are the same
+%disp(x)
+%disp(xx)
+ 
+%now see the performace increase!
+%disp(t2/t1)
+
+
+ 
+ 
+

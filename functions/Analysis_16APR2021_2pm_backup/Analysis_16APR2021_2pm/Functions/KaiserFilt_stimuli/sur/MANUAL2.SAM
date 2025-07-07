@@ -1,0 +1,2158 @@
+[ver]
+	4
+[sty]
+	
+[files]
+[charset]
+	82
+	ANSI (Windows, IBM CP 1252)
+[revisions]
+	0
+[prn]
+	HP LaserJet III PostScript
+[port]
+	LPT1:
+[lang]
+	1
+[desc]
+	
+	
+	
+	
+	
+	745271783
+	12
+	741124904
+	2535
+	8
+	0
+	0
+	0
+	0
+	
+	
+	
+	
+	
+	
+	1
+[fopts]
+	0
+	1
+	0
+	0
+[lnopts]
+	2
+	Body Text
+	1
+[docopts]
+	5
+	2
+[GramStyle]
+	
+[ParaNum]
+	1
+[tag]
+	Body Text
+	2
+	[fnt]
+		Times New Roman
+		240
+		0
+		49152
+	[algn]
+		1
+		1
+		0
+		0
+		0
+	[spc]
+		33
+		288
+		1
+		72
+		0
+		1
+		100
+	[brk]
+		4
+	[line]
+		8
+		0
+		1
+		0
+		1
+		1
+		1
+		10
+		10
+		1
+	[spec]
+		0
+		0
+		
+		0
+		1
+		1
+		0
+		0
+		0
+		0
+	[nfmt]
+		280
+		1
+		2
+		.
+		,
+		$
+	Body Text
+	0
+	0
+[tag]
+	Body Single
+	3
+	[fnt]
+		Times New Roman
+		240
+		0
+		49152
+	[algn]
+		1
+		1
+		0
+		0
+		0
+	[spc]
+		33
+		273
+		1
+		0
+		0
+		1
+		100
+	[brk]
+		4
+	[line]
+		8
+		0
+		1
+		0
+		1
+		1
+		1
+		10
+		10
+		1
+	[spec]
+		0
+		0
+		
+		0
+		1
+		1
+		0
+		0
+		0
+		0
+	[nfmt]
+		280
+		1
+		2
+		.
+		,
+		$
+	Body Single
+	0
+	0
+[tag]
+	Bullet
+	4
+	[fnt]
+		Times New Roman
+		240
+		0
+		49152
+	[algn]
+		1
+		1
+		0
+		288
+		288
+	[spc]
+		33
+		273
+		1
+		0
+		0
+		1
+		100
+	[brk]
+		4
+	[line]
+		8
+		0
+		1
+		0
+		1
+		1
+		1
+		10
+		10
+		1
+	[spec]
+		0
+		0
+		<*0>
+		360
+		1
+		1
+		0
+		0
+		0
+		0
+	[nfmt]
+		272
+		1
+		2
+		.
+		,
+		$
+	Bullet
+	0
+	0
+[tag]
+	Bullet 1
+	5
+	[fnt]
+		Times New Roman
+		240
+		0
+		49152
+	[algn]
+		1
+		1
+		288
+		288
+		288
+	[spc]
+		33
+		273
+		1
+		0
+		0
+		1
+		100
+	[brk]
+		4
+	[line]
+		8
+		0
+		1
+		0
+		1
+		1
+		1
+		10
+		10
+		1
+	[spec]
+		0
+		0
+		<*5>
+		0
+		1
+		1
+		0
+		0
+		0
+		0
+	[nfmt]
+		280
+		1
+		2
+		.
+		,
+		$
+	Bullet 1
+	0
+	0
+[tag]
+	Number List
+	6
+	[fnt]
+		Times New Roman
+		240
+		0
+		49152
+	[algn]
+		1
+		1
+		360
+		360
+		360
+	[spc]
+		33
+		273
+		1
+		0
+		0
+		1
+		100
+	[brk]
+		4
+	[line]
+		8
+		0
+		1
+		0
+		1
+		1
+		1
+		10
+		10
+		1
+	[spec]
+		0
+		0
+		<*:>.
+		360
+		1
+		1
+		0
+		0
+		0
+		0
+	[nfmt]
+		272
+		1
+		2
+		.
+		,
+		$
+	Number List
+	0
+	0
+[tag]
+	Subhead
+	7
+	[fnt]
+		Times New Roman
+		320
+		0
+		49157
+	[algn]
+		1
+		1
+		0
+		0
+		0
+	[spc]
+		33
+		273
+		1
+		72
+		72
+		1
+		100
+	[brk]
+		80
+	[line]
+		8
+		0
+		1
+		0
+		1
+		1
+		1
+		10
+		10
+		1
+	[spec]
+		0
+		2
+		<*:> - 
+		0
+		1
+		1
+		0
+		0
+		0
+		0
+	[nfmt]
+		272
+		1
+		2
+		.
+		,
+		$
+	Body Text
+	0
+	0
+[tag]
+	Title
+	8
+	[fnt]
+		Arial
+		360
+		0
+		16385
+	[algn]
+		4
+		1
+		0
+		0
+		0
+	[spc]
+		33
+		446
+		1
+		144
+		72
+		1
+		100
+	[brk]
+		16
+	[line]
+		8
+		0
+		1
+		0
+		1
+		1
+		1
+		10
+		10
+		1
+	[spec]
+		0
+		1
+		
+		0
+		1
+		1
+		0
+		0
+		0
+		0
+	[nfmt]
+		272
+		1
+		2
+		.
+		,
+		$
+	Title
+	0
+	0
+[tag]
+	Header
+	9
+	[fnt]
+		Times New Roman
+		240
+		0
+		49152
+	[algn]
+		1
+		1
+		0
+		0
+		0
+	[spc]
+		33
+		273
+		1
+		0
+		0
+		1
+		100
+	[brk]
+		4
+	[line]
+		8
+		0
+		1
+		0
+		1
+		1
+		1
+		10
+		10
+		1
+	[spec]
+		0
+		0
+		
+		0
+		1
+		1
+		0
+		0
+		0
+		0
+	[nfmt]
+		280
+		1
+		2
+		.
+		,
+		$
+	Header
+	0
+	0
+[tag]
+	Footer
+	11
+	[fnt]
+		Times New Roman
+		240
+		0
+		49152
+	[algn]
+		1
+		1
+		0
+		0
+		0
+	[spc]
+		33
+		273
+		1
+		0
+		0
+		1
+		100
+	[brk]
+		4
+	[line]
+		8
+		0
+		1
+		0
+		1
+		1
+		1
+		10
+		10
+		1
+	[spec]
+		0
+		0
+		
+		0
+		1
+		1
+		0
+		0
+		0
+		0
+	[nfmt]
+		280
+		1
+		2
+		.
+		,
+		$
+	Footer
+	0
+	0
+[tag]
+	Outline3
+	12
+	[fnt]
+		Times New Roman
+		280
+		0
+		49155
+	[algn]
+		1
+		1
+		0
+		0
+		0
+	[spc]
+		33
+		316
+		1
+		144
+		72
+		1
+		100
+	[brk]
+		16
+	[line]
+		8
+		0
+		1
+		0
+		1
+		1
+		1
+		10
+		10
+		1
+	[spec]
+		0
+		3
+		
+		0
+		1
+		1
+		0
+		0
+		0
+		0
+	[nfmt]
+		280
+		1
+		2
+		.
+		,
+		$
+	Outline3
+	0
+	0
+[tag]
+	Outline4
+	0
+	[fnt]
+		Times New Roman
+		240
+		0
+		49155
+	[algn]
+		1
+		1
+		0
+		0
+		0
+	[spc]
+		33
+		288
+		1
+		144
+		72
+		1
+		100
+	[brk]
+		80
+	[line]
+		8
+		0
+		1
+		0
+		1
+		1
+		1
+		10
+		10
+		1
+	[spec]
+		0
+		4
+		<*1> 
+		0
+		1
+		1
+		0
+		0
+		0
+		0
+	[nfmt]
+		280
+		1
+		2
+		.
+		,
+		$
+	Body Text
+	0
+	0
+[tag]
+	Outline5
+	0
+	[fnt]
+		Times New Roman
+		240
+		0
+		49153
+	[algn]
+		1
+		1
+		0
+		0
+		0
+	[spc]
+		33
+		288
+		1
+		72
+		0
+		1
+		100
+	[brk]
+		80
+	[line]
+		8
+		0
+		1
+		0
+		1
+		1
+		1
+		10
+		10
+		1
+	[spec]
+		0
+		5
+		<*0> 
+		0
+		1
+		1
+		0
+		0
+		0
+		0
+	[nfmt]
+		280
+		1
+		2
+		.
+		,
+		$
+	Body Text
+	0
+	0
+[tag]
+	Outline6
+	0
+	[fnt]
+		Times New Roman
+		240
+		0
+		49152
+	[algn]
+		1
+		1
+		0
+		0
+		0
+	[spc]
+		33
+		273
+		1
+		0
+		0
+		1
+		100
+	[brk]
+		4
+	[line]
+		8
+		0
+		1
+		0
+		1
+		1
+		1
+		10
+		10
+		1
+	[spec]
+		0
+		6
+		<*7> 
+		0
+		1
+		1
+		0
+		0
+		0
+		0
+	[nfmt]
+		280
+		1
+		2
+		.
+		,
+		$
+	Outline6
+	0
+	0
+[tag]
+	Single up
+	0
+	[fnt]
+		Times New Roman
+		240
+		0
+		49152
+	[algn]
+		1
+		1
+		0
+		0
+		0
+	[spc]
+		33
+		273
+		1
+		0
+		0
+		1
+		100
+	[brk]
+		72
+	[line]
+		8
+		0
+		1
+		0
+		1
+		1
+		1
+		10
+		10
+		1
+	[spec]
+		0
+		0
+		
+		0
+		1
+		1
+		0
+		0
+		0
+		0
+	[nfmt]
+		280
+		1
+		2
+		.
+		,
+		$
+	Body Single
+	0
+	0
+[frm]
+	4
+	536936640
+	1421
+	10035
+	10796
+	14363
+	1
+	1
+	1
+	1 0 0 100 100 18 0
+	0
+	16777215
+	6
+	[frmname]
+		Frame4
+	[frmlay]
+		14363
+		9375
+		1
+		144
+		144
+		1
+		10179
+		144
+		0
+		2
+		0
+		0
+		0
+		103
+		1
+		1681
+		10536
+		0
+	[isd]
+		.X6
+		.sdw
+		
+		1
+		1
+		0
+		0
+		8830
+		61762
+		100
+		0
+		384
+		258
+		0
+		0
+		1
+		16
+		15767
+		24
+		15767
+		32
+		15767
+		40
+		15767
+		48
+		15767
+		56
+		15767
+		8
+		15767
+		23660
+		0
+		1575
+		5413
+		10425
+		9213
+		0
+		0
+		0
+		11
+		49344
+		192
+		65535
+		255
+		0
+		0
+		0
+		0
+		20
+		0
+		0
+		21504
+		28009
+		29541
+		20000
+		30565
+		21024
+		28015
+		28257
+		0
+		0
+		0
+		0
+		0
+		0
+		0
+		0
+		4608
+		320
+		0
+		0
+		3
+		60249
+		0
+		1
+		1
+		180
+		180
+		360
+		720
+		1
+		1
+		0
+		25878
+		16286
+		16206
+		0
+		16351
+		1882
+		16351
+		115
+		16231
+		192
+		16231
+		418
+		16247
+		487
+		16247
+		288
+		16231
+		1
+		255
+		0
+		17151
+		30
+		33279
+		0
+		65535
+		0
+		65280
+		0
+		65280
+		178
+		65280
+		255
+		32768
+		255
+		0
+		255
+		16225
+		255
+		129
+		255
+		255
+		255
+		255
+		128
+		65535
+		255
+		0
+		0
+		1
+		49407
+		206
+		49407
+		182
+		49919
+		129
+		65535
+		194
+		65474
+		145
+		65473
+		213
+		65473
+		255
+		61378
+		255
+		61920
+		255
+		57568
+		255
+		49121
+		255
+		49663
+		253
+		49407
+		228
+		65535
+		255
+		36751
+		143
+		33535
+		160
+		33023
+		128
+		49151
+		24
+		65535
+		128
+		65408
+		128
+		65410
+		202
+		65408
+		255
+		58017
+		255
+		57792
+		255
+		49087
+		255
+		40930
+		255
+		32767
+		255
+		33535
+		194
+		63479
+		247
+		32896
+		128
+		16639
+		112
+		33279
+		65
+		33279
+		0
+		65535
+		0
+		65345
+		50
+		65346
+		199
+		65280
+		255
+		49215
+		255
+		40833
+		226
+		32896
+		255
+		33472
+		255
+		17151
+		249
+		16639
+		160
+		61423
+		239
+		29298
+		114
+		255
+		0
+		17151
+		30
+		25314
+		0
+		49087
+		0
+		65280
+		0
+		65280
+		178
+		57344
+		224
+		32768
+		255
+		33089
+		255
+		16705
+		255
+		17026
+		255
+		255
+		255
+		255
+		128
+		57825
+		225
+		24415
+		95
+		194
+		0
+		8417
+		0
+		16289
+		0
+		41377
+		0
+		49664
+		0
+		49408
+		150
+		49408
+		194
+		25088
+		225
+		0
+		255
+		65
+		255
+		129
+		255
+		161
+		159
+		192
+		127
+		53970
+		210
+		20303
+		79
+		129
+		0
+		160
+		0
+		17026
+		0
+		33153
+		0
+		32768
+		0
+		40704
+		130
+		33280
+		128
+		16384
+		128
+		0
+		128
+		34
+		161
+		65
+		194
+		128
+		128
+		130
+		64
+		49344
+		192
+		16448
+		64
+		45520
+		161
+		41440
+		117
+		45266
+		106
+		49856
+		124
+		49538
+		104
+		49281
+		151
+		49791
+		188
+		45681
+		207
+		40863
+		224
+		41408
+		224
+		40930
+		222
+		37359
+		235
+		40930
+		200
+		45746
+		178
+		12079
+		47
+		24703
+		79
+		25249
+		82
+		25216
+		16
+		33410
+		63
+		25151
+		31
+		24892
+		62
+		24631
+		94
+		16656
+		96
+		24674
+		161
+		16738
+		129
+		12640
+		129
+		8544
+		98
+		8546
+		82
+		41634
+		162
+		0
+		0
+		0
+		1044
+		1256
+		664
+		154
+		153
+		155
+		151
+		0
+		0
+		8
+		15759
+		24
+		15759
+		32
+		15759
+		40
+		15759
+		16
+		15759
+		48
+		15759
+		0
+		0
+		.sdw
+		0
+		0
+		0
+[frm]
+	7
+	536936640
+	1373
+	10148
+	10773
+	14086
+	1
+	1
+	1
+	1 0 0 100 100 18 0
+	0
+	16777215
+	7
+	[frmname]
+		Frame3
+	[frmlay]
+		14086
+		9400
+		1
+		144
+		144
+		1
+		10292
+		144
+		0
+		2
+		0
+		0
+		0
+		0
+		1
+		1622
+		10524
+		0
+	[isd]
+		.X7
+		.sdw
+		
+		1
+		1
+		0
+		0
+		8422
+		62106
+		100
+		0
+		384
+		258
+		0
+		0
+		1
+		16
+		15767
+		24
+		15767
+		32
+		15767
+		40
+		15767
+		48
+		15767
+		56
+		15767
+		8
+		15767
+		23660
+		0
+		1700
+		4125
+		10600
+		7563
+		0
+		0
+		9
+		0
+		0
+		0
+		65535
+		255
+		0
+		0
+		0
+		0
+		20
+		16
+		0
+		21504
+		28009
+		29541
+		20000
+		30565
+		21024
+		28015
+		28257
+		0
+		0
+		0
+		0
+		0
+		0
+		0
+		0
+		4608
+		325
+		0
+		0
+		3
+		0
+		0
+		1
+		1
+		72
+		72
+		360
+		720
+		1
+		1
+		0
+		25878
+		16286
+		16206
+		0
+		16351
+		1882
+		16351
+		115
+		16231
+		192
+		16231
+		418
+		16247
+		487
+		16247
+		288
+		16231
+		1
+		255
+		0
+		17151
+		30
+		33279
+		0
+		65535
+		0
+		65280
+		0
+		65280
+		178
+		65280
+		255
+		32768
+		255
+		0
+		255
+		16225
+		255
+		129
+		255
+		255
+		255
+		255
+		128
+		65535
+		255
+		0
+		0
+		1
+		49407
+		206
+		49407
+		182
+		49919
+		129
+		65535
+		194
+		65474
+		145
+		65473
+		213
+		65473
+		255
+		61378
+		255
+		61920
+		255
+		57568
+		255
+		49121
+		255
+		49663
+		253
+		49407
+		228
+		65535
+		255
+		36751
+		143
+		33535
+		160
+		33023
+		128
+		49151
+		24
+		65535
+		128
+		65408
+		128
+		65410
+		202
+		65408
+		255
+		58017
+		255
+		57792
+		255
+		49087
+		255
+		40930
+		255
+		32767
+		255
+		33535
+		194
+		63479
+		247
+		32896
+		128
+		16639
+		112
+		33279
+		65
+		33279
+		0
+		65535
+		0
+		65345
+		50
+		65346
+		199
+		65280
+		255
+		49215
+		255
+		40833
+		226
+		32896
+		255
+		33472
+		255
+		17151
+		249
+		16639
+		160
+		61423
+		239
+		29298
+		114
+		255
+		0
+		17151
+		30
+		25314
+		0
+		49087
+		0
+		65280
+		0
+		65280
+		178
+		57344
+		224
+		32768
+		255
+		33089
+		255
+		16705
+		255
+		17026
+		255
+		255
+		255
+		255
+		128
+		57825
+		225
+		24415
+		95
+		194
+		0
+		8417
+		0
+		16289
+		0
+		41377
+		0
+		49664
+		0
+		49408
+		150
+		49408
+		194
+		25088
+		225
+		0
+		255
+		65
+		255
+		129
+		255
+		161
+		159
+		192
+		127
+		53970
+		210
+		20303
+		79
+		129
+		0
+		160
+		0
+		17026
+		0
+		33153
+		0
+		32768
+		0
+		40704
+		130
+		33280
+		128
+		16384
+		128
+		0
+		128
+		34
+		161
+		65
+		194
+		128
+		128
+		130
+		64
+		49344
+		192
+		16448
+		64
+		45520
+		161
+		41440
+		117
+		45266
+		106
+		49856
+		124
+		49538
+		104
+		49281
+		151
+		49791
+		188
+		45681
+		207
+		40863
+		224
+		41408
+		224
+		40930
+		222
+		37359
+		235
+		40930
+		200
+		45746
+		178
+		12079
+		47
+		24703
+		79
+		25249
+		82
+		25216
+		16
+		33410
+		63
+		25151
+		31
+		24892
+		62
+		24631
+		94
+		16656
+		96
+		24674
+		161
+		16738
+		129
+		12640
+		129
+		8544
+		98
+		8546
+		82
+		41634
+		162
+		0
+		0
+		0
+		1044
+		1256
+		664
+		154
+		153
+		155
+		151
+		1
+		0
+		8
+		15759
+		24
+		15759
+		32
+		15759
+		40
+		15759
+		16
+		15759
+		48
+		15759
+		0
+		0
+		.sdw
+		0
+		0
+		0
+[lay]
+	Standard
+	513
+	[rght]
+		15840
+		12240
+		1
+		1440
+		1440
+		1
+		1440
+		1440
+		0
+		1
+		0
+		1
+		0
+		2
+		1
+		1440
+		10800
+		12
+		1
+		720
+		1
+		1440
+		1
+		2160
+		1
+		2880
+		1
+		3600
+		1
+		4320
+		1
+		5040
+		1
+		5760
+		1
+		6480
+		1
+		7200
+		1
+		7920
+		1
+		8640
+	[hrght]
+	[lyfrm]
+		1
+		11200
+		0
+		0
+		12240
+		1440
+		0
+		1
+		3
+		1 0 0 0 0 0 0
+		0
+		0
+		1
+	[frmlay]
+		1440
+		12240
+		1
+		1440
+		72
+		1
+		792
+		1440
+		0
+		1
+		0
+		1
+		1
+		0
+		1
+		1440
+		10800
+		2
+		2
+		4680
+		3
+		9360
+	[txt]
+
+>
+	[frght]
+	[lyfrm]
+		1
+		13248
+		0
+		14400
+		12240
+		15840
+		0
+		1
+		3
+		1 0 0 0 0 0 0
+		0
+		0
+		2
+	[frmlay]
+		15840
+		12240
+		1
+		1440
+		792
+		1
+		14472
+		1440
+		0
+		1
+		0
+		1
+		1
+		0
+		1
+		1440
+		10800
+		2
+		2
+		4680
+		3
+		9360
+	[txt]
+>
+[elay]
+[l1]
+	0
+[pg]
+	8
+	18 195 95 0 0 0 0 65535 65535 Standard	65535 0 0	0 0 0 0 0 0 0 65535 0 0 65535 0 0 0 0 0
+	43 290 75 0 0 0 0 65535 65535 Standard	65535 0 0	0 0 0 0 0 0 0 65535 0 0 65535 0 0 0 0 0
+	63 177 71 32 0 0 0 65535 65535 Standard	65535 0 0	0 0 0 0 0 0 0 65535 0 0 65535 0 0 0 0 0
+	82 0 92 0 0 0 0 65535 65535 Standard	65535 0 0	0 0 0 0 0 0 0 65535 0 0 65535 0 0 0 0 0
+	91 0 56 32 0 0 0 65535 65535 Standard	65535 0 0	0 0 0 0 0 0 0 65535 0 0 65535 0 0 0 0 0
+	109 196 9 32 0 0 0 65535 65535 Standard	65535 0 0	0 0 0 0 0 0 0 65535 0 0 65535 0 0 0 0 0
+	123 0 22 32 0 0 0 65535 65535 Standard	65535 0 0	0 0 0 0 0 0 0 65535 0 0 65535 0 0 0 0 0
+	140 0 47 1025 0 0 0 65535 65535 Standard	65535 0 0	0 0 0 0 0 0 0 65535 0 0 65535 0 0 0 0 0
+[edoc]
+@Title@<:#432,9360>Short Description of the Analysis Program
+
+<:#1420,9360>The analysis program was designed to deal with segmented data and much of the programming effort was spent on providing an adequate software environment for processing, viewing, grouping, selecting and stitching together, multiple regions of interest. The g
+eneral idea was to design a central data server that would be able to gather together the data in these regions of interest into an efficient data format. 
+
+<:I0,630,0,0><:#852,9360>Data is also abstracted from its defining variables by a lookup table that may be reconfigured from within the analysis program. For example, horizontal eye position (hep) can be defined as the difference of gaze and head position through a definition file.
+ 
+
+@Subhead@<:I0,0,0,0><:R1,12,1,630,1,1440,1,2160,1,2880,1,3600,1,4320,1,5040,1,5760,1,6480,1,7200,1,7920,1,8640,><:#379,9360>Basics
+
+<:I0,0,0,0><:R1,12,1,630,1,1440,1,2160,1,2880,1,3600,1,4320,1,5040,1,5760,1,6480,1,7200,1,7920,1,8640,><:#568,9360>This section describes how to access the Matlab environment and within it the calibrate and analysis modules.
+
+@Outline3@<:R><:#322,9360>Invoking Matlab
+
+<:#1136,9360>Matlab can be invoked in any of the computers that are connected in the network. As the programs have been deseigned for Matlab 4 this should be the version running NOT version 3.5. If Matlab is not in the computer analysis desktop, it can be invoked direct
+ly through the file manager by going in the file menu, choosing 'file run' and entering: 
+
+<:#322,9360><:f,BLetterGothic,><+!>C:\MATLAB\BIN\MATLAB-S.EXE<-!><:f>
+
+@Outline3@<:#322,9360>Invoking Calibrate
+
+<:#852,9360>The calibrate module can be invoked from the Matlab command window by simply typing 'calibrate.' (This module does not define a calibration, such a function is beyond the scope of this documentation.)
+
+@Outline4@<:#284,9360>Input files
+
+<:#284,9360>You will be prompted for the first and last files to calibrate. The filenames should have the form:
+
+<:#284,9360><+!>xxxxxxd.nnn<-!>
+
+<:#857,9360>Where '<+!>xxxxxxx<-!>' can have up to seven characters to describe the data; 'nnn' describes the session number. Choose two files with the same name but different extensions; for example tsuk49d.005 and tsuk49d.009. This would cause these files as well as 
+tsuk49d.006 ... to be processed.
+
+@Outline4@<:#284,9360>Output files
+
+<:#852,9360>The output files generated are stored in the same directory than that used for the input files but the character 'd' before the period is stripped (in the example, the files would be tsuk49.005, tsuk49.006, and so on).
+
+@Outline3@<:#322,9360>Invoking and Using Analysis
+
+<:#1704,9360>From the Matlab command line the analysis program can be invoked by simply entering 'analysis'. You will be immediately prompted for a user directory. This is the directory storing your personal choices for the display and for a couple of other options such
+ as thresholding and dynamic fit parameters. Immediately after that you will be asked for a data file. Note that data can be accessed through the network and thus need not be in the local hard disk. The analysis program is meant to be a menu driven program 
+accessed totaly from the figure window.
+
+@Outline4@<:#284,9360>Use of menus and command line simultaneously.
+
+<:#1136,9360>The analysis program may be used from the command line as well as from the figure window, using it from the command line, however, is risky since all the data and program variables can be altered or rewritten all too easily. The last part of this documentat
+ion contains a (long) list of variable names used by the program and should be avoided.
+
+@Outline4@<:#284,9360>Menu items:
+
+<:#568,9360>The File, Edit, Windows, Help menu items are the default Matlab menu items, the analysis menu items (Data, <<, <;>, Segments, Display, Metrics, Tools) follow these.
+
+@Outline5@<:#284,9360>Data
+
+@Bullet 1@<:#284,9360><+#>L<-#>oad datafile - Load a new data file for analysis.
+
+@Bullet 1@<:#284,9360><+#>S<-#>ave datafile - save data file to overwrite the previous version.
+
+@Bullet 1@<:#568,9360>Start stichfile - Initializes a stich file and loads all the segments that are displayed on the screen.
+
+@Bullet 1@<:#568,9360>Append to stichfile - Appends all the segments that are displayed on the screen to an already existing stich file.
+
+@Bullet 1@<:#568,9360><+#>L<-#>atency - allows you to enter the expected latency of the neurons. This number is used to compensate the signals so that trajectories are aligned to the firing rate of the neuron. 
+
+@Outline5@<:#284,9360>Segment, <;> and <<
+
+<:#284,9360>These items allow you to choose and manipulate the segment(s) of interest displayed.
+
+@Bullet 1@<:#284,9360><+#>F<-#>irst segment - shift segments of interest to start at the first one; e.g., 3,4,7 to 1,2,5.
+
+@Bullet 1@<:#568,9360><+#>L<-#>ast segment - same as above but segments now end with the last segment (defined by the program variable 
+<+">NoofSegments<-">
+
+@Bullet 1@<:#284,9360>Select by <+#>n<-#>umber - choose the segment numbers to be displayed
+
+@Bullet 1@<:#284,9360>Select by loca<+#>t<-#>ion - select segments by their locations
+
+@Bullet 1@<:#284,9360>Select <+#>A<-#>ll - display all segments simultanuously.
+
+@Bullet 1@<:#284,9360><+#>A<-#>dd new segment - Click with the mouse at the beginning and end of a new segment. 
+
+@Bullet 1@<:#284,9360><+#>D<-#>elete segment - Delete the markers for a segment.
+
+@Bullet 1@<:#852,9360><+#>E<-#>dit location - Edit the location for a segment by clicking with the mouse at their beginning and end points. You must edit the location of every segment displayed; e.g.; if you have two segments you must click on four locations.
+
+@Bullet 1@<:#284,9360><+#>U<-#>ndo last - Undo the last change, deletion or addition of segments.
+
+@Outline5@<:#284,9360>Display
+
+<:#284,9360>Changing display options involves altering what is being displayed on the screen.
+
+@Outline5@<:#284,9360>Metrics
+
+<:#1136,9360>With this choice you can automatically measure parameters from the displayed signals. The results are copied to the clipboard. When computing metrics it is more efficient to do it with as many segments of interest as possible at the same time. If you have t
+o obtain different metrics for a number of related data files it might be best to stich them together first.
+
+@Bullet 1@<:#284,9360>beginning, end
+
+@Bullet 1@<:#284,9360>Maxima, Minima
+
+@Bullet 1@<:#284,9360>Locations, Durations
+
+@Outline5@<:#284,9360>Fit
+
+<:#568,9360>This choice allows you to estimate parameters for static (polynomial) or dynamic (output error) relationships.
+
+@Outline4@<:#284,9360>Loading the data from tape
+
+<:#852,9360>Quite often you must load data that has been stored in tape. First find the tape with the recording you want, make sure it is the latest backup. Insert the tape into the tape drive with the exposed tape first and the metallic side down.
+
+@Outline4@<:#284,9360>Using PCTools tape backup
+
+<:#568,9360>Call up the PCTOOLS backup program (if you do not know how to do this get help!). This program is used for both backups and restores. 
+
+@Outline5@<:#284,9360>Using the restore operation
+
+<:#284,9360>After you are in restore mode make sure that you follow the steps listed below:
+
+@Number List@<:#284,9360>use the high speed option
+
+@Number List@<:#284,9360>select PCTools tape format 
+
+@Number List@<:#568,9360>the tape may contain more than one saveset, choose the latest unless you suspect problems prior to the last backup.
+
+@Number List@<:#284,9360>Select the disk to restore to. You may select a network (not local) disk drive.
+
+@Number List@<:#284,9360>Select the files to be restored.
+
+@Number List@<:#284,9360>Start restore.
+
+@Subhead@<:#379,9360>Configuring for personal use
+
+@Outline3@<:#322,9360>Minimum PC configuration
+
+<:#852,9360>A PC needs a lot of memory to run the analysis program. Virtual memory should exceed 30 megabytes and physical memory should be at least 16 megabytes. Running with less than 16 megabytes of RAM may take up to 10 times longer for certain operations.
+
+@Outline3@<:#322,9360>Setting the correct drive for the matlab analysis modules
+
+<:#1136,9360>To be able to run the analysis programs through the network you must have Matlab version 4 installed in the PC that you intend to use. You can gain access to the analysis programs through the network by adding a few lines to the matlab startup program locat
+ed in the directory \matlab\ in your hard disk. The last lines of the matlabpath definition should read:
+
+@Single up@<:#278,9360><:f,BHelvetica,>';X:\SUR',...
+
+@Single up@<:#278,9360><:f,BHelvetica,>';X:\SUR\segments',...
+
+@Single up@<:#278,9360><:f,BHelvetica,>';X:\SUR\fit',...
+
+@Single up@<:#278,9360><:f,BHelvetica,>';X:\SUR\data',...
+
+@Single up@<:#278,9360><:f,BHelvetica,>';X:\SUR\display',...
+
+@Single up@<:#278,9360><:f,BHelvetica,>';X:\SUR\metrics',...
+
+@Single up@<:#278,9360><:f,BHelvetica,>';X:\SUR\signal',...
+
+@Single up@<:#278,9360><:f,BHelvetica,>';X:\SUR\catdata',...
+
+@Single up@<:#278,9360><:f,BHelvetica,>]);<:f>
+
+@Single up@<:#284,9360>Where 'X' is the network drive letter where the analysis modules are located.
+
+@Outline3@<:#322,9360>Reconfiguring for Different Data
+
+<:#1136,9360>The last directory added to the matlabpath indicates data specific modules. There may be more than one such directory avaliable to examine different types of data files. Make sure that you chose the correct one for the data you want. These directories conta
+in all the modules that allow the analysis program to load and set up very different types of data. 
+
+@Outline3@<:#322,9360>General Configuration Ideas
+
+@Outline3@<:#322,9360>Configuration Modules
+
+@Outline4@<:#284,9360><+!>anaini<-!>
+
+<:#284,9360>Loads program variables including:
+
+@Bullet@<:#284,9360><+">signalstobesaved<-"> - names of all the basic data variables that are stored in a data file.
+
+@Bullet@<:#284,9360><+">Basicdefaultsignal<-"> - name of the basic variable default if the plot definition file is not found.
+
+@Outline4@<:#284,9360><+!>listini<-!>
+
+<:#573,9360>Loads some of the main program variables including the definitions of the signals based on the basic variables identified in 
+<:f,2Times New Roman,><+">signalstobesaved <-"><:f>and the extra variables defined by 
+<+!>loadini<-!>.
+
+@Outline4@<:#284,9360><+!>loadini<-!>
+
+<:#568,9360>Contains the commands for loading the basic data variables (D in Fig. 2) and for defining the extra data variables used.
+
+@Outline4@<:#284,9360>calibration modules
+
+<:#852,9360>Calibration modules are used for converting raw uncalibrated data from the A/D board into the basic data variables (D in Fig. 2). A calibration module has the same root name as the data files to which it applies. That is how the calibrate module figures out
+ how to call it.
+
+@Outline3@<:#322,9360>Setting the Matlab master startup file
+
+<:#284,9360>The master startup file must contain the directory path 
+
+@Outline3@<:#322,9360>Setting the correct drive for the matlab analysis modules
+
+@Outline3@<:#322,9360>Required variables
+
+@Outline4@<:#284,9360>M
+
+@Outline4@<:#284,9360>N
+
+@Outline4@<:#284,9360>Ts
+
+@Outline3@<:#322,9360>Signal labelling
+
+@Outline3@<:#322,9360>Signal definition
+
+@Outline3@<:#322,9360>Defining variables online in loadini
+
+@Outline3@<:#322,9360>Calibration Files
+
+@Outline4@<:#284,9360>cull module
+
+@Outline4@<:#284,9360>mark module
+
+@Subhead@<:#379,9360>Adapting to changes
+
+@Outline3@<:#322,9360>anaini module
+
+@Outline3@<:#322,9360>loadini module
+
+@Subhead@<:#379,9360>Programming considerations
+
+<:#1136,9360>This section descrbes some of the essential programming considerations for adding new modules to the analysis program and even for doing on line computations on the command line while the analysis program is loaded. The main issue that is discussed is that 
+of overwriting variables that are predefined  and also some of the special matlab functions built for aiding analysis.
+
+@Outline3@<:#322,9360>Module Names
+
+<:#852,9360>It is essential that variables used do not have the same name as analysis modules. This might cause some of the basic routines not to execute causing erratic behaviour and even possible damage to the data.
+
+@Outline3@<:#322,9360>Global Variables
+
+@Outline4@<:#284,9360>userdir
+
+@Outline4@<:#284,9360>lat
+
+@Outline4@<:#284,9360>Colorlist, SignalDescriptions, SignalDefinitions, Plotlist, Signals
+
+@Outline4@<:#284,9360>M, Md, Mx, N, ns
+
+<:#1152,9360>Markers pointing to the regions of interest and the length of data (in samples). 
+<:f240,BFutura Bk BT,0,0,0>M <:f>is the marker for  all the data in the current data file (called a session). 
+<:f240,BFutura Bk BT,0,0,0>Md <:f>are the markers corresponding to what is displayedl in the screen. 
+<:f240,BFutura Bk BT,0,0,0>Mx <:f>are the markers of the data with respect to 
+<:f240,BFutura Bk BT,0,0,0>Md<:f>. <:f240,BFutura Bk BT,0,0,0>ns <:f>is the list of segment numbers in 
+<:f240,BFutura Bk BT,0,0,0>M <:f>actually being displayed.
+
+@Outline4@<:#284,9360>Noof Signals, Noofdisplayed, NoofSegments
+
+<:#568,9360>Important counters for the number of signals defined the ones displayed and the total number of segments in this session of data.
+
+@Outline4@<:#284,9360>pan, buffer, timebase, displaytitle
+
+<:#284,9360>These are used by the plot server to draw the traces on the screen. 
+
+@Outline3@<:#322,9360>Scratch Variables
+
+@Outline4@<:#284,9360>str, list, heditstr, hpoplist
+
+@Outline4@<:#284,9360>i,j,k
+
+<:#284,9360>scratch loop counters.
+
+@Outline4@<:#284,9360>indexsave hgpnew vgpnew hhpnew vhpnew ufdnew nssave Stichfileloaded ixd ixx
+
+@Outline4@<:#284,9360>buf001, ...
+
+@Outline4@<:#284,9360>b, nk, f, o, p, PP, ZZ, GG
+
+<:#284,9360>These variables are used by the dynamic fitting algorithms.
+
+@Outline4@<:#284,9360>X
+
+<:#284,9360>Used when marking new or editing segment locations.
+
+@Outline3@<:#322,9360>Special Functions
+
+@Outline4@<:#284,9360>sh
+
+<:#1140,9360>It performs a sample and hold of the first, minimum, mean, maximum or last value of segmented data. This function is extremely useful for computing segment analysis. For example, if you want to view all the gaze shifts starting at zero you would redefine ga
+ze position as: <:f,BFutura Bk BT,>ghp-sh(ghp,M,-1)<:f>
+
+@Outline4@<:#284,9360>nos
+
+<:#284,9360>This function computes the number of spikes occuring within a segment of data.
+
+@Outline4@<:#284,9360>nscheck
+
+<:#288,9360>It keeps the segment numbers from exceeding <:f240,BFutura Bk BT,0,0,0>NoofSegments<:f>.
+
+@Outline4@<:#284,9360>timecheck 
+
+<:#288,9360>It keeps the times chosen to exceed the end of data or <:f240,BFutura Bk BT,0,0,0>N*Ts.<:f>
+
+@Outline4@<:#284,9360>mx2ix 
+
+<:#284,9360>It converts segment markers into domain indices
+
+>
+
+[Embedded]
+6 .sdw 28223 0 0 0 
+7 .sdw 28223 0 0 0 
+00028225

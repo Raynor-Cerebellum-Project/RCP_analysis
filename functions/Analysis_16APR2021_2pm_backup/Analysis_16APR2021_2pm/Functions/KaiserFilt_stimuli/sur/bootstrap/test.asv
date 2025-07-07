@@ -1,0 +1,9 @@
+
+
+function [x,sd,error_sim,VAF,BIC,est,Others] = dynlatpick(M,ns,lat,out1,in1to4,mode_flag);
+
+for ns=1:length(ns);
+    [x,sd,error_sim,VAF,BIC,est,Others] = dynlatpick(M,ns,lat,out1,in1to4,mode_flag);
+    
+end
+

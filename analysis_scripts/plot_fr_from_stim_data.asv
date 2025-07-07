@@ -1,0 +1,111 @@
+%% Clearing workspace
+clear all; close all; clc;
+addpath(genpath(fullfile('..', 'functions')));  % assumes functions is parallel to Neural Pipeline
+
+%% Define base root
+% Prompt or detect machine-specific root path
+base_root = set_paths_cullen_lab();
+
+%% Define folders
+code_root = fullfile(base_root, 'Current Project Databases - NHP', '2025 Cerebellum prosthesis', 'Bryan', 'Analysis Codes');
+session   = 'BL_RW_003_Session_1';
+base_folder = fullfile(base_root, 'Current Project Databases - NHP', '2025 Cerebellum prosthesis', 'Bryan', 'Data', session);
+
+% Paths
+intan_folder = fullfile(base_folder, 'Intan');
+fig_folder   = fullfile(base_folder, 'Figures');
+
+% Add paths
+addpath(genpath(fullfile(code_root, '..', 'functions')));
+addpath(genpath(intan_folder));
+
+% Create output folders
+if ~exist(fig_folder, 'dir'), mkdir(fig_folder); end
+
+%% Find valid trials
+trial_dirs = dir(fullfile(intan_folder, 'BL_closed_loop_STIM_*'));
+valid_trials = {};
+
+for i = 1:length(trial_dirs)
+    trial_name = trial_dirs(i).name;
+    trial_path = fullfile(intan_folder, trial_name);
+    
+    has_fr_estimates = isfile(fullfile(trial_path, 'firing_rate_data.mat'));
+    has_neural_corrected = isfile(fullfile(trial_path, 'neural_data_artifact_removed.mat'));
+    has_neural = isfile(fullfile(trial_path, 'neural_data.mat'));
+    has_stim   = isfile(fullfile(trial_path, 'stim_data.mat'));
+    
+    if has_fr_estimates
+        valid_trials{end+1} = trial_name;
+    end
+end
+
+fprintf('Found %d valid Intan folders with required files.\n', numel(valid_trials));
+
+%% Plot firing rate traces for a trial with stimulation trigger overlays
+trial_idx = 1;  % Select trial to plot
+trial_name = valid_trials{trial_idx};
+trial_path = fullfile(intan_folder, trial_name);
+
+% Load firing rates
+load(fullfile(trial_path, 'firing_rate_data.mat'));  % smoothed_fr_all, fs
+
+%% Load stim_data and extract triggers
+stim_file = fullfile(trial_path, 'stim_data.mat');
+if exist(stim_file, 'file')
+    load(stim_file, 'Stim_data');
+
+    fs_stim = 30000;  % Must match original recording
+    STIM_CHANS = find(any(Stim_data ~= 0, 2));
+    TRIGDAT = Stim_data(STIM_CHANS(1), :)';
+
+    % Detect trigger start (falling edge) and return-to-zero
+    trigs1 = find(diff(TRIGDAT) < 0);  % falling edges
+    trigs_rz = arrayfun(@(idx) ...
+        idx + find(TRIGDAT(idx+1:end) == 0, 1, 'first'), ...
+        trigs1, 'UniformOutput', false);
+    trigs_rz = cell2mat(trigs_rz(~cellfun('isempty', trigs_rz)));
+
+    trigs_beg = trigs1;
+    trigs_end = trigs_rz;
+
+    % Final trigger matrix [start end]
+    n_trigs = min(length(trigs_beg), length(trigs_end));
+    trigs = [trigs_beg(1:n_trigs), trigs_end(1:n_trigs)];
+
+    % Convert to seconds at 1kHz resolution
+    trig_times_s = trigs(:,1) / fs_stim;
+else
+    warning('Stim file not found — skipping trigger overlay.');
+    trig_times_s = [];
+end
+
+%% === Plot firing rate traces with trigger lines ===
+nChans = numel(smoothed_fr_all);
+target_fs = 1000;  % firing rate was downsampled to 1kHz
+T = (0:length(smoothed_fr_all{1})-1) / target_fs;
+
+figure('Name', trial_name, 'Position', [100 100 1200 800]);
+nCols = 4;
+nRows = ceil(nChans / nCols);
+
+for ch = 1:nChans
+    subplot(nRows, nCols, ch);
+    plot(T, smoothed_fr_all{ch}, 'b', 'LineWidth', 1.0);
+    hold on;
+
+    % Overlay stim onset lines
+    if ~isempty(trig_times_s)
+        yl = ylim;
+        for t = trig_times_s(:)'
+            line([t t], yl, 'Color', [1 0 0 0.4], 'LineStyle', '--');
+        end
+    end
+
+    title(sprintf('Ch %d', ch));
+    xlabel('Time (s)');
+    ylabel('Hz');
+    xlim([T(1) T(end)]);
+end
+
+sgtitle(sprintf('Firing Rate Estimates + Stim Triggers - %s', trial_name), 'Interpreter', 'none');
