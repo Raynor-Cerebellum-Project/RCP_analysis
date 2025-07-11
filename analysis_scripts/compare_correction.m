@@ -1,103 +1,131 @@
-%% Clearing workspace
-clear all; close all; clc;
-addpath(genpath(fullfile('..', 'functions')));  % assumes functions is parallel to Neural Pipeline
-%% Define base root
-% Prompt or detect machine-specific root path
-base_root = set_paths();  % e.g., '/Volumes/cullenlab_server'
+%% Setup
+clear; close all; clc;
+addpath(genpath(fullfile('..', 'functions')));
 
-%% Define code and data folders
-code_root = fullfile(base_root, 'Current Project Databases - NHP', '2025 Cerebellum prosthesis', 'Bryan', 'Analysis Codes');
-session   = 'BL_RW_001_Session_1';
-base_folder = fullfile(base_root, 'Current Project Databases - NHP', '2025 Cerebellum prosthesis', 'Bryan', 'Data', session);
+session = 'BL_RW_003_Session_1';
+[base_root, code_root, base_folder] = set_paths_cullen_lab(session);
 
-% Analysis subfolders
 intan_folder = fullfile(base_folder, 'Intan');
-outputfolder = fullfile(base_folder, 'Artifact_Corrected');
-fig_folder   = fullfile(base_folder, 'Figures');
-
-%% Add relevant analysis paths
-% addpath(genpath(fullfile(code_root, '..', 'functions')));  % assumes functions is parallel to Neural Pipeline
-addpath(genpath(intan_folder));
-%% Create output folders if needed
-if ~exist(fig_folder, 'dir'), mkdir(fig_folder); end
-if ~exist(outputfolder, 'dir'), mkdir(outputfolder); end
-
-%% Find valid trials
 trial_dirs = dir(fullfile(intan_folder, 'BL_closed_loop_STIM_*'));
-valid_trials = {};  % Store names of valid trials
 
-for i = 1:length(trial_dirs)
-    trial_name = trial_dirs(i).name;
-    trial_path = fullfile(intan_folder, trial_name);
-    
-    has_neural = isfile(fullfile(trial_path, 'neural_data.mat'));
-    has_stim   = isfile(fullfile(trial_path, 'stim_data.mat'));
-
-    if has_neural && has_stim
-        valid_trials{end+1} = trial_name;
-    end
-end
-
-fprintf('Found %d valid trials with all required files.\n', numel(valid_trials));
-
-%% Parameters
-fs = 30000;  % Hz
+fs = 30000;
 fixed_params = struct( ...
     'NSTIM', 0, ...
-    'buffer', 25, ... % 10, 20, 30, or 40 are all fine
-    'template_leeway', 15, ... % 10, 20, 25
-    'stim_neural_delay', 13, ... 
-    'period_avg', 25, ... % 20, 30, or 40
-    'movmean_window', 3, ... % greater than 3
-    'pca_components', 3, ...
-    'minus_decay', false, ...
+    'buffer', 25, ...
+    'template_leeway', 15, ...
+    'stim_neural_delay', 13, ...
+    'movmean_window', 3, ...
     'med_filt_range', 25, ...
     'gauss_filt_range', 25 ...
-);
+    );
+template_modes = {'local_drift_corr'};
 
-template_modes = {'local_drift_corr'};%'exponential'
-%% Loop through trials
-skip_ids = [];  % Large file size; skip for now
+% Spike detection + FR params
+filt_range = [300 6000];
+[b, a] = butter(3, filt_range / (fs/2), 'bandpass');
+rate_mode = 'kaiser';
+cutoff_freq = 5;
+threshold_std = 3;
+refractory_ms = 1;
+target_fs = 1000;
+ds_factor = round(fs / target_fs);
 
-for i = 5
-    if ismember(i, skip_ids)
-        fprintf('Skipping trial %d: %s\n', i, valid_trials{i});
-        continue;
-    end
-    trial = valid_trials{i};
-    trial_path = fullfile(intan_folder, trial);
-    
-    fprintf('\nProcessing trial: %s\n', trial);
+%% Select trial 5
+trial_id = 5;
+trial = trial_dirs(trial_id).name;
+trial_path = fullfile(intan_folder, trial);
+fprintf('\nProcessing trial: %s\n', trial);
 
-    % Load stim_data robustly
-    stim_struct = load(fullfile(trial_path, 'stim_data.mat'));
-    if isfield(stim_struct, 'Stim_data')
-        Stim_data = stim_struct.Stim_data;
-    elseif isfield(stim_struct, 'stim_data')
-        Stim_data = stim_struct.stim_data;
-    else
-        warning('No recognized stim_data field in %s. Skipping.', trial);
-        continue;
-    end
-
-    % Detect stim channels
-    STIM_CHANS = find(any(Stim_data ~= 0, 2));
-    if isempty(STIM_CHANS)
-        warning('No stim signal detected in %s. Skipping.', trial);
-        continue;
-    end
-
-    % Artifact removal
-    compare_plot = true;
-    plot_chan = 1;
-    load(fullfile(trial_path, 'neural_data.mat'));
-    [cleaned_all, trigs, stim_drift_all]= compare_template_modes(neural_data, Stim_data, fixed_params, plot_chan, template_modes, compare_plot);
-    % clear neural_data Stim_data;a
-    artifact_removed_data = squeeze(cleaned_all(:, 1, :));  % [nChans x time]
-
-    % Save cleaned data
-    % save_path = fullfile(outputfolder, [trial '_artifact_removed.mat']);
-    % save(save_path, 'artifact_removed_data', 'trigs', '-v7.3');
-    clear artifact_removed_data cleaned_all;
-    % fprintf('Saved cleaned data for %s\n', trial);
+% === Load stim data ===
+stim_struct = load(fullfile(trial_path, 'stim_data.mat'));
+if isfield(stim_struct, 'Stim_data')
+    stim_data = stim_struct.Stim_data;
+elseif isfield(stim_struct, 'stim_data')
+    stim_data = stim_struct.stim_data;
+else
+    error('No stim_data found.');
 end
+
+[trigs, repeat_boundaries, STIM_CHANS, updated_params] = ...
+    extract_triggers_and_repeats(stim_data, fs, fixed_params);
+
+if isempty(trigs)
+    error('No triggers found.');
+end
+
+neural_struct = load(fullfile(trial_path, 'neural_data.mat'));
+neural_data = neural_struct.neural_data;
+%%
+plot_chans = [1, 21, 45, 46, 48, 49, 65, 66, 69, 96];
+
+spike_trains_all = cell(numel(plot_chans), 1);
+smoothed_fr_all  = cell(numel(plot_chans), 1);
+
+for i = 1:numel(plot_chans)
+    ch = plot_chans(i);
+    fprintf('Artifact correction for channel %d...\n', ch);
+
+    [cleaned_versions, block2]  = ...
+        compare_template_modes(neural_data, updated_params, template_modes, ...
+        trigs, repeat_boundaries, trial_path, ch);
+
+    fprintf('Spike detection for channel %d...\n', ch);
+    raw = double(cleaned_versions(ch, :));  % Get just the channel you asked for
+    filtered = filtfilt(b, a, raw);
+
+    med = median(filtered);
+    mad_val = median(abs(filtered' - med'));
+    robust_std = 1.4826 * mad_val;
+    thresh = threshold_std * robust_std;
+
+    spike_idx = find(abs(filtered - med) > abs(thresh));
+    isi = diff(spike_idx);
+    spike_idx = spike_idx([true, isi > fs * refractory_ms / 1000]);
+
+    spike_train = zeros(length(filtered), 1);
+    spike_train(spike_idx) = 1;
+
+    if exist('block2', 'var') && ~isempty(block2) && isfield(block2, 'range_end')
+        t = (block2.full_range_start:block2.range_end) - block2.full_range_start;
+        t = t / fs * 1000;  % ms
+        final_trace = double(cleaned_trace(block2.full_range_start:block2.range_end));
+
+        fig = figure('Name', 'Block 2: Drift + Template Removal', 'Color', 'w');
+        plot(t, block2.original_trace, 'k-', 'LineWidth', 0.8); hold on;
+        plot(t, block2.gauss_filtered, 'r-', 'LineWidth', 0.6);
+        plot(t, final_trace, 'b-', 'LineWidth', 1.2);
+
+        for k = 1:length(block2.template_subtractions)
+            ts = block2.template_subtractions{k};
+            if ~isempty(ts)
+                plot(t, ts, 'Color', [0.3 0.7 0.3], 'LineStyle', '--');
+            end
+        end
+
+        for k = 1:length(block2.interpulse_drifts)
+            ds = block2.interpulse_drifts{k};
+            if ~isempty(ds)
+                plot(t, ds, 'Color', [0.7 0.3 0.7], 'LineStyle', ':');
+            end
+        end
+
+        legend({'Original', 'Drift (Gauss)', 'Final Cleaned', ...
+            'Pulse Templates', 'Interpulse Drifts'}, 'Location', 'best');
+        xlabel('Time (ms)');
+        ylabel('Amplitude');
+        title(sprintf('Overlay: Block 2 | Channel %d', ch));
+        grid on;
+
+        % === Save Figure ===
+        out_dir = fullfile(trial_path, 'Figures');
+        if ~exist(out_dir, 'dir'), mkdir(out_dir); end
+        out_name = fullfile(out_dir, sprintf('Block2_Cleaning_Channel_%03d.png', ch));
+        exportgraphics(fig, out_name, 'Resolution', 300);
+        close(fig);  % optional: close to avoid cluttering GUI
+    end
+
+    fr_full = fr_estimate(spike_train, rate_mode, cutoff_freq, fs);
+    smoothed_fr_all{i} = downsample(fr_full, ds_factor);
+    spike_trains_all{i} = spike_train;
+end
+

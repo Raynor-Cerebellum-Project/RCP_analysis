@@ -1,5 +1,5 @@
-function combined = combine_metrics(base_metrics, cond_metrics, combine_map)
-% COMBINE_METRICS: Merge specified fields between baseline and condition trials.
+function combined = combine_baseline_with_rand(base_metrics, cond_metrics, combine_map)
+% combine_baseline_with_rand: Merge specified fields between baseline and condition trials.
 %
 % INPUTS:
 %   - base_metrics: struct from baseline trial (e.g. trial 4)

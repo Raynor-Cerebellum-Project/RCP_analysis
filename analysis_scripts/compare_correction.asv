@@ -1,0 +1,57 @@
+%% Setup
+clear; close all; clc;
+addpath(genpath(fullfile('..', 'functions')));
+
+session = 'BL_RW_003_Session_1';
+[base_root, code_root, base_folder] = set_paths_cullen_lab(session);
+
+intan_folder = fullfile(base_folder, 'Intan');
+trial_dirs = dir(fullfile(intan_folder, 'BL_closed_loop_STIM_*'));
+
+fs = 30000;
+fixed_params = struct( ...
+    'NSTIM', 0, ...
+    'buffer', 25, ...
+    'template_leeway', 15, ...
+    'stim_neural_delay', 13, ...
+    'movmean_window', 3, ...
+    'med_filt_range', 25, ...
+    'gauss_filt_range', 25 ...
+);
+template_modes = {'local_drift_corr'};
+
+%% Select trial 5
+trial_id = 5;
+trial = trial_dirs(trial_id).name;
+trial_path = fullfile(intan_folder, trial);
+fprintf('\nProcessing trial: %s\n', trial);
+
+% === Load stim data ===
+%stim_struct = load(fullfile(trial_path, 'stim_data.mat'));
+if isfield(stim_struct, 'Stim_data')
+    stim_data = stim_struct.Stim_data;
+elseif isfield(stim_struct, 'stim_data')
+    stim_data = stim_struct.stim_data;
+else
+    error('No stim_data found.');
+end
+
+[trigs, repeat_boundaries, STIM_CHANS, updated_params] = ...
+    extract_triggers_and_repeats(stim_data, fs, fixed_params);
+
+if isempty(trigs)
+    error('No triggers found.');
+end
+
+neural_struct = load(fullfile(trial_path, 'neural_data.mat'));
+neural_data = neural_struct.neural_data;
+
+plot_chans = [1, 21, 45, 46, 48, 49, 65, 66, 69, 96];
+
+for i = 1:numel(plot_chans)
+    chan = plot_chans(i);
+    fprintf('Processing channel %d...\n', chan);
+    [cleaned_trace, ~] = ...
+        compare_template_modes(neural_data, updated_params, template_modes, ...
+        trigs, repeat_boundaries, trial_path, chan);
+end

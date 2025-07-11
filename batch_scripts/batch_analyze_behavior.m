@@ -1,5 +1,5 @@
 clear all; close all; clc;
-addpath(genpath('functions'));
+addpath(genpath('..', 'functions'));
 
 %% --- Setup Paths and Define session
 session = 'BL_RW_001_Session_1';
@@ -139,8 +139,6 @@ end
 % Save all raw data
 save(raw_metrics_path, ...
     'raw_metrics_all', 'T', 'segment_fields', 'EndPoint_pos', 'EndPoint_neg');
-%% Merging baselines and calculating mean/var
-load(raw_metrics_path);
 %% Merge
 % Initialize merged baseline struct
 merged_baseline = raw_metrics_all{baseline_file_nums(1)};

@@ -1,0 +1,105 @@
+% === Load data from disk ===
+trial_path = '/Volumes/cullenlab_server/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/Data/BL_RW_001_Session_1/Intan/BL_closed_loop_STIM_001_250501_133137';
+raw_data_path   = fullfile(trial_path, 'neural_data.mat');
+cleaned_path    = fullfile(trial_path, 'neural_data_artifact_removed.mat');
+trig_info_path  = fullfile(trial_path, 'trig_info.mat');
+
+if ~isfile(raw_data_path) || ~isfile(cleaned_path) || ~isfile(trig_info_path)
+    warning('Missing one or more required files in %s. Skipping plot.', trial_path);
+    return;
+end
+
+raw_struct = load(raw_data_path, 'neural_data');
+cleaned_struct = load(cleaned_path, 'artifact_removed_data');
+% Load stim timing fields
+trig_info = load(trig_info_path, 'stim_drift_all', 'repeat_boundaries', 'trigs');
+
+
+if ~isfield(trig_info, 'repeat_boundaries') || ...
+   ~isfield(trig_info, 'trigs_beg') || ~isfield(trig_info, 'trigs_end')
+    warning('Missing timing info in trig_info.mat');
+    return;
+end
+
+repeat_boundaries = trig_info.repeat_boundaries;
+trigs = tri
+
+trigs_beg = trigs(:, 1);
+trigs_end = trigs(:, 2) + stim_neural_delay;
+
+% Convert to seconds
+trigs_beg_sec = trigs_beg / fs;
+trigs_end_sec = trigs_end / fs;
+
+
+if ~isfield(raw_struct, 'neural_data') || ...
+        ~isfield(cleaned_struct, 'artifact_removed_data') || ...
+        ~isfield(trig_struct, 'stim_drift_all')
+    warning('Incomplete data structure. Skipping plot.');
+    return;
+end
+
+plot_chan = 21;
+raw_trace = raw_struct.neural_data(plot_chan, :);
+cleaned_trace = cleaned_struct.artifact_removed_data(plot_chan, :);
+stim_drift_all = trig_info.stim_drift_all;
+
+fs = 30000;
+nSamples = length(raw_trace);
+time_ms = (0:nSamples-1) / fs * 1000;
+
+% Optional: reapply notch filter to raw trace
+notch_freq = 60;
+d = designfilt('bandstopiir', ...
+    'FilterOrder', 4, ...
+    'HalfPowerFrequency1', notch_freq - 2, ...
+    'HalfPowerFrequency2', notch_freq + 2, ...
+    'SampleRate', fs);
+raw_trace = filter(d, raw_trace);
+
+% === Plotting ===
+figure('Name', sprintf('Artifact Removal - Channel %d', plot_chan), ...
+    'Position', [100 100 1200 500]);
+
+plot(time_ms, raw_trace, ...
+    'Color', [0.8 0.3 0.3 0.4], 'LineWidth', 0.75, 'DisplayName', 'Original'); hold on;
+
+% Plot drift if available
+drift_trace = nan(size(raw_trace));
+if ~isempty(stim_drift_all) && size(stim_drift_all, 1) >= plot_chan && ...
+        ~isempty(stim_drift_all{plot_chan})
+    drift = stim_drift_all{plot_chan};
+    for r = 1:numel(drift)
+        indices = drift(r).indices;
+        values  = drift(r).values;
+        if all(indices <= length(drift_trace))
+            drift_trace(indices) = values(:)';
+        end
+    end
+    plot(time_ms, drift_trace, ...
+        'Color', [0.3 0.3 0.3], 'LineWidth', 0.6, ...
+        'DisplayName', 'Estimated Drift');
+end
+
+plot(time_ms, cleaned_trace, ...
+    'Color', [0.2 0.6 0.9], 'LineWidth', 0.8, ...
+    'DisplayName', 'Cleaned');
+xlim([12.4 12.9] * 1000);  % Convert to ms since time_ms is in milliseconds
+
+% Convert to seconds for shade function
+trigs_beg_sec = trigs_beg / fs;
+trigs_end_sec = trigs_end / fs;
+
+% Define zoom window and center
+t_center = 12.65;       % Seconds
+zoom_win = 0.5;         % Seconds
+y_limits = ylim;
+
+% Shade stimulation periods
+shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, t_center, zoom_win, y_limits);
+
+legend('Location', 'best');
+xlabel('Time (ms)');
+ylabel('Amplitude (µV)');
+title(sprintf('Artifact Removal - Channel %d', plot_chan));
+box off;

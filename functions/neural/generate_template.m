@@ -1,4 +1,4 @@
-function template = generate_template(chn_data, template_mode, num_pulse, repeat_boundaries, buffer, period_avg, pca_k, window_size)
+function template = generate_template(chn_data, template_mode, num_pulse, window_size)
 % GENERATE_TEMPLATE
 % Creates pulse-by-pulse artifact templates from aligned channel data.
 
@@ -14,7 +14,6 @@ switch lower(template_mode)
             base = local(i - num_pulse * a, :);
             template(i, :) = base - base(1);
         end
-
     case 'local_drift_corr'
         first_pulse_indices = find(mod((1:NSTIM) - 1, num_pulse) == 0);
         w = linspace(0, 1, interpulse_len);
@@ -59,24 +58,6 @@ switch lower(template_mode)
             template_i = base - base(1);
             drift = w * (-template_i(end));
             template(i, :) = template_i + drift;
-        end
-
-    case 'carryover'
-        num_repeats = length(repeat_boundaries) - 1;
-        for b = 1:num_repeats
-            idx = (repeat_boundaries(b)+1):repeat_boundaries(b+1);
-            if b > 1
-                prev_idx = (repeat_boundaries(b-1)+1):repeat_boundaries(b);
-                base = mean(chn_data(prev_idx, 1:(period_avg + buffer)), 1);
-            else
-                base = mean(chn_data(idx, 1:(period_avg + buffer)), 1);
-            end
-            base = base - base(1);
-            taper = linspace(base(end), 0, interpulse_len - (period_avg + buffer) + 1);
-            for i = idx
-                template(i, 1:(period_avg + buffer)) = base;
-                template(i, period_avg + buffer:end) = taper;
-            end
         end
 
     case 'pca'

@@ -14,6 +14,6 @@ function shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, t_ce
         x1 = max(t1, t_center - zoom_win);
         x2 = min(t2, t_center + zoom_win);
         patch([x1 x2 x2 x1], [y_limits(1) y_limits(1) y_limits(2) y_limits(2)], ...
-              [0.8 0.9 1], 'EdgeColor', 'none', 'FaceAlpha', 0.3);  % light blue
+              [0.8 0.9 1], 'EdgeColor', 'none', 'FaceAlpha', 0.5);  % light blue
     end
 end

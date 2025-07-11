@@ -45,11 +45,11 @@ repeat_gap_threshold = 2 * (2 * buffer + 1);  % this should be in samples
 repeat_boundaries = [0; find(time_diffs > repeat_gap_threshold); numel(trigs_beg)];
 num_repeats = numel(repeat_boundaries) - 1;
 
-%% Plotting
+%% Spike Raster
 figure('Name', 'Spike Detection: Trial 5 — Zoom on 2nd Spike', 'Position', [100 100 1200 800]);
 zoom_win = 20;  % 0.5s window around 2nd spike
 
-for ch = 21:25
+for ch = 1:5
     raw = double(neural_data(ch, :));
     filtered = filtfilt(b, a, raw);
 
@@ -81,31 +81,10 @@ for ch = 21:25
 end
 
 sgtitle(sprintf('Spike Detection on Trial 5 — %s', trial_dirs(5).name));
-%% Spike Raster Plot Around 2nd Spike in Channel 1
-% Reuse the zoom window and center time from earlier
-ref_ch = 1;       % use channel 1 to define t_center
-
-% Recompute spike times on ref_ch
-raw_ref = double(neural_data(ref_ch, :));
-filtered_ref = filtfilt(b, a, raw_ref);
-thresh_ref = threshold_std * std(filtered_ref);
-spike_idx_ref = find(filtered_ref < thresh_ref);
-isi_ref = diff(spike_idx_ref);
-spike_idx_ref = spike_idx_ref([true, isi_ref > fs * refractory_ms / 1000]);
-
-if numel(spike_idx_ref) < 2
-    error('Not enough spikes in reference channel to center the window.');
-end
-
-t_center = t(spike_idx_ref(2));  % center around second spike
-
-% Now plot all channels within the window
+% === Raster Plot Around 2nd Spike in Channel 1 ===
 figure('Name', 'Spike Raster Around 2nd Spike', 'Position', [100 100 1400 900]); hold on;
 
-% Shade stim blocks
-y_limits = ylim;
-shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, t_center, zoom_win, y_limits);
-
+% Plot spike rasters
 for ch = 1:nChans
     raw = double(neural_data(ch, :));
     filtered = filtfilt(b, a, raw);
@@ -115,7 +94,6 @@ for ch = 1:nChans
     isi = diff(spike_idx);
     spike_idx = spike_idx([true, isi > fs * refractory_ms / 1000]);
 
-    % Extract spikes in window
     t_spikes = t(spike_idx);
     in_window = t_spikes >= (t_center - zoom_win) & t_spikes <= (t_center + zoom_win);
     t_spikes_window = t_spikes(in_window);
@@ -124,11 +102,18 @@ for ch = 1:nChans
     scatter(t_spikes_window, y_ch, 3, 'r', 'filled');
 end
 
+% Set axis limits first
 xlim([t_center - zoom_win, t_center + zoom_win]);
 ylim([1, nChans]);
+y_limits = ylim;
+
+% Shade stim blocks using actual y-axis limits
+shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, t_center, zoom_win, y_limits);
+
 xlabel('Time (s)');
 ylabel('Channel');
 title(sprintf('Spike Raster — ±%.0f ms Around 2nd Spike (%.3f s) on Ch %d', ...
     zoom_win * 1000, t_center, ref_ch));
-set(gca, 'YDir', 'reverse');  % optional: flip so low channels are at top
+set(gca, 'YDir', 'reverse');  % optional flip
+
 
