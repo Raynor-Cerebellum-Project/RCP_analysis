@@ -7,6 +7,14 @@ template = zeros(size(chn_data));
 
 switch lower(template_mode)
     case 'local'
+        for i = 1:NSTIM
+            a = floor((i - 1) / num_pulse);
+            idx = (1 + num_pulse * a):(min(num_pulse * (a + 1), NSTIM));
+            local = movmean(chn_data(idx, :), window_size, 1);
+            base = local(i - num_pulse * a, :);
+            template(i, :) = base - base(1);
+        end
+    case 'local_drift_corr'
         first_pulse_indices = find(mod((1:NSTIM) - 1, num_pulse) == 0);
         w = linspace(0, 1, interpulse_len);
 
@@ -60,7 +68,7 @@ switch lower(template_mode)
             a = floor((i - 1) / num_pulse);  % block index
             relative_idx = i - num_pulse * a;  % 1-based within block
     
-            % === First pulse: match local logic ===
+            % === First pulse: match local_drift_corr logic ===
             if relative_idx == 1
                 prev_first_pulses = first_pulse_indices(first_pulse_indices < i);
                 n_available = numel(prev_first_pulses);
