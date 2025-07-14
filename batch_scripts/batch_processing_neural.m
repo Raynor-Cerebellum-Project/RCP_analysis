@@ -34,7 +34,7 @@ fixed_params = struct( ...
     'med_filt_range', 25, ...
     'gauss_filt_range', 25 ...
     );
-template_modes = {'local_drift_corr'};
+template_modes = {'pca', 'local'};
 
 % Spike detection + FR params
 filt_range = [300 6000];
@@ -46,12 +46,12 @@ refractory_ms = 1;
 target_fs = 1000;
 ds_factor = round(fs / target_fs);
 
-% if isempty(gcp('nocreate'))
-%     num_workers = min(30, feature('numcores')); % fallback
-%     parpool('local', num_workers);
-% end
+if isempty(gcp('nocreate'))
+    num_workers = min(30, feature('numcores')); % fallback
+    parpool('local', num_workers);
+end
 %% Loop through each trial
-for i = 5%1:numel(valid_trials)
+for i = 1:numel(valid_trials)
     trial = valid_trials{i};
     trial_path = fullfile(intan_folder, trial);
     fprintf('\n[%d/%d] Processing: %s\n', i, numel(valid_trials), trial);
@@ -81,20 +81,25 @@ for i = 5%1:numel(valid_trials)
     elapsed_time = toc;
     fprintf('Done (%.2f sec).\n', elapsed_time);
 
-    % === Artifact removal ===
-    fprintf('  Running artifact removal... ');
-    tic;
-    neural_data = neural_struct.neural_data;
-    artifact_removed_data = ...
-        compare_template_modes(neural_data, updated_params, template_modes, ...
-        trigs, repeat_boundaries, trial_path);
-    elapsed_time = toc;
-    fprintf('Done (%.2f sec).\n', elapsed_time);
-
-    % Save artifact removed data
-    save(fullfile(trial_path, 'trig_info.mat'), 'trigs', 'repeat_boundaries');
-    save(fullfile(trial_path, 'neural_data_artifact_removed.mat'), 'artifact_removed_data', '-v7.3');
-    fprintf('  Saved artifact-corrected data.\n');
+    for m = 1:numel(template_modes)
+        % === Artifact removal ===
+        method = template_modes{m};
+        fprintf('  Running artifact removal (%s)... ', method);
+        tic;
+        artifact_removed_data = ...
+            template_subtraction_all_parallel(neural_data, updated_params, {method}, ...
+            trigs, repeat_boundaries, trial_path);
+        elapsed_time = toc;
+        fprintf('Done (%.2f sec).\n', elapsed_time);
+    
+        % Save artifact removed data and trig info with method suffix
+        trig_info_file = fullfile(trial_path, sprintf('trig_info_%s.mat', method));
+        artifact_file  = fullfile(trial_path, sprintf('neural_data_artifact_removed_%s.mat', method));
+        
+        save(trig_info_file, 'trigs', 'repeat_boundaries');
+        save(artifact_file, 'artifact_removed_data', '-v7.3');
+        fprintf('  Saved artifact-corrected data (%s).\n', method);
+    end
 
     % === Spike detection + FR estimation ===
     fprintf('  Running FR estimation... ');
