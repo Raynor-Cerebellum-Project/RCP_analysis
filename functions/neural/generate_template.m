@@ -55,13 +55,16 @@ switch lower(template_mode)
     case 'pca'
         w = linspace(0, 1, interpulse_len);
         first_pulse_indices = find(mod((1:NSTIM) - 1, num_pulse) == 0);
+        is_first = false(NSTIM, 1);
+        is_first(first_pulse_indices) = true;
+    
+        buffer_size = 40;
+        template_buffer = zeros(buffer_size, interpulse_len);  % rolling window
+        buffer_count = 0;  % number of valid rows in buffer
     
         for i = 1:NSTIM
-            a = floor((i - 1) / num_pulse);  % block index
-            relative_idx = i - num_pulse * a;  % 1-based within block
-    
-            % === First pulse: match local logic ===
-            if relative_idx == 1
+            if is_first(i)
+                % First pulse logic (same as before)
                 prev_first_pulses = first_pulse_indices(first_pulse_indices < i);
                 n_available = numel(prev_first_pulses);
     
@@ -76,29 +79,32 @@ switch lower(template_mode)
                 continue
             end
     
-            % === Non-first pulses: PCA over previous same-relative pulses ===
-            rel_mask = false(NSTIM, 1);
-            for blk = 0:(a - 1)
-                idx = blk * num_pulse + relative_idx;
-                if idx < i
-                    rel_mask(idx) = true;
-                end
-            end
-    
-            X_rel = chn_data(rel_mask, :);  % prior same-relative pulses
-            if size(X_rel, 1) >= pca_k
-                [coeff, score, ~, ~, ~, mu] = pca(X_rel);
-                recon = score(end, 1:pca_k) * coeff(:, 1:pca_k)' + mu;  % use last
-            elseif size(X_rel, 1) >= 1
-                recon = mean(X_rel, 1);  % fallback to average if < k samples
+            % === PCA using rolling buffer ===
+            if buffer_count >= pca_k
+                X_prev = template_buffer(1:buffer_count, :);
+                [coeff, score, ~, ~, ~, mu] = pca(X_prev);
+                recon = score(end, 1:pca_k) * coeff(:, 1:pca_k)' + mu;
+            elseif buffer_count > 0
+                recon = mean(template_buffer(1:buffer_count, :), 1);  % fallback
             else
-                recon = zeros(1, interpulse_len);  % fallback to zero
+                recon = zeros(1, interpulse_len);
             end
     
+            % Align and drift-correct
             template_i = recon - recon(1);
             drift = w * (-template_i(end));
             template(i, :) = template_i + drift;
+    
+            % === Update rolling buffer ===
+            if buffer_count < buffer_size
+                buffer_count = buffer_count + 1;
+                template_buffer(buffer_count, :) = template_i;
+            else
+                % FIFO shift: discard first row, append new one
+                template_buffer = [template_buffer(2:end, :); template_i];
+            end
         end
+
     otherwise
         error('Invalid template_mode.');
 end
