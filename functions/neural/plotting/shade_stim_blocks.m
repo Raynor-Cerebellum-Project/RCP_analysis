@@ -1,4 +1,6 @@
-function shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, t_center, zoom_win, y_limits)
+function shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, ...
+                           t_center, zoom_win, y_limits)
+
     for r = 1:length(repeat_boundaries) - 1
         idx_start = repeat_boundaries(r) + 1;
         idx_end   = repeat_boundaries(r+1);
@@ -13,7 +15,13 @@ function shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, t_ce
 
         x1 = max(t1, t_center - zoom_win);
         x2 = min(t2, t_center + zoom_win);
-        patch([x1 x2 x2 x1], [y_limits(1) y_limits(1) y_limits(2) y_limits(2)], ...
-              [0.8 0.9 1], 'EdgeColor', 'none', 'FaceAlpha', 0.5);  % light blue
+
+        % Shade patch (light blue with transparency)
+        p = patch([x1 x2 x2 x1], ...
+                  [y_limits(1) y_limits(1) y_limits(2) y_limits(2)], ...
+                  [0.8 0.9 1], ...
+                  'EdgeColor', 'none', ...
+                  'FaceAlpha', 0.5);
+        uistack(p, 'bottom');  % Send behind plot lines
     end
 end

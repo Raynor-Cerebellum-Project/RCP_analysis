@@ -17,14 +17,41 @@ end
 
 trial_path = fullfile(intan_folder, trial_dirs(5).name);
 artifact_file = fullfile(trial_path, 'neural_data_artifact_removed.mat');
-firing_file   = fullfile(trial_path, 'firing_rate_data.mat');
+firing_file   = fullfile(trial_path, 'firing_rate_data_test.mat');
 trig_file     = fullfile(trial_path, 'trig_info.mat');
 raw_file      = fullfile(trial_path, 'neural_data.mat');
+stim_drift_file = fullfile(trial_path, 'stim_drift_all.mat');
+
 
 load(artifact_file, 'artifact_removed_data');
 load(firing_file, 'spike_trains_all', 'smoothed_fr_all');
 load(trig_file, 'trigs', 'repeat_boundaries');
 load(raw_file, 'neural_data');
+
+if isfile(stim_drift_file)
+    load(stim_drift_file, 'stim_drift_all');
+    use_drift = true;
+
+    % Preallocate full drift matrix
+    drift_full = nan(nChans, nSamples);
+    for ch = 1:min(nChans, numel(stim_drift_all))
+        drift_ch_full = zeros(1, nSamples);
+        drift_structs = stim_drift_all{ch};
+        for k = 1:numel(drift_structs)
+            idx_range = round(drift_structs(k).range);  % [start, end]
+            vals = double(drift_structs(k).values(:)');
+            if ~isempty(vals) && all(idx_range > 0) && idx_range(2) <= nSamples
+                drift_ch_full(idx_range(1):idx_range(2)) = vals;
+            end
+        end
+        drift_full(ch, :) = drift_ch_full;
+    end
+    fprintf('  Reconstructed drift signals for overlay.\n');
+else
+    warning('  stim_drift_all.mat not found. Skipping template subtraction overlay.');
+    use_drift = false;
+    drift_full = [];
+end
 
 [nChans, nSamples] = size(artifact_removed_data);
 t = (0:nSamples-1) / fs;
@@ -47,52 +74,61 @@ t_end   = t_stim_start + t_window(2);
 
 figure('Name', 'Spike Detection: Trial 5 — Raw vs Corrected + Smoothed FR', ...
        'Position', [100 100 1800 1000]);
-
-tiledlayout(5, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+tiledlayout(5, 3, 'Padding', 'compact', 'TileSpacing', 'compact');
 ax = gobjects(5, 2);
 
 for ch = 1:5
-    % --- Raw and Corrected Plot ---
-    ax(ch, 1) = nexttile((ch-1)*2 + 1);
+    row_idx = ch;
+
+    % === Left Plot (Span columns 1–2 of this row) ===
+    ax(ch, 1) = nexttile((row_idx - 1) * 3 + 1, [1 2]);
     raw_ch = double(neural_data(ch, :));
     corrected_ch = double(artifact_removed_data(ch, :));
 
-    plot(t, raw_ch, 'Color', [0.6 0.6 0.6]); hold on;
-    plot(t, corrected_ch, 'k');
+    h1 = plot(t, raw_ch, 'Color', [0.6 0.6 0.6]); hold on;
+    h2 = plot(t, corrected_ch, 'k');
 
-    spike_idx = find(spike_trains_all{ch});
-    scatter(t(spike_idx), corrected_ch(spike_idx), 10, 'r', 'filled');
-
-    ylim([-200 200]);
-    shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, ...
-                      t_stim_start, diff(t_window), [-200 200]);
-    xlim([t_start, t_end]);
-
-    ylabel('Voltage');
-    title(sprintf('Ch %d — Raw vs Corrected', ch));
-    if ch == 5
-        xlabel('Time (s)');
+    if use_drift && ~isempty(drift_full)
+        drift_ch = drift_full(ch, :);
+        h3 = plot(t, drift_ch, 'Color',[0 0.4470 0.7410 0.5], 'LineWidth', 0.5);
+        template_ch = corrected_ch - (raw_ch - drift_ch);
+        h4 = plot(t, template_ch, 'Color', [0.8500 0.3250 0.0980 0.3], 'LineWidth', 0.5);
     end
 
-    % --- Smoothed FR Plot ---
-    ax(ch, 2) = nexttile((ch-1)*2 + 2);
+    h5 = scatter(t(spike_trains_all{ch} > 0), corrected_ch(spike_trains_all{ch} > 0), 10, 'r', 'filled');
+
+    ylim([-200 200]);
+    xlim([t_start, t_end]);
+    shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, ...
+                      t_stim_start, diff(t_window), ylim);
+
+    ylabel('Voltage');
+    title(sprintf('Ch %d — Raw, Corrected, Drift, Template', ch));
+
+    if ch == 5
+        xlabel('Time (s)');
+        legend([h1, h2, h3, h4, h5], ...
+               {'Raw', 'Corrected', 'Drift', 'Template', 'Spikes'}, ...
+               'Location', 'northeast', 'Box', 'off', 'FontSize', 8);
+    end
+
+    % === Right Plot (Column 3 of this row) ===
+    ax(ch, 2) = nexttile((row_idx - 1) * 3 + 3);
     t_idx = (t_fr >= t_start) & (t_fr <= t_end);
     t_plot = t_fr(t_idx);
     fr_plot = smoothed_fr_all{ch}(t_idx);
 
     plot(t_plot, fr_plot, 'b', 'LineWidth', 1.2); hold on;
     yline(mean(smoothed_fr_all{ch}), '--', 'Mean', 'Color', [0.4 0.4 1]);
-
     ylim([0, max(smoothed_fr_all{ch}) * 1.1]);
     xlim([t_start, t_end]);
+
     shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, ...
                       t_stim_start, diff(t_window), ylim);
 
     ylabel('FR (Hz)');
     title(sprintf('Ch %d — Smoothed FR', ch));
-    if ch == 5
-        xlabel('Time (s)');
-    end
+    if ch == 5, xlabel('Time (s)'); end
 end
 
 linkaxes(ax(:, 1), 'x');

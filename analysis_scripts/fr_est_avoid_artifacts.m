@@ -46,26 +46,6 @@ ds_factor = round(fs / target_fs);
 
 %% Loop through each trial
 for i = 1:15
-    trial = valid_trials{i};
-    trial_path = fullfile(intan_folder, trial);
-    fprintf('\n[%d/%d] Processing: %s\n', i, numel(valid_trials), trial);
-
-    % === Check for neural data ===
-    artifact_file = fullfile(trial_path, 'neural_data_artifact_removed.mat');
-    raw_file      = fullfile(trial_path, 'neural_data.mat');
-
-    if isfile(artifact_file)
-        load(artifact_file, 'artifact_removed_data');
-        fprintf('  Using artifact-corrected data.\n');
-    elseif isfile(raw_file)
-        load(raw_file, 'neural_data');
-        artifact_removed_data = neural_data;  % fallback to raw
-        fprintf('  Using raw neural_data.mat (no artifact correction).\n');
-    else
-        warning('  No neural data found in %s. Skipping.\n', trial);
-        continue;
-    end
-    
     % === Spike detection + FR estimation ===
     fprintf('  Running FR estimation... ');
     tic;

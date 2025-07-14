@@ -51,7 +51,7 @@ ds_factor = round(fs / target_fs);
 %     parpool('local', num_workers);
 % end
 %% Loop through each trial
-for i = 16:numel(valid_trials)
+for i = 5%1:numel(valid_trials)
     trial = valid_trials{i};
     trial_path = fullfile(intan_folder, trial);
     fprintf('\n[%d/%d] Processing: %s\n', i, numel(valid_trials), trial);
@@ -140,7 +140,7 @@ for i = 16:numel(valid_trials)
         smoothed_fr_all{ch} = downsample(fr_full, ds_factor);
         spike_trains_all{ch} = spike_train;
     end
-
+    
     elapsed_time = toc;
     fprintf('Done (%.2f sec).\n', elapsed_time);
 
