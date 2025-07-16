@@ -42,34 +42,51 @@ end
 % === Template subtraction ===
 interpulse_len = (trigs_end(1) - trigs_beg(1) + 1) + 2 * template_leeway;
 chn_data = nan(NSTIM, interpulse_len);
-for i = 1:NSTIM
-    seg_start = trigs_beg(i) - template_leeway;
-    seg_end = trigs_end(i) + template_leeway;
-    if seg_start < 1 || seg_end > length(amplifier_data), continue; end
-    chn_data(i, :) = amplifier_data(seg_start:seg_end);
-end
-template = generate_template(chn_data, template_mode, num_pulse, window_size, pca_k);
+valid_indices = false(NSTIM, 1);
 
+% Single loop to extract valid segments and flag usable indices
 for i = 1:NSTIM
     seg_start = trigs_beg(i) - template_leeway;
-    seg_end = trigs_end(i) + template_leeway;
-    if seg_start < 1 || seg_end > length(amplifier_data), continue; end
+    seg_end   = trigs_end(i) + template_leeway;
+    if seg_start >= 1 && seg_end <= length(amplifier_data)
+        chn_data(i, :) = amplifier_data(seg_start:seg_end);
+        valid_indices(i) = true;
+    end
+end
+
+% Compute template
+template = generate_template(chn_data, template_mode, repeat_boundaries, window_size, pca_k);
+
+% Apply template subtraction using only valid indices
+for i = find(valid_indices)'
+    seg_start = trigs_beg(i) - template_leeway;
+    seg_end   = trigs_end(i) + template_leeway;
     amplifier_data(seg_start:seg_end) = amplifier_data(seg_start:seg_end) - template(i, :);
 end
 
+
 % === Interpulse drift correction ===
-for i = 1:NSTIM-1
-    end_i = trigs_end(i);
-    beg_next = trigs_beg(i+1);
-    mid1 = round((end_i + trigs_beg(i)) / 2);
-    mid2 = round((beg_next + trigs_end(i+1)) / 2);
-    if mid1 >= mid2 || mid2 > length(amplifier_data), continue; end
-    seg_idx = mid1:mid2;
-    template_end_val = amplifier_data(trigs_end(i));
-    interpulse_len = length(seg_idx);
-    drift = (0:interpulse_len-1)' / (interpulse_len - 1) * -template_end_val;
-    amplifier_data(seg_idx) = amplifier_data(seg_idx) + drift';
+for r = 1:num_repeats
+    idx = (repeat_boundaries(r)+1):repeat_boundaries(r+1);
+    for j = 1:(length(idx)-1)
+        i = idx(j);      % current pulse
+        i_next = idx(j+1);  % next pulse in the same block
+
+        end_i = trigs_end(i);
+        beg_next = trigs_beg(i_next);
+        mid1 = round((end_i + trigs_beg(i)) / 2);
+        mid2 = round((beg_next + trigs_end(i_next)) / 2);
+
+        if mid1 >= mid2 || mid2 > length(amplifier_data), continue; end
+
+        seg_idx = mid1:mid2;
+        template_end_val = amplifier_data(trigs_end(i));
+        interpulse_len = length(seg_idx);
+        drift = (0:interpulse_len-1)' / (interpulse_len - 1) * -template_end_val;
+        amplifier_data(seg_idx) = amplifier_data(seg_idx) + drift';
+    end
 end
+
 
 amplifier_data_cleaned = amplifier_data;
 end
