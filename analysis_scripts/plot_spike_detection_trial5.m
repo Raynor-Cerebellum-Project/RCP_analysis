@@ -5,8 +5,10 @@ addpath(genpath(fullfile('..', 'functions')));
 fs = 30000;
 fs_ds = 1000;  % Downsampled FR sampling rate
 
-%% Locate Trial 5
+%% Locate Trial
 session = 'BL_RW_003_Session_1';
+template_mode = 'local';
+trial_num = 5;
 [base_root, code_root, base_folder] = set_paths_cullen_lab(session);
 intan_folder = fullfile(base_folder, 'Intan');
 
@@ -15,18 +17,31 @@ if numel(trial_dirs) < 5
     error('Less than 5 trials found.');
 end
 
-trial_path = fullfile(intan_folder, trial_dirs(5).name);
-artifact_file = fullfile(trial_path, 'neural_data_artifact_removed.mat');
-firing_file   = fullfile(trial_path, 'firing_rate_data_test.mat');
+valid_modes = {'local', 'pca'};
+if ~ismember(template_mode, valid_modes)
+    error('Invalid template mode. Choose either ''local'' or ''pca''.');
+end
+
+trial_path = fullfile(intan_folder, trial_dirs(trial_num).name);
+artifact_file = fullfile(trial_path, sprintf('neural_data_artifact_removed_%s.mat', template_mode));
+firing_file   = fullfile(trial_path, 'firing_rate_data.mat');
 trig_file     = fullfile(trial_path, 'trig_info.mat');
 raw_file      = fullfile(trial_path, 'neural_data.mat');
 stim_drift_file = fullfile(trial_path, 'stim_drift_all.mat');
 
+fig_folder = fullfile(base_folder, 'Figures/spikeDetection');
+if ~exist(fig_folder, 'dir')
+    mkdir(fig_folder);
+end
 
 load(artifact_file, 'artifact_removed_data');
 load(firing_file, 'spike_trains_all', 'smoothed_fr_all');
 load(trig_file, 'trigs', 'repeat_boundaries');
 load(raw_file, 'neural_data');
+
+[nChans, nSamples] = size(artifact_removed_data);
+t = (0:nSamples-1) / fs;
+t_fr = (0:length(smoothed_fr_all{1}) - 1) / fs_ds;
 
 if isfile(stim_drift_file)
     load(stim_drift_file, 'stim_drift_all');
@@ -52,11 +67,6 @@ else
     use_drift = false;
     drift_full = [];
 end
-
-[nChans, nSamples] = size(artifact_removed_data);
-t = (0:nSamples-1) / fs;
-t_fr = (0:length(smoothed_fr_all{1}) - 1) / fs_ds;
-
 %% Identify stim boundaries
 stim_neural_delay = 0;
 buffer = round(fs * 0.01);
@@ -73,7 +83,7 @@ t_start = t_stim_start + t_window(1);
 t_end   = t_stim_start + t_window(2);
 
 figure('Name', 'Spike Detection: Trial 5 — Raw vs Corrected + Smoothed FR', ...
-       'Position', [100 100 1800 1000]);
+    'Position', [100 100 1800 1000]);
 tiledlayout(5, 3, 'Padding', 'compact', 'TileSpacing', 'compact');
 ax = gobjects(5, 2);
 
@@ -82,25 +92,35 @@ for ch = 1:5
 
     % === Left Plot (Span columns 1–2 of this row) ===
     ax(ch, 1) = nexttile((row_idx - 1) * 3 + 1, [1 2]);
-    raw_ch = double(neural_data(ch, :));
-    corrected_ch = double(artifact_removed_data(ch, :));
+    % Downsampled or trimmed window (optional)
+    t_idx = (t >= t_start) & (t <= t_end);
+    t_trim = t(t_idx);
+    raw_trim = double(neural_data(ch, t_idx));
+    corrected_trim = double(artifact_removed_data(ch, t_idx));
 
-    h1 = plot(t, raw_ch, 'Color', [0.6 0.6 0.6]); hold on;
-    h2 = plot(t, corrected_ch, 'k');
+    h1 = plot(t_trim, raw_trim, 'Color', [0.6 0.6 0.6]); hold on;
+    h2 = plot(t_trim, corrected_trim, 'k');
+
 
     if use_drift && ~isempty(drift_full)
-        drift_ch = drift_full(ch, :);
-        h3 = plot(t, drift_ch, 'Color',[0 0.4470 0.7410 0.5], 'LineWidth', 0.5);
-        template_ch = corrected_ch - (raw_ch - drift_ch);
-        h4 = plot(t, template_ch, 'Color', [0.8500 0.3250 0.0980 0.3], 'LineWidth', 0.5);
+        drift_trim = drift_full(ch, t_idx);
+        template_trim = corrected_trim - (raw_trim - drift_trim);
+
+        h3 = plot(t_trim, drift_trim, 'Color', [0 0.4470 0.7410], 'LineWidth', 0.5);
+        h4 = plot(t_trim, template_trim, 'Color', [0.8500 0.3250 0.0980], 'LineWidth', 0.5);
     end
 
-    h5 = scatter(t(spike_trains_all{ch} > 0), corrected_ch(spike_trains_all{ch} > 0), 10, 'r', 'filled');
+    spike_locs = find(spike_trains_all{ch} > 0);
+    spike_times = t(spike_locs);
+    spike_vals = artifact_removed_data(ch, spike_locs);
+
+    in_range = spike_times >= t_start & spike_times <= t_end;
+    h5 = scatter(spike_times(in_range), spike_vals(in_range), 10, 'r', 'filled');
 
     ylim([-200 200]);
     xlim([t_start, t_end]);
     shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, ...
-                      t_stim_start, diff(t_window), ylim);
+        t_stim_start, diff(t_window), ylim);
 
     ylabel('Voltage');
     title(sprintf('Ch %d — Raw, Corrected, Drift, Template', ch));
@@ -108,11 +128,11 @@ for ch = 1:5
     if ch == 5
         xlabel('Time (s)');
         legend([h1, h2, h3, h4, h5], ...
-               {'Raw', 'Corrected', 'Drift', 'Template', 'Spikes'}, ...
-               'Location', 'northeast', 'Box', 'off', 'FontSize', 8);
+            {'Raw', 'Corrected', 'Drift', 'Template', 'Spikes'}, ...
+            'Location', 'northeast', 'Box', 'off', 'FontSize', 8);
     end
 
-    % === Right Plot (Column 3 of this row) ===
+    % === Right Plot (Column 3 of this row) ===F
     ax(ch, 2) = nexttile((row_idx - 1) * 3 + 3);
     t_idx = (t_fr >= t_start) & (t_fr <= t_end);
     t_plot = t_fr(t_idx);
@@ -124,7 +144,7 @@ for ch = 1:5
     xlim([t_start, t_end]);
 
     shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, ...
-                      t_stim_start, diff(t_window), ylim);
+        t_stim_start, diff(t_window), ylim);
 
     ylabel('FR (Hz)');
     title(sprintf('Ch %d — Smoothed FR', ch));
@@ -133,8 +153,13 @@ end
 
 linkaxes(ax(:, 1), 'x');
 linkaxes(ax(:, 2), 'x');
-sgtitle(sprintf('Raw/Corrected Traces and Smoothed FR — Trial 5 (%s)', trial_dirs(5).name));
-
+sgtitle(sprintf('Raw/Corrected Traces and Smoothed FR — Trial %d (%s)', ...
+    trial_num, trial_dirs(trial_num).name));
+% === Save Figure 1 ===
+fig1 = figure(1);  % assuming this is Figure 1
+fig1_name = sprintf('%s_Trial%d_SpikeOverlay_%s', session, trial_num, template_mode);
+saveas(fig1, fullfile(fig_folder, 'png', [fig1_name '.png']));
+%savefig(fig1, fullfile(fig_folder, 'fig', [fig1_name '.fig']), 'compact');
 %% === Figure 2: Full Spike Raster and FR Heatmap (Aligned to Stim Block) ===
 t_lim = [t_start, t_end];  % Match window from Figure 1
 fr_idx = (t_fr >= t_lim(1)) & (t_fr <= t_lim(2));
@@ -160,12 +185,11 @@ end
 xlim(t_lim);
 ylim([1, nChans]);
 shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, ...
-                  t_stim_start, diff(t_window), ylim);
+    t_stim_start, diff(t_window), ylim);
 xlabel('Time (s)');
 ylabel('Channel');
-title(sprintf('Spike Raster — Stim Aligned Window (%.3f to %.3f s)', t_lim(1), t_lim(2)));
+title(sprintf('Spike Raster — Stim Aligned Window (%.3f to %.3f s) — Trial %d', t_lim(1), t_lim(2), trial_num));
 set(gca, 'YDir', 'reverse');
-
 % --- Heatmap Plot ---
 nexttile(2);
 imagesc(t_fr_window, 1:nChans, fr_mat);
@@ -176,3 +200,11 @@ title('Smoothed Firing Rate (Hz)');
 colormap jet;
 colorbar;
 xlim(t_lim);
+
+% === Save Figure 2 ===
+fig2 = figure(2);  % assuming this is Figure 2
+fig2_name = sprintf('%s_Trial%d_SpikeRaster_FR_%s', session, trial_num, template_mode);
+saveas(fig2, fullfile(fig_folder, 'png', [fig2_name '.png']));
+savefig(fig2, fullfile(fig_folder, 'fig', [fig2_name '.fig']));
+
+fprintf('Saved .png and .fig versions to: %s\n', fig_folder);

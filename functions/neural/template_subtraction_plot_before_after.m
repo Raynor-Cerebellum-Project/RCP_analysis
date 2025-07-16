@@ -56,7 +56,7 @@ for i = 1:NSTIM
     if seg_start < 1 || seg_end > length(amplifier_data), continue; end
     chn_data(i, :) = amplifier_data(seg_start:seg_end);
 end
-template = generate_template(chn_data, template_mode, num_pulse, window_size);
+template = generate_template(chn_data, template_mode, num_pulse, window_size, pca_k);
 
 for i = 1:NSTIM
     seg_start = trigs_beg(i) - template_leeway;

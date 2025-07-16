@@ -18,7 +18,7 @@ fixed_params = struct( ...
     'med_filt_range', 25, ...
     'gauss_filt_range', 25 ...
     );
-template_modes = {'local_drift_corr'};
+template_modes = {'pca'};
 
 % Spike detection + FR params
 filt_range = [300 6000];
@@ -30,6 +30,10 @@ refractory_ms = 1;
 target_fs = 1000;
 ds_factor = round(fs / target_fs);
 
+if isempty(gcp('nocreate'))
+    num_workers = min(30, feature('numcores')); % fallback
+    parpool('local', num_workers);
+end
 %% Select trial 5
 trial_id = 5;
 trial = trial_dirs(trial_id).name;

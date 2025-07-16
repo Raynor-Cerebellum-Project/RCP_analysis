@@ -1,7 +1,7 @@
 %% Clearing workspace
 clear all; close all; clc;
+%%
 profile on -memory
-
 %% Setup Paths
 addpath(genpath(fullfile('..', 'functions')));
 session = 'BL_RW_003_Session_1';
@@ -32,9 +32,10 @@ fixed_params = struct( ...
     'stim_neural_delay', 13, ...
     'movmean_window', 3, ...
     'med_filt_range', 25, ...
-    'gauss_filt_range', 25 ...
+    'gauss_filt_range', 25, ...
+    'pca_k', 3 ...
     );
-template_modes = {'pca', 'local'};
+template_modes = {'local'};
 
 % Spike detection + FR params
 filt_range = [300 6000];
@@ -46,6 +47,7 @@ refractory_ms = 1;
 target_fs = 1000;
 ds_factor = round(fs / target_fs);
 
+%%
 if isempty(gcp('nocreate'))
     num_workers = min(30, feature('numcores')); % fallback
     parpool('local', num_workers);
@@ -73,6 +75,9 @@ for i = 1:numel(valid_trials)
         continue;
     end
     clear stim_data
+    % Save artifact removed data and trig info with method suffix
+    trig_info_file = fullfile(trial_path, sprintf('trig_info.mat'));
+    save(trig_info_file, 'trigs', 'repeat_boundaries');
 
     % === Load neural data ===
     fprintf('  Loading data... ');
@@ -86,77 +91,70 @@ for i = 1:numel(valid_trials)
         method = template_modes{m};
         fprintf('  Running artifact removal (%s)... ', method);
         tic;
+        neural_data = neural_struct.neural_data;
         artifact_removed_data = ...
             template_subtraction_all_parallel(neural_data, updated_params, {method}, ...
             trigs, repeat_boundaries, trial_path);
         elapsed_time = toc;
         fprintf('Done (%.2f sec).\n', elapsed_time);
-    
-        % Save artifact removed data and trig info with method suffix
-        trig_info_file = fullfile(trial_path, sprintf('trig_info_%s.mat', method));
         artifact_file  = fullfile(trial_path, sprintf('neural_data_artifact_removed_%s.mat', method));
-        
-        save(trig_info_file, 'trigs', 'repeat_boundaries');
         save(artifact_file, 'artifact_removed_data', '-v7.3');
         fprintf('  Saved artifact-corrected data (%s).\n', method);
-    end
 
-    % === Spike detection + FR estimation ===
-    fprintf('  Running FR estimation... ');
-    tic;
-    [nChans, nSamples] = size(artifact_removed_data);
-    spike_trains_all = cell(nChans, 1);
-    smoothed_fr_all  = cell(nChans, 1);
+        % === Spike detection + FR estimation ===
+        fprintf('  Running FR estimation... ');
+        tic;
+        [nChans, nSamples] = size(artifact_removed_data);
+        spike_trains_all = cell(nChans, 1);
+        smoothed_fr_all  = cell(nChans, 1);
 
-    for ch = 1:nChans %parfor
-        raw = double(artifact_removed_data(ch, :));
-        filtered = filtfilt(b, a, raw);
+        parfor ch = 1:nChans
+            raw = double(artifact_removed_data(ch, :));
+            filtered = filtfilt(b, a, raw);
 
-        % Robust threshold using MAD
-        med = median(filtered);
-        mad_val = median(abs(filtered - med));
-        robust_std = 1.4826 * mad_val;
-        thresh = threshold_std * robust_std;
+            % Robust threshold using MAD
+            med = median(filtered);
+            mad_val = median(abs(filtered - med));
+            robust_std = 1.4826 * mad_val;
+            thresh = threshold_std * robust_std;
 
-        % Detect both positive and negative threshold crossings
-        spike_idx = find(abs(filtered - med) > abs(thresh));
+            % Detect both positive and negative threshold crossings
+            spike_idx = find(abs(filtered - med) > abs(thresh));
 
-        spike_idx = sort(spike_idx);
-        refractory_samples = round(fs * refractory_ms / 1000);
-        
-        % Keep only spikes that are at least 1 ms apart
-        cleaned_idx = [];
-        last_spike = -Inf;
-        for j = 1:length(spike_idx)
-            if spike_idx(j) - last_spike >= refractory_samples
-                cleaned_idx(end+1) = spike_idx(j);
-                last_spike = spike_idx(j);
+            spike_idx = sort(spike_idx);
+            refractory_samples = round(fs * refractory_ms / 1000);
+            
+            % Keep only spikes that are at least 1 ms apart
+            cleaned_idx = [];
+            last_spike = -Inf;
+            for j = 1:length(spike_idx)
+                if spike_idx(j) - last_spike >= refractory_samples
+                    cleaned_idx(end+1) = spike_idx(j);
+                    last_spike = spike_idx(j);
+                end
             end
+            spike_idx = cleaned_idx;
+
+
+            % Create binary spike train
+            spike_train = zeros(nSamples, 1);
+            spike_train(spike_idx) = 1;
+
+            % Estimate firing rate
+            fr_full = fr_estimate(spike_train, rate_mode, cutoff_freq, fs);
+            smoothed_fr_all{ch} = downsample(fr_full, ds_factor);
+            spike_trains_all{ch} = spike_train;
         end
-        spike_idx = cleaned_idx;
-
-
-        % Create binary spike train
-        spike_train = zeros(nSamples, 1);
-        spike_train(spike_idx) = 1;
-
-        % Estimate firing rate
-        fr_full = fr_estimate(spike_train, rate_mode, cutoff_freq, fs);
-        smoothed_fr_all{ch} = downsample(fr_full, ds_factor);
-        spike_trains_all{ch} = spike_train;
+        elapsed_time = toc;
+        fprintf('Done (%.2f sec).\n', elapsed_time);
+        % Save FR data
+        fr_out_path = fullfile(trial_path, sprintf('firing_rate_data_%s.mat', method));
+        if isfile(fr_out_path), delete(fr_out_path); end
+        save(fr_out_path, 'smoothed_fr_all', 'spike_trains_all', ...
+            'fs', 'cutoff_freq', 'rate_mode', '-v7.3');
+        fprintf('  Saved firing rate data (%s).\n', method);
     end
-    
-    elapsed_time = toc;
-    fprintf('Done (%.2f sec).\n', elapsed_time);
-
-    % Save FR data
-    fr_out_path = fullfile(trial_path, 'firing_rate_data.mat');
-    if isfile(fr_out_path), delete(fr_out_path); end
-    save(fr_out_path, 'smoothed_fr_all', 'spike_trains_all', ...
-        'fs', 'cutoff_freq', 'rate_mode', '-v7.3');
-    fprintf('  Saved firing rate data.\n');
 end
-
 %% Save profiler output
 p = profile('info');
 save('profiler_data.mat', 'p');
