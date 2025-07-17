@@ -58,7 +58,7 @@ if isempty(gcp('nocreate'))
     parpool('local', num_workers);
 end
 %% Loop through each trial
-for i = 5:numel(valid_trials)
+for i = 1:numel(valid_trials)
     trial = valid_trials{i};
     trial_path = fullfile(intan_folder, trial);
     fprintf('\n[%d/%d] Processing: %s\n', i, numel(valid_trials), trial);
