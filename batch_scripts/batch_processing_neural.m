@@ -136,15 +136,8 @@ for i = 5:numel(valid_trials)
             spike_idx = sort(spike_idx);
             refractory_samples = round(fs * refractory_ms / 1000);
 
-            cleaned_idx = [];
-            last_spike = -Inf;
-            for j = 1:length(spike_idx)
-                if spike_idx(j) - last_spike >= refractory_samples
-                    cleaned_idx(end+1) = spike_idx(j);
-                    last_spike = spike_idx(j);
-                end
-            end
-            spike_idx = cleaned_idx;
+            isi = diff([-Inf; spike_idx(:)]);
+            spike_idx = spike_idx(isi >= refractory_samples);
 
             spike_train = zeros(nSamples, 1);
             spike_train(spike_idx) = 1;

@@ -295,359 +295,371 @@ title(layout, sprintf('Condition %03d - %s', trial_num, strrep(side_label, '_', 
 
 title_str = sprintf('Condition %03d - %s', trial_num, suffix);
 sgtitle({title_str, stim_str}, 'FontWeight', 'bold');
-%% === Baseline Raster ===
-ax_fr_baseline = nexttile(13, [1 2]); hold on;
-imagesc(t, 1:128, base_data.(base_side_label).fr_trace_mean);
-title('Baseline Firing Rate (Raster)');
+%% === Compute Z-Scored Rasters ===
+baseline_mean = mean(base_data.(base_summary_field).fr_mean, 2);  % [128 x 1]
+baseline_std  = std(base_data.(base_summary_field).fr_mean, 0, 2);  % [128 x 1]
+
+cond_mean = mean(cond_data.(cond_summary_field).fr_mean, 2);  % [128 x 1]
+cond_std  = std(cond_data.(cond_summary_field).fr_mean, 0, 2);  % [128 x 1]
+
+% Avoid division by zero
+baseline_std(baseline_std == 0) = 1e-6;
+cond_std(cond_std == 0) = 1e-6;
+
+% Z-score both baseline and condition relative to baseline stats
+fr_base_zscore = (base_data.(base_summary_field).fr_mean - baseline_mean) ./ baseline_std;
+fr_cond_zscore = (cond_data.(cond_summary_field).fr_mean - cond_mean) ./ cond_std;
+fr_zdiff = fr_cond_zscore - fr_base_zscore;
+
+%% === Z-Scored Baseline Raster ===
+ax_fr_baseline = nexttile(13, [2 2]); hold on;
+imagesc(t, 1:128, fr_base_zscore);
+title('Baseline Firing Rate (Z-scored)');
 xlabel('Time (ms)'); ylabel('Channel');
-colormap(ax_fr_baseline, 'gray');
+colormap(ax_fr_baseline, 'parula');
 colorbar;
-caxis([0 max(base_data.(base_side_label).fr_trace_mean(:))]);  % or set fixed range
+caxis([-3 3]);  % Adjust as needed
 box off; set(gca, 'YDir', 'normal', 'TickDir', 'out');
 xlim([-800 1200]);
+ylim([0 128]);
 
-%% === Condition Raster ===
-ax_fr_condition = nexttile(15, [1 2]); hold on;
-imagesc(t, 1:128, cond_data.(side_label).fr_trace_mean);
-title('Condition Firing Rate (Raster)');
+%% === Z-Scored Condition Raster ===
+ax_fr_condition = nexttile(15, [2 2]); hold on;
+imagesc(t, 1:128, fr_cond_zscore);
+title('Condition Firing Rate (Z-scored)');
 xlabel('Time (ms)'); ylabel('Channel');
 colormap(ax_fr_condition, 'parula');
 colorbar;
-caxis([0 max(cond_data.(side_label).fr_trace_mean(:))]);
+caxis([-3 3]);  % Keep range same for fair comparison
 box off; set(gca, 'YDir', 'normal', 'TickDir', 'out');
 xlim([-800 1200]);
-%% === Difference Raster (Condition - Baseline) ===
-ax_fr_diff = nexttile(17, [1 2]); hold on;
+ylim([0 128]);
 
-% Compute difference (assuming same size and aligned)
-fr_diff = cond_data.(side_label).fr_trace_mean - base_data.(base_side_label).fr_trace_mean;
-
-imagesc(t, 1:128, fr_diff);
-title('Firing Rate Difference (Cond - Base)');
+%% === Z-Score Difference Raster ===
+ax_fr_diff = nexttile(17, [2 2]); hold on;
+imagesc(t, 1:128, fr_zdiff);
+title('Firing Rate Z-Diff (Cond − Base)');
 xlabel('Time (ms)'); ylabel('Channel');
-colormap(ax_fr_diff, 'redblue');  % you can use cmocean('balance') or custom
+colormap(ax_fr_diff, 'redbluecmap');  % Or cmocean('balance')
 colorbar;
-
-% Center colormap around 0
-caxis_max = max(abs(fr_diff(:)));
-caxis([-caxis_max caxis_max]);
-
+caxis([-3 3]);  % Symmetric color limits
 box off; set(gca, 'YDir', 'normal', 'TickDir', 'out');
 xlim([-800 1200]);
-%% --- Endpoint Error Bar Plot ---
-nexttile(layout, 19); hold on;
-box off; set(gca, 'TickDir', 'out');
-
-% Get data
-baseline_trials = base_data.(base_side_label).all_err;
-condition_trials = cond_data.(side_label).all_err;
-n_base = sum(~isnan(baseline_trials));
-n_cond = sum(~isnan(condition_trials));
-baseline_trials = baseline_trials(~isnan(baseline_trials));
-condition_trials = condition_trials(~isnan(condition_trials));
-
-err_data = [
-    base_data.(base_summary_field).all_err_mean, ...
-    cond_data.(cond_summary_field).all_err_mean
-    ];
-err_sem = [
-    sqrt(base_data.(base_summary_field).all_err_var), ...
-    sqrt(cond_data.(cond_summary_field).all_err_var)
-    ];
-
-% Bar plot
-bar_err = bar(1:2, err_data, 'FaceColor', 'flat');
-bar_err.CData = [0.6 0.6 0.6; 0 0.4 1];
-errorbar(1:2, err_data, err_sem, 'k', 'linestyle', 'none', 'LineWidth', 1);
-
-% Significance
-[~, p] = ttest2(baseline_trials, condition_trials);
-if p < 0.001, sig_label = '***';
-elseif p < 0.01, sig_label = '**';
-elseif p < 0.05, sig_label = '*';
-else, sig_label = 'n.s.';
-end
-% Determine y-axis limits
-bar_top = max(err_data + err_sem);
-yl = ylim;
-y_sig = max(bar_top, yl(2)) + 0.05 * range(yl);
-
-text(1.5, y_sig, sig_label, ...
-    'HorizontalAlignment', 'center', ...
-    'VerticalAlignment', 'bottom', ...
-    'FontSize', 10);
-
-% Axis
-ylabel('Error (deg)');
-ylow = min(err_data - err_sem); yhigh = max(err_data + err_sem);
-ylim([ylow - 0.1*abs(ylow), yhigh + 0.1*abs(yhigh)]);
-% Ensure the axis can accommodate the significance label
-ylim([yl(1), max(y_sig, yl(2)) * 1.05]);
-xticks(1.5); xticklabels({'EndpointError'});
-xtickangle(45);
-set(gca, 'FontSize', 10);
-%% --- Other Metrics Bar Plot Group 1 ---
-nexttile(layout, 20, [1 2]); hold on;
-box off; set(gca, 'TickDir', 'out');
-
-group1_metrics = {'all_err_abs_mean', 'var_500ms_mean', 'all_var_mean'};
-group1_labels  = {'AbsEndpointError', 'VarAfterStim', 'VarAfterEndpoint'};
-
-bar_data1 = zeros(2, numel(group1_metrics));
-bar_std1  = zeros(2, numel(group1_metrics));
-sig_labels1 = strings(1, numel(group1_metrics));
-
-for i = 1:numel(group1_metrics)
-    raw_field = erase(group1_metrics{i}, '_mean');
-    
-    % Extract per-trial data
-    if strcmp(raw_field, 'all_err_abs')
-        base_vals = abs(base_data.(base_side_label).all_err);
-        cond_vals = abs(cond_data.(side_label).all_err);
-    else
-        base_vals = base_data.(base_side_label).(raw_field);
-        cond_vals = cond_data.(side_label).(raw_field);
-    end
-
-    base_vals = base_vals(~isnan(base_vals));
-    cond_vals = cond_vals(~isnan(cond_vals));
-
-    % Mean
-    bar_data1(1, i) = mean(base_vals);
-    bar_data1(2, i) = mean(cond_vals);
-
-    % Plot SD (not SEM)
-    bar_std1(1, i) = std(base_vals);
-    bar_std1(2, i) = std(cond_vals);
-
-    % T-test using raw values (which implicitly uses SEM)
-    [~, p] = ttest2(base_vals, cond_vals);
-    if p < 0.001
-        sig_labels1(i) = '***';
-    elseif p < 0.01
-        sig_labels1(i) = '**';
-    elseif p < 0.05
-        sig_labels1(i) = '*';
-    else
-        sig_labels1(i) = 'n.s.';
-    end
-end
-
-bar_handle1 = bar(bar_data1', 'grouped');
-bar_handle1(1).FaceColor = [0.6 0.6 0.6];
-bar_handle1(2).FaceColor = [0 0.4 1];
-
-ng1 = size(bar_data1, 2);
-nb1 = size(bar_data1, 1);
-gw1 = min(0.8, nb1/(nb1 + 1.5));
-for i = 1:nb1
-    x = (1:ng1) - gw1/2 + (2*i-1)*gw1/(2*nb1);
-    errorbar(x, bar_data1(i,:), bar_std1(i,:), 'k', 'linestyle', 'none', 'LineWidth', 1);
-end
-
-yl1_max = max(bar_data1(:) + bar_std1(:));
-yl1_min = min(bar_data1(:) - bar_std1(:));
-yl1_range = yl1_max - yl1_min;
-ylim([yl1_min - 0.1*abs(yl1_min), yl1_max + 0.1*yl1_range]);
-
-for i = 1:ng1
-    bar_top = max(bar_data1(:, i) + bar_std1(:, i));
-    y_sig = bar_top + 0.05 * yl1_range;
-    text(i, y_sig, sig_labels1(i), 'HorizontalAlignment', 'center', 'FontSize', 10);
-end
-
-xticks(1:ng1);
-xticklabels(group1_labels);
-xtickangle(45);
-ylabel('deg/s');
-set(gca, 'FontSize', 10);
-
-%% --- Other Metrics Bar Plot Group 2 ---
-nexttile(layout, 22); hold on;
-box off; set(gca, 'TickDir', 'out');
-
-group2_metrics = {'max_speed_mean', 'avg_speed_mean'};
-group2_labels  = {'MaxSpeed', 'AvgSpeed'};
-
-bar_data2 = zeros(2, numel(group2_metrics));
-bar_std2  = zeros(2, numel(group2_metrics));
-sig_labels2 = strings(1, numel(group2_metrics));
-
-for i = 1:numel(group2_metrics)
-    raw_field = erase(group2_metrics{i}, '_mean');
-
-    base_vals = base_data.(base_side_label).(raw_field);
-    cond_vals = cond_data.(side_label).(raw_field);
-
-    base_vals = base_vals(~isnan(base_vals));
-    cond_vals = cond_vals(~isnan(cond_vals));
-
-    bar_data2(1, i) = mean(base_vals);
-    bar_data2(2, i) = mean(cond_vals);
-
-    % Plot SD
-    bar_std2(1, i) = std(base_vals);
-    bar_std2(2, i) = std(cond_vals);
-
-    [~, p] = ttest2(base_vals, cond_vals);
-    if p < 0.001
-        sig_labels2(i) = '***';
-    elseif p < 0.01
-        sig_labels2(i) = '**';
-    elseif p < 0.05
-        sig_labels2(i) = '*';
-    else
-        sig_labels2(i) = 'n.s.';
-    end
-end
-
-bar_handle2 = bar(bar_data2', 'grouped');
-bar_handle2(1).FaceColor = [0.6 0.6 0.6];
-bar_handle2(2).FaceColor = [0 0.4 1];
-
-ng2 = size(bar_data2, 2);
-nb2 = size(bar_data2, 1);
-gw2 = min(0.8, nb2/(nb2 + 1.5));
-for i = 1:nb2
-    x = (1:ng2) - gw2/2 + (2*i-1)*gw2/(2*nb2);
-    errorbar(x, bar_data2(i,:), bar_std2(i,:), 'k', 'linestyle', 'none', 'LineWidth', 1);
-end
-
-yl2_max = max(bar_data2(:) + bar_std2(:));
-yl2_min = min(bar_data2(:) - bar_std2(:));
-yl2_range = yl2_max - yl2_min;
-ylim([yl2_min - 0.1*abs(yl2_min), yl2_max + 0.1*yl2_range]);
-
-for i = 1:ng2
-    bar_top = max(bar_data2(:, i) + bar_std2(:, i));
-    y_sig = bar_top + 0.05 * yl2_range;
-    text(i, y_sig, sig_labels2(i), 'HorizontalAlignment', 'center', 'FontSize', 10);
-end
-
-legend_labels = {
-    sprintf('Baseline (n = %d)', n_base), ...
-    sprintf('Condition (n = %d)', n_cond)
-    };
-
-legend(bar_handle2, legend_labels, ...
-    'Location', 'northoutside', 'Orientation', 'horizontal', 'Box', 'off');
-
-xticks(1:ng2);
-xticklabels(group2_labels);
-xtickangle(45);
-ylabel('deg/s');
-set(gca, 'FontSize', 10);
-
-%% --- Endpoint Oscillation Bar Plot ---
-nexttile(layout, 23); hold on;
-box off; set(gca, 'TickDir', 'out');
-
-osc_data = [
-    base_data.(base_summary_field).oscillations_mean, ...
-    cond_data.(cond_summary_field).oscillations_mean
-    ];
-osc_std = [
-    sqrt(base_data.(base_summary_field).oscillations_var), ...
-    sqrt(cond_data.(cond_summary_field).oscillations_var)
-    ];
-
-bar_osc = bar(1:2, osc_data, 'FaceColor', 'flat');
-bar_osc.CData = [0.6 0.6 0.6; 0 0.4 1];
-errorbar(1:2, osc_data, osc_std, 'k', 'linestyle', 'none', 'LineWidth', 1);
-
-xticks(1.5);
-xticklabels({'EndpointOscillation'});
-
-% Perform t-test on raw per-trial data
-baseline_osc = base_data.(base_side_label).oscillations;
-condition_osc = cond_data.(side_label).oscillations;
-
-baseline_osc = baseline_osc(~isnan(baseline_osc));
-condition_osc = condition_osc(~isnan(condition_osc));
-
-[~, p] = ttest2(baseline_osc, condition_osc);
-
-% Significance stars
-if p < 0.001, sig_label = '***';
-elseif p < 0.01, sig_label = '**';
-elseif p < 0.05, sig_label = '*';
-else, sig_label = 'n.s.';
-end
-bar_top = max(osc_data + osc_std);
-yl = ylim;
-y_sig = max(bar_top, yl(2)) + 0.05 * range(yl);
-
-text(1.5, y_sig, sig_label, 'HorizontalAlignment', 'center', 'FontSize', 10);
-
-xtickangle(45);
-ylabel('Count');
-ylim([0 1.2 * max(osc_data + osc_std)]);
-set(gca, 'FontSize', 10);
-
-%% --- FFT Power Bar Plot ---
-nexttile(layout, 24); hold on;
-box off; set(gca, 'TickDir', 'out');
-
-fft_power_data = [
-    base_data.(base_summary_field).fft_power_mean, ...
-    cond_data.(cond_summary_field).fft_power_mean
-    ];
-fft_power_std = [
-    sqrt(base_data.(base_summary_field).fft_power_var), ...
-    sqrt(cond_data.(cond_summary_field).fft_power_var)
-    ];
-
-% Plot each bar separately so we get two handles
-hold on;
-bar1 = bar(1, fft_power_data(1), 'FaceColor', [0.6 0.6 0.6], 'BarWidth', 0.4);
-bar2 = bar(2, fft_power_data(2), 'FaceColor', [0 0.4 1], 'BarWidth', 0.4);
-
-% Add error bars
-errorbar(1:2, fft_power_data, fft_power_std, 'k', ...
-    'linestyle', 'none', 'LineWidth', 1);
-
-xticks(1.5);
-xticklabels({'FFTPowerAfterEnd'});
-
-% Perform t-test on raw per-trial data
-baseline_fft = base_data.(base_side_label).fft_power;
-condition_fft = cond_data.(side_label).fft_power;
-
-baseline_fft = baseline_fft(~isnan(baseline_fft));
-condition_fft = condition_fft(~isnan(condition_fft));
-
-[~, p] = ttest2(baseline_fft, condition_fft);
-
-if p < 0.001, sig_label = '***';
-elseif p < 0.01, sig_label = '**';
-elseif p < 0.05, sig_label = '*';
-else, sig_label = 'n.s.';
-end
-bar_top = max(fft_power_data + fft_power_std);
-yl = ylim;
-y_sig = max(bar_top, yl(2)) + 0.05 * range(yl);
-
-text(1.5, y_sig, sig_label, 'HorizontalAlignment', 'center', 'FontSize', 10);
-
-xtickangle(45);
-ylabel('Power');
-ylim([0 1.2 * max(fft_power_data + fft_power_std)]);
-set(gca, 'FontSize', 10);
-% Adjust layout to make room for annotation
-outerpos = get(layout, 'OuterPosition');
-outerpos(2) = outerpos(2) + 0.08; % Shift layout up a bit
-outerpos(4) = outerpos(4) - 0.08; % Shrink height to make room below
-set(layout, 'OuterPosition', outerpos);
-% === Add boxed significance legend at bottom center ===
-annotation('textbox', [0.35, 0.01, 0.3, 0.08], ...
-    'String', {'\bf{Significance Legend}', ...
-    '*   p < 0.05    **   p < 0.01    ***   p < 0.001    n.s. = not significant'}, ...
-    'EdgeColor', 'k', ...
-    'HorizontalAlignment', 'center', ...
-    'VerticalAlignment', 'middle', ...
-    'FontSize', 9, ...
-    'FitBoxToText', 'on', ...
-    'BackgroundColor', 'white');
+ylim([0 128]);
+% %% --- Endpoint Error Bar Plot ---
+% nexttile(layout, 19); hold on;
+% box off; set(gca, 'TickDir', 'out');
+% 
+% % Get data
+% baseline_trials = base_data.(base_side_label).all_err;
+% condition_trials = cond_data.(side_label).all_err;
+% n_base = sum(~isnan(baseline_trials));
+% n_cond = sum(~isnan(condition_trials));
+% baseline_trials = baseline_trials(~isnan(baseline_trials));
+% condition_trials = condition_trials(~isnan(condition_trials));
+% 
+% err_data = [
+%     base_data.(base_summary_field).all_err_mean, ...
+%     cond_data.(cond_summary_field).all_err_mean
+%     ];
+% err_sem = [
+%     sqrt(base_data.(base_summary_field).all_err_var), ...
+%     sqrt(cond_data.(cond_summary_field).all_err_var)
+%     ];
+% 
+% % Bar plot
+% bar_err = bar(1:2, err_data, 'FaceColor', 'flat');
+% bar_err.CData = [0.6 0.6 0.6; 0 0.4 1];
+% errorbar(1:2, err_data, err_sem, 'k', 'linestyle', 'none', 'LineWidth', 1);
+% 
+% % Significance
+% [~, p] = ttest2(baseline_trials, condition_trials);
+% if p < 0.001, sig_label = '***';
+% elseif p < 0.01, sig_label = '**';
+% elseif p < 0.05, sig_label = '*';
+% else, sig_label = 'n.s.';
+% end
+% % Determine y-axis limits
+% bar_top = max(err_data + err_sem);
+% yl = ylim;
+% y_sig = max(bar_top, yl(2)) + 0.05 * range(yl);
+% 
+% text(1.5, y_sig, sig_label, ...
+%     'HorizontalAlignment', 'center', ...
+%     'VerticalAlignment', 'bottom', ...
+%     'FontSize', 10);
+% 
+% % Axis
+% ylabel('Error (deg)');
+% ylow = min(err_data - err_sem); yhigh = max(err_data + err_sem);
+% ylim([ylow - 0.1*abs(ylow), yhigh + 0.1*abs(yhigh)]);
+% % Ensure the axis can accommodate the significance label
+% ylim([yl(1), max(y_sig, yl(2)) * 1.05]);
+% xticks(1.5); xticklabels({'EndpointError'});
+% xtickangle(45);
+% set(gca, 'FontSize', 10);
+% %% --- Other Metrics Bar Plot Group 1 ---
+% nexttile(layout, 20, [1 2]); hold on;
+% box off; set(gca, 'TickDir', 'out');
+% 
+% group1_metrics = {'all_err_abs_mean', 'var_500ms_mean', 'all_var_mean'};
+% group1_labels  = {'AbsEndpointError', 'VarAfterStim', 'VarAfterEndpoint'};
+% 
+% bar_data1 = zeros(2, numel(group1_metrics));
+% bar_std1  = zeros(2, numel(group1_metrics));
+% sig_labels1 = strings(1, numel(group1_metrics));
+% 
+% for i = 1:numel(group1_metrics)
+%     raw_field = erase(group1_metrics{i}, '_mean');
+% 
+%     % Extract per-trial data
+%     if strcmp(raw_field, 'all_err_abs')
+%         base_vals = abs(base_data.(base_side_label).all_err);
+%         cond_vals = abs(cond_data.(side_label).all_err);
+%     else
+%         base_vals = base_data.(base_side_label).(raw_field);
+%         cond_vals = cond_data.(side_label).(raw_field);
+%     end
+% 
+%     base_vals = base_vals(~isnan(base_vals));
+%     cond_vals = cond_vals(~isnan(cond_vals));
+% 
+%     % Mean
+%     bar_data1(1, i) = mean(base_vals);
+%     bar_data1(2, i) = mean(cond_vals);
+% 
+%     % Plot SD (not SEM)
+%     bar_std1(1, i) = std(base_vals);
+%     bar_std1(2, i) = std(cond_vals);
+% 
+%     % T-test using raw values (which implicitly uses SEM)
+%     [~, p] = ttest2(base_vals, cond_vals);
+%     if p < 0.001
+%         sig_labels1(i) = '***';
+%     elseif p < 0.01
+%         sig_labels1(i) = '**';
+%     elseif p < 0.05
+%         sig_labels1(i) = '*';
+%     else
+%         sig_labels1(i) = 'n.s.';
+%     end
+% end
+% 
+% bar_handle1 = bar(bar_data1', 'grouped');
+% bar_handle1(1).FaceColor = [0.6 0.6 0.6];
+% bar_handle1(2).FaceColor = [0 0.4 1];
+% 
+% ng1 = size(bar_data1, 2);
+% nb1 = size(bar_data1, 1);
+% gw1 = min(0.8, nb1/(nb1 + 1.5));
+% for i = 1:nb1
+%     x = (1:ng1) - gw1/2 + (2*i-1)*gw1/(2*nb1);
+%     errorbar(x, bar_data1(i,:), bar_std1(i,:), 'k', 'linestyle', 'none', 'LineWidth', 1);
+% end
+% 
+% yl1_max = max(bar_data1(:) + bar_std1(:));
+% yl1_min = min(bar_data1(:) - bar_std1(:));
+% yl1_range = yl1_max - yl1_min;
+% ylim([yl1_min - 0.1*abs(yl1_min), yl1_max + 0.1*yl1_range]);
+% 
+% for i = 1:ng1
+%     bar_top = max(bar_data1(:, i) + bar_std1(:, i));
+%     y_sig = bar_top + 0.05 * yl1_range;
+%     text(i, y_sig, sig_labels1(i), 'HorizontalAlignment', 'center', 'FontSize', 10);
+% end
+% 
+% xticks(1:ng1);
+% xticklabels(group1_labels);
+% xtickangle(45);
+% ylabel('deg/s');
+% set(gca, 'FontSize', 10);
+% 
+% %% --- Other Metrics Bar Plot Group 2 ---
+% nexttile(layout, 22); hold on;
+% box off; set(gca, 'TickDir', 'out');
+% 
+% group2_metrics = {'max_speed_mean', 'avg_speed_mean'};
+% group2_labels  = {'MaxSpeed', 'AvgSpeed'};
+% 
+% bar_data2 = zeros(2, numel(group2_metrics));
+% bar_std2  = zeros(2, numel(group2_metrics));
+% sig_labels2 = strings(1, numel(group2_metrics));
+% 
+% for i = 1:numel(group2_metrics)
+%     raw_field = erase(group2_metrics{i}, '_mean');
+% 
+%     base_vals = base_data.(base_side_label).(raw_field);
+%     cond_vals = cond_data.(side_label).(raw_field);
+% 
+%     base_vals = base_vals(~isnan(base_vals));
+%     cond_vals = cond_vals(~isnan(cond_vals));
+% 
+%     bar_data2(1, i) = mean(base_vals);
+%     bar_data2(2, i) = mean(cond_vals);
+% 
+%     % Plot SD
+%     bar_std2(1, i) = std(base_vals);
+%     bar_std2(2, i) = std(cond_vals);
+% 
+%     [~, p] = ttest2(base_vals, cond_vals);
+%     if p < 0.001
+%         sig_labels2(i) = '***';
+%     elseif p < 0.01
+%         sig_labels2(i) = '**';
+%     elseif p < 0.05
+%         sig_labels2(i) = '*';
+%     else
+%         sig_labels2(i) = 'n.s.';
+%     end
+% end
+% 
+% bar_handle2 = bar(bar_data2', 'grouped');
+% bar_handle2(1).FaceColor = [0.6 0.6 0.6];
+% bar_handle2(2).FaceColor = [0 0.4 1];
+% 
+% ng2 = size(bar_data2, 2);
+% nb2 = size(bar_data2, 1);
+% gw2 = min(0.8, nb2/(nb2 + 1.5));
+% for i = 1:nb2
+%     x = (1:ng2) - gw2/2 + (2*i-1)*gw2/(2*nb2);
+%     errorbar(x, bar_data2(i,:), bar_std2(i,:), 'k', 'linestyle', 'none', 'LineWidth', 1);
+% end
+% 
+% yl2_max = max(bar_data2(:) + bar_std2(:));
+% yl2_min = min(bar_data2(:) - bar_std2(:));
+% yl2_range = yl2_max - yl2_min;
+% ylim([yl2_min - 0.1*abs(yl2_min), yl2_max + 0.1*yl2_range]);
+% 
+% for i = 1:ng2
+%     bar_top = max(bar_data2(:, i) + bar_std2(:, i));
+%     y_sig = bar_top + 0.05 * yl2_range;
+%     text(i, y_sig, sig_labels2(i), 'HorizontalAlignment', 'center', 'FontSize', 10);
+% end
+% 
+% legend_labels = {
+%     sprintf('Baseline (n = %d)', n_base), ...
+%     sprintf('Condition (n = %d)', n_cond)
+%     };
+% 
+% legend(bar_handle2, legend_labels, ...
+%     'Location', 'northoutside', 'Orientation', 'horizontal', 'Box', 'off');
+% 
+% xticks(1:ng2);
+% xticklabels(group2_labels);
+% xtickangle(45);
+% ylabel('deg/s');
+% set(gca, 'FontSize', 10);
+% 
+% %% --- Endpoint Oscillation Bar Plot ---
+% nexttile(layout, 23); hold on;
+% box off; set(gca, 'TickDir', 'out');
+% 
+% osc_data = [
+%     base_data.(base_summary_field).oscillations_mean, ...
+%     cond_data.(cond_summary_field).oscillations_mean
+%     ];
+% osc_std = [
+%     sqrt(base_data.(base_summary_field).oscillations_var), ...
+%     sqrt(cond_data.(cond_summary_field).oscillations_var)
+%     ];
+% 
+% bar_osc = bar(1:2, osc_data, 'FaceColor', 'flat');
+% bar_osc.CData = [0.6 0.6 0.6; 0 0.4 1];
+% errorbar(1:2, osc_data, osc_std, 'k', 'linestyle', 'none', 'LineWidth', 1);
+% 
+% xticks(1.5);
+% xticklabels({'EndpointOscillation'});
+% 
+% % Perform t-test on raw per-trial data
+% baseline_osc = base_data.(base_side_label).oscillations;
+% condition_osc = cond_data.(side_label).oscillations;
+% 
+% baseline_osc = baseline_osc(~isnan(baseline_osc));
+% condition_osc = condition_osc(~isnan(condition_osc));
+% 
+% [~, p] = ttest2(baseline_osc, condition_osc);
+% 
+% % Significance stars
+% if p < 0.001, sig_label = '***';
+% elseif p < 0.01, sig_label = '**';
+% elseif p < 0.05, sig_label = '*';
+% else, sig_label = 'n.s.';
+% end
+% bar_top = max(osc_data + osc_std);
+% yl = ylim;
+% y_sig = max(bar_top, yl(2)) + 0.05 * range(yl);
+% 
+% text(1.5, y_sig, sig_label, 'HorizontalAlignment', 'center', 'FontSize', 10);
+% 
+% xtickangle(45);
+% ylabel('Count');
+% ylim([0 1.2 * max(osc_data + osc_std)]);
+% set(gca, 'FontSize', 10);
+% 
+% %% --- FFT Power Bar Plot ---
+% nexttile(layout, 24); hold on;
+% box off; set(gca, 'TickDir', 'out');
+% 
+% fft_power_data = [
+%     base_data.(base_summary_field).fft_power_mean, ...
+%     cond_data.(cond_summary_field).fft_power_mean
+%     ];
+% fft_power_std = [
+%     sqrt(base_data.(base_summary_field).fft_power_var), ...
+%     sqrt(cond_data.(cond_summary_field).fft_power_var)
+%     ];
+% 
+% % Plot each bar separately so we get two handles
+% hold on;
+% bar1 = bar(1, fft_power_data(1), 'FaceColor', [0.6 0.6 0.6], 'BarWidth', 0.4);
+% bar2 = bar(2, fft_power_data(2), 'FaceColor', [0 0.4 1], 'BarWidth', 0.4);
+% 
+% % Add error bars
+% errorbar(1:2, fft_power_data, fft_power_std, 'k', ...
+%     'linestyle', 'none', 'LineWidth', 1);
+% 
+% xticks(1.5);
+% xticklabels({'FFTPowerAfterEnd'});
+% 
+% % Perform t-test on raw per-trial data
+% baseline_fft = base_data.(base_side_label).fft_power;
+% condition_fft = cond_data.(side_label).fft_power;
+% 
+% baseline_fft = baseline_fft(~isnan(baseline_fft));
+% condition_fft = condition_fft(~isnan(condition_fft));
+% 
+% [~, p] = ttest2(baseline_fft, condition_fft);
+% 
+% if p < 0.001, sig_label = '***';
+% elseif p < 0.01, sig_label = '**';
+% elseif p < 0.05, sig_label = '*';
+% else, sig_label = 'n.s.';
+% end
+% bar_top = max(fft_power_data + fft_power_std);
+% yl = ylim;
+% y_sig = max(bar_top, yl(2)) + 0.05 * range(yl);
+% 
+% text(1.5, y_sig, sig_label, 'HorizontalAlignment', 'center', 'FontSize', 10);
+% 
+% xtickangle(45);
+% ylabel('Power');
+% ylim([0 1.2 * max(fft_power_data + fft_power_std)]);
+% set(gca, 'FontSize', 10);
+% % Adjust layout to make room for annotation
+% outerpos = get(layout, 'OuterPosition');
+% outerpos(2) = outerpos(2) + 0.08; % Shift layout up a bit
+% outerpos(4) = outerpos(4) - 0.08; % Shrink height to make room below
+% set(layout, 'OuterPosition', outerpos);
+% % === Add boxed significance legend at bottom center ===
+% annotation('textbox', [0.35, 0.01, 0.3, 0.08], ...
+%     'String', {'\bf{Significance Legend}', ...
+%     '*   p < 0.05    **   p < 0.01    ***   p < 0.001    n.s. = not significant'}, ...
+%     'EdgeColor', 'k', ...
+%     'HorizontalAlignment', 'center', ...
+%     'VerticalAlignment', 'middle', ...
+%     'FontSize', 9, ...
+%     'FitBoxToText', 'on', ...
+%     'BackgroundColor', 'white');
 end
 function out = ternary(cond, valTrue, valFalse)
     if cond

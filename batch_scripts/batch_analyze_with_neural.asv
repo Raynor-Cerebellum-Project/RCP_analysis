@@ -184,67 +184,65 @@ fprintf('Saved raw FR segments to: %s\n', raw_metrics_with_fr_path);
 merged_baseline = raw_metrics_all{baseline_file_nums(1)};
 fields = fieldnames(merged_baseline);
 
-% Pre-initialize per-field fr_traces sum and count trackers
-fr_sum_struct = struct();
-fr_count_struct = struct();
+% Initialize a sum tracker for fr_traces
+if isfield(merged_baseline.(fields{1}), 'fr_traces')
+    num_chans = length(merged_baseline.(fields{1}).fr_traces);
+    fr_sum_all = cell(size(merged_baseline.(fields{1}).fr_traces));
+    fr_count_all = zeros(size(merged_baseline.(fields{1}).fr_traces));
+    for ch = 1:num_chans
+        fr_sum_all{ch} = merged_baseline.(fields{1}).fr_traces{ch};
+        fr_count_all(ch) = size(fr_sum_all{ch}, 1);  % start with baseline 1
+    end
+end
 
+% Loop through remaining baseline trials
 for f = 2:length(baseline_file_nums)
     current = raw_metrics_all{baseline_file_nums(f)};
-    
     for field = fields'
         key = field{1};
-        if ~isfield(current, key) || ~isfield(merged_baseline, key)
-            continue;
-        end
-
-        % Ensure field exists in sum structs
-        if ~isfield(fr_sum_struct, key)
-            fr_sum_struct.(key) = cell(size(merged_baseline.(key).fr_traces));
-            fr_count_struct.(key) = zeros(size(merged_baseline.(key).fr_traces));
-            for ch = 1:length(fr_sum_struct.(key))
-                fr_sum_struct.(key){ch} = merged_baseline.(key).fr_traces{ch};
-                fr_count_struct.(key)(ch) = size(merged_baseline.(key).fr_traces{ch}, 1);
-            end
-        end
-
-        % Loop through subfields
-        fnames = fieldnames(merged_baseline.(key));
-        for subf = fnames'
-            subkey = subf{1};
-
-            if ~isfield(current.(key), subkey)
-                continue;
-            end
-
-            if strcmp(subkey, 'fr_traces')
-                % Sum fr_traces per channel
-                for ch = 1:length(current.(key).fr_traces)
-                    new_data = current.(key).fr_traces{ch};
-                    if ~isempty(new_data)
-                        fr_sum_struct.(key){ch} = [
-                            fr_sum_struct.(key){ch};
-                            new_data
+        if isfield(current, key)
+            % Concatenate trial metrics and traces
+            fnames = fieldnames(merged_baseline.(key));
+            for subf = fnames'
+                subkey = subf{1};
+                if isfield(current.(key), subkey)
+                    if strcmp(subkey, 'fr_traces')
+                        % Sum across trials per channel
+                        for ch = 1:length(current.(key).fr_traces)
+                            new_data = current.(key).fr_traces{ch};
+                            if ~isempty(new_data)
+                                if isempty(fr_sum_all{ch})
+                                    fr_sum_all{ch} = new_data;
+                                    fr_count_all(ch) = size(new_data, 1);
+                                else
+                                    fr_sum_all{ch} = [
+                                        fr_sum_all{ch};
+                                        new_data
+                                    ];
+                                    fr_count_all(ch) = fr_count_all(ch) + size(new_data, 1);
+                                end
+                            end
+                        end
+                    else
+                        % Default concatenation
+                        merged_baseline.(key).(subkey) = [
+                            merged_baseline.(key).(subkey);
+                            current.(key).(subkey)
                         ];
-                        fr_count_struct.(key)(ch) = fr_count_struct.(key)(ch) + size(new_data, 1);
                     end
                 end
-            else
-                % Concatenate other subfields
-                merged_baseline.(key).(subkey) = [
-                    merged_baseline.(key).(subkey);
-                    current.(key).(subkey)
-                ];
             end
         end
     end
 end
 
-% Overwrite the merged fr_traces per field
-for key = fieldnames(fr_sum_struct)'
-    fieldname = key{1};
-    merged_baseline.(fieldname).fr_traces = fr_sum_struct.(fieldname);
+% Overwrite the merged fr_traces with summed version (optional: average it)
+for field = fields'
+    key = field{1};
+    if isfield(merged_baseline.(key), 'fr_traces')
+        merged_baseline.(key).fr_traces = fr_sum_all;
+    end
 end
-
 % --- Calculate summaries for merged baseline ---
 all_fields = fieldnames(merged_baseline);
 ipsi_fields = all_fields(contains(all_fields, '_pos'));
@@ -351,6 +349,8 @@ for k = 1:length(subfolders)
         mkdir(folder_path);
     end
 end
+
+load(summary_with_fr_path, 'summary_struct', 'merged_baseline_summary');
 
 %% Loop over condition trials
 for i = trial_indices
