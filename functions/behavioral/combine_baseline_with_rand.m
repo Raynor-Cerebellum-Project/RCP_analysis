@@ -32,7 +32,6 @@ for i = 1:numel(map_fields)
     base_data = base_metrics.(base_field);
     cond_data = cond_metrics.(cond_field);
 
-    % Initialize output
     merged_data = struct();
     subfields = union(fieldnames(base_data), fieldnames(cond_data));
 
@@ -43,7 +42,24 @@ for i = 1:numel(map_fields)
         cval = getfield_safe(cond_data, sf);
 
         try
-            merged_data.(sf) = [bval; cval];
+            % Special handling for fr_traces (cell array of channels)
+            if strcmp(sf, 'fr_traces') && iscell(bval) && iscell(cval)
+                ch_count = min(length(bval), length(cval));
+                traces_merged = cell(ch_count, 1);
+                for ch = 1:ch_count
+                    bch = get_cell_safe(bval, ch);
+                    cch = get_cell_safe(cval, ch);
+                    try
+                        traces_merged{ch} = [bch; cch];  % concat by row (segment)
+                    catch
+                        warning('Failed to concatenate fr_traces channel %d', ch);
+                        traces_merged{ch} = cch;
+                    end
+                end
+                merged_data.fr_traces = traces_merged;
+            else
+                merged_data.(sf) = [bval; cval];
+            end
         catch
             warning("Failed to concatenate %s.%s", combined_field, sf);
             merged_data.(sf) = cval;  % fallback to condition
@@ -51,7 +67,9 @@ for i = 1:numel(map_fields)
     end
 
     % Add total trial count
-    merged_data.n_trials = size(merged_data.all_err, 1);
+    if isfield(merged_data, 'all_err')
+        merged_data.n_trials = size(merged_data.all_err, 1);
+    end
 
     % Save back into new combined field
     combined.(combined_field) = merged_data;
@@ -61,6 +79,14 @@ end
 function val = getfield_safe(S, f)
 if isfield(S, f)
     val = S.(f);
+else
+    val = [];
+end
+end
+
+function val = get_cell_safe(C, i)
+if iscell(C) && i <= length(C)
+    val = C{i};
 else
     val = [];
 end

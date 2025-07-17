@@ -1,18 +1,23 @@
 clear; close all; clc;
-addpath(genpath('functions'));
+addpath(genpath(fullfile('..', 'functions')));
 
 %% --- Setup Session and Paths ---
 session = 'BL_RW_003_Session_1';
+fr_method = 'local';  % Options: 'local' or 'pca'
 [base_root, code_root, base_folder] = set_paths_cullen_lab(session);
 
 intan_folder     = fullfile(base_folder, 'Intan');
 cal_folder       = fullfile(base_folder, 'Calibrated');
-metadata_csv     = fullfile(base_folder, 'Metadata', [session, '_metadata.csv']);
+fig_folder         = fullfile(base_folder, 'Figures', 'Neural');
+metadata_csv_path     = fullfile(base_folder, 'Metadata', [session, '_metadata.csv']);
 raw_metrics_path   = fullfile(base_folder, 'Checkpoints', [session, '_raw_metrics_all.mat']);
-
 summary_with_fr_path       = fullfile(base_folder, 'Checkpoints', [session, '_summarized_metrics.mat']);
 merged_baseline_with_fr_path = fullfile(base_folder, 'Checkpoints', [session, '_merged_baseline.mat']);
 raw_metrics_with_fr_path        = fullfile(base_folder, 'Checkpoints', [session, '_raw_metrics_all_with_fr.mat']);
+
+save_figs = false;  % Set to false to skip saving .fig files
+show_figs = false;
+trace_analysis_plot = false;
 
 window_ms = [-800, 1200];
 window_samples = round(window_ms * 30 / 1000);  % Convert ms to 1 kHz (30kHz / 30)
@@ -36,7 +41,7 @@ switch session
         EndPoint_pos = 30; EndPoint_neg = -30;
 end
 %% --- Load Metadata ---
-T = readtable(metadata_csv);
+T = readtable(metadata_csv_path);
 all_trial_indices = sort([baseline_file_nums, trial_indices]);
 %% --- Locate Trial Files ---
 stim_files = dir(fullfile(cal_folder, '**', '*_Cal_stim.mat'));
@@ -61,9 +66,9 @@ raw_metrics_all = tmp.raw_metrics_all;
 
 fr_segments_all = cell(height(T), 1);
 segment_fields_random = {'active_like_stim_pos_nan', 'active_like_stim_pos_0', ...
-                         'active_like_stim_pos_100', 'active_like_stim_pos_200', ...
-                         'active_like_stim_neg_nan', 'active_like_stim_neg_0', ...
-                         'active_like_stim_neg_100', 'active_like_stim_neg_200'};
+    'active_like_stim_pos_100', 'active_like_stim_pos_200', ...
+    'active_like_stim_neg_nan', 'active_like_stim_neg_0', ...
+    'active_like_stim_neg_100', 'active_like_stim_neg_200'};
 
 prev_intan_id = -1;
 smoothed_fr_all = {};
@@ -89,14 +94,33 @@ for i = 1:height(T)
         intan_dirs = intan_dirs([intan_dirs.isdir]);
         intan_names = {intan_dirs.name};
 
-        if intan_id > numel(intan_names), warning("Bad intan ID"); continue; end
-        fr_path = fullfile(intan_folder, intan_names{intan_id}, 'firing_rate_data.mat');
-        if ~isfile(fr_path), warning("Missing FR: %s", fr_path); continue; end
+        if intan_id > numel(intan_names)
+            warning("Bad intan ID"); continue;
+        end
+
+        % Determine if the trial had stim
+        trial_has_stim = false;
+        if ismember('Has_Stim', T.Properties.VariableNames)
+            trial_has_stim = T.Has_Stim(i);
+        end
+
+        % Choose filename accordingly
+        if trial_has_stim
+            fr_filename = sprintf('firing_rate_data_%s.mat', fr_method);  % Use method-specific
+        else
+            fr_filename = 'firing_rate_data.mat';  % Default fallback
+        end
+        fr_path = fullfile(intan_folder, intan_names{intan_id}, fr_filename);
+        if ~isfile(fr_path)
+            warning("FR file not found: %s", fr_path);
+            continue;
+        end
 
         fr_data = load(fr_path, 'smoothed_fr_all');
         smoothed_fr_all = fr_data.smoothed_fr_all;
         prev_intan_id = intan_id;
     end
+
 
     % Segment fields
     segment_fields = {'active_like_stim_pos', 'active_like_stim_neg'};
@@ -107,7 +131,7 @@ for i = 1:height(T)
         end
     end
 
-    % Inject FR data into each segment field
+    % Insert FR data into each segment field
     for f = 1:length(segment_fields)
         field = segment_fields{f};
         if ~isfield(segments, field) || ~isfield(raw_metrics_all{i}, field)
@@ -242,9 +266,198 @@ for i = all_trial_indices
     summary_struct(i).merged_with_summary = merged_with_summary;
     summary_struct(i).BR_File = T.BR_File(i);
 end
-
-
-
 %% Save summarized metrics
 save(summary_with_fr_path, 'summary_struct', 'merged_baseline_summary', '-v7.3');
 fprintf('Saved merged FR summary to: %s\n', summary_with_fr_path);
+%%
+%% --- Compare Traces ---
+% Ensure save_dir exists
+if ~exist(fig_folder, 'dir')
+    mkdir(fig_folder);
+end
+
+% Define required subdirectories
+subfolders = {
+    'vsBaselineTraces/figFigs', ...
+    'vsBaselineTraces/pngFigs', ...
+    'vsBaselineTraces/svgFigs', ...
+    'ComparisonTraces/figFigs', ...
+    'ComparisonTraces/pngFigs', ...
+    'ComparisonTraces/svgFigs'
+};
+
+% Create subdirectories if they do not exist
+for k = 1:length(subfolders)
+    folder_path = fullfile(fig_folder, subfolders{k});
+    if ~exist(folder_path, 'dir')
+        mkdir(folder_path);
+    end
+end
+
+load(summary_with_fr_path, 'summary_struct', 'merged_baseline_summary');
+
+%% Loop over condition trials
+for i = trial_indices
+    cond_struct = summary_struct(i);
+    if isempty(cond_struct.merged_with_summary), continue; end
+
+    cond_data = cond_struct.merged_with_summary;
+    cond_br = cond_struct.BR_File;
+    meta_cond = T(T.BR_File == cond_br, :);
+
+    % === Determine baseline source ===
+    has_merged = isfield(cond_data, 'active_like_stim_pos_nan') || ...
+        isfield(cond_data, 'active_like_stim_neg_nan');
+
+    if has_merged
+        base_data = cond_data;
+        baseline_file_used = i;
+    else
+        base_data = merged_baseline_summary;
+        baseline_file_used = NaN;
+    end
+
+    if iscell(meta_cond.Stim_Delay)
+        raw_delay = meta_cond.Stim_Delay{1};
+    else
+        raw_delay = meta_cond.Stim_Delay;
+    end
+
+    % Special case for Random: run multiple fixed-delay comparisons
+    if ischar(raw_delay) && strcmpi(raw_delay, 'Random')
+        delays = [0, 100, 200];
+        for delay_val = delays
+            for polarity = {'pos', 'neg'}
+                side_label = sprintf('active_like_stim_%s_%d', polarity{1}, delay_val);
+                try
+                    base_data = cond_data;
+                    fig = plot_traces_neural(base_data, cond_data, side_label, false, ...
+                        meta_cond, true, show_figs);
+
+                    % === Save ===
+                    side_short = strrep(side_label, 'active_like_stim_', '');  % e.g., 'pos' or 'neg'
+                    stim_str_for_file = sprintf('%dCh_%dHz_%duA_%dmsdelay_%s', ...
+                        meta_cond.Channels, ...
+                        meta_cond.Stim_Frequency_Hz, ...
+                        meta_cond.Current_uA, ...
+                        delay_val, ...
+                        meta_cond.Movement_Trigger{1});
+                    % Define base name without any extension
+
+                    save_filename_base = sprintf('%s_Condition_%03d_%s_vsBaselineTraces', ...
+                        stim_str_for_file, cond_br, side_short);
+                    if save_figs
+                        % Save .fig
+                        fig_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'figFigs', [save_filename_base, '.fig']);
+                        savefig(fig, fig_save_path);
+                    end
+                    % Save .png
+                    png_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'pngFigs', [save_filename_base, '.png']);
+                    print(fig, png_save_path, '-dpng', '-r300');
+                    % Save .svg
+                    set(fig, 'Renderer', 'painters');
+                    svg_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'svgFigs', [save_filename_base, '.svg']);
+                    print(fig, svg_save_path, '-dsvg', '-r300');
+
+                    close(fig);
+                    fprintf('Saved Random Delay Comparison: %s\n', save_filename_base);
+
+                catch ME
+                    warning('Plot failed for Random trial %d (%s, delay %d): %s', ...
+                        i, polarity{1}, delay_val, ME.message);
+                end
+            end
+        end
+        for polarity = {'pos', 'neg'}
+            side_label = sprintf('active_like_stim_%s', polarity{1});
+            try
+                base_data = cond_data;
+                fig = plot_rand_condition_traces_neural(base_data, cond_data, side_label, false, ...
+                    meta_cond, true, show_figs);
+
+                % === Save ===
+                side_short = strrep(side_label, 'active_like_stim_', '');  % e.g., 'pos' or 'neg'
+                trigger_clean = strrep(strtrim(meta_cond.Movement_Trigger{1}), ' ', '_');
+                stim_str_for_file = sprintf('%dCh_%dHz_%duA_%s', ...
+                    meta_cond.Channels, ...
+                    meta_cond.Stim_Frequency_Hz, ...
+                    meta_cond.Current_uA, ...
+                    trigger_clean);
+
+
+                % Define base name without any extension
+                save_filename_base = sprintf('%s_Condition_%03d_%s_ComparisonAcrossDelay', ...
+                    stim_str_for_file, cond_br, side_short);
+
+
+                if save_figs
+                    % Save .fig
+                    fig_save_path = fullfile(fig_folder, 'ComparisonTraces', 'figFigs', [save_filename_base, '.fig']);
+                    savefig(fig, fig_save_path);
+                end
+                % Save .png
+                png_save_path = fullfile(fig_folder, 'ComparisonTraces', 'pngFigs', [save_filename_base, '.png']);
+                print(fig, png_save_path, '-dpng', '-r300');
+                % Save .svg
+                set(fig, 'Renderer', 'painters');
+                svg_save_path = fullfile(fig_folder, 'ComparisonTraces', 'svgFigs', [save_filename_base, '.svg']);
+                print(fig, svg_save_path, '-dsvg', '-r300');
+
+                close(fig);
+                fprintf('Saved Random Delay Comparison: %s\n', save_filename_base);
+
+            catch ME
+                warning('Plot failed for Random trial %d (%s, delay %d): %s', ...
+                    i, polarity{1}, ME.message);
+            end
+        end
+        continue;  % skip default pos/neg loop
+    end
+
+    % Loop over sides
+    for side = {'active_like_stim_pos', 'active_like_stim_neg'}
+        side_label = side{1};
+        try
+            fig = plot_traces_neural(base_data, cond_data, side_label, false, ...
+                meta_cond, true, show_figs);
+            % Convert delay to numeric if it's a cell
+            if iscell(meta_cond.Stim_Delay)
+                delay_value = str2double(meta_cond.Stim_Delay{1});
+            else
+                delay_value = meta_cond.Stim_Delay;
+            end
+            % === Save ===
+            side_short = strrep(side_label, 'active_like_stim_', '');  % e.g., 'pos' or 'neg'
+            trigger_clean = strrep(strtrim(meta_cond.Movement_Trigger{1}), ' ', '_');
+            stim_str_for_file = sprintf('%dCh_%dHz_%duA_%dmsdelay_%s', ...
+                meta_cond.Channels, ...
+                meta_cond.Stim_Frequency_Hz, ...
+                meta_cond.Current_uA, ...
+                delay_value, ...
+                trigger_clean);
+
+            % Define base name without any extension
+            save_filename_base = sprintf('%s_Condition_%03d_%s_vsBaselineTraces', ...
+                stim_str_for_file, cond_br, side_short);
+            if save_figs
+                % Save .fig
+                fig_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'figFigs', [save_filename_base, '.fig']);
+                savefig(fig, fig_save_path);
+            end
+            % Save .png
+            png_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'pngFigs', [save_filename_base, '.png']);
+            print(fig, png_save_path, '-dpng', '-r300');
+
+            % Save .svg
+            set(fig, 'Renderer', 'painters');
+            svg_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'svgFigs', [save_filename_base, '.svg']);
+            print(fig, svg_save_path, '-dsvg', '-r300');
+
+
+            close(fig);
+            fprintf('Saved: %s\n', save_filename_base);
+        catch ME
+            warning('Plot failed for trial %d (%s): %s', i, side_label, ME.message);
+        end
+    end
+end

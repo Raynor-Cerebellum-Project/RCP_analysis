@@ -10,7 +10,7 @@ relative_path = fullfile('Current Project Databases - NHP', ...
 base_folder = fullfile(base_root, relative_path);
 %%
 search_folder      = fullfile(base_folder, 'Calibrated');
-fig_folder         = fullfile(base_folder, 'Figures');
+fig_folder         = fullfile(base_folder, 'Figures', 'Behavior');
 metadata_csv_path  = fullfile(base_folder, [session, '_metadata.csv']);
 raw_metrics_path   = fullfile(base_folder, 'Checkpoints', [session, '_raw_metrics_all.mat']);
 summary_path       = fullfile(base_folder, 'Checkpoints', [session, '_summarized_metrics.mat']);
@@ -307,7 +307,7 @@ for i = trial_indices
                 side_label = sprintf('active_like_stim_%s_%d', polarity{1}, delay_val);
                 try
                     base_data = cond_data;
-                    fig = plot_traces(base_data, cond_data, side_label, false, ...
+                    fig = plot_traces_neural(base_data, cond_data, side_label, false, ...
                         meta_cond, true, show_figs);
 
                     % === Save ===
@@ -348,7 +348,7 @@ for i = trial_indices
             side_label = sprintf('active_like_stim_%s', polarity{1});
             try
                 base_data = cond_data;
-                fig = plot_rand_condition_traces(base_data, cond_data, side_label, false, ...
+                fig = plot_rand_condition_traces_neural(base_data, cond_data, side_label, false, ...
                     meta_cond, true, show_figs);
 
                 % === Save ===
@@ -394,7 +394,7 @@ for i = trial_indices
     for side = {'active_like_stim_pos', 'active_like_stim_neg'}
         side_label = side{1};
         try
-            fig = plot_traces(base_data, cond_data, side_label, false, ...
+            fig = plot_traces_neural(base_data, cond_data, side_label, false, ...
                 meta_cond, true, show_figs);
             % Convert delay to numeric if it's a cell
             if iscell(meta_cond.Stim_Delay)
