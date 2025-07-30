@@ -31,7 +31,7 @@ trig_file     = fullfile(trial_path, 'trig_info.mat');
 raw_file      = fullfile(trial_path, 'neural_data.mat');
 stim_drift_file = fullfile(trial_path, 'stim_drift_all.mat');
 
-fig_folder = fullfile(base_folder, 'Figures/spikeDetection/Neural');
+fig_folder = fullfile(base_folder, 'Figures/Neural/spikeDetection');
 if ~exist(fig_folder, 'dir')
     mkdir(fig_folder);
 end
@@ -123,7 +123,7 @@ for ch = 1:5
     shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, ...
         t_stim_start, diff(t_window), ylim);
 
-    ylabel('Voltage');
+    ylabel('Voltage (mV)');
     title(sprintf('Ch %d — Raw, Corrected, Drift, Template', ch));
     set(ax(ch, 1), 'Box', 'off');
 
@@ -168,19 +168,16 @@ saveas(fig1, fullfile(fig_folder, 'png', [fig1_name '.png']));
 t_lim = [t_start, t_end];  % Match window from Figure 1
 fr_idx = (t_fr >= t_lim(1)) & (t_fr <= t_lim(2));
 t_fr_window = t_fr(fr_idx);
-fr_mat = nan(nChans, numel(t_fr_window));
 % Define baseline window in seconds
 baseline_window = [t_stim_start - 0.5, t_stim_start];  % e.g., 0.5 sec before stim
-
-% Get indices for baseline window
 baseline_idx = (t_fr >= baseline_window(1)) & (t_fr <= baseline_window(2));
 
-% Normalize each channel's FR by its baseline mean
-fr_mat_norm = fr_mat;
+% Normalize
+fr_mat_norm = nan(nChans, numel(t_fr_window));
 for ch = 1:nChans
     baseline_mean = mean(smoothed_fr_all{ch}(baseline_idx));
     if baseline_mean > 0
-        fr_mat_norm(ch, :) = fr_mat(ch, :) / baseline_mean;
+        fr_mat_norm(ch, :) = smoothed_fr_all{ch}(fr_idx) / baseline_mean;
     end
 end
 % 
@@ -192,7 +189,7 @@ figure('Name', 'Full Spike Raster and FR Heatmap', 'Position', [100 100 1600 900
 tiledlayout(2,1, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 % --- Raster Plot ---
-nexttile(1); hold on; box off;
+nexttile(1); hold on;
 for ch = 1:nChans
     spike_idx = find(spike_trains_all{ch});
     t_spikes = spike_idx / fs;
@@ -208,9 +205,10 @@ xlabel('Time (s)');
 ylabel('Channel');
 title(sprintf('Spike Raster — Stim Aligned Window (%.3f to %.3f s) — Trial %d', t_lim(1), t_lim(2), trial_num));
 set(gca, 'YDir', 'reverse');
+box off;
 
 % --- Heatmap Plot ---
-nexttile(2); box off;
+nexttile(2);
 imagesc(t_fr_window, 1:nChans, fr_mat_norm);
 set(gca, 'YDir', 'reverse');
 xlabel('Time (s)');
@@ -219,6 +217,8 @@ title('Normalized Smoothed Firing Rate (Baseline = 1)');
 colormap jet;
 colorbar;
 xlim(t_lim);
+xline(t_stim_start, 'r--', 'LineWidth', 1.2);
+box off;
 
 % === Save Figure 2 ===
 fig2 = figure(2);  % assuming this is Figure 2

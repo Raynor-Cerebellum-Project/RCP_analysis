@@ -14,30 +14,20 @@ pca_k = params.pca_k;
 trigs_beg = trigs(:, 1);
 trigs_end = trigs(:, 2) + stim_neural_delay;
 
-stim_drift = struct('values', cell(num_repeats, 1), 'range', cell(num_repeats, 1));
+% === Global drift correction: Median + Gaussian filter ===
+raw_trace = double(amplifier_data);
+med_filtered = movmedian(raw_trace, med_filt_range, 'Endpoints', 'shrink');
 
-for r = 1:num_repeats
-    idx = (repeat_boundaries(r)+1):repeat_boundaries(r+1);
-    full_range_start = trigs_end(idx(1)) - 4;
+w = gausswin(gauss_filt_range, 2.5); 
+w = w / sum(w);
+gauss_filtered = filtfilt(w, 1, med_filtered);
 
-    if r < num_repeats
-        range_end = trigs_beg(repeat_boundaries(r+1)+1) - 1;
-    else
-        range_end = trigs_end(idx(end)) + buffer;
-    end
+% Subtract global drift
+amplifier_data = amplifier_data - gauss_filtered;
 
-    if full_range_start > 0 && range_end <= length(amplifier_data)
-        raw_block = double(amplifier_data(full_range_start:range_end));
-        med_filtered = movmedian(raw_block, med_filt_range, 'Endpoints', 'shrink');
-        w = gausswin(gauss_filt_range, 2.5); w = w / sum(w);
-        gauss_filtered = filtfilt(w, 1, med_filtered);
-
-        amplifier_data(full_range_start:range_end) = amplifier_data(full_range_start:range_end) - gauss_filtered;
-
-        stim_drift(r).values = single(gauss_filtered(:));
-        stim_drift(r).range = [full_range_start, range_end];
-    end
-end
+% Store drift as a single field for the full trace
+stim_drift = struct('values', single(gauss_filtered(:)), ...
+                    'range', [1, length(amplifier_data)]);
 
 % === Template subtraction ===
 interpulse_len = (trigs_end(1) - trigs_beg(1) + 1) + 2 * template_leeway;
