@@ -7,14 +7,16 @@ fs_ds = 1000;  % Downsampled FR sampling rate
 
 %% Locate Trial
 session = 'BL_RW_003_Session_1';
-template_mode = 'local';
-trial_num = 5;
+template_mode = 'pca';
+trial_num = 3;
+pulse_num = 2;
+ref_ch = 21;
 [base_root, code_root, base_folder] = set_paths_cullen_lab(session);
 intan_folder = fullfile(base_folder, 'Intan');
 
 trial_dirs = dir(fullfile(intan_folder, 'BL_closed_loop_STIM_*'));
-if numel(trial_dirs) < 5
-    error('Less than 5 trials found.');
+if numel(trial_dirs) < 3
+    error('Less than 3 trials found.');
 end
 
 valid_modes = {'local', 'pca'};
@@ -29,7 +31,7 @@ trig_file     = fullfile(trial_path, 'trig_info.mat');
 raw_file      = fullfile(trial_path, 'neural_data.mat');
 stim_drift_file = fullfile(trial_path, 'stim_drift_all.mat');
 
-fig_folder = fullfile(base_folder, 'Figures/spikeDetection');
+fig_folder = fullfile(base_folder, 'Figures/spikeDetection/Neural');
 if ~exist(fig_folder, 'dir')
     mkdir(fig_folder);
 end
@@ -76,8 +78,7 @@ trigs_beg_sec = trigs_beg / fs;
 trigs_end_sec = trigs_end / fs;
 
 %% === Figure 1: Per-channel raw/corrected + smoothed FR ===
-ref_ch = 1;
-t_stim_start = trigs_beg_sec(repeat_boundaries(1) + 1);
+t_stim_start = trigs_beg_sec(repeat_boundaries(pulse_num) + 1);
 t_window = [-0.8, 1.2];
 t_start = t_stim_start + t_window(1);
 t_end   = t_stim_start + t_window(2);
@@ -124,12 +125,14 @@ for ch = 1:5
 
     ylabel('Voltage');
     title(sprintf('Ch %d — Raw, Corrected, Drift, Template', ch));
+    set(ax(ch, 1), 'Box', 'off');
 
     if ch == 5
         xlabel('Time (s)');
         legend([h1, h2, h3, h4, h5], ...
             {'Raw', 'Corrected', 'Drift', 'Template', 'Spikes'}, ...
-            'Location', 'northeast', 'Box', 'off', 'FontSize', 8);
+            'Orientation', 'horizontal', 'Location', 'southoutside', ...
+            'Box', 'off', 'FontSize', 8);
     end
 
     % === Right Plot (Column 3 of this row) ===F
@@ -148,6 +151,7 @@ for ch = 1:5
 
     ylabel('FR (Hz)');
     title(sprintf('Ch %d — Smoothed FR', ch));
+    set(ax(ch, 2), 'Box', 'off');
     if ch == 5, xlabel('Time (s)'); end
 end
 
@@ -165,16 +169,30 @@ t_lim = [t_start, t_end];  % Match window from Figure 1
 fr_idx = (t_fr >= t_lim(1)) & (t_fr <= t_lim(2));
 t_fr_window = t_fr(fr_idx);
 fr_mat = nan(nChans, numel(t_fr_window));
+% Define baseline window in seconds
+baseline_window = [t_stim_start - 0.5, t_stim_start];  % e.g., 0.5 sec before stim
 
+% Get indices for baseline window
+baseline_idx = (t_fr >= baseline_window(1)) & (t_fr <= baseline_window(2));
+
+% Normalize each channel's FR by its baseline mean
+fr_mat_norm = fr_mat;
 for ch = 1:nChans
-    fr_mat(ch, :) = smoothed_fr_all{ch}(fr_idx);
+    baseline_mean = mean(smoothed_fr_all{ch}(baseline_idx));
+    if baseline_mean > 0
+        fr_mat_norm(ch, :) = fr_mat(ch, :) / baseline_mean;
+    end
 end
+% 
+% for ch = 1:nChans
+%     fr_mat(ch, :) = smoothed_fr_all{ch}(fr_idx);
+% end
 
 figure('Name', 'Full Spike Raster and FR Heatmap', 'Position', [100 100 1600 900]);
 tiledlayout(2,1, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 % --- Raster Plot ---
-nexttile(1); hold on;
+nexttile(1); hold on; box off;
 for ch = 1:nChans
     spike_idx = find(spike_trains_all{ch});
     t_spikes = spike_idx / fs;
@@ -190,13 +208,14 @@ xlabel('Time (s)');
 ylabel('Channel');
 title(sprintf('Spike Raster — Stim Aligned Window (%.3f to %.3f s) — Trial %d', t_lim(1), t_lim(2), trial_num));
 set(gca, 'YDir', 'reverse');
+
 % --- Heatmap Plot ---
-nexttile(2);
-imagesc(t_fr_window, 1:nChans, fr_mat);
+nexttile(2); box off;
+imagesc(t_fr_window, 1:nChans, fr_mat_norm);
 set(gca, 'YDir', 'reverse');
 xlabel('Time (s)');
 ylabel('Channel');
-title('Smoothed Firing Rate (Hz)');
+title('Normalized Smoothed Firing Rate (Baseline = 1)');
 colormap jet;
 colorbar;
 xlim(t_lim);
