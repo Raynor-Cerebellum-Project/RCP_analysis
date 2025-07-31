@@ -52,16 +52,18 @@ ds_factor = round(fs / target_fs);
 T = readtable(metadata_csv);
 has_stim_all = false(height(T), 1);  % Preallocate logical array
 
-%%
+%% Start parallel pool before trial loop
 if isempty(gcp('nocreate'))
-    num_workers = min(30, feature('numcores')); % fallback
-    parpool('local', num_workers);
+    myCluster = parcluster('local');
+    myCluster.IdleTimeout = 60;  % Keep pool alive for up to 60 minutes idle
+    parpool(myCluster, min(30, feature('numcores')));
 end
+
 %% Loop through each trial
 for i = 1:numel(valid_trials)
     trial = valid_trials{i};
     trial_path = fullfile(intan_folder, trial);
-    fprintf('\n[%d/%d] Processing: %s\n', i, numel(valid_trials), trial);
+    logmsg(sprintf('[%d/%d] Processing: %s', i, numel(valid_trials), trial));
 
     % === Load stim data and extract triggers ===
     stim_struct = load(fullfile(trial_path, 'stim_data.mat'));
@@ -89,11 +91,12 @@ for i = 1:numel(valid_trials)
     save(trig_info_file, 'trigs', 'repeat_boundaries');
 
     % === Load neural data ===
-    fprintf('  Loading data... ');
+    logmsg('  Loading data...');
+
     tic;
     neural_struct = load(fullfile(trial_path, 'neural_data.mat'));
     elapsed_time = toc;
-    fprintf('Done (%.2f sec).\n', elapsed_time);
+    logmsg(sprintf('Done (%.2f sec).', elapsed_time));
 
     for m = 1:numel(template_modes)
         method = template_modes{m};
@@ -106,7 +109,7 @@ for i = 1:numel(valid_trials)
                 template_subtraction_all_parallel(neural_data, updated_params, {method}, ...
                 trigs, repeat_boundaries, trial_path);
             elapsed_time = toc;
-            fprintf('Done (%.2f sec).\n', elapsed_time);
+            logmsg(sprintf('Done (%.2f sec).', elapsed_time));
 
             artifact_file  = fullfile(trial_path, sprintf('neural_data_artifact_removed_%s.mat', method));
             save(artifact_file, 'artifact_removed_data', '-v7.3');
@@ -148,7 +151,7 @@ for i = 1:numel(valid_trials)
         end
 
         elapsed_time = toc;
-        fprintf('Done (%.2f sec).\n', elapsed_time);
+        logmsg(sprintf('Done (%.2f sec).', elapsed_time));
 
         % Save FR data
         if has_trigs
@@ -171,3 +174,7 @@ save(fullfile(base_folder, 'Metadata', [session '_metadata_with_stim.mat']), 'T'
 %% Save profiler output
 p = profile('info');
 save('profiler_data.mat', 'p');
+
+function logmsg(msg)
+    fprintf('[%s] %s\n', datestr(datetime('now'), 'yyyy-mm-dd HH:MM:SS'), msg);
+end
