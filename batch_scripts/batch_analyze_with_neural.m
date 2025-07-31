@@ -3,7 +3,7 @@ addpath(genpath(fullfile('..', 'functions')));
 
 %% --- Setup Session and Paths ---
 session = 'BL_RW_003_Session_1';
-fr_method = 'local';  % Options: 'local' or 'pca'
+fr_method = 'pca';  % Options: 'local' or 'pca'
 [base_root, code_root, base_folder] = set_paths_cullen_lab(session);
 
 intan_folder     = fullfile(base_folder, 'Intan');
