@@ -7,12 +7,13 @@ fs_ds = 1000;  % Downsampled FR sampling rate
 
 %% Locate Trial
 session = 'BL_RW_003_Session_1';
-template_mode = 'pca';
+template_mode = 'local';
 trial_num = 3;
 pulse_num = 2;
-ref_ch = 21;
+ref_ch = 1;
 [base_root, code_root, base_folder] = set_paths_cullen_lab(session);
 intan_folder = fullfile(base_folder, 'Intan');
+%%
 
 trial_dirs = dir(fullfile(intan_folder, 'BL_closed_loop_STIM_*'));
 if numel(trial_dirs) < 3
@@ -135,15 +136,14 @@ for ch = 1:5
             'Box', 'off', 'FontSize', 8);
     end
 
-    % === Right Plot (Column 3 of this row) ===F
+    % === Right Plot (Column 3 of this row) ===
     ax(ch, 2) = nexttile((row_idx - 1) * 3 + 3);
     t_idx = (t_fr >= t_start) & (t_fr <= t_end);
     t_plot = t_fr(t_idx);
     fr_plot = smoothed_fr_all{ch}(t_idx);
 
     plot(t_plot, fr_plot, 'b', 'LineWidth', 1.2); hold on;
-    yline(mean(smoothed_fr_all{ch}), '--', 'Mean', 'Color', [0.4 0.4 1]);
-    ylim([0, max(smoothed_fr_all{ch}) * 1.1]);
+    ylim([-100, 1000]);
     xlim([t_start, t_end]);
 
     shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, ...
