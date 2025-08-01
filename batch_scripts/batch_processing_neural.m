@@ -54,9 +54,7 @@ has_stim_all = false(height(T), 1);  % Preallocate logical array
 
 %% Start parallel pool before trial loop
 if isempty(gcp('nocreate'))
-    myCluster = parcluster('local');
-    myCluster.IdleTimeout = 60;  % Keep pool alive for up to 60 minutes idle
-    parpool(myCluster, min(30, feature('numcores')));
+    parpool('local', min(30, feature('numcores')), 'IdleTimeout', 60);
 end
 
 %% Loop through each trial
