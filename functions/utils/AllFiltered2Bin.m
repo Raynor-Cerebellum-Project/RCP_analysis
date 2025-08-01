@@ -1,7 +1,7 @@
 clear all; close all; clc;
 %% === Setup root path using machine-aware logic ===
 addpath(genpath('functions'));
-base_root = set_paths();  % e.g., returns '/Volumes/CullenLab_Server/...' or prompts via uigetdir
+base_root = set_paths_cullen_lab();  % e.g., returns '/Volumes/CullenLab_Server/...' or prompts via uigetdir
 
 %% === Define artifact root and output folder ===
 artifact_root = fullfile(base_root, 'Current Project Databases - NHP', ...
