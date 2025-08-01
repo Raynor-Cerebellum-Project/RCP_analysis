@@ -35,10 +35,9 @@ for m = 1:numel(template_modes)
     art_file = fullfile(trial_path, sprintf('neural_data_artifact_removed_%s.mat', mode));
     fr_file  = fullfile(trial_path, sprintf('firing_rate_data_%s.mat', mode));
     tmp_art = load(art_file, 'artifact_removed_data');
-    tmp_fr  = load(fr_file, 'smoothed_fr_all', 'spike_trains_all');
+    tmp_fr  = load(fr_file, 'smoothed_fr_all');
     artifact_data.(mode) = tmp_art.artifact_removed_data;
     fr_data.(mode) = tmp_fr.smoothed_fr_all;
-    spike_data.(mode) = tmp_fr.spike_trains_all;
 end
 
 trig_file     = fullfile(trial_path, 'trig_info.mat');
@@ -116,46 +115,29 @@ for ch = 1:5
     h1 = plot(t_trim, raw_trim, 'Color', [0.6 0.6 0.6]); hold on;
 
     color_map = lines(numel(template_modes));
-    % --- Plot corrected traces and compute template/drift per mode ---
     h_corrected = gobjects(numel(template_modes), 1);
-    h_template = gobjects(numel(template_modes), 1);
-
-    drift_trim = [];
-    if use_drift && ~isempty(drift_full)
-        drift_trim = drift_full(ch, t_idx);
-        h_drift = plot(t_trim, drift_trim, '--', 'Color', [0.2 0.2 0.8], 'LineWidth', 0.8);
-    else
-        h_drift = gobjects(1);
-    end
-
+    
     for m = 1:numel(template_modes)
         mode = template_modes{m};
         corrected_trim = double(artifact_data.(mode)(ch, t_idx));
         h_corrected(m) = plot(t_trim, corrected_trim, ...
             'Color', color_map(m, :), 'LineWidth', 1.2);
-
-        % if ~isempty(drift_trim)
-        %     template_trim = corrected_trim - (raw_trim - drift_trim);
-        %     h_template(m) = plot(t_trim, template_trim, ':', 'Color', color_map(m, :), 'LineWidth', 1.0);
-        % else
-            h_template(m) = gobjects(1);
-        % end
     end
 
+    if use_drift && ~isempty(drift_full)
+        drift_trim = drift_full(ch, t_idx);
+        template_trim = corrected_trim - (raw_trim - drift_trim);
 
-    h_spikes = gobjects(numel(template_modes), 1);
-    spike_colors = [0.9 0.1 0.1; 0.1 0.5 0.1];  % red, green, etc.
-
-    for m = 1:numel(template_modes)
-        mode = template_modes{m};
-        spike_locs = find(spike_data.(mode){ch} > 0);
-        spike_times = t(spike_locs);
-        spike_vals = artifact_data.(mode)(ch, spike_locs);
-        in_range = spike_times >= t_start & spike_times <= t_end;
-
-        h_spikes(m) = scatter(spike_times(in_range), spike_vals(in_range), ...
-            10, spike_colors(m, :), 'filled');
+        h3 = plot(t_trim, drift_trim, 'Color', [0 0.4470 0.7410], 'LineWidth', 0.5);
+        h4 = plot(t_trim, template_trim, 'Color', [0.8500 0.3250 0.0980], 'LineWidth', 0.5);
     end
+
+    spike_locs = find(spike_trains_all{ch} > 0);
+    spike_times = t(spike_locs);
+    spike_vals = artifact_removed_data(ch, spike_locs);
+
+    in_range = spike_times >= t_start & spike_times <= t_end;
+    h5 = scatter(spike_times(in_range), spike_vals(in_range), 10, 'r', 'filled');
 
     ylim([-200 200]);
     xlim([t_start, t_end]);
@@ -168,36 +150,11 @@ for ch = 1:5
 
     if ch == 5
         xlabel('Time (s)');
-
-        % === Construct and clean legend entries ===
-        legend_handles = [h1; h_corrected(:)];
-        legend_labels  = [{'Raw'}, strcat('Corrected (', template_modes, ')')];
-        
-        if use_drift && isgraphics(h_drift)
-            legend_handles = [legend_handles; h_drift];
-            legend_labels  = [legend_labels, {'Drift'}];
-        end
-        
-        % Only include spike handles that were actually plotted
-        for m = 1:numel(h_spikes)
-            if isgraphics(h_spikes(m))
-                legend_handles(end+1) = h_spikes(m);
-                legend_labels{end+1} = sprintf('Spikes (%s)', template_modes{m});
-            end
-        end
-        
-        % Plot legend
-        legend(legend_handles, legend_labels, ...
+        legend_entries = [{'Raw'}, strcat('Corrected (', template_modes, ')'), {'Spikes'}];
+        legend([h1; h_corrected(:); h5], legend_entries, ...
             'Orientation', 'horizontal', 'Location', 'southoutside', ...
             'Box', 'off', 'FontSize', 8);
-
     end
-
-
-    % legend([h1, h2, h3, h4, h5], ...
-    %     {'Raw', 'Corrected', 'Drift', 'Template', 'Spikes'}, ...
-    %     'Orientation', 'horizontal', 'Location', 'southoutside', ...
-    %     'Box', 'off', 'FontSize', 8); end
 
     % === Right Plot (Column 3 of this row) ===
     ax(ch, 2) = nexttile((row_idx - 1) * 3 + 3);
@@ -208,7 +165,7 @@ for ch = 1:5
         fr_plot = fr_data.(mode){ch}(t_idx);
         plot(t_plot, fr_plot, 'Color', color_map(m, :), 'LineWidth', 1.2); hold on;
     end
-    ylim([-100, 500]);
+    ylim([-100, 1000]);
     xlim([t_start, t_end]);
 
     shade_stim_blocks(repeat_boundaries, trigs_beg_sec, trigs_end_sec, ...
@@ -244,12 +201,12 @@ baseline_idx = (t_fr >= baseline_window(1)) & (t_fr <= baseline_window(2));
 % Normalize
 fr_mat_norm = nan(nChans, numel(t_fr_window));
 for ch = 1:nChans
-    baseline_mean = mean(fr_data.(ref_mode){ch}(baseline_idx));
+    baseline_mean = mean(smoothed_fr_all{ch}(baseline_idx));
     if baseline_mean > 0
-        fr_mat_norm(ch, :) = fr_data.(ref_mode){ch}(fr_idx) / baseline_mean;
+        fr_mat_norm(ch, :) = smoothed_fr_all{ch}(fr_idx) / baseline_mean;
     end
 end
-%
+% 
 % for ch = 1:nChans
 %     fr_mat(ch, :) = smoothed_fr_all{ch}(fr_idx);
 % end
@@ -291,7 +248,7 @@ box off;
 
 % === Save Figure 2 ===
 fig2 = figure(2);  % assuming this is Figure 2
-fig2_name = sprintf('%s_Trial%d_SpikeRaster_FR_%s', session, trial_num, mode_str);
+fig2_name = sprintf('%s_Trial%d_SpikeRaster_FR_%s', session, trial_num, template_mode);
 saveas(fig2, fullfile(fig_folder, 'png', [fig2_name '.png']));
 savefig(fig2, fullfile(fig_folder, 'fig', [fig2_name '.fig']));
 
