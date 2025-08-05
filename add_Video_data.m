@@ -16,7 +16,7 @@ channel_names = C_text{1,1};
 close all;
 
 load(Calib_name,'Data')
-trigger = (Data.Neural(:,1))/11; % Selects column with trigger pulses to match frames and align signals
+trigger = (Data.Neural(:,132))/11; % *probably channel 132* Selects column with trigger pulses to match frames and align signals
 % idx = find(diff((triger>1500))==1); 
 idx = find(diff(trigger)>100);  
 
