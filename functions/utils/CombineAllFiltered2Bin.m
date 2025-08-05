@@ -18,17 +18,17 @@ if ~exist(output_folder, 'dir'); mkdir(output_folder); end
 selected_trials = {
     'BL_closed_loop_STIM_003_250528_140952';
     'BL_closed_loop_STIM_003_250528_152812';
-    'BL_closed_loop_STIM_003_250528_160100'
+    'BL_closed_loop_STIM_003_250528_160100';
 
-    % 'BL_closed_loop_STIM_003_250528_143802';
-    % BL_closed_loop_STIM_003_250528_144603
-    % BL_closed_loop_STIM_003_250528_145904
-    % BL_closed_loop_STIM_003_250528_152226
-    % BL_closed_loop_STIM_003_250528_153443
-    % BL_closed_loop_STIM_003_250528_153849
-    % BL_closed_loop_STIM_003_250528_154801
-    % BL_closed_loop_STIM_003_250528_160557
-    % BL_closed_loop_STIM_003_250528_160920
+    'BL_closed_loop_STIM_003_250528_143802';
+    'BL_closed_loop_STIM_003_250528_144603';
+    'BL_closed_loop_STIM_003_250528_145904';
+    'BL_closed_loop_STIM_003_250528_152226';
+    'BL_closed_loop_STIM_003_250528_153443';
+    'BL_closed_loop_STIM_003_250528_153849';
+    'BL_closed_loop_STIM_003_250528_154801';
+    'BL_closed_loop_STIM_003_250528_160557';
+    'BL_closed_loop_STIM_003_250528_160920'
 };
 
 %% === Find all trial subfolders ===
@@ -99,7 +99,7 @@ end
 data_to_write = int16(combined_data');  % [total_time x 128]
 
 %% === Save combined .bin to output folder ===
-bin_path = fullfile(output_folder, 'combined_baseline_data.bin');
+bin_path = fullfile(output_folder, 'combined_baseline_and_stim_data.bin');
 fileID = fopen(bin_path, 'w');
 fwrite(fileID, data_to_write, 'int16');
 fclose(fileID);
