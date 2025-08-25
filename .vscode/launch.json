@@ -1,0 +1,35 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // Use this when you're sitting at the Linux desktop
+      "name": "Python: Local Plot (Linux desktop)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DISPLAY": ":0",
+        "QT_QPA_PLATFORM": "xcb",
+        "MPLBACKEND": "qtagg"
+      },
+      "justMyCode": false
+    },
+    {
+      // Use this when you connect from your Mac with X11 forwarding
+      "name": "Python: SSH Forwarded Plot (Mac XQuartz)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "QT_QPA_PLATFORM": "xcb",
+        "MPLBACKEND": "qtagg"
+        // DISPLAY is intentionally NOT set here so it stays "localhost:10.0"
+      },
+      "justMyCode": false
+    }
+  ]
+}
