@@ -1,1 +1,3 @@
-Traces/
+*.egg-info
+data
+.vscode
