@@ -2,7 +2,7 @@
 from __future__ import annotations
 from pathlib import Path
 import gc
-from typing import List, Optional
+from typing import Optional
 import spikeinterface as si
 import spikeinterface.preprocessing as spre
 from spikeinterface.core import concatenate_recordings
@@ -11,8 +11,8 @@ from RCP_analysis import (
     read_blackrock_recording,
     read_intan_recording,
     quicklook_stim_grid_all,
-    load_br_geometry,
-    load_session_geometry,
+    load_ua_geom_from_excel,
+    align_geom_index_to_recording,
 )
 from RCP_analysis.python.functions.params_loading import (
     load_experiment_params,
@@ -21,7 +21,7 @@ from RCP_analysis.python.functions.params_loading import (
 
 # ---------------- Module-level constants ----------------
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS = load_experiment_params(  # YAML, not TOML
+PARAMS = load_experiment_params(
     yaml_path=REPO_ROOT / "config" / "params.yaml",
     repo_root=REPO_ROOT,
 )
@@ -29,9 +29,7 @@ PARAMS = load_experiment_params(  # YAML, not TOML
 OUT_BASE = (REPO_ROOT / "results").resolve()
 OUT_BASE.mkdir(parents=True, exist_ok=True)
 
-# Short aliases from params
 HPF_HZ = float(PARAMS.highpass_hz)
-
 PARALLEL_JOBS = int(PARAMS.parallel_jobs)
 THREADS_PER_WORKER = int(PARAMS.threads_per_worker)
 CHUNK = str(PARAMS.chunk)
@@ -47,11 +45,7 @@ STIM_NUMS = getattr(PARAMS, "stim_nums", {}) or {}
 
 def _list_sessions(use_intan: bool = False) -> list[Path]:
     data_root = resolve_data_root(PARAMS)
-    if use_intan:
-        root = data_root  # TODO: add an intan_rel in YAML when you have it
-    else:
-        root = data_root / PARAMS.blackrock_rel
-
+    root = data_root if use_intan else data_root / PARAMS.blackrock_rel
     if not root.exists():
         raise FileNotFoundError(f"Session root not found: {root}")
 
@@ -59,11 +53,10 @@ def _list_sessions(use_intan: bool = False) -> list[Path]:
     if subdirs:
         return sorted(subdirs)
 
-    # No subdirs; check for Blackrock files sitting in this directory
     has_nsx = any(p.suffix.lower().startswith(".ns") for p in root.iterdir())
     has_nev = any(p.suffix.lower() == ".nev" for p in root.iterdir())
     if has_nsx or has_nev:
-        return [root]  # treat the folder as a single session
+        return [root]
 
     raise FileNotFoundError(
         f"No sessions found under {root}.\n"
@@ -72,32 +65,29 @@ def _list_sessions(use_intan: bool = False) -> list[Path]:
 
 
 def _probe_radii_for_session(sess_name: str) -> tuple[int, int]:
-    """
-    Pull (inner, outer) radii straight from YAML:
-      - If session mapped in PARAMS.sessions with `probe`, use that probe's radii.
-      - Else fall back to the first probe defined in PARAMS.probes.
-    No extra resolver; just declarative YAML.
-    """
     sess_cfg = (PARAMS.sessions or {}).get(sess_name, {})
-    probe_tag = sess_cfg.get("probe")
-
+    probe_tag = sess_cfg.get("probe") or (next(iter(PARAMS.probes.keys())) if PARAMS.probes else None)
     if not probe_tag:
-        # fallback to the first probe defined
-        if not PARAMS.probes:
-            raise ValueError("No probes defined in YAML.")
-        probe_tag = next(iter(PARAMS.probes.keys()))
+        raise ValueError("No probes defined in YAML.")
 
     probe_cfg = PARAMS.probes.get(probe_tag)
     if not probe_cfg:
         raise ValueError(f"Probe '{probe_tag}' not found in YAML 'probes'.")
 
     try:
-        lr_in = int(probe_cfg["local_radius_inner"])
-        lr_out = int(probe_cfg["local_radius_outer"])
+        return int(probe_cfg["local_radius_inner"]), int(probe_cfg["local_radius_outer"])
     except KeyError as e:
         raise KeyError(f"Missing key in probes['{probe_tag}']: {e}")
 
-    return lr_in, lr_out
+
+def _ua_excel_path() -> Optional[Path]:
+    """Prefer per-probe Excel geometry from YAML if present."""
+    ua_cfg = (PARAMS.probes or {}).get("UA", {})
+    rel = ua_cfg.get("geom_excel_rel")
+    if not rel:
+        return None
+    p = (REPO_ROOT / rel) if not str(rel).startswith("/") else Path(rel)
+    return p if p.exists() else None
 
 
 def main(
@@ -105,71 +95,62 @@ def main(
     limit_sessions: Optional[int] = None,
     overwrite_saved: bool = True,
 ):
-    """
-    Run the Utah BR preprocessing + concatenation + mountainsort5 pipeline.
-    """
-    # List sessions at run-time (not import-time)
     session_folders = _list_sessions(use_intan=use_intan)
     if limit_sessions is not None:
         session_folders = session_folders[:limit_sessions]
-
     print("Found session folders:", len(session_folders))
+
+    # --- Load UA geometry Excel once (if configured) ---
+    ua_excel = _ua_excel_path()
+    ua_map = None
+    if not use_intan and ua_excel is not None:
+        ua_map = load_ua_geom_from_excel(ua_excel)
+    elif not use_intan and ua_excel is None:
+        print("[WARN] UA Excel geometry not configured/found; proceeding without geometry mapping.")
 
     saved_paths: list[Path] = []
 
     for sess in session_folders:
         print(f"=== Session: {sess.name} ===")
 
-        # Choose the loader you need
-        if use_intan:
-            rec = read_intan_recording(sess, stream_name="RHS2000 amplifier channel")
-        else:
-            rec = read_blackrock_recording(sess)
+        rec = read_intan_recording(sess, stream_name="RHS2000 amplifier channel") if use_intan \
+              else read_blackrock_recording(sess)
 
-        # Per-session probe radii from YAML
         lr_inner, lr_outer = _probe_radii_for_session(sess.name)
 
-        # Preprocess
         rec_hpf = spre.highpass_filter(rec, freq_min=HPF_HZ)
         rec_local = spre.common_reference(
-            rec_hpf,
-            reference="local",
-            operator="median",
-            local_radius=(lr_inner, lr_outer),
+            rec_hpf, reference="local", operator="median", local_radius=(lr_inner, lr_outer)
         )
 
-        # Save preprocessed, permuted data for this session
         out_geom = OUT_BASE / f"pp_local_{lr_inner}_{lr_outer}__{sess.name}_GEOM"
         out_geom.mkdir(parents=True, exist_ok=True)
-
         rec_local.save(folder=out_geom, overwrite=overwrite_saved)
         print(f"[{sess.name}] saved permuted session -> {out_geom}")
 
-        # Free upstream objects ASAP
         del rec, rec_hpf, rec_local
         gc.collect()
 
-        # Reload saved extractor
         try:
             rec_perm = si.load(out_geom)
         except Exception:
             rec_perm = si.load_extractor(out_geom / "si_folder.json")
 
-        # Quick diagnostics / figures
         fs = float(rec_perm.get_sampling_frequency())
         stim_num = STIM_NUMS.get(sess.name, DEFAULT_STIM_NUM)
 
         quicklook_dir = OUT_BASE / "quicklooks"
         quicklook_dir.mkdir(parents=True, exist_ok=True)
 
-        # Per-session UA geometry (if available)
-        ua_geom = load_session_geometry(
-            sess_name=sess.name, params=PARAMS, repo_root=REPO_ROOT
-        )
-        geom_idx = ua_geom.get("geom_corr_ind") if ua_geom else None
-        xy = ua_geom.get("xy") if ua_geom else None
+        # If we have UA geometry, align to recording row order (available for downstream use)
+        geom_idx_rows = None
+        if ua_map is not None:
+            try:
+                geom_idx_rows = align_geom_index_to_recording(rec_perm, ua_map["geom_corr_ind_nsp"])
+            except Exception as e:
+                print(f"[WARN] Could not align UA geometry to recording: {e}")
 
-        # If your quicklook accepts geometry, pass it (uncomment the arg below if supported)
+        # If your quicklook accepts geometry/indices, pass them here (left as-is if not needed)
         quicklook_stim_grid_all(
             rec_sess=rec_perm,
             sess_folder=sess,
@@ -183,13 +164,16 @@ def main(
             bar_ms=STIM_BAR_MS,
             dig_line=DIG_LINE,
             stride=int(PARAMS.stride),
+            # geom_idx_rows=geom_idx_rows,  # uncomment if your function supports it
         )
-        saved_paths.append(out_geom)
 
+        saved_paths.append(out_geom)
         del rec_perm
         gc.collect()
 
-    # Concatenate all sessions
+    if not saved_paths:
+        raise RuntimeError("No sessions processed; nothing to concatenate.")
+
     print("Concatenating preprocessed sessions...")
     recs_for_concat = []
     for p in saved_paths:
@@ -202,7 +186,6 @@ def main(
     rec_concat = concatenate_recordings(recs_for_concat)
     gc.collect()
 
-    # ====== Run sorters ======
     sorting_ms5 = si.run_sorter(
         sorter_name="mountainsort5",
         recording=rec_concat,
@@ -223,5 +206,4 @@ def main(
 
 
 if __name__ == "__main__":
-    # Tweak args here for one-off runs
     main(use_intan=False, limit_sessions=None, overwrite_saved=True)

@@ -11,14 +11,16 @@ probes:
     local_radius_inner: 60
     local_radius_outer: 150
     n_channels: 256
-    geom_mat_rel: "config/UtahArray256_geometry.mat"
+    geom_excel_rel: "config/1106-22, 24, 42, 44 SN 11386-024040.xlsm"
+    geom_mat_rel: ""  # or omit
+
   NN_DBS:
-    local_radius_inner: 40
-    local_radius_outer: 120
+    local_radius_inner: 40 # NEED TO CHECK
+    local_radius_outer: 120 # NEED TO CHECK
     n_channels: 32
-    # geom_mat_rel: "config/NN_DBS32_geometry.mat"
     stim_channels: [1,2,3,4,5,6,7,8,9,10,11,12,21,22,23,24,25,26,27,28,29,30,31,32]
     rec_channels: [13,14,15,16,17,18,19,20]
+
   NPRW:
     local_radius_inner: 50
     local_radius_outer: 120

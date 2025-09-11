@@ -1,12 +1,150 @@
-# RCP_analysis/python/functions/br_preproc.py
 from __future__ import annotations
 from pathlib import Path
+from typing import Optional, Tuple, Dict, Any
+import re
 import numpy as np
+import pandas as pd
 from scipy.io import loadmat
 import h5py
 import spikeinterface.extractors as se
-from typing import Optional, Dict, Any
 
+# ---------- Excel -> mapping ----------
+
+def _norm(s: str) -> str:
+    return ''.join(c.lower() for c in s if c.isalnum() or c == '_')
+
+def _find_col(cols, *names):
+    norm = {_norm(c): c for c in cols}
+    for n in names:
+        k = _norm(n)
+        if k in norm:
+            return norm[k]
+    return None
+
+def _parse_nsp_channel(val) -> Optional[int]:
+    """
+    Accepts 'ch-15', 'CH 015', '15', 15, etc., returns int 15.
+    """
+    if val is None:
+        return None
+    if isinstance(val, (int, np.integer)):
+        return int(val)
+    s = str(val)
+    m = re.search(r'(\d+)', s)
+    return int(m.group(1)) if m else None
+
+def load_ua_geom_from_excel(xls_path: Path,
+                            sheet: str | int | None = 0) -> Dict[str, Any]:
+    """
+    Read the first tab with the NSP map (e.g. 'Impedance Values from Automated').
+
+    Expects 2 columns (case/space-insensitive):
+      - NSP channel: e.g. 'NSP ch' values like 'ch-15'
+      - Electrode number: e.g. 'Elec#' / 'Elec #' / 'Electrode'
+
+    Returns dict:
+      {
+        'elec_to_nsp': np.ndarray shape (n_elec,), where entry g (0-based) is NSP ch number for geometry g
+        'geom_corr_ind_nsp': np.ndarray shape (n_elec,), integer NSP channel numbers in geometry order,
+        'n_channels': int
+      }
+
+    Note: 'geom_corr_ind_nsp' is expressed in NSP channel **numbers**, NOT row indices.
+          Use align_geom_index_to_recording(...) to convert it to actual row indices for a RecordingExtractor.
+    """
+    xls_path = Path(xls_path)
+    if not xls_path.exists():
+        raise FileNotFoundError(f"Excel not found: {xls_path}")
+
+    df = pd.read_excel(xls_path, sheet_name=sheet, engine="openpyxl")
+    # Try to recover header if the first row isn't the real header
+    if not any(df.columns.str.contains(r'NSP|Elec|Electrode', case=False, regex=True)):
+        for hdr in range(1, min(8, len(df))):
+            df2 = pd.read_excel(xls_path, sheet_name=sheet, header=hdr, engine="openpyxl")
+            if any(df2.columns.str.contains(r'NSP|Elec|Electrode', case=False, regex=True)):
+                df = df2
+                break
+
+    nsp_col  = _find_col(df.columns, 'NSP ch', 'NSP', 'NSP Channel', 'Channel', 'CH')
+    elec_col = _find_col(df.columns, 'Elec#', 'Elec #', 'Elec', 'Electrode', 'Electrode #')
+    if nsp_col is None or elec_col is None:
+        raise ValueError(f"Could not find NSP/Electrode columns in {xls_path.name} "
+                         f"(found columns: {list(df.columns)})")
+
+    # Parse mapping
+    nsp = df[nsp_col].map(_parse_nsp_channel)
+    elec = df[elec_col].astype("Int64")  # pandas NA-safe int
+    mask = nsp.notna() & elec.notna()
+    nsp = nsp[mask].astype(int).to_numpy()
+    elec = elec[mask].astype(int).to_numpy()
+
+    # Normalize Electrode numbers to 1..N, then make 0-based geometry index
+    max_elec = int(elec.max())
+    elec_to_nsp = np.zeros(max_elec, dtype=int)  # 0 means "unknown"
+    elec_to_nsp[elec - 1] = nsp
+
+    # Geometry order is Elec# ascending (1..N) -> NSP numbers
+    geom_corr_ind_nsp = elec_to_nsp.copy()  # NSP ch number per geometry position
+    # Note: this is still in NSP numbering, not row indices
+
+    return {
+        "elec_to_nsp": elec_to_nsp,                 # (N,) values: NSP ch numbers
+        "geom_corr_ind_nsp": geom_corr_ind_nsp,     # (N,) values: NSP ch numbers in geometry order
+        "n_channels": int(max_elec),
+    }
+
+# ---------- NSP numbering -> Recording row indices ----------
+
+def align_geom_index_to_recording(recording, geom_corr_ind_nsp: np.ndarray) -> np.ndarray:
+    """
+    Convert a geometry-order NSP channel list -> actual row indices for a SpikeInterface Recording.
+
+    Strategy:
+      1) Try to match NSP channel numbers to `recording.get_channel_ids()` directly.
+      2) Otherwise, look for common Blackrock properties in `get_property_keys()`
+         like 'electrode_id', 'nsx_chan_id', 'channel_name', and match by integer.
+      3) Fall back to identity (warn) if nothing matches.
+
+    Returns
+    -------
+    idx_rows : np.ndarray[int], shape (N,)
+        0-based row indices s.t. data_geom = data_device[idx_rows, :]
+    """
+    import numpy as np
+
+    ch_ids = np.array(recording.get_channel_ids())
+    N = geom_corr_ind_nsp.size
+
+    # Case 1: channel_ids are actual NSP numbers
+    try:
+        ch_ids_int = ch_ids.astype(int)
+        id_to_row = {int(cid): i for i, cid in enumerate(ch_ids_int)}
+        if all(int(n) in id_to_row for n in geom_corr_ind_nsp):
+            return np.array([id_to_row[int(n)] for n in geom_corr_ind_nsp], dtype=int)
+    except Exception:
+        pass
+
+    # Case 2: look into properties for a numeric NSP/electrode id
+    for key in ("electrode_id", "nsx_chan_id", "nsp_channel", "channel_name"):
+        if key in recording.get_property_keys():
+            vals = recording.get_property(key)
+            try:
+                # Try to coerce values to int (e.g., "ch-15" -> 15)
+                def v2i(v):
+                    if isinstance(v, (int, np.integer)):
+                        return int(v)
+                    m = re.search(r'(\d+)', str(v))
+                    return int(m.group(1)) if m else None
+                ints = [v2i(v) for v in vals]
+                id_to_row = {iv: i for i, iv in enumerate(ints) if iv is not None}
+                if all(int(n) in id_to_row for n in geom_corr_ind_nsp):
+                    return np.array([id_to_row[int(n)] for n in geom_corr_ind_nsp], dtype=int)
+            except Exception:
+                continue
+
+    # Fallback: identity with warning
+    print("[WARN] Could not align NSP numbers to recording channels; using identity mapping.")
+    return np.arange(N, dtype=int)
 
 def load_session_geometry(
     sess_name: str,
@@ -43,23 +181,42 @@ def load_session_geometry(
         print(f"[WARN] Could not load UA geometry from {geom_path}: {e}")
         return None
 
+# RCP_analysis/python/functions/br_preproc.py
 
-# -------- existing ----------
 def read_blackrock_recording(sess_folder: Path, stream_id: str | None = None):
     """
-    Load a Blackrock session folder as a SpikeInterface RecordingExtractor.
-    sess_folder: path containing .nsx/.nev files
-    stream_id:   optional stream specifier (e.g. "2", "5"), pass None for auto
+    If `sess_folder` contains multiple Blackrock bases (e.g. *_001.*, *_002.*),
+    choose the first base and pass a specific file to neo instead of the folder.
     """
     sess_folder = Path(sess_folder)
+
     nsx_files = sorted(sess_folder.glob("*.ns*"))
     if not nsx_files:
         raise FileNotFoundError(f"No .nsx files found in {sess_folder}")
-    rec = se.read_blackrock(str(sess_folder), stream_id=stream_id, all_annotations=True)
-    return rec
 
+    # Group by base (prefix before extension)
+    bases = {}
+    for f in nsx_files:
+        bases.setdefault(f.stem, []).append(f)
 
-# -------- new: UA geometry loader ----------
+    if len(bases) > 1:
+        # Choose one base deterministically (or make this configurable)
+        base = sorted(bases.keys())[0]
+        # Prefer an NS5 if present, else any NS*
+        candidates = sorted(sess_folder.glob(f"{base}.ns5")) or sorted(sess_folder.glob(f"{base}.ns*"))
+        if not candidates:
+            raise FileNotFoundError(f"Could not locate a file for base {base} in {sess_folder}")
+        file_path = str(candidates[0])
+    else:
+        # Single base: passing the directory is fine, but passing a file is safer
+        base = next(iter(bases.keys()))
+        candidates = sorted(sess_folder.glob(f"{base}.ns5")) or sorted(sess_folder.glob(f"{base}.ns*"))
+        file_path = str(candidates[0])
+
+    # Now open the specific file; neo will load the rest of the matching set
+    return se.read_blackrock(file_path, stream_id=stream_id, all_annotations=True)
+
+# UA geometry loader
 def _mat_read_any(path: Path) -> dict:
     """Read MATLAB file (classic or v7.3) into a simple dict-like namespace."""
     try:
@@ -85,7 +242,6 @@ def _mat_read_any(path: Path) -> dict:
                 pass
     return out
 
-
 def _maybe_to_1d(a) -> np.ndarray | None:
     try:
         arr = np.asarray(a)
@@ -94,7 +250,6 @@ def _maybe_to_1d(a) -> np.ndarray | None:
         return arr.ravel()
     except Exception:
         return None
-
 
 def load_br_geometry(mat_path: Path) -> dict:
     """
