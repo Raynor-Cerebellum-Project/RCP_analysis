@@ -1,6 +1,12 @@
 import os  # <-- add
+
 # Limit BLAS/OpenMP threads so multiple Python workers don't oversubscribe CPUs
-for v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+for v in (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+):
     os.environ.setdefault(v, "1")
 
 import numpy as np
@@ -9,6 +15,7 @@ import gc  # for explicit cleanup
 
 # Save-only backend so it works in tmux/SSH/headless
 import matplotlib
+
 matplotlib.use("Agg", force=True)
 import matplotlib.pyplot as plt
 from matplotlib import gridspec, patches
@@ -19,7 +26,8 @@ import spikeinterface.extractors as se
 import spikeinterface.preprocessing as spre
 import spikeinterface.sorters as ss
 import spikeinterface.exporters as sexp
-#import spikeinterface.postprocessing as spost
+
+# import spikeinterface.postprocessing as spost
 from spikeinterface.core import concatenate_recordings
 from probeinterface import Probe
 from probeinterface.plotting import plot_probe
@@ -29,14 +37,16 @@ from ..functions.utils.params_loading import *
 from ..functions.utils.plotting import *
 
 # ----- parallel tuning -----
-PARALLEL_JOBS = 2          # try 2–4; raise only if RAM is comfy
-CHUNK = "0.5s"            # smaller chunk = lower per-worker RAM (0.25–0.5s good)
-THREADS_PER_WORKER = 1     # keep 1 to avoid nested threading
+PARALLEL_JOBS = 2  # try 2–4; raise only if RAM is comfy
+CHUNK = "0.5s"  # smaller chunk = lower per-worker RAM (0.25–0.5s good)
+THREADS_PER_WORKER = 1  # keep 1 to avoid nested threading
 
 # ==============================
 # Config
 # ==============================
-DATA_DIR = Path("/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/data")
+DATA_DIR = Path(
+    "/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/data"
+)
 GEOM_MAT = DATA_DIR / "BL_RW_003_Session_1/ImecPrimateStimRec128_042421.mat"
 TARGET_STREAM = "RHS2000 amplifier channel"
 
@@ -52,15 +62,16 @@ si.set_global_job_kwargs(n_jobs=PARALLEL_JOBS, chunk_duration=CHUNK, progress_ba
 
 # ---- quicklook knobs ----
 DEFAULT_STIM_NUM = 1
-DIG_LINE         = None
-WIN_PRE_S        = 0.015   # 15 ms
-WIN_POST_S       = 0.115
-STIM_BAR_MS      = 20
+DIG_LINE = None
+WIN_PRE_S = 0.015  # 15 ms
+WIN_POST_S = 0.115
+STIM_BAR_MS = 20
 
 # Optional per-session override (name -> stim_num)
 STIM_NUMS = {
     # "BL_closed_loop_STIM_003_018": 3,
 }
+
 
 # ==============================
 # Helpers
@@ -71,15 +82,16 @@ def ensure_signed(rec):
         rec = spre.astype(rec, dtype="int16")
     return rec
 
+
 def _probe_sidebar(ax, rec_sess, sel_indices, stim_ids, title="Probe (top→bottom)"):
     probe = rec_sess.get_probe()
-    ids   = list(rec_sess.get_channel_ids())
-    pos   = probe.contact_positions  # (n_contacts, 2)
+    ids = list(rec_sess.get_channel_ids())
+    pos = probe.contact_positions  # (n_contacts, 2)
 
     # Colors: default light gray; stim sites red
     colors = ["0.8"] * pos.shape[0]
     id2idx = {cid: i for i, cid in enumerate(ids)}
-    for sid in (stim_ids or []):
+    for sid in stim_ids or []:
         if sid in id2idx:
             colors[id2idx[sid]] = "red"
 
@@ -96,10 +108,19 @@ def _probe_sidebar(ax, rec_sess, sel_indices, stim_ids, title="Probe (top→bott
     try:
         if isinstance(shpp, dict) and "radius" in shpp:
             r = float(shpp["radius"])
-        elif isinstance(shpp, (list, tuple)) and shpp and isinstance(shpp[0], dict) and "radius" in shpp[0]:
+        elif (
+            isinstance(shpp, (list, tuple))
+            and shpp
+            and isinstance(shpp[0], dict)
+            and "radius" in shpp[0]
+        ):
             r = float(shpp[0]["radius"])
         elif isinstance(shpp, np.ndarray):
-            if getattr(shpp, "dtype", None) is not None and shpp.dtype.names and ("radius" in shpp.dtype.names):
+            if (
+                getattr(shpp, "dtype", None) is not None
+                and shpp.dtype.names
+                and ("radius" in shpp.dtype.names)
+            ):
                 val = shpp["radius"][0]
                 r = float(val) if np.ndim(val) == 0 else float(val[0])
             else:
@@ -124,12 +145,16 @@ def _probe_sidebar(ax, rec_sess, sel_indices, stim_ids, title="Probe (top→bott
             (xs.min() - pad, ys.min() - pad),
             (xs.max() - xs.min()) + 2 * pad,
             (ys.max() - ys.min()) + 2 * pad,
-            linewidth=1.6, edgecolor="tab:blue", facecolor="none", zorder=5
+            linewidth=1.6,
+            edgecolor="tab:blue",
+            facecolor="none",
+            zorder=5,
         )
         ax.add_patch(rect)
 
     ax.set_title(title, fontsize=9)
     ax.set_aspect("equal", adjustable="box")
+
 
 def run_sorter_and_export(name: str, recording, base_folder: Path, sorter_params=None):
     sorter_params = sorter_params or {}
@@ -155,19 +180,26 @@ def run_sorter_and_export(name: str, recording, base_folder: Path, sorter_params
         overwrite=True,
     )
     analyzer.compute(
-        ["random_spikes", "waveforms", "templates", "noise_levels",
-         "spike_amplitudes", "principal_components"],
+        [
+            "random_spikes",
+            "waveforms",
+            "templates",
+            "noise_levels",
+            "spike_amplitudes",
+            "principal_components",
+        ],
         extension_params={"random_spikes": {"max_spikes_per_unit": 500}},
-        n_jobs=PARALLEL_JOBS,           # <-- was 1
-        chunk_duration=CHUNK,           # <-- was "0.25s" hardcoded
+        n_jobs=PARALLEL_JOBS,  # <-- was 1
+        chunk_duration=CHUNK,  # <-- was "0.25s" hardcoded
         progress_bar=True,
         save=True,
     )
 
     phy_dir = base_folder / f"phy_output_{name}"
     sexp.export_to_phy(analyzer, output_folder=phy_dir, remove_if_exists=True)
-    
+
     return sorting, analyzer
+
 
 def extract_triggers_and_repeats(stim_geom: np.ndarray, buffer_samples: int = 20):
     """
@@ -186,13 +218,13 @@ def extract_triggers_and_repeats(stim_geom: np.ndarray, buffer_samples: int = 20
     TRIGDAT = np.asarray(stim_geom[STIM_CHANS[0], :], float).ravel()
     d = np.diff(TRIGDAT)
 
-    trigs1 = np.flatnonzero(d < 0)   # falling
-    trigs2 = np.flatnonzero(d > 0)   # rising
+    trigs1 = np.flatnonzero(d < 0)  # falling
+    trigs2 = np.flatnonzero(d > 0)  # rising
 
     # Next zero after each falling edge
     rz = []
     for idx in trigs1:
-        tail = TRIGDAT[idx+1:]
+        tail = TRIGDAT[idx + 1 :]
         zrel = np.flatnonzero(np.abs(tail) <= 1e-9)
         if zrel.size:
             rz.append(idx + 1 + int(zrel[0]))
@@ -200,8 +232,8 @@ def extract_triggers_and_repeats(stim_geom: np.ndarray, buffer_samples: int = 20
 
     # Begin/end pairing
     trigs_beg = trigs1 if trigs2.size <= trigs1.size else trigs2
-    trigs_beg = trigs_beg[::2]    # 1:2:end
-    trigs_end = trigs_rz[1::2]    # 2:2:end
+    trigs_beg = trigs_beg[::2]  # 1:2:end
+    trigs_end = trigs_rz[1::2]  # 2:2:end
 
     n = int(min(trigs_beg.size, trigs_end.size))
     if n == 0:
@@ -219,6 +251,7 @@ def extract_triggers_and_repeats(stim_geom: np.ndarray, buffer_samples: int = 20
         repeat_boundaries = np.array([0, n], int)
 
     return trigs, repeat_boundaries, STIM_CHANS
+
 
 def count_neighbors_in_radius(rec, r_min_um=0.0, r_max_um=200.0, same_shank=True):
     """
@@ -240,7 +273,7 @@ def count_neighbors_in_radius(rec, r_min_um=0.0, r_max_um=200.0, same_shank=True
     counts = np.zeros(nch, dtype=int)
     for sh in np.unique(shank_ids):
         idx = np.where(shank_ids == sh)[0]
-        if idx.size == 0: 
+        if idx.size == 0:
             continue
         tree = cKDTree(pos[idx])
         # query neighbors within outer radius
@@ -256,6 +289,7 @@ def count_neighbors_in_radius(rec, r_min_um=0.0, r_max_um=200.0, same_shank=True
                 nb = [j for j in nb if j not in inner]
             counts[idx[k]] = len(nb)
     return counts
+
 
 def make_probe_with_np_permutation(geom_mat_path: Path, index_list_1based) -> Probe:
     mat = loadmat(geom_mat_path)
@@ -275,22 +309,30 @@ def make_probe_with_np_permutation(geom_mat_path: Path, index_list_1based) -> Pr
     print("Probe remapped using new config")
     return pr
 
+
 def permuted_geometry_view(rec):
     """
     Slice 'rec' into the exact geometry order used in MATLAB:
       fwrite(... amplifier_data_copy(neuropixel_index, :), 'int16')
     Here, NEUROPIXEL_INDEX_1BASED encodes geometry->device (1-based).
     """
-    ids_device = list(rec.get_channel_ids())     # current device order
-    geom_ids_by_perm = [ids_device[i] for i in geom_corr_ind]  # G2D is 0-based geometry->device
+    ids_device = list(rec.get_channel_ids())  # current device order
+    geom_ids_by_perm = [
+        ids_device[i] for i in geom_corr_ind
+    ]  # G2D is 0-based geometry->device
     if hasattr(rec, "channel_slice"):
         return rec.channel_slice(channel_ids=geom_ids_by_perm)
     from spikeinterface.core import ChannelSliceRecording
+
     return ChannelSliceRecording(rec, channel_ids=geom_ids_by_perm)
+
 
 import csv
 
-def neighbors_in_radius(rec, r_min_um=0.0, r_max_um=150.0, same_shank=True, return_ids=True):
+
+def neighbors_in_radius(
+    rec, r_min_um=0.0, r_max_um=150.0, same_shank=True, return_ids=True
+):
     """
     Build a mapping: center channel -> list of neighbors whose centers are within [r_min_um, r_max_um].
     If same_shank=True, neighbors are limited to the same shank (when available).
@@ -337,6 +379,7 @@ def neighbors_in_radius(rec, r_min_um=0.0, r_max_um=150.0, same_shank=True, retu
     else:
         return {i: neigh_indices[i] for i in range(nch)}
 
+
 def save_neighbors_csv(neighbor_map, csv_path: Path):
     """
     Save rows: center_id, neighbor_id (one row per neighbor).
@@ -359,22 +402,134 @@ def save_neighbors_csv(neighbor_map, csv_path: Path):
 
 # 1-based Neuropixels reindex list from MATLAB (paste your exact list here)
 NEUROPIXEL_INDEX_1BASED = [
-    18, 19, 20, 21, 22, 23, 24, 25,
-    26, 27, 29, 17, 2, 32, 1, 30,
-    31, 39, 3, 36, 38, 28, 35, 37,
-    4, 34, 16, 33, 15, 14, 13, 12,
-    11, 10, 9, 8, 7, 6, 5, 63,
-    59, 56, 64, 58, 55, 40, 57, 54,
-    41, 60, 53, 43, 61, 52, 44, 62,
-    51, 42, 47, 50, 45, 48, 49, 46,
-    65, 96, 69, 66, 95, 68, 67, 94,
-    70, 83, 93, 72, 84, 92, 71, 85,
-    91, 73, 88, 90, 81, 87, 89, 82,
-    86, 108, 107, 106, 105, 104, 103, 102,
-    101, 100, 99, 98, 80, 97, 79, 109,
-    76, 78, 117, 75, 77, 110, 74, 114,
-    115, 112, 113, 111, 128, 116, 118, 119,
-    120, 121, 122, 123, 124, 125, 126, 127,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    29,
+    17,
+    2,
+    32,
+    1,
+    30,
+    31,
+    39,
+    3,
+    36,
+    38,
+    28,
+    35,
+    37,
+    4,
+    34,
+    16,
+    33,
+    15,
+    14,
+    13,
+    12,
+    11,
+    10,
+    9,
+    8,
+    7,
+    6,
+    5,
+    63,
+    59,
+    56,
+    64,
+    58,
+    55,
+    40,
+    57,
+    54,
+    41,
+    60,
+    53,
+    43,
+    61,
+    52,
+    44,
+    62,
+    51,
+    42,
+    47,
+    50,
+    45,
+    48,
+    49,
+    46,
+    65,
+    96,
+    69,
+    66,
+    95,
+    68,
+    67,
+    94,
+    70,
+    83,
+    93,
+    72,
+    84,
+    92,
+    71,
+    85,
+    91,
+    73,
+    88,
+    90,
+    81,
+    87,
+    89,
+    82,
+    86,
+    108,
+    107,
+    106,
+    105,
+    104,
+    103,
+    102,
+    101,
+    100,
+    99,
+    98,
+    80,
+    97,
+    79,
+    109,
+    76,
+    78,
+    117,
+    75,
+    77,
+    110,
+    74,
+    114,
+    115,
+    112,
+    113,
+    111,
+    128,
+    116,
+    118,
+    119,
+    120,
+    121,
+    122,
+    123,
+    124,
+    125,
+    126,
+    127,
 ]
 # geometry -> device (0-based)
 geom_corr_ind = np.asarray(NEUROPIXEL_INDEX_1BASED, dtype=int) - 1
@@ -387,9 +542,11 @@ saved_paths = []  # keep only paths, not big recording objects
 
 for idx, folder in enumerate(SESSION_FOLDERS):
     if idx < 2:
-        print(f"[sess {idx+1}/{len(SESSION_FOLDERS)}] {folder.name}: skipping first two by request")
+        print(
+            f"[sess {idx + 1}/{len(SESSION_FOLDERS)}] {folder.name}: skipping first two by request"
+        )
         continue
-    print(f"[sess {idx+1}/{len(SESSION_FOLDERS)}] {folder.name}: load analog")
+    print(f"[sess {idx + 1}/{len(SESSION_FOLDERS)}] {folder.name}: load analog")
 
     rec = se.read_split_intan_files(
         folder, mode="concatenate", stream_name=TARGET_STREAM, use_names_as_ids=True
@@ -397,8 +554,10 @@ for idx, folder in enumerate(SESSION_FOLDERS):
     rec = ensure_signed(rec).set_probe(probe, in_place=False)
 
     # preprocess per session
-    rec_hpf   = spre.highpass_filter(rec, freq_min=300)
-    rec_local = spre.common_reference(rec_hpf, reference="local", operator="median", local_radius=(60, 150))
+    rec_hpf = spre.highpass_filter(rec, freq_min=300)
+    rec_local = spre.common_reference(
+        rec_hpf, reference="local", operator="median", local_radius=(60, 150)
+    )
 
     # ---- APPLY THE MATLAB PERMUTATION BEFORE SAVING (match neuropixel_index) ----
     rec_local_perm = permuted_geometry_view(rec_local)
@@ -419,23 +578,26 @@ for idx, folder in enumerate(SESSION_FOLDERS):
     # quicklooks in the MATLAB order
     fs = float(rec_perm.get_sampling_frequency())
     stim_num = STIM_NUMS.get(folder.name, DEFAULT_STIM_NUM)
-    
+
     # quick diagnostic of neighbors used for local referencing (matches local_radius=(30,150))
     if idx == 1:
-        neighbor_map = neighbors_in_radius(rec_perm, r_min_um=30.0, r_max_um=150.0, same_shank=True, return_ids=True)
+        neighbor_map = neighbors_in_radius(
+            rec_perm, r_min_um=30.0, r_max_um=150.0, same_shank=True, return_ids=True
+        )
         # Save to CSV for later inspection
         csv_out = OUT_BASE / "neighbors" / f"neighbors_{folder.name}_r30-150.csv"
         save_neighbors_csv(neighbor_map, csv_out)
 
-    
     quicklook_stim_grid_all(
         rec_sess=rec_perm,
         sess_folder=folder,
         out_dir=OUT_BASE / "quicklooks",
         fs=fs,
         stim_num=stim_num,
-        nrows=4, ncols=4,
-        pre_s=WIN_PRE_S, post_s=WIN_POST_S,
+        nrows=4,
+        ncols=4,
+        pre_s=WIN_PRE_S,
+        post_s=WIN_POST_S,
         bar_ms=STIM_BAR_MS,
         dig_line=DIG_LINE,
         stride=16,
@@ -448,7 +610,7 @@ for idx, folder in enumerate(SESSION_FOLDERS):
 
     # concat the permuted saves
     saved_paths.append(out_geom)
-        
+
 # concatenate all preprocessed sessions from disk (lazy)
 print("Concatenating preprocessed sessions...")
 recs_for_concat = []
@@ -469,7 +631,7 @@ sorting_ms5, analyzer_ms5 = run_sorter_and_export(
     sorter_params={
         "n_jobs": PARALLEL_JOBS,
         "chunk_duration": CHUNK,
-        "pool_engine": "process",          # process pool (good isolation)
+        "pool_engine": "process",  # process pool (good isolation)
         "max_threads_per_worker": THREADS_PER_WORKER,
         # optional MS5 knobs if you need: "detect_threshold": 5, "detect_sign": "neg"
     },

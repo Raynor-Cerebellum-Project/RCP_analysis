@@ -16,7 +16,9 @@ from probeinterface.plotting import plot_probe
 # ==============================
 # Config
 # ==============================
-DATA_DIR = Path("/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/data")
+DATA_DIR = Path(
+    "/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/data"
+)
 GEOM_MAT = DATA_DIR / "BL_RW_003_Session_1/ImecPrimateStimRec128_042421.mat"
 TARGET_STREAM = "RHS2000 amplifier channel"
 
@@ -28,9 +30,10 @@ SESSION_FOLDERS = sorted([p for p in intan_root.iterdir() if p.is_dir()])
 print("Found session folders:")
 for sf in SESSION_FOLDERS:
     print("  ", sf)
-    
+
 # Global SI job settings
 si.set_global_job_kwargs(n_jobs=4, chunk_duration="1s", progress_bar=True)
+
 
 # ==============================
 # Helpers
@@ -54,6 +57,7 @@ def load_probe_from_mat(mat_path: Path) -> Probe:
             pass
     return pr
 
+
 def ensure_signed(rec):
     """Convert unsigned dtype to signed (or float) before filtering."""
     if rec.get_dtype().kind == "u":
@@ -61,8 +65,11 @@ def ensure_signed(rec):
         rec = spre.astype(rec, dtype="int16")
     return rec
 
+
 # ---- helper: run sorter + analyze + export to Phy ----
-def run_sorter_and_export(name: str, recording, base_folder: Path, sorter_params: dict | None = None):
+def run_sorter_and_export(
+    name: str, recording, base_folder: Path, sorter_params: dict | None = None
+):
     sorter_params = sorter_params or {}
     sort_out = base_folder / f"{name}_output"
 
@@ -73,7 +80,7 @@ def run_sorter_and_export(name: str, recording, base_folder: Path, sorter_params
         remove_existing_folder=True,
         delete_output_folder=False,
         verbose=True,
-        **sorter_params,   # safe if empty
+        **sorter_params,  # safe if empty
     )
 
     an_dir = base_folder / f"analyzer_{name}"
@@ -86,15 +93,24 @@ def run_sorter_and_export(name: str, recording, base_folder: Path, sorter_params
         overwrite=True,
     )
     analyzer.compute(
-        ["random_spikes", "waveforms", "templates", "noise_levels",
-         "spike_amplitudes", "principal_components"],
+        [
+            "random_spikes",
+            "waveforms",
+            "templates",
+            "noise_levels",
+            "spike_amplitudes",
+            "principal_components",
+        ],
         extension_params={
             "random_spikes": {"method": "uniform", "max_spikes_per_unit": 500},
             "waveforms": {"ms_before": 1.0, "ms_after": 2.0},
             "spike_amplitudes": {"peak_sign": "neg"},
             "principal_components": {"n_components": 3, "mode": "by_channel_local"},
         },
-        n_jobs=8, chunk_duration="1s", progress_bar=True, save=True
+        n_jobs=8,
+        chunk_duration="1s",
+        progress_bar=True,
+        save=True,
     )
 
     phy_dir = base_folder / f"phy_output_{name}"
@@ -103,10 +119,10 @@ def run_sorter_and_export(name: str, recording, base_folder: Path, sorter_params
     except TypeError:
         we = analyzer.get_extension("waveforms").get_waveform_extractor()
         sexp.export_to_phy(
-            we, output_folder=phy_dir,
-            compute_pc_features=True, compute_amplitudes=True
+            we, output_folder=phy_dir, compute_pc_features=True, compute_amplitudes=True
         )
     return sorting, analyzer
+
 
 # Load recordings from all subfolders
 recordings = [
@@ -122,7 +138,9 @@ recordings = [
 rec_concat = concatenate_recordings(recordings)
 
 
-print(f"Loaded Intan: fs={rec_concat.get_sampling_frequency()} Hz, chans={rec_concat.get_num_channels()}")
+print(
+    f"Loaded Intan: fs={rec_concat.get_sampling_frequency()} Hz, chans={rec_concat.get_num_channels()}"
+)
 
 rec = ensure_signed(rec_concat)
 rec_pp = spre.highpass_filter(rec, freq_min=300)
@@ -141,22 +159,18 @@ try:
     rec_pp = rec_pp.set_probe(probe, in_place=False)
     print("Attached probe geometry from .mat")
 except Exception as e:
-    print(f"Warning: failed to attach probe from {GEOM_MAT} ({e}). "
-          "Proceeding without geometry; MS5 will use adjacency_radius=-1.")
-    
+    print(
+        f"Warning: failed to attach probe from {GEOM_MAT} ({e}). "
+        "Proceeding without geometry; MS5 will use adjacency_radius=-1."
+    )
+
 fig, ax = plt.subplots()
-plot_probe(probe, ax=ax)    # no extra kwargs in older probeinterface
-ax.set_aspect('equal', adjustable='box')
+plot_probe(probe, ax=ax)  # no extra kwargs in older probeinterface
+ax.set_aspect("equal", adjustable="box")
 out_png = OUT_BASE / "probe_layout.png"
 fig.savefig(out_png, dpi=300, bbox_inches="tight")
 print("Saved:", out_png)
 plt.close(fig)
-
-
-
-
-
-
 
 
 import math
@@ -164,8 +178,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
+
 class TraceBrowser:
-    def __init__(self, recording, out_dir: Path, channels_per_page=5, duration_s=5.0, t0_s=0.0, scale='auto'):
+    def __init__(
+        self,
+        recording,
+        out_dir: Path,
+        channels_per_page=5,
+        duration_s=5.0,
+        t0_s=0.0,
+        scale="auto",
+    ):
         """
         recording: SpikeInterface Recording (e.g., rec_pp)
         out_dir: where screenshots are saved
@@ -186,10 +209,14 @@ class TraceBrowser:
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
-        self.fig, self.axes = plt.subplots(self.cpp, 1, sharex=True, figsize=(12, 8), constrained_layout=True)
+        self.fig, self.axes = plt.subplots(
+            self.cpp, 1, sharex=True, figsize=(12, 8), constrained_layout=True
+        )
         if self.cpp == 1:
             self.axes = [self.axes]
-        self.fig.canvas.manager.set_window_title("TraceBrowser (←/→ pan, ↑/↓ page, [/] duration, g goto, s save, q quit)")
+        self.fig.canvas.manager.set_window_title(
+            "TraceBrowser (←/→ pan, ↑/↓ page, [/] duration, g goto, s save, q quit)"
+        )
         self._draw()
 
         # key bindings
@@ -203,20 +230,31 @@ class TraceBrowser:
 
     def _draw(self):
         # clamp time range
-        n_frames = int(self.rec.get_total_duration() * self.fs) if hasattr(self.rec, "get_total_duration") else None
+        n_frames = (
+            int(self.rec.get_total_duration() * self.fs)
+            if hasattr(self.rec, "get_total_duration")
+            else None
+        )
         start = max(0, int(self.t0 * self.fs))
         stop = int((self.t0 + self.duration) * self.fs)
         if n_frames is not None:
             stop = min(stop, n_frames)
 
         chans = self._page_channels()
-        traces = self.rec.get_traces(start_frame=start, end_frame=stop, channel_ids=chans)
+        traces = self.rec.get_traces(
+            start_frame=start, end_frame=stop, channel_ids=chans
+        )
         t = np.arange(traces.shape[0]) / self.fs + (start / self.fs)
 
         # auto scale per channel
-        if self.scale == 'auto':
+        if self.scale == "auto":
             # robust scale: median abs dev
-            mad = np.median(np.abs(traces - np.median(traces, axis=0, keepdims=True)), axis=0) + 1e-9
+            mad = (
+                np.median(
+                    np.abs(traces - np.median(traces, axis=0, keepdims=True)), axis=0
+                )
+                + 1e-9
+            )
             ylim = 6 * mad  # ~±6*MAD
         else:
             ylim = np.full(traces.shape[1], float(self.scale))
@@ -226,7 +264,7 @@ class TraceBrowser:
         for i, ch in enumerate(chans):
             ax = self.axes[i]
             ax.plot(t, traces[:, i], linewidth=0.8)
-            ax.set_ylabel(f"ch {ch}", rotation=0, ha='right', va='center')
+            ax.set_ylabel(f"ch {ch}", rotation=0, ha="right", va="center")
             ax.grid(True, alpha=0.3)
             ax.set_ylim(-ylim[i], +ylim[i])
         # hide unused axes on the last page
@@ -235,9 +273,11 @@ class TraceBrowser:
             self.axes[j].axis("off")
 
         self.axes[-1].set_xlabel("Time (s)")
-        self.fig.suptitle(f"TraceBrowser | page {self.page+1}/{math.ceil(self.n_ch/self.cpp)} | "
-                          f"channels {self.page*self.cpp}-{min((self.page+1)*self.cpp-1, self.n_ch-1)} | "
-                          f"t=[{start/self.fs:.3f}, {stop/self.fs:.3f}] s | fs={self.fs:.1f} Hz")
+        self.fig.suptitle(
+            f"TraceBrowser | page {self.page + 1}/{math.ceil(self.n_ch / self.cpp)} | "
+            f"channels {self.page * self.cpp}-{min((self.page + 1) * self.cpp - 1, self.n_ch - 1)} | "
+            f"t=[{start / self.fs:.3f}, {stop / self.fs:.3f}] s | fs={self.fs:.1f} Hz"
+        )
 
         self.fig.canvas.draw_idle()
 
@@ -253,7 +293,9 @@ class TraceBrowser:
         try:
             import tkinter as tk
             from tkinter.simpledialog import askfloat
-            root = tk.Tk(); root.withdraw()
+
+            root = tk.Tk()
+            root.withdraw()
             val = askfloat("Go to time", "Start time t0 (seconds):", minvalue=0.0)
             root.destroy()
         except Exception:
@@ -268,7 +310,10 @@ class TraceBrowser:
             self._draw()
 
     def _save(self):
-        fname = self.out_dir / f"trace_view_p{self.page+1}_t{self.t0:.3f}s_{self.duration:.3f}s.png"
+        fname = (
+            self.out_dir
+            / f"trace_view_p{self.page + 1}_t{self.t0:.3f}s_{self.duration:.3f}s.png"
+        )
         self.fig.savefig(fname, dpi=200, bbox_inches="tight")
         print("Saved:", fname)
 
@@ -299,6 +344,9 @@ class TraceBrowser:
     def show(self):
         plt.show()
 
+
 # ---- usage (put this after you create `rec_pp` and `OUT_BASE`) ----
-browser = TraceBrowser(recording=rec_pp, out_dir=OUT_BASE, channels_per_page=5, duration_s=5.0, t0_s=0.0)
+browser = TraceBrowser(
+    recording=rec_pp, out_dir=OUT_BASE, channels_per_page=5, duration_s=5.0, t0_s=0.0
+)
 browser.show()
