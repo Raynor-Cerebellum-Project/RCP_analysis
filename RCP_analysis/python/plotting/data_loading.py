@@ -1,3 +1,6 @@
+from pathlib import Path
+from scipy.io import loadmat
+
 def _load_intan_idx(sess_folder: Path):
     """
     Load Data.Intan_idx from the first '*Cal.mat' in the session folder.

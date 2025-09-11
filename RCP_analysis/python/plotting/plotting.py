@@ -1,3 +1,17 @@
+from pathlib import Path
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import gridspec
+
+# import helpers from sibling modules
+from .data_loading import _load_intan_idx
+from ..functions.params_loading import load_stim_geometry
+
+def _probe_sidebar(ax, rec_sess, sel_indices=None, stim_ids=None, title="Probe"):
+    # TODO: draw probe; for now keep it minimal
+    ax.axis("off")
+    ax.set_title(title, fontsize=10)
+    
 def _pulse_onsets_from_stim_row(stim_row, eps=1e-12, min_gap=1):
     """
     Return indices where the stimulation goes from ~0 to non-zero (pulse onsets).
@@ -30,7 +44,7 @@ def get_stimulated_channel_ids_from_geom(sess_folder: Path, rec_geom) -> set[str
 
     ids_geom = list(rec_geom.get_channel_ids())  # geometry order
     return {ids_geom[i] for i in active_rows if 0 <= i < len(ids_geom)}
-
+    
 def quicklook_stim_grid(
     rec_sess, sess_folder: Path, out_dir: Path, fs: float,
     stim_num: int, nrows: int = 4, ncols: int = 4,
