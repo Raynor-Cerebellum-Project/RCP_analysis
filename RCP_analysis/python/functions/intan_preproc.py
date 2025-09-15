@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import spikeinterface.extractors as se
 import numpy as np
+import h5py
 from .cal_utils import load_sample_index_from_cal
 
 NCH = 128

@@ -1,7 +1,7 @@
 from __future__ import annotations
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
+from pathlib import Path
 import yaml
 import numpy as np
 from scipy.io import loadmat
@@ -11,9 +11,9 @@ import h5py
 # ---------------- Params model ----------------
 @dataclass
 class experimentParams:
+    # ---- required (no defaults) ----
     data_root: str
     blackrock_rel: str
-    geom_mat_rel: str
     highpass_hz: float
     probes: Dict[str, Dict[str, Any]]
     probe_arrays: Dict[str, Dict[str, Dict[str, Any]]]
@@ -23,20 +23,19 @@ class experimentParams:
     win_pre_s: float
     win_post_s: float
     stim_bar_ms: float
-    dig_line: Optional[str]
     quicklook_rows: int
     quicklook_cols: int
     stride: int
     default_stim_num: int
     sessions: Dict[str, Dict[str, Any]]
-    stim_nums: Dict[str, int] = None
+
+    # ---- optional ----
+    mapping_mat_rel: Optional[str] = None
+    dig_line: Optional[str] = None
+    stim_nums: Dict[str, int] = field(default_factory=dict)
 
 
 def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams:
-    """
-    Load YAML configuration into a experimentParams dataclass and expand {REPO_ROOT}
-    placeholders anywhere they appear (top-level and nested dicts).
-    """
     cfg = yaml.safe_load(yaml_path.read_text()) or {}
 
     def expand_placeholders(obj):
@@ -53,22 +52,23 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
     return experimentParams(
         data_root=cfg.get("data_root", str(repo_root / "data")),
         blackrock_rel=cfg["blackrock_rel"],
-        geom_mat_rel=cfg["geom_mat_rel"],
         highpass_hz=float(cfg["highpass_hz"]),
         probes=cfg.get("probes", {}),
         probe_arrays=cfg.get("probe_arrays", {}),
-        parallel_jobs=int(cfg["parallel_jobs"]),
-        threads_per_worker=int(cfg["threads_per_worker"]),
-        chunk=str(cfg["chunk"]),
+        parallel_jobs=int(cfg.get("parallel_jobs", 1)),
+        threads_per_worker=int(cfg.get("threads_per_worker", 1)),
+        chunk=str(cfg.get("chunk", "0.5s")),
         win_pre_s=float(cfg["win_pre_s"]),
         win_post_s=float(cfg["win_post_s"]),
         stim_bar_ms=float(cfg["stim_bar_ms"]),
-        dig_line=cfg.get("dig_line") or None,
         quicklook_rows=int(cfg["quicklook_rows"]),
         quicklook_cols=int(cfg["quicklook_cols"]),
         stride=int(cfg["stride"]),
         default_stim_num=int(cfg["default_stim_num"]),
         sessions=cfg.get("sessions", {}) or {},
+        # optional
+        mapping_mat_rel=cfg.get("mapping_mat_rel"),
+        dig_line=cfg.get("dig_line") or None,
         stim_nums=cfg.get("stim_nums", {}) or {},
     )
 

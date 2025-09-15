@@ -1,0 +1,103 @@
+{
+    "class": "spikeinterface.core.segmentutils.ConcatenateSegmentRecording",
+    "module": "spikeinterface",
+    "version": "0.103.0",
+    "kwargs": {
+        "recording_list": [
+            {
+                "class": "spikeinterface.core.binaryfolder.BinaryFolderRecording",
+                "module": "spikeinterface",
+                "version": "0.103.0",
+                "kwargs": {
+                    "folder_path": "/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/RCP_analysis/results/pp_local_60_150__Blackrock_GEOM"
+                },
+                "annotations": {
+                    "is_filtered": true,
+                    "stream_name": "nsx5",
+                    "stream_id": "5",
+                    "file_origin": "/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis/Nike/Nike_reaching_002/Blackrock/Nike_reaching_002_001.ns5",
+                    "description": "AnalogSignal from  nsx5",
+                    "nsx": 5
+                },
+                "properties": {
+                    "group": null,
+                    "location": [
+                        [
+                            0.0,
+                            0.0
+                        ],
+                        [
+                            0.4,
+                            0.0
+                        ]
+                    ],
+                    "gain_to_uV": [
+                        152.59254737998594,
+                        152.59254737998594
+                    ],
+                    "offset_to_uV": [
+                        0,
+                        0
+                    ],
+                    "gain_to_physical_unit": [
+                        0.15259254737998595,
+                        0.15259254737998595
+                    ],
+                    "offset_to_physical_unit": [
+                        0.0,
+                        0.0
+                    ],
+                    "physical_unit": [
+                        "mV",
+                        "mV"
+                    ]
+                },
+                "relative_paths": false
+            }
+        ],
+        "ignore_times": true,
+        "sampling_frequency_max_diff": 0
+    },
+    "annotations": {
+        "is_filtered": true,
+        "stream_name": "nsx5",
+        "stream_id": "5",
+        "file_origin": "/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis/Nike/Nike_reaching_002/Blackrock/Nike_reaching_002_001.ns5",
+        "description": "AnalogSignal from  nsx5",
+        "nsx": 5
+    },
+    "properties": {
+        "group": null,
+        "location": [
+            [
+                0.0,
+                0.0
+            ],
+            [
+                0.4,
+                0.0
+            ]
+        ],
+        "gain_to_uV": [
+            152.59254737998594,
+            152.59254737998594
+        ],
+        "offset_to_uV": [
+            0,
+            0
+        ],
+        "gain_to_physical_unit": [
+            0.15259254737998595,
+            0.15259254737998595
+        ],
+        "offset_to_physical_unit": [
+            0.0,
+            0.0
+        ],
+        "physical_unit": [
+            "mV",
+            "mV"
+        ]
+    },
+    "relative_paths": false
+}
