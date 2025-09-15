@@ -9,7 +9,7 @@ import pandas as pd
 import spikeinterface.extractors as se
 
 # ---------- Session discovery ----------
-def list_sessions(data_root: Path, blackrock_rel: str, use_intan: bool = False) -> list[Path]:
+def list_br_sessions(data_root: Path, blackrock_rel: str, use_intan: bool = False) -> list[Path]:
     root = data_root if use_intan else data_root / blackrock_rel
     if not root.exists():
         raise FileNotFoundError(f"Session root not found: {root}")
@@ -289,7 +289,7 @@ def save_bundle_npz(sess_name: str, bundle: dict, out_dir: Path):
     print(f"[SAVED] {out_dir / f'{sess_name}_bundle.npz'}")
 
 __all__ = [
-    "list_sessions", "ua_excel_path",
+    "list_br_sessions", "ua_excel_path",
     "load_ns6_spikes", "load_ns5_aux", "load_ns2_digi",
     "load_UA_mapping_from_excel", "apply_ua_mapping_properties",
     "build_blackrock_bundle", "save_bundle_npz",

@@ -32,8 +32,8 @@ Neural spike sorting and preprocessing are handled in Python using [SpikeInterfa
 7. Run Kilosort4 with Intan geometry and mapping
 7. Export results in Phy format
 8. **TODO** SLAy
-9. **TODO**Separate by condition
-10. **TODO**FR estimation?
+9. **TODO** Separate by condition
+10. **TODO** FR estimation?
 
 ---
 

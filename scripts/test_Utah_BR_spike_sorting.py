@@ -16,7 +16,7 @@ from RCP_analysis import load_experiment_params, resolve_data_root
 
 # BR/UA helpers
 from RCP_analysis import (
-    list_sessions, ua_excel_path,
+    list_br_sessions, ua_excel_path,
     load_ns6_spikes, load_UA_mapping_from_excel, apply_ua_mapping_properties,
     build_blackrock_bundle, save_bundle_npz,
 )
@@ -28,9 +28,9 @@ PARAMS = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=
 OUT_BASE = (REPO_ROOT / "results").resolve()
 OUT_BASE.mkdir(parents=True, exist_ok=True)
 
-def main(use_intan: bool = False, limit_sessions: Optional[int] = None):
+def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[int] = None):
     data_root = resolve_data_root(PARAMS)
-    session_folders = list_sessions(data_root, PARAMS.blackrock_rel, use_intan=use_intan)
+    session_folders = list_br_sessions(data_root, PARAMS.blackrock_rel, use_intan=use_intan)
     if limit_sessions:
         session_folders = session_folders[:limit_sessions]
     print("Found session folders:", len(session_folders))
@@ -97,22 +97,16 @@ def main(use_intan: bool = False, limit_sessions: Optional[int] = None):
         folder=str(OUT_BASE / "mountainsort5"),
         remove_existing_folder=True,
         verbose=True,
-        filter=False,
-        whiten=False,
-        
-        
-        # per-channel detection (no adjacency)
-        scheme1_detect_channel_radius=0,
-        scheme2_phase1_detect_channel_radius=0,
-        scheme2_detect_channel_radius=0,
-
-        # execution
-        n_jobs=1, #int(PARAMS.parallel_jobs),
-        chunk_duration=str(PARAMS.chunk),
-        pool_engine="process",
-        max_threads_per_worker=int(PARAMS.threads_per_worker),
-        progress_bar=True,
+        scheme="1",
+        scheme1_detect_channel_radius=1,
+        detect_threshold=6,
+        npca_per_channel=6,
+        filter=False, whiten=True,
+        delete_temporary_recording=True,
+        n_jobs=1, chunk_duration="0.25s",
+        max_threads_per_worker=1, progress_bar=True,
     )
+
 
     sa_folder = OUT_BASE / "sorting_ms5_analyzer"
     phy_folder = OUT_BASE / "phy_ms5"
