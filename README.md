@@ -31,9 +31,9 @@ Neural spike sorting and preprocessing are handled in Python using [SpikeInterfa
 6. Run Mountainsort5 with Utah-array mapping (per-channel sorting)
 7. Run Kilosort4 with Intan geometry and mapping
 7. Export results in Phy format
-8. **TODO Later:** SLAy
-9. Separate by condition?
-10. FR estimation
+8. **TODO** SLAy
+9. **TODO**Separate by condition
+10. **TODO**FR estimation?
 
 ---
 
