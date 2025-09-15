@@ -41,6 +41,8 @@ def main(use_intan: bool = False, limit_sessions: Optional[int] = None):
         raise RuntimeError("UA mapping required for mapping on NS6.")
 
     bundles_out = OUT_BASE / "bundles"
+    checkpoint_out = OUT_BASE / "checkpoint"
+    checkpoint_out.mkdir(parents=True, exist_ok=True)
     saved_paths: list[Path] = []
 
     # --- per session: save non-spike bundle + preproc ns6
@@ -63,7 +65,7 @@ def main(use_intan: bool = False, limit_sessions: Optional[int] = None):
             locs = np.column_stack([np.arange(n_ch, dtype=float), np.zeros(n_ch, dtype=float)])
             rec_ref.set_channel_locations(locs)
     
-        out_geom = OUT_BASE / f"pp_global__{sess.name}__NS6"
+        out_geom = checkpoint_out / f"pp_global__{sess.name}__NS6"
         out_geom.mkdir(parents=True, exist_ok=True)
         rec_ref.save(folder=out_geom, overwrite=True)
         print(f"[{sess.name}] (ns6) saved preprocessed -> {out_geom}")
@@ -91,22 +93,32 @@ def main(use_intan: bool = False, limit_sessions: Optional[int] = None):
 
     sorting_ms5 = sorters.run_sorter(
         "mountainsort5",
-        rec_concat,
-        str(OUT_BASE / "mountainsort5"),
+        recording=rec_concat,
+        folder=str(OUT_BASE / "mountainsort5"),
         remove_existing_folder=True,
-        verbose=False,
-        
+        verbose=True,
+        # per-channel independent sorting <<<
+        scheme="1",                          # per-channel pipeline
+        scheme1_detect_channel_radius=0,     # detect only on the channel itself
+        snippet_mask_radius=0,               # extract snippets only from the channel itself
+
+        # detection/clustering hygiene
+        detect_sign=-1,                      # Utah spikes are usually negative; use +1 or 0 if needed
+        detect_threshold=5,                  # adjust 4–6 as needed
+        npca_per_channel=3,                  # standard
+
+        # don't double-filter (you already did HPF + CAR)
+        filter=False,
+        whiten=False,
+
+        # execution
         n_jobs=int(PARAMS.parallel_jobs),
         chunk_duration=str(PARAMS.chunk),
         pool_engine="process",
         max_threads_per_worker=int(PARAMS.threads_per_worker),
-
-        # per-channel sorting (no neighbors)
-        scheme1_detect_channel_radius=0,
-        scheme2_phase1_detect_channel_radius=0,
-        scheme2_detect_channel_radius=0,
-        snippet_mask_radius=0,
+        progress_bar=True,
     )
+
 
     sa_folder = OUT_BASE / "sorting_ms5_analyzer"
     phy_folder = OUT_BASE / "phy_ms5"
@@ -126,6 +138,7 @@ def main(use_intan: bool = False, limit_sessions: Optional[int] = None):
     sa.compute("spike_amplitudes")
 
     export_to_phy(sa, output_folder=phy_folder, copy_binary=True, remove_if_exists=True)
+    
     print(f"Phy export ready: {phy_folder}")
 
 if __name__ == "__main__":

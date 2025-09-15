@@ -2,7 +2,7 @@
 # data_root: "{REPO_ROOT}/data"
 data_root: "/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis"
 blackrock_rel: "Nike/Nike_reaching_002/Blackrock"
-geom_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091225.mat"
+geom_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
 # ---- preprocessing ----
 highpass_hz: 300.0
 
@@ -25,7 +25,7 @@ probes:
     local_radius_inner: 50
     local_radius_outer: 120
     n_channels: 128
-    mapping_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091225.mat"
+    mapping_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
 
 # ---- chunking / parallel ----
 parallel_jobs: 2
