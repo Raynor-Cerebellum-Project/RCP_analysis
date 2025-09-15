@@ -1,50 +1,80 @@
+# RCP_analysis/br_preproc.py
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 import re
 import numpy as np
 import pandas as pd
+
 import spikeinterface.extractors as se
 
-# Blackrock loader (can run when multiple trials exist)
-def read_blackrock_recording(sess_folder: Path, stream_id: str | None = None):
-    """
-    Robustly load a Blackrock Recording.
+# ---------- Session discovery ----------
+def list_sessions(data_root: Path, blackrock_rel: str, use_intan: bool = False) -> list[Path]:
+    root = data_root if use_intan else data_root / blackrock_rel
+    if not root.exists():
+        raise FileNotFoundError(f"Session root not found: {root}")
 
-    Accepts either:
-      - a real directory containing *.ns* files (classic case), OR
-      - a 'pseudo session' path whose .parent is the real folder and whose .name
-        is the base (e.g., /.../Blackrock/Nike_reaching_002_001).
-    """
-    sess_folder = Path(sess_folder)
+    subdirs = [p for p in root.iterdir() if p.is_dir()]
+    if subdirs:
+        return sorted(subdirs)
 
-    if sess_folder.is_dir():
-        # classic: directory with files
-        nsx_files = sorted(sess_folder.glob("*.ns*"))
-        if not nsx_files:
-            raise FileNotFoundError(f"No .nsx files found in {sess_folder}")
-        bases = sorted({f.stem for f in nsx_files})
-        base = bases[0]
-        root = sess_folder
-    else:
-        # pseudo session: parent is real folder, name is base
-        root = sess_folder.parent
-        base = sess_folder.name
-        nsx_files = sorted(root.glob(f"{base}.ns*"))
-        if not nsx_files:
-            raise FileNotFoundError(f"No .nsx files found for base {base} in {root}")
+    files = [p for p in root.iterdir() if p.is_file()]
+    nsx_nev = [p for p in files if p.suffix.lower().startswith(".ns") or p.suffix.lower() == ".nev"]
+    if not nsx_nev:
+        raise FileNotFoundError(f"No sessions found under {root}.")
+    bases = sorted({p.stem for p in nsx_nev})
+    return [root / b for b in bases]
 
-    # Prefer .ns5 (30 kHz), fallback to any .ns*
-    candidates = sorted(root.glob(f"{base}.ns5")) or sorted(root.glob(f"{base}.ns*"))
-    if not candidates:
-        raise FileNotFoundError(f"Could not locate a file for base {base} in {root}")
 
-    return se.read_blackrock(str(candidates[0]), stream_id=stream_id, all_annotations=True)
+def ua_excel_path(repo_root: Path, probes_cfg: dict | None) -> Optional[Path]:
+    ua_cfg = (probes_cfg or {}).get("UA", {})
+    rel = ua_cfg.get("mapping_excel_rel") or ua_cfg.get("mapping_mat_rel")
+    if not rel:
+        return None
+    p = (repo_root / rel) if not str(rel).startswith("/") else Path(rel)
+    return p if p.exists() else None
 
+# ---------- BR loaders ----------
+def _load_nsx(sess: Path, ext: str):
+    sess = Path(sess)
+    root = sess if sess.is_dir() else sess.parent
+    base = sess.name if not sess.is_dir() else sorted({p.stem for p in root.glob("*.ns*")})[0]
+    f = root / f"{base}.{ext}"
+    if not f.exists():
+        raise FileNotFoundError(f"Missing {ext} for base {base} in {root}")
+    print(f"[LOAD] {f.name}")
+    return se.read_blackrock(str(f), all_annotations=True)
+
+def load_ns6_spikes(sess: Path):
+    return _load_nsx(sess, "ns6")   # 30 kHz, 1..128
+
+def load_ns5_aux(sess: Path):
+    return _load_nsx(sess, "ns5")   # 30 kHz, 134 & 138
+
+def load_ns2_lfp(sess: Path):
+    return _load_nsx(sess, "ns2")   # 1 kHz, 129..133,135..137,139..144
+
+# ---------- Mapping helpers ----------
+def _ensure_int_ids(rec) -> np.ndarray:
+    ids = rec.get_channel_ids()
+    out = []
+    for cid in ids:
+        try:
+            out.append(int(cid))
+        except Exception:
+            m = re.search(r"(\d+)", str(cid))
+            out.append(int(m.group(1)) if m else None)
+    return np.array(out, dtype=int)
+
+def pick_cols_by_ids(rec, wanted_ids) -> Tuple[list[int], list[int]]:
+    ids = _ensure_int_ids(rec)
+    id2col = {ch: i for i, ch in enumerate(ids)}
+    cols = [id2col[c] for c in wanted_ids if c in id2col]
+    missing = [c for c in wanted_ids if c not in id2col]
+    return cols, missing
 
 # Parsing MAP file excel file (xlsm)
 def _parse_nsp_channel(val) -> Optional[int]:
-    """Accept 'ch-15', 'CH 015', '15', 15 -> 15."""
     if val is None:
         return None
     if isinstance(val, (int, np.integer)):
@@ -52,9 +82,7 @@ def _parse_nsp_channel(val) -> Optional[int]:
     m = re.search(r'(\d+)', str(val))
     return int(m.group(1)) if m else None
 
-def load_UA_mapping_from_excel(
-    xls_path: Path, sheet: str | int = 0, n_elec: int | None = None
-) -> Dict[str, Any]:
+def load_UA_mapping_from_excel(xls_path: Path, sheet: str | int = 0, n_elec: int | None = None) -> Dict[str, Any]:
     """
     Read the excel sheet that has columns like:
       - 'NSP ch' (values like 'ch-01')
@@ -81,7 +109,6 @@ def load_UA_mapping_from_excel(
 
     df = pd.read_excel(xls_path, sheet_name=sheet)
 
-    # Find likely columns by fuzzy match
     def find_col(names):
         cols = {re.sub(r'[^a-z0-9]+', '', c.lower()): c for c in map(str, df.columns)}
         for n in names:
@@ -92,44 +119,30 @@ def load_UA_mapping_from_excel(
 
     nsp_col  = find_col(["NSP ch", "NSP", "NSP Channel", "Channel", "CH"])
     elec_col = find_col(["Elec#", "Elec #", "Electrode", "Electrode #"])
-
     if nsp_col is None or elec_col is None:
-        raise ValueError(
-            f"Could not find NSP/Electrode columns in {xls_path.name}. "
-            f"Columns seen: {list(df.columns)}"
-        )
+        raise ValueError(f"Could not find NSP/Electrode columns in {xls_path.name}. Columns: {list(df.columns)}")
 
     nsp  = df[nsp_col].map(_parse_nsp_channel)
     elec = pd.to_numeric(df[elec_col], errors="coerce").astype("Int64")
-
     mask = nsp.notna() & elec.notna()
     nsp  = nsp[mask].astype(int).to_numpy()
     elec = elec[mask].astype(int).to_numpy()
 
     max_elec = int(n_elec or elec.max())
-    mapped_nsp = np.zeros(max_elec, dtype=int)  # zero => unknown
+    mapped_nsp = np.zeros(max_elec, dtype=int)
     mapped_nsp[elec - 1] = nsp
-
     return {"mapped_nsp": mapped_nsp, "n_channels": int(max_elec)}
 
-# ------------------------
-# Align mapping to Recording + optional XY
-# ------------------------
 def align_mapping_index_to_recording(recording, mapped_nsp: np.ndarray) -> np.ndarray:
-    """
-    Convert a mapping-order list of NSP channel numbers -> recording row indices.
-    """
     ch_ids = np.array(recording.get_channel_ids())
-
-    # Case 1: channel ids are NSP numbers
+    # try direct numeric IDs
     try:
         id_to_row = {int(cid): i for i, cid in enumerate(ch_ids.astype(int))}
         if all(int(n) in id_to_row for n in mapped_nsp if n > 0):
             return np.array([id_to_row.get(int(n), -1) for n in mapped_nsp], dtype=int)
     except Exception:
         pass
-
-    # Case 2: try properties
+    # try common properties
     for key in ("electrode_id", "nsx_chan_id", "nsp_channel", "channel_name"):
         if key in recording.get_property_keys():
             vals = recording.get_property(key)
@@ -143,55 +156,95 @@ def align_mapping_index_to_recording(recording, mapped_nsp: np.ndarray) -> np.nd
             if all(int(n) in id_to_row for n in mapped_nsp if n > 0):
                 return np.array([id_to_row.get(int(n), -1) for n in mapped_nsp], dtype=int)
 
-    # Fallback: identity for the first N channels
     print("[WARN] Could not align NSP numbers to recording channels; using identity mapping.")
     N = mapped_nsp.size
     return np.arange(min(N, recording.get_num_channels()), dtype=int)
 
-
-def ua_xy_geometry(n_elec: int, pitch_mm: float = 0.4) -> np.ndarray: ## NEED TO FIX
+def apply_ua_mapping_properties(recording, mapped_nsp: np.ndarray):
     """
-    Simple Utah layouts (geometry order):
-      64  => 8x8
-      128 => 2 8x8 blocks
-      256 => 4 8x8 blocks
-    Returns (N,2) array of (x,y) in mm.
+    Attach mapping info to the Recording without setting XY geometry.
+    - mapped_nsp[i] = NSP channel wired to Electrode #(i+1)
+    This stamps two per-row arrays:
+      * 'ua_electrode': Electrode number (1..N) for each recording row, or -1
+      * 'ua_nsp_channel': NSP channel id for each recording row, or -1
     """
-    def block():
-        r, c = np.mgrid[0:8, 0:8]
-        return np.column_stack([c.ravel(), r.ravel()]) * pitch_mm
-
-    if n_elec == 64:
-        return block()
-    if n_elec == 128:
-        top = block()
-        bot = block() + np.array([0, 8 * pitch_mm])
-        return np.vstack([top, bot])
-    if n_elec == 256:
-        tl = block()
-        tr = block() + np.array([8 * pitch_mm, 0])
-        bl = block() + np.array([0, 8 * pitch_mm])
-        br = block() + np.array([8 * pitch_mm, 8 * pitch_mm])
-        return np.vstack([tl, tr, bl, br])
-    raise ValueError(f"Unsupported UA size {n_elec} (expected 64/128/256)")
-
-
-def apply_ua_geometry_to_recording(recording, mapped_nsp: np.ndarray, pitch_mm: float = 0.4) -> dict:
     idx_rows = align_mapping_index_to_recording(recording, mapped_nsp)
+    n_ch = recording.get_num_channels()
+    ua_elec_per_row = -np.ones(n_ch, dtype=int)
+    ua_nsp_per_row  = -np.ones(n_ch, dtype=int)
+    for elec_idx0, row in enumerate(idx_rows):
+        if 0 <= row < n_ch:
+            ua_elec_per_row[row] = elec_idx0 + 1
+            ua_nsp_per_row[row]  = int(mapped_nsp[elec_idx0])
+    recording.set_property("ua_electrode", ua_elec_per_row)
+    recording.set_property("ua_nsp_channel", ua_nsp_per_row)
+    mapped = int(np.sum(ua_elec_per_row > 0))
+    print(f"[MAP] stamped UA mapping properties on {mapped}/{n_ch} rows (no geometry).")
 
-    # how many geometry entries we’ll actually place
-    N = (idx_rows != -1).sum() if np.any(idx_rows == -1) else len(idx_rows)
+# ---------- Bundles (NS5+NS2 only) ----------
+def build_blackrock_bundle(sess: Path) -> dict:
+    bundle: Dict[str, Any] = {}
 
-    xy_geom = ua_xy_geometry(len(mapped_nsp), pitch_mm)[:N]
+    # ns5: camera_sync (134), intan_sync (138)
+    camera_sync = None
+    intan_sync  = None
+    fs_ns5 = None
+    try:
+        rec_ns5 = load_ns5_aux(sess)
+        fs_ns5 = float(rec_ns5.get_sampling_frequency())
+        cols, missing = pick_cols_by_ids(rec_ns5, [134, 138])
+        if missing:
+            print(f"[WARN] ns5 missing channels: {missing}")
+        if cols:
+            tr = rec_ns5.get_traces(0, 0, rec_ns5.get_num_frames(0)).astype(np.float32)
+            ids = _ensure_int_ids(rec_ns5)
+            for col in cols:
+                ch_id = int(ids[col])
+                if ch_id == 134:
+                    camera_sync = tr[:, col]
+                elif ch_id == 138:
+                    intan_sync = tr[:, col]
+    except FileNotFoundError:
+        print("[WARN] ns5 not found; aux syncs unavailable.")
+    bundle["aux"] = {"fs": fs_ns5, "camera_sync": camera_sync, "intan_sync": intan_sync}
 
-    # allocate for ALL channels to make row indexing valid
-    num_ch = recording.get_num_channels()
-    xy_rows = np.zeros((num_ch, 2), dtype=float)
+    # ns2: keep as ch129, ch130, ...
+    lfp = {"fs": None, "channels": {}}
+    try:
+        rec_ns2 = load_ns2_lfp(sess)
+        fs_ns2 = float(rec_ns2.get_sampling_frequency())
+        lfp["fs"] = fs_ns2
+        wanted = [129,130,131,132,133,135,136,137,139,140,141,142,143,144]
+        cols, missing = pick_cols_by_ids(rec_ns2, wanted)
+        if missing:
+            print(f"[WARN] ns2 missing channels: {missing}")
+        if cols:
+            tr = rec_ns2.get_traces(0, 0, rec_ns2.get_num_frames(0)).astype(np.float32)
+            ids = _ensure_int_ids(rec_ns2)
+            for col in cols:
+                ch_id = int(ids[col])
+                lfp["channels"][f"ch{ch_id}"] = tr[:, col]
+    except FileNotFoundError:
+        print("[WARN] ns2 not found; no LFP channels.")
+    bundle["lfp_ns2"] = lfp
 
-    # only place the first N aligned entries
-    # (optionally mask valid = idx_rows[:N] >= 0 if you want to be extra safe)
-    xy_rows[idx_rows[:N]] = xy_geom
+    return bundle
 
-    recording.set_channel_locations(xy_rows)
-    return {"idx_rows": idx_rows[:N], "xy_rows": xy_rows}
+def save_bundle_npz(sess_name: str, bundle: dict, out_dir: Path):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        out_dir / f"{sess_name}_bundle.npz",
+        aux_fs=np.array(bundle["aux"]["fs"] if bundle["aux"]["fs"] is not None else np.nan, dtype=np.float64),
+        camera_sync=bundle["aux"]["camera_sync"] if bundle["aux"]["camera_sync"] is not None else np.array([]),
+        intan_sync=bundle["aux"]["intan_sync"] if bundle["aux"]["intan_sync"] is not None else np.array([]),
+        lfp_fs=np.array(bundle["lfp_ns2"]["fs"] if bundle["lfp_ns2"]["fs"] is not None else np.nan, dtype=np.float64),
+        **{k: v for k, v in bundle["lfp_ns2"]["channels"].items()},
+    )
+    print(f"[SAVED] {out_dir / f'{sess_name}_bundle.npz'}")
 
+__all__ = [
+    "list_sessions", "ua_excel_path",
+    "load_ns6_spikes", "load_ns5_aux", "load_ns2_lfp",
+    "load_UA_mapping_from_excel", "apply_ua_mapping_properties",
+    "build_blackrock_bundle", "save_bundle_npz",
+]
