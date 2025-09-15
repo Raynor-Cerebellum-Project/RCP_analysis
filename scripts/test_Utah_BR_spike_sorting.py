@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 import gc
+import numpy as np
 
 # SpikeInterface
 import spikeinterface as si
@@ -55,6 +56,13 @@ def main(use_intan: bool = False, limit_sessions: Optional[int] = None):
         rec_hp  = spre.highpass_filter(rec_ns6, freq_min=float(PARAMS.highpass_hz))
         rec_ref = spre.common_reference(rec_hp, reference="global", operator="median")
 
+        try:
+            _ = rec_ref.get_channel_locations()
+        except Exception:
+            n_ch = rec_ref.get_num_channels()
+            locs = np.column_stack([np.arange(n_ch, dtype=float), np.zeros(n_ch, dtype=float)])
+            rec_ref.set_channel_locations(locs)
+    
         out_geom = OUT_BASE / f"pp_global__{sess.name}__NS6"
         out_geom.mkdir(parents=True, exist_ok=True)
         rec_ref.save(folder=out_geom, overwrite=True)
@@ -84,17 +92,16 @@ def main(use_intan: bool = False, limit_sessions: Optional[int] = None):
     sorting_ms5 = sorters.run_sorter(
         "mountainsort5",
         rec_concat,
-        folder=str(OUT_BASE / "mountainsort5"),
+        str(OUT_BASE / "mountainsort5"),
         remove_existing_folder=True,
         verbose=False,
-
-        # load parallel settings
+        
         n_jobs=int(PARAMS.parallel_jobs),
         chunk_duration=str(PARAMS.chunk),
         pool_engine="process",
         max_threads_per_worker=int(PARAMS.threads_per_worker),
 
-        # make detection per-channel (no neighbors)
+        # per-channel sorting (no neighbors)
         scheme1_detect_channel_radius=0,
         scheme2_phase1_detect_channel_radius=0,
         scheme2_detect_channel_radius=0,

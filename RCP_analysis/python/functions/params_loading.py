@@ -3,15 +3,62 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
 from pathlib import Path
 import yaml
-import numpy as np
-from scipy.io import loadmat
-import h5py
 
 
 # ---------------- Params model ----------------
 @dataclass
 class experimentParams:
-    # ---- required (no defaults) ----
+    """
+    class for yaml data
+    
+    Attributes:
+    data_root : str
+        Root directory
+    blackrock_rel : str
+        Relative path to Blackrock session
+    highpass_hz : float
+        Cutoff frequency for high-pass filtering neural data
+    probes : Dict[str, Dict[str, Any]]
+        Mapping of probe names to metadata/config dicts (e.g. UA, Neuropixels)
+    probe_arrays : Dict[str, Dict[str, Dict[str, Any]]]
+        Nested dict for array-specific probe metadata
+        
+    Processing metadata:
+    parallel_jobs : int
+        Number of jobs to use in parallel (n_jobs for SpikeInterface)
+    threads_per_worker : int
+        Threads to allocate per worker when parallelizing
+    chunk : str
+        Chunk duration string (e.g. "0.5s") for processing
+        
+    Plotting params:
+    win_pre_s : float
+        Window length before stimulation (seconds)
+    win_post_s : float
+        Window length after stimulation (seconds)
+    stim_bar_ms : float
+        Duration of stimulation for plotting Ex: 100ms
+    quicklook_rows : int
+        Rows in quicklook plotting grid - unused for now
+    quicklook_cols : int
+        Columns in quicklook plotting grid - unused for now
+    stride : int
+        Stride (samples or frames) for downsampling quicklook plots
+    default_stim_num : int
+        Default stimulation channel/number to use if unspecified
+    sessions : Dict[str, Dict[str, Any]]
+        Dictionary of per-session overrides or metadata
+
+    Optional
+    --------
+    mapping_mat_rel : Optional[str]
+        Relative path to .mat mapping file (alternative to Excel)
+    dig_line : Optional[str]
+        Digital line name/id used for trigger detection
+    stim_nums : Dict[str, int]
+        Mapping of stim labels -> numbers (per user config)
+    """
+    # ---- required ----
     data_root: str
     blackrock_rel: str
     highpass_hz: float
@@ -36,8 +83,20 @@ class experimentParams:
 
 
 def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams:
+    """
+    Load yaml data into the data class experimentParams.
+    
+    Input:
+    yaml_path : Path
+        Path to params.yaml
+    repo_root : Path
+        Root of the repo
+    Returns:
+        experimentParams class
+    """
     cfg = yaml.safe_load(yaml_path.read_text()) or {}
 
+#   Expand {REPO_ROOT} placeholders in yaml file so that users can have their own file paths
     def expand_placeholders(obj):
         if isinstance(obj, str):
             return obj.replace("{REPO_ROOT}", str(repo_root))
@@ -74,4 +133,7 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
 
 
 def resolve_data_root(p: experimentParams) -> Path:
+    """
+    Expand and resolve the absolute path to data_root
+    """
     return Path(p.data_root).resolve()

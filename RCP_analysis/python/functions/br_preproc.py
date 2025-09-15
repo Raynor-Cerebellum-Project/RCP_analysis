@@ -25,7 +25,6 @@ def list_sessions(data_root: Path, blackrock_rel: str, use_intan: bool = False) 
     bases = sorted({p.stem for p in nsx_nev})
     return [root / b for b in bases]
 
-
 def ua_excel_path(repo_root: Path, probes_cfg: dict | None) -> Optional[Path]:
     ua_cfg = (probes_cfg or {}).get("UA", {})
     rel = ua_cfg.get("mapping_excel_rel") or ua_cfg.get("mapping_mat_rel")
@@ -36,6 +35,11 @@ def ua_excel_path(repo_root: Path, probes_cfg: dict | None) -> Optional[Path]:
 
 # ---------- BR loaders ----------
 def _load_nsx(sess: Path, ext: str):
+    """
+    Load a Blackrock .nsx file by extension (e.g. ns2, ns5, ns6).
+    - sess is the session path
+    Returns a SpikeInterface BlackrockRecordingExtractor
+    """
     sess = Path(sess)
     root = sess if sess.is_dir() else sess.parent
     base = sess.name if not sess.is_dir() else sorted({p.stem for p in root.glob("*.ns*")})[0]
@@ -51,11 +55,15 @@ def load_ns6_spikes(sess: Path):
 def load_ns5_aux(sess: Path):
     return _load_nsx(sess, "ns5")   # 30 kHz, 134 & 138
 
-def load_ns2_lfp(sess: Path):
+def load_ns2_digi(sess: Path):
     return _load_nsx(sess, "ns2")   # 1 kHz, 129..133,135..137,139..144
 
 # ---------- Mapping helpers ----------
 def _ensure_int_ids(rec) -> np.ndarray:
+    """
+    Convert channel IDs from a SI RecordingExtractor to integers.
+    Ex: Cases where IDs are strings like 'chan-001'
+    """
     ids = rec.get_channel_ids()
     out = []
     for cid in ids:
@@ -75,6 +83,10 @@ def pick_cols_by_ids(rec, wanted_ids) -> Tuple[list[int], list[int]]:
 
 # Parsing MAP file excel file (xlsm)
 def _parse_nsp_channel(val) -> Optional[int]:
+    """
+    Parse excel mapping file into an NSP channel int
+    Ex: converts 'ch-15' to 15
+    """
     if val is None:
         return None
     if isinstance(val, (int, np.integer)):
@@ -92,7 +104,7 @@ def load_UA_mapping_from_excel(xls_path: Path, sheet: str | int = 0, n_elec: int
         mapped_nsp[i] = NSP channel wired to Electrode #(i+1)
     Example:
         If the MAP file indicates that Electrode #1 is connected to NSP ch-146,
-        then mapped_nsp[0] == 146.
+        then mapped_nsp[0] == 146
     Input:
         xls_path: Path to the excel file
         sheet:    Sheet name or index (default 0)
@@ -134,6 +146,15 @@ def load_UA_mapping_from_excel(xls_path: Path, sheet: str | int = 0, n_elec: int
     return {"mapped_nsp": mapped_nsp, "n_channels": int(max_elec)}
 
 def align_mapping_index_to_recording(recording, mapped_nsp: np.ndarray) -> np.ndarray:
+    """
+    Try to align an array of NSP channel numbers (mapped_nsp) to the row
+    indices of a SpikeInterface Recording.
+    Attempts several strategies:
+      1. Direct match to numeric channel IDs
+      2. Matching against common property keys
+    If alignment fails, falls back to identity mapping (0..N-1)
+    Returns: np.ndarray of row indices (length = len(mapped_nsp))
+    """
     ch_ids = np.array(recording.get_channel_ids())
     # try direct numeric IDs
     try:
@@ -162,11 +183,10 @@ def align_mapping_index_to_recording(recording, mapped_nsp: np.ndarray) -> np.nd
 
 def apply_ua_mapping_properties(recording, mapped_nsp: np.ndarray):
     """
-    Attach mapping info to the Recording without setting XY geometry.
-    - mapped_nsp[i] = NSP channel wired to Electrode #(i+1)
-    This stamps two per-row arrays:
-      * 'ua_electrode': Electrode number (1..N) for each recording row, or -1
-      * 'ua_nsp_channel': NSP channel id for each recording row, or -1
+    Add Utah Array (UA) mapping information onto a Recording without geometry
+    Adds two per-channel properties:
+      - 'ua_electrode': Electrode number (1..N), -1 if unmapped
+      - 'ua_nsp_channel': NSP channel ID, -1 if unmapped
     """
     idx_rows = align_mapping_index_to_recording(recording, mapped_nsp)
     n_ch = recording.get_num_channels()
@@ -183,6 +203,12 @@ def apply_ua_mapping_properties(recording, mapped_nsp: np.ndarray):
 
 # ---------- Bundles (NS5+NS2 only) ----------
 def build_blackrock_bundle(sess: Path) -> dict:
+    """
+    Build a bundle of non-NS6 streams -- TODO: Load this in NWB format
+      - aux:  ns5 (camera_sync ch134, intan_sync ch138)
+      - digi:  ns2 (channels 129..133,135..137,139..144)
+    Returns a dict of signals + sampling rates
+    """
     bundle: Dict[str, Any] = {}
 
     # ns5: camera_sync (134), intan_sync (138)
@@ -209,11 +235,11 @@ def build_blackrock_bundle(sess: Path) -> dict:
     bundle["aux"] = {"fs": fs_ns5, "camera_sync": camera_sync, "intan_sync": intan_sync}
 
     # ns2: keep as ch129, ch130, ...
-    lfp = {"fs": None, "channels": {}}
+    digi_ch = {"fs": None, "channels": {}}
     try:
-        rec_ns2 = load_ns2_lfp(sess)
+        rec_ns2 = load_ns2_digi(sess)
         fs_ns2 = float(rec_ns2.get_sampling_frequency())
-        lfp["fs"] = fs_ns2
+        digi_ch["fs"] = fs_ns2
         wanted = [129,130,131,132,133,135,136,137,139,140,141,142,143,144]
         cols, missing = pick_cols_by_ids(rec_ns2, wanted)
         if missing:
@@ -223,10 +249,10 @@ def build_blackrock_bundle(sess: Path) -> dict:
             ids = _ensure_int_ids(rec_ns2)
             for col in cols:
                 ch_id = int(ids[col])
-                lfp["channels"][f"ch{ch_id}"] = tr[:, col]
+                digi_ch["channels"][f"ch{ch_id}"] = tr[:, col]
     except FileNotFoundError:
-        print("[WARN] ns2 not found; no LFP channels.")
-    bundle["lfp_ns2"] = lfp
+        print("[WARN] ns2 not found; no digital channels.")
+    bundle["digi"] = digi_ch
 
     return bundle
 
@@ -237,14 +263,14 @@ def save_bundle_npz(sess_name: str, bundle: dict, out_dir: Path):
         aux_fs=np.array(bundle["aux"]["fs"] if bundle["aux"]["fs"] is not None else np.nan, dtype=np.float64),
         camera_sync=bundle["aux"]["camera_sync"] if bundle["aux"]["camera_sync"] is not None else np.array([]),
         intan_sync=bundle["aux"]["intan_sync"] if bundle["aux"]["intan_sync"] is not None else np.array([]),
-        lfp_fs=np.array(bundle["lfp_ns2"]["fs"] if bundle["lfp_ns2"]["fs"] is not None else np.nan, dtype=np.float64),
-        **{k: v for k, v in bundle["lfp_ns2"]["channels"].items()},
+        digi_fs=np.array(bundle["digi"]["fs"] if bundle["digi"]["fs"] is not None else np.nan, dtype=np.float64),
+        **{k: v for k, v in bundle["digi"]["channels"].items()},
     )
     print(f"[SAVED] {out_dir / f'{sess_name}_bundle.npz'}")
 
 __all__ = [
     "list_sessions", "ua_excel_path",
-    "load_ns6_spikes", "load_ns5_aux", "load_ns2_lfp",
+    "load_ns6_spikes", "load_ns5_aux", "load_ns2_digi",
     "load_UA_mapping_from_excel", "apply_ua_mapping_properties",
     "build_blackrock_bundle", "save_bundle_npz",
 ]
