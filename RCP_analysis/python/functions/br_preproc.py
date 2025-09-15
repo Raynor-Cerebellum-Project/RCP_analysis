@@ -147,59 +147,79 @@ def load_UA_mapping_from_excel(xls_path: Path, sheet: str | int = 0, n_elec: int
 
 def align_mapping_index_to_recording(recording, mapped_nsp: np.ndarray) -> np.ndarray:
     """
-    Try to align an array of NSP channel numbers (mapped_nsp) to the row
+    Align an array of NSP channel numbers (mapped_nsp) to the row
     indices of a SpikeInterface Recording.
-    Attempts several strategies:
-      1. Direct match to numeric channel IDs
-      2. Matching against common property keys
-    If alignment fails, falls back to identity mapping (0..N-1)
-    Returns: np.ndarray of row indices (length = len(mapped_nsp))
+
+    Returns an array of length len(mapped_nsp):
+      - valid row index if that NSP channel is present in recording
+      - -1 if not present
     """
     ch_ids = np.array(recording.get_channel_ids())
-    # try direct numeric IDs
+    id_to_row = {}
+
+    # try direct numeric match
     try:
         id_to_row = {int(cid): i for i, cid in enumerate(ch_ids.astype(int))}
-        if all(int(n) in id_to_row for n in mapped_nsp if n > 0):
-            return np.array([id_to_row.get(int(n), -1) for n in mapped_nsp], dtype=int)
     except Exception:
         pass
-    # try common properties
-    for key in ("electrode_id", "nsx_chan_id", "nsp_channel", "channel_name"):
-        if key in recording.get_property_keys():
-            vals = recording.get_property(key)
-            def v2i(v):
-                if isinstance(v, (int, np.integer)):
-                    return int(v)
-                m = re.search(r'(\d+)', str(v))
-                return int(m.group(1)) if m else None
-            ints = [v2i(v) for v in vals]
-            id_to_row = {iv: i for i, iv in enumerate(ints) if iv is not None}
-            if all(int(n) in id_to_row for n in mapped_nsp if n > 0):
-                return np.array([id_to_row.get(int(n), -1) for n in mapped_nsp], dtype=int)
 
-    print("[WARN] Could not align NSP numbers to recording channels; using identity mapping.")
-    N = mapped_nsp.size
-    return np.arange(min(N, recording.get_num_channels()), dtype=int)
+    # fallback: check common property keys
+    if not id_to_row:
+        for key in ("electrode_id", "nsx_chan_id", "nsp_channel", "channel_name"):
+            if key in recording.get_property_keys():
+                vals = recording.get_property(key)
+                def v2i(v):
+                    if isinstance(v, (int, np.integer)):
+                        return int(v)
+                    m = re.search(r'(\d+)', str(v))
+                    return int(m.group(1)) if m else None
+                ints = [v2i(v) for v in vals]
+                id_to_row = {iv: i for i, iv in enumerate(ints) if iv is not None}
+                break
+
+    # build output: -1 for missing
+    idx_rows = np.full(mapped_nsp.shape, -1, dtype=int)
+    for i, nsp in enumerate(mapped_nsp):
+        if nsp in id_to_row:
+            idx_rows[i] = id_to_row[nsp]
+
+    return idx_rows
 
 def apply_ua_mapping_properties(recording, mapped_nsp: np.ndarray):
     """
-    Add Utah Array (UA) mapping information onto a Recording without geometry
-    Adds two per-channel properties:
-      - 'ua_electrode': Electrode number (1..N), -1 if unmapped
-      - 'ua_nsp_channel': NSP channel ID, -1 if unmapped
+    Stamp UA mapping info onto the Recording without geometry.
+
+    Per-channel properties (length == n_channels):
+      - 'ua_electrode'   : Electrode number (1..N) for that recording row, or -1
+      - 'ua_nsp_channel' : NSP channel id mapped to that row, or -1
+
+    Per-recording annotation (any length):
+      - 'ua_row_index_from_electrode' : np.ndarray len == len(mapped_nsp),
+        where entry i is the recording row index for electrode (i+1), or -1 if absent.
     """
-    idx_rows = align_mapping_index_to_recording(recording, mapped_nsp)
+    idx_rows = align_mapping_index_to_recording(recording, mapped_nsp)  # shape = (N_elec,)
     n_ch = recording.get_num_channels()
+
+    # Per-channel arrays
     ua_elec_per_row = -np.ones(n_ch, dtype=int)
     ua_nsp_per_row  = -np.ones(n_ch, dtype=int)
+
+    # Fill only rows that exist in the recording
     for elec_idx0, row in enumerate(idx_rows):
         if 0 <= row < n_ch:
-            ua_elec_per_row[row] = elec_idx0 + 1
+            ua_elec_per_row[row] = elec_idx0 + 1            # 1-based electrode number
             ua_nsp_per_row[row]  = int(mapped_nsp[elec_idx0])
+
+    # Set per-channel properties (must be length n_ch)
     recording.set_property("ua_electrode", ua_elec_per_row)
     recording.set_property("ua_nsp_channel", ua_nsp_per_row)
-    mapped = int(np.sum(ua_elec_per_row > 0))
-    print(f"[MAP] stamped UA mapping properties on {mapped}/{n_ch} rows (no geometry).")
+
+    # Store the per-electrode -> row-index map as an annotation (any shape allowed)
+    recording.set_annotation("ua_row_index_from_electrode", idx_rows.astype(int))
+
+    mapped = int((ua_elec_per_row > 0).sum())
+    print(f"[MAP] stamped UA mapping on {mapped}/{n_ch} rows (no geometry).")
+
 
 # ---------- Bundles (NS5+NS2 only) ----------
 def build_blackrock_bundle(sess: Path) -> dict:

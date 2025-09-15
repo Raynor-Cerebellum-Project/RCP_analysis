@@ -97,28 +97,22 @@ def main(use_intan: bool = False, limit_sessions: Optional[int] = None):
         folder=str(OUT_BASE / "mountainsort5"),
         remove_existing_folder=True,
         verbose=True,
-        # per-channel independent sorting <<<
-        scheme="1",                          # per-channel pipeline
-        scheme1_detect_channel_radius=0,     # detect only on the channel itself
-        snippet_mask_radius=0,               # extract snippets only from the channel itself
-
-        # detection/clustering hygiene
-        detect_sign=-1,                      # Utah spikes are usually negative; use +1 or 0 if needed
-        detect_threshold=5,                  # adjust 4–6 as needed
-        npca_per_channel=3,                  # standard
-
-        # don't double-filter (you already did HPF + CAR)
         filter=False,
         whiten=False,
+        
+        
+        # per-channel detection (no adjacency)
+        scheme1_detect_channel_radius=0,
+        scheme2_phase1_detect_channel_radius=0,
+        scheme2_detect_channel_radius=0,
 
         # execution
-        n_jobs=int(PARAMS.parallel_jobs),
+        n_jobs=1, #int(PARAMS.parallel_jobs),
         chunk_duration=str(PARAMS.chunk),
         pool_engine="process",
         max_threads_per_worker=int(PARAMS.threads_per_worker),
         progress_bar=True,
     )
-
 
     sa_folder = OUT_BASE / "sorting_ms5_analyzer"
     phy_folder = OUT_BASE / "phy_ms5"
@@ -130,6 +124,7 @@ def main(use_intan: bool = False, limit_sessions: Optional[int] = None):
         overwrite=True,
         sparse=False,
     )
+    sa.compute("random_spikes", method="uniform", max_spikes_per_unit=1000, seed=0)
     sa.compute("waveforms", ms_before=1.0, ms_after=2.0, max_spikes_per_unit=1000,
                n_jobs=int(PARAMS.parallel_jobs), chunk_duration=str(PARAMS.chunk), progress_bar=True)
     sa.compute("templates")
