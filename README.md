@@ -15,7 +15,7 @@ The workflow supports:
 
 ---
 
-### 1. Neural Preprocessing
+### 1. **TODO** Neural Preprocessing
 Neural spike sorting and preprocessing are handled in Python using [SpikeInterface](https://spikeinterface.readthedocs.io/)
 
 **Steps:**
@@ -29,21 +29,21 @@ Processing Intan data (NPRW)
 5. Concatenate sessions for sorting  
 6. Run Kilosort4 with Intan geometry and mapping
 7. Export results in Phy format
-8. **TODO** SLAy
+8. **TODO** Optional now: SLAy
 9. **TODO** Separate by condition
 10. **TODO** FR estimation?
 11. **TODO** Align with BR using two sync pulses (one from BR side)
 
-### 2. **TODO** Processing BR data (UA)
+### 2. Processing BR data (UA)
 1. Load neural data (.ns6) and config (location to data, geometry and mapping)
 2. Load geometry and mapping (.xlsm file)
-3. Preprocess Intan (.rhs) data (high-pass filter, common global median reference)  
+3. Preprocess UA data (high-pass filter, common global median reference)  
 4. Build bundles for data other then neural data (save as .npz file) (2 sync digital channels in .ns5 and other .ns2 files) (`br_preproc.build_blackrock_bundle`) - TODO: Convert to NWB format
 5. Save per-session preprocessed data
 6. Concatenate sessions for sorting
 7. Run Mountainsort5 with Utah-array mapping (per-channel sorting)
 8. Export results in Phy format
-9. SLAy
+9. Optional now: SLAy
 10. Separate by condition
 11. FR estimation?
 12. Use as template to align Intan with BR using .ns5 sync pulses (two from BR side)
@@ -54,13 +54,14 @@ Processing Intan data (NPRW)
 TODO: Need to convert from MATLAB
 TODO: Need to create for DLC processed data
 
-ALL TODO:
-1. Identify movement segments from DLC data
-2. Extract stimulation timing from Intan
-3. Plot movement traces (how to align? based on velocity or based on stim timing?, try to plot baseline aligned by velocity first)
-4. Calculate movement metrics (Previously: Endpoint error, Absolute endpoint error, Variance (in velocity) after stim, Variance (in velocity) after endpoint, Max speed, Avg speed, Endpoint oscillation, FFTPower after endpoint)
-5. Calculate significance relative to baseline
-6. Plot bargraphs
+TODO:
+1. DLC labeling and annotations
+2. Identify movement segments from DLC data
+3. Extract stimulation timing from Intan
+4. Plot movement traces (how to align? based on velocity or based on stim timing?, try to plot baseline aligned by velocity first)
+5. Calculate movement metrics (Previously: Endpoint error, Absolute endpoint error, Variance (in velocity) after stim, Variance (in velocity) after endpoint, Max speed, Avg speed, Endpoint oscillation, FFTPower after endpoint)
+6. Calculate significance relative to baseline
+7. Plot bargraphs
 See examples: https://docs.google.com/presentation/d/1z6fLBiO8Wbell_FSsJK0Mcj66stKMJZmZtJu6tcY7FA/edit?slide=id.g35fb40ee04d_0_42#slide=id.g35fb40ee04d_0_42
 
 ---
