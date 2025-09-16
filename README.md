@@ -67,7 +67,7 @@ See examples: https://docs.google.com/presentation/d/1z6fLBiO8Wbell_FSsJK0Mcj66s
 ---
 
 ## Output
-- Intermediate files during pipeline:
+Intermediate files during pipeline:
 1. Raw neural signals
 2. Stim data for stim timing and channels
 3. Preprocessed neural signals (UA and Intan) (After HPF and referencing)
@@ -75,7 +75,7 @@ See examples: https://docs.google.com/presentation/d/1z6fLBiO8Wbell_FSsJK0Mcj66s
 5. Curated and sorted data if exists
 6. FR data after alignment with DLC and Intan
 
-- Final output
+Final output
 1. Metadata and other channel data in NWB format
 2. Plots of velocity, position, and neural data (dim-reduced)
 
