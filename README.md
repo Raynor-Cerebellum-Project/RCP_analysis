@@ -45,6 +45,14 @@ Neural spike sorting and preprocessing are handled in Python using [SpikeInterfa
 3. Preprocess UA data (high-pass filter, common global median reference)  
 4. Build bundles for data other then neural data (save as .npz file) (2 sync digital channels in .ns5 and other .ns2 files) (`br_preproc.build_blackrock_bundle`) - TODO: Convert to NWB format
 5. Save per-session preprocessed data
+New pipeline using thresholding:
+6. Using thresholding to detect spikes
+7. **TODO** Use PCA to separate MUA within a cluster
+8. FR estimation?
+12. Use as template to align Intan with BR using .ns5 sync pulses (two from BR side)
+13. Use as template to align DLC kinematics file using the .ns5 sync pulses
+
+Old pipeline envisioned:
 6. Concatenate sessions for sorting
 7. Run Mountainsort5 (MS5) with UA mapping (per-channel sorting)
 8. Export results in Phy format
