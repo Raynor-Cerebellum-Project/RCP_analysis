@@ -45,7 +45,7 @@ ANNULUS: Tuple[float, float] = (30.0, 150.0)
 # ==============================
 # Pipeline
 # ==============================
-def main(limit_sessions: Optional[int] = None):
+def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[int] = None):
     # 1) Load geometry & mapping
     geom = load_stim_geometry(GEOM_PATH)
     probe = make_probe_from_geom(geom, radius_um=5.0)

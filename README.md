@@ -25,13 +25,14 @@ Neural spike sorting and preprocessing are handled in Python using [SpikeInterfa
 4. Build bundles for data other then neural data (save as .npz file) (2 sync channels) (`intan_preproc.build_intan_bundle`) - TODO: Convert to NWB format
 5. **TODO** Extract stim data (save as .npz file)
 6. Save per-session preprocessed data
-5. Concatenate sessions for sorting  
-6. Run Kilosort4 (KS4) with Intan geometry and mapping
-7. Export results in Phy format
-8. **TODO** Optional now: SLAy
-9. **TODO** Separate by condition
-10. **TODO** Firing rate (FR) estimation using Gaussian filter?
-11. **TODO** Align with BR using two sync pulses (one from BR side)
+7. **TODO** Artifact correction via PCA fitting
+8. Concatenate sessions for sorting  
+9. Run Kilosort4 (KS4) with Intan geometry and mapping
+10. Export results in Phy format
+11. **TODO** Optional now: SLAy
+12. **TODO** Separate by condition
+13. **TODO** Firing rate (FR) estimation using Gaussian filter?
+14. **TODO** Align with BR using two sync pulses (one from BR side)
 
 ### 2. Neural data processing (Blackrock (BR) / Utah Array (UA))
 **Steps:**

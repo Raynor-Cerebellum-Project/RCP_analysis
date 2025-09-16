@@ -27,10 +27,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PARAMS = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
 OUT_BASE = (REPO_ROOT / "results").resolve()
 OUT_BASE.mkdir(parents=True, exist_ok=True)
+global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
+si.set_global_job_kwargs(**global_job_kwargs)
 
 def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[int] = None):
     data_root = resolve_data_root(PARAMS)
-    session_folders = list_br_sessions(data_root, PARAMS.blackrock_rel, use_intan=use_intan)
+    session_folders = list_br_sessions(data_root, PARAMS.blackrock_rel)
     if limit_sessions:
         session_folders = session_folders[:limit_sessions]
     print("Found session folders:", len(session_folders))
@@ -97,8 +99,8 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
         folder=str(OUT_BASE / "mountainsort5"),
         remove_existing_folder=True,
         verbose=True,
-        scheme="1",
-        scheme1_detect_channel_radius=1,
+        scheme="2",
+        # scheme1_detect_channel_radius=1,
         detect_threshold=6,
         npca_per_channel=6,
         filter=False, whiten=True,

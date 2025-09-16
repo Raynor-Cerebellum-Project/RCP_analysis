@@ -9,21 +9,28 @@ import pandas as pd
 import spikeinterface.extractors as se
 
 # ---------- Session discovery ----------
-def list_br_sessions(data_root: Path, blackrock_rel: str, use_intan: bool = False) -> list[Path]:
-    root = data_root if use_intan else data_root / blackrock_rel
+def list_br_sessions(data_root: Path, blackrock_rel: str) -> list[Path]:
+    """
+    List Blackrock sessions under data_root/blackrock_rel.
+    A session can be either a directory or a base filename for NSx/NEV pairs.
+    """
+    root = data_root / blackrock_rel
     if not root.exists():
         raise FileNotFoundError(f"Session root not found: {root}")
 
+    # Case 1: sessions are organized as subdirectories
     subdirs = [p for p in root.iterdir() if p.is_dir()]
     if subdirs:
         return sorted(subdirs)
 
+    # Case 2: sessions are loose NSx/NEV files in the root
     files = [p for p in root.iterdir() if p.is_file()]
     nsx_nev = [p for p in files if p.suffix.lower().startswith(".ns") or p.suffix.lower() == ".nev"]
     if not nsx_nev:
-        raise FileNotFoundError(f"No sessions found under {root}.")
+        raise FileNotFoundError(f"No NSx/NEV files found under {root}.")
     bases = sorted({p.stem for p in nsx_nev})
     return [root / b for b in bases]
+
 
 def ua_excel_path(repo_root: Path, probes_cfg: dict | None) -> Optional[Path]:
     ua_cfg = (probes_cfg or {}).get("UA", {})
