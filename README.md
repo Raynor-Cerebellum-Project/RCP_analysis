@@ -15,11 +15,10 @@ The workflow supports:
 
 ---
 
-### 1. **TODO** Neural Preprocessing
+### 1. **TODO** Neural data processing (Intan / Neuropixel Read/Write (NPRW))
 Neural spike sorting and preprocessing are handled in Python using [SpikeInterface](https://spikeinterface.readthedocs.io/)
 
 **Steps:**
-Processing Intan data (NPRW)
 1. Load neural data and config (location to data, geometry and mapping)
 2. Load geometry and mapping (.mat file)
 3. Preprocess Intan (.rhs) data (high-pass filter, common local median reference default radius: 30, 150)  
@@ -27,21 +26,22 @@ Processing Intan data (NPRW)
 5. **TODO** Extract stim data (save as .npz file)
 6. Save per-session preprocessed data
 5. Concatenate sessions for sorting  
-6. Run Kilosort4 with Intan geometry and mapping
+6. Run Kilosort4 (KS4) with Intan geometry and mapping
 7. Export results in Phy format
 8. **TODO** Optional now: SLAy
 9. **TODO** Separate by condition
-10. **TODO** FR estimation?
+10. **TODO** Firing rate (FR) estimation using Gaussian filter?
 11. **TODO** Align with BR using two sync pulses (one from BR side)
 
-### 2. Processing BR data (UA)
+### 2. Neural data processing (Blackrock (BR) / Utah Array (UA))
+**Steps:**
 1. Load neural data (.ns6) and config (location to data, geometry and mapping)
 2. Load geometry and mapping (.xlsm file)
 3. Preprocess UA data (high-pass filter, common global median reference)  
 4. Build bundles for data other then neural data (save as .npz file) (2 sync digital channels in .ns5 and other .ns2 files) (`br_preproc.build_blackrock_bundle`) - TODO: Convert to NWB format
 5. Save per-session preprocessed data
 6. Concatenate sessions for sorting
-7. Run Mountainsort5 with Utah-array mapping (per-channel sorting)
+7. Run Mountainsort5 (MS5) with UA mapping (per-channel sorting)
 8. Export results in Phy format
 9. Optional now: SLAy
 10. Separate by condition
@@ -49,15 +49,14 @@ Processing Intan data (NPRW)
 12. Use as template to align Intan with BR using .ns5 sync pulses (two from BR side)
 13. Use as template to align DLC kinematics file using the .ns5 sync pulses
 
-
-### 3. Behavioral Analysis and Stim Data Processing
+### 3. Behavioral Analysis and Stim timing Processing
 TODO: Need to convert from MATLAB
 TODO: Need to create for DLC processed data
 
 TODO:
 1. DLC labeling and annotations
 2. Identify movement segments from DLC data
-3. Extract stimulation timing from Intan
+3. Load stimulation timing from Intan
 4. Plot movement traces (how to align? based on velocity or based on stim timing?, try to plot baseline aligned by velocity first)
 5. Calculate movement metrics (Previously: Endpoint error, Absolute endpoint error, Variance (in velocity) after stim, Variance (in velocity) after endpoint, Max speed, Avg speed, Endpoint oscillation, FFTPower after endpoint)
 6. Calculate significance relative to baseline
@@ -69,10 +68,11 @@ See examples: https://docs.google.com/presentation/d/1z6fLBiO8Wbell_FSsJK0Mcj66s
 ## Output
 - Intermediate files during pipeline:
 1. Raw neural signals
-2. Preprocessed neural signals (UA and Intan) (After HPF and referencing)
-3. Spike sorted data for MS5 and KS4 in Phy format (Including mean waveforms, spike times)
-4. Curated and sorted data if exists
-5. FR data after alignment with DLC and Intan
+2. Stim data for stim timing and channels
+3. Preprocessed neural signals (UA and Intan) (After HPF and referencing)
+4. Spike sorted data for MS5 and KS4 in Phy format (Including mean waveforms, spike times)
+5. Curated and sorted data if exists
+6. FR data after alignment with DLC and Intan
 
 - Final output
 1. Metadata and other channel data in NWB format
