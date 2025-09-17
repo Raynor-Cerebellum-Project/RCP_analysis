@@ -5,8 +5,10 @@ from typing import Optional, Dict, Any, Tuple
 import re
 import numpy as np
 import pandas as pd
-
+import spikeinterface as si
 import spikeinterface.extractors as se
+from spikeinterface.sortingcomponents.peak_detection import detect_peaks
+from scipy.ndimage import gaussian_filter1d
 
 # ---------- Session discovery ----------
 def list_br_sessions(data_root: Path, blackrock_rel: str) -> list[Path]:
@@ -294,6 +296,94 @@ def save_bundle_npz(sess_name: str, bundle: dict, out_dir: Path):
         **{k: v for k, v in bundle["digi"]["channels"].items()},
     )
     print(f"[SAVED] {out_dir / f'{sess_name}_bundle.npz'}")
+
+def threshold_mua_rates(
+    recording,
+    detect_threshold: float,
+    peak_sign: str,
+    bin_ms: float,
+    sigma_ms: float,
+    n_jobs: int,
+):
+    """
+    Threshold-crossing MUA → binned + smoothed firing rates.
+
+    Returns
+    -------
+    rate_hz : np.ndarray
+        (n_channels, n_bins) Gaussian-smoothed firing rate in Hz.
+    t_ms : np.ndarray
+        (n_bins,) bin-center times in ms.
+    counts : np.ndarray
+        (n_channels, n_bins) raw spike counts per bin.
+    """
+    fs = recording.get_sampling_frequency()
+    n_ch = recording.get_num_channels()
+    n_seg = recording.get_num_segments()
+    bin_samps = int(round(bin_ms * 1e-3 * fs))
+    if bin_samps < 1:
+        raise ValueError("bin_ms too small for sampling rate")
+
+    # 1) Detect peaks
+    noise_levels = si.get_noise_levels(recording)
+    peaks = detect_peaks(
+        recording,
+        method="by_channel_torch",
+        detect_threshold=detect_threshold,
+        peak_sign=peak_sign,
+        noise_levels=noise_levels,
+        n_jobs=n_jobs,
+    )
+
+    # --- robust field picking across SI versions ---
+    def _pick_field(peaks, candidates):
+        for f in candidates:
+            if f in peaks.dtype.names:
+                return f
+        raise KeyError(f"Expected one of {candidates}, got {peaks.dtype.names}")
+
+    ch_field   = _pick_field(peaks, ("channel_ind", "channel_index", "channel_id", "channel"))
+    samp_field = _pick_field(peaks, ("sample_ind", "sample_index", "sample"))
+    seg_field  = _pick_field(peaks, ("segment_ind", "segment_index", "segment"))
+
+    # 2) Bin counts per segment
+    counts_all, t_all = [], []
+    sigma_bins = max(1e-9, sigma_ms / bin_ms)  # ms → bins
+    bin_offset = 0
+
+    for seg in range(n_seg):
+        n_samps = recording.get_num_frames(seg)
+        seg_bins = int(np.ceil(n_samps / bin_samps))
+        counts = np.zeros((n_ch, seg_bins), dtype=np.int32)
+
+        # select peaks for this segment
+        if seg_field is not None and seg_field in peaks.dtype.names:
+            seg_peaks = peaks[peaks[seg_field] == seg]
+        else:
+            seg_peaks = peaks if n_seg == 1 else None
+            if seg_peaks is None:
+                raise RuntimeError("No segment field in peaks for multi-segment recording.")
+
+        if seg_peaks.size > 0:
+            ch_idx = seg_peaks[ch_field].astype(np.int64)
+            samp   = seg_peaks[samp_field].astype(np.int64)
+            bins   = np.clip(samp // bin_samps, 0, seg_bins - 1)
+            np.add.at(counts, (ch_idx, bins), 1)
+
+        counts_all.append(counts)
+        t_ms = (np.arange(seg_bins) + 0.5 + bin_offset) * bin_ms
+        t_all.append(t_ms)
+        bin_offset += seg_bins
+
+    counts_cat = np.concatenate(counts_all, axis=1)
+    t_cat_ms   = np.concatenate(t_all)
+
+    # 3) Smooth → Hz
+    counts_smooth = gaussian_filter1d(counts_cat.astype(float), sigma=sigma_bins, axis=1, mode="nearest")
+    rate_hz = counts_smooth * (1000.0 / bin_ms)
+
+    return rate_hz, t_cat_ms, counts_cat
+
 
 __all__ = [
     "list_br_sessions", "ua_excel_path",

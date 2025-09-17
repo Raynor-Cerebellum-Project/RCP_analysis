@@ -1,29 +1,29 @@
 # ---- paths ----
-# data_root: "{REPO_ROOT}/data"
 data_root: "/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis"
 blackrock_rel: "Nike/Nike_reaching_002/Blackrock"
+intan_root_rel: "Bryan/Intan"
+output_root: "Nike/Nike_reaching_002/Results"
 geom_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
+
 # ---- preprocessing ----
 highpass_hz: 300.0
 
 probes:
   UA:
-    local_radius_inner: 60
-    local_radius_outer: 150
     n_channels: 256
     mapping_mat_rel: "config/1106-22, 24, 42, 44 SN 11386-024040.xlsm"
-    geom_mat_rel: ""  # or omit
+    # geom_mat_rel: ""   # (optional) if you want a specific .mat for UA
 
   NN_DBS:
-    local_radius_inner: 40 # NEED TO CHECK
-    local_radius_outer: 120 # NEED TO CHECK
+    local_radius_inner: 40
+    local_radius_outer: 120
     n_channels: 32
     stim_channels: [1,2,3,4,5,6,7,8,9,10,11,12,21,22,23,24,25,26,27,28,29,30,31,32]
     rec_channels: [13,14,15,16,17,18,19,20]
 
   NPRW:
-    local_radius_inner: 50
-    local_radius_outer: 120
+    local_radius_inner: 30
+    local_radius_outer: 150
     n_channels: 128
     mapping_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
 
@@ -32,6 +32,13 @@ parallel_jobs: 4
 threads_per_worker: 1
 chunk: "1s"
 
+# ---- firing rate (threshold MUA) ----
+rates:
+  bin_ms: 1.0          # bin width for counts
+  sigma_ms: 20.0       # Gaussian kernel std
+  detect_threshold: 4.5
+  peak_sign: "neg"     # "neg" | "pos" | "both"
+  
 # ---- plotting ----
 win_pre_s: 0.050
 win_post_s: 0.250
@@ -46,8 +53,12 @@ default_stim_num: 1
 sessions:
   BL_RW_003_Session_1:
     probe: "NPRW"
+    # Optional: if this one session lives somewhere special:
+    # intan_rel: "Bryan/Intan/BL_RW_003_Session_1"
+
   Nike_reaching_002_Session_01:
     probe: "UA"
     array: "M1s"
+
   Bert_reaching_001:
     probe: "NPRW"

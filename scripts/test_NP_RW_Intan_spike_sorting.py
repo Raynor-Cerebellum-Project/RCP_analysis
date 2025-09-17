@@ -34,7 +34,7 @@ OUT_BASE.mkdir(parents=True, exist_ok=True)
 
 # Intan locations (edit these two)
 INTAN_ROOT = Path(PARAMS.sessions.get("intan_root", "/path/to/Intan")).resolve()
-GEOM_PATH  = Path(PARAMS.sessions.get("intan_geom_path", "/path/to/geometry.mat")).resolve()
+GEOM_PATH  = Path(PARAMS.sessions.get("intan_geom_path", "/path/to/ImecPrimateStimRec128_BT_corrected_091525.mat")).resolve()
 
 # Stream name for Intan (RHS2000 is the usual)
 INTAN_STREAM = PARAMS.sessions.get("intan_stream_name", "RHS2000 amplifier channel")

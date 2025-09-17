@@ -75,11 +75,16 @@ class experimentParams:
     stride: int
     default_stim_num: int
     sessions: Dict[str, Dict[str, Any]]
-
-    # ---- optional ----
     mapping_mat_rel: Optional[str] = None
     dig_line: Optional[str] = None
     stim_nums: Dict[str, int] = field(default_factory=dict)
+    rates: Dict[str, Any] = field(default_factory=dict) # Threshold MUA params
+    # Intan-specific
+    intan_root_rel: Optional[str] = None
+    intan_root: Optional[str] = None
+    geom_mat_rel: Optional[str] = None
+    
+    output_root: Optional[str] = None
 
 
 def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams:
@@ -129,6 +134,14 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
         mapping_mat_rel=cfg.get("mapping_mat_rel"),
         dig_line=cfg.get("dig_line") or None,
         stim_nums=cfg.get("stim_nums", {}) or {},
+        
+        # Thresholding
+        rates=cfg.get("rates", {}) or {},
+        # Intan-specific
+        intan_root_rel=cfg.get("intan_root_rel"),
+        intan_root=cfg.get("intan_root"),
+        geom_mat_rel=cfg.get("geom_mat_rel"),
+        output_root=cfg.get("output_root"),
     )
 
 
@@ -137,3 +150,12 @@ def resolve_data_root(p: experimentParams) -> Path:
     Expand and resolve the absolute path to data_root
     """
     return Path(p.data_root).resolve()
+
+def resolve_output_root(p: experimentParams) -> Path:
+    base = Path(p.data_root).resolve()
+    if p.output_root:
+        if str(p.output_root).startswith("/"):
+            return Path(p.output_root).resolve()
+        else:
+            return (base / p.output_root).resolve()
+    return base / "results"   # sensible fallback

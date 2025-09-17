@@ -1,6 +1,6 @@
 # Analysis Codes: Behavioral and Neural Pipeline for the Raynor Project
 
-## Overview
+## Pipeline Overview
 This repository contains the analysis pipeline for processing, quantifying, and comparing stimulation trials from the Raynor experiments.  
 
 The workflow supports:
@@ -9,13 +9,11 @@ The workflow supports:
 - Visualization of stimulation on behavior
 - Neural data preprocessing (artifact correction, template subtraction) - TODO: Convert from MATLAB
 
----
-
-## Pipeline Overview
-
 [Summary of recorded signals](https://docs.google.com/document/d/1C4-xSWL8n7P_mMrYqlUxQR6blz9WIHDU4B7O9bxhMnE/edit?tab=t.0)
 
 [Example final figures: Bert's plots for headturn](https://docs.google.com/presentation/d/1z6fLBiO8Wbell_FSsJK0Mcj66stKMJZmZtJu6tcY7FA/edit?slide=id.g35fb40ee04d_0_42#slide=id.g35fb40ee04d_0_42)
+
+
 
 ---
 
@@ -48,7 +46,7 @@ Neural spike sorting and preprocessing are handled in Python using [SpikeInterfa
 New pipeline using thresholding:
 6. Using thresholding to detect spikes
 7. **TODO** Use PCA to separate MUA within a cluster
-8. FR estimation?
+8. FR estimation
 12. Use as template to align Intan with BR using .ns5 sync pulses (two from BR side)
 13. Use as template to align DLC kinematics file using the .ns5 sync pulses
 
