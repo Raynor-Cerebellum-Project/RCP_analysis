@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import Optional, Sequence, Dict, Any, Tuple
 
 import numpy as np
-
 import spikeinterface as si
 import spikeinterface.extractors as se
 import spikeinterface.preprocessing as spre
@@ -116,3 +115,4 @@ def save_recording(rec: si.BaseRecording, out_dir: Path) -> None:
 def list_intan_sessions(root: Path) -> list[Path]:
     root = Path(root)
     return sorted([p for p in root.iterdir() if p.is_dir()])
+

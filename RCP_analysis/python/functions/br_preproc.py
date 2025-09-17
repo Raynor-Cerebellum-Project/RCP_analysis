@@ -390,4 +390,5 @@ __all__ = [
     "load_ns6_spikes", "load_ns5_aux", "load_ns2_digi",
     "load_UA_mapping_from_excel", "apply_ua_mapping_properties",
     "build_blackrock_bundle", "save_bundle_npz",
+    "threshold_mua_rates",
 ]

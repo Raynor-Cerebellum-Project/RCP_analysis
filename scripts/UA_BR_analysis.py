@@ -8,20 +8,18 @@ import numpy as np
 import spikeinterface as si
 import spikeinterface.preprocessing as spre
 
-from spikeinterface import sorters, create_sorting_analyzer
-from spikeinterface.core import concatenate_recordings
-from spikeinterface.exporters import export_to_phy
+# from spikeinterface import sorters, create_sorting_analyzer
+# from spikeinterface.core import concatenate_recordings
+# from spikeinterface.exporters import export_to_phy
 
 from sklearn.decomposition import PCA
 
-# Project config
-from RCP_analysis import load_experiment_params, resolve_data_root
-
-# BR/UA helpers
 from RCP_analysis import (
-    list_br_sessions, ua_excel_path,
-    load_ns6_spikes, load_UA_mapping_from_excel, apply_ua_mapping_properties,
-    build_blackrock_bundle, save_bundle_npz, resolve_output_root, threshold_mua_rates,
+    load_experiment_params, resolve_data_root, resolve_output_root,
+    # BR/UA helpers
+    list_br_sessions, ua_excel_path, load_ns6_spikes,
+    load_UA_mapping_from_excel, apply_ua_mapping_properties,
+    build_blackrock_bundle, save_bundle_npz, threshold_mua_rates, # Not sure why this isn't color coded
 )
 
 # INTAN HELPERS HERE
@@ -34,7 +32,6 @@ OUT_BASE.mkdir(parents=True, exist_ok=True)
 
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
-
 
 def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[int] = None):
     data_root = resolve_data_root(PARAMS)
@@ -55,7 +52,7 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
         raise RuntimeError("UA mapping required for mapping on NS6.")
 
     bundles_out = OUT_BASE / "bundles"
-    checkpoint_out = OUT_BASE / "checkpoint"
+    checkpoint_out = OUT_BASE / "checkpoints/UA/"
     checkpoint_out.mkdir(parents=True, exist_ok=True)
     saved_paths: list[Path] = []
 

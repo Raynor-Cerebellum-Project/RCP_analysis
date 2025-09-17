@@ -15,7 +15,7 @@ from spikeinterface.exporters import export_to_phy
 from RCP_analysis import load_experiment_params, resolve_data_root
 
 # Intan helpers
-from RCP_analysis.python.functions.intan_preproc import (
+from RCP_analysis import (
     load_stim_geometry,
     make_probe_from_geom,
     read_intan_recording,
@@ -23,24 +23,106 @@ from RCP_analysis.python.functions.intan_preproc import (
     save_recording,
     list_intan_sessions,
 )
+from pathlib import Path
+from typing import Tuple
+
+# Package API
+from RCP_analysis import (
+    load_experiment_params, resolve_data_root, resolve_output_root,
+    resolve_probe_geom_path, resolve_session_intan_dir,
+    resolve_probe_geom_path,
+)
 
 # ==============================
 # Config
 # ==============================
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PARAMS = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-OUT_BASE = (REPO_ROOT / "results_intan").resolve()
+OUT_BASE = resolve_output_root(PARAMS)
 OUT_BASE.mkdir(parents=True, exist_ok=True)
+DATA_ROOT = resolve_data_root(PARAMS)
 
-# Intan locations (edit these two)
-INTAN_ROOT = Path(PARAMS.sessions.get("intan_root", "/path/to/Intan")).resolve()
-GEOM_PATH  = Path(PARAMS.sessions.get("intan_geom_path", "/path/to/ImecPrimateStimRec128_BT_corrected_091525.mat")).resolve()
+# --- Intan root ---
+INTAN_ROOT = (
+    Path(PARAMS.intan_root).resolve()
+    if getattr(PARAMS, "intan_root", None) and str(PARAMS.intan_root).startswith("/")
+    else (DATA_ROOT / PARAMS.intan_root_rel).resolve()
+    if getattr(PARAMS, "intan_root_rel", None)
+    else None
+)
+if INTAN_ROOT is None:
+    raise ValueError("No Intan root specified. Set 'intan_root_rel' or 'intan_root' in params.yaml.")
 
-# Stream name for Intan (RHS2000 is the usual)
-INTAN_STREAM = PARAMS.sessions.get("intan_stream_name", "RHS2000 amplifier channel")
+# --- Geometry path ---
+GEOM_PATH = (
+    Path(PARAMS.geom_mat_rel).resolve()
+    if getattr(PARAMS, "geom_mat_rel", None) and str(PARAMS.geom_mat_rel).startswith("/")
+    else (REPO_ROOT / PARAMS.geom_mat_rel).resolve()
+    if getattr(PARAMS, "geom_mat_rel", None)
+    else resolve_probe_geom_path(PARAMS, REPO_ROOT, session_key=None)
+)
 
-# Local reference annulus [inner, outer] in µm
-ANNULUS: Tuple[float, float] = (30.0, 150.0)
+# === Intan stream name ===
+INTAN_STREAM = getattr(PARAMS, "neural_data_stream", "RHS2000 amplifier channel")
+STIM_STREAM = getattr(PARAMS, "stim_data_stream", "RHS2000 amplifier channel")
+
+# === Local reference annulus (µm) ===
+probe_cfg = (PARAMS.probes or {}).get("NPRW", {})
+inner = float(probe_cfg.get("local_radius_inner", 30.0))
+outer = float(probe_cfg.get("local_radius_outer", 150.0))
+ANNULUS: Tuple[float, float] = (inner, outer)
+
+global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
+si.set_global_job_kwargs(**global_job_kwargs)
+
+
+
+from pathlib import Path
+from neo.rawio.intanrawio import IntanRawIO
+
+def inspect_intan_streams(sess_folder: Path):
+    """
+    Print available Intan streams and channels in a session folder.
+
+    Shows:
+      - signal streams (names/ids) and sampling rates
+      - signal channels in each stream
+      - event (digital) channels – likely where stim/sync lives
+    """
+    r = IntanRawIO(dirname=str(sess_folder))
+    r.parse_header()
+
+    # Streams (continuous signals)
+    streams = r.header['signal_streams']   # array of (stream_id, stream_name)
+    chans   = r.header['signal_channels']  # array with fields: name, id, stream_id, dtype, sampling_rate, units
+
+    print(f"\n=== STREAMS in {sess_folder.name} ===")
+    for sid, sname in streams:
+        # channels belonging to this stream
+        cs = [c for c in chans if c['stream_id'] == sid]
+        srates = {float(c['sampling_rate']) for c in cs}
+        sr_str = ", ".join(sorted({f"{sr:g} Hz" for sr in srates}))
+        print(f"- stream_id='{sid}'  name='{sname}'  (samplerate(s): {sr_str}, n_channels={len(cs)})")
+        # show a few channel names
+        preview = ", ".join(c['name'] for c in cs[:6])
+        if len(cs) > 6:
+            preview += ", ..."
+        print(f"    channels: {preview}")
+
+    # Event/digital channels (TTL lines, buttons, stim markers, etc.)
+    ev = r.header.get('event_channels', None)
+    if ev is not None and len(ev):
+        print("\n=== EVENT (DIGITAL) CHANNELS ===")
+        for i, e in enumerate(ev):
+            # e has fields: name, id, dtype
+            print(f"- idx={i:02d} name='{e['name']}' id='{e['id']}' dtype={e['dtype']}")
+    else:
+        print("\n(no event channels found)")
+
+    print()  # newline for readability
+
+
+
 
 # ==============================
 # Pipeline
@@ -57,7 +139,7 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
     print(f"Found Intan sessions: {len(sess_folders)}")
 
     preproc_paths: list[Path] = []
-    checkpoint_out = OUT_BASE / "checkpoint"
+    checkpoint_out = OUT_BASE / "checkpoints/NPRW"
     checkpoint_out.mkdir(parents=True, exist_ok=True)
 
     for sess in sess_folders:

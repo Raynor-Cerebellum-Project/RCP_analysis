@@ -146,10 +146,8 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
 
 
 def resolve_data_root(p: experimentParams) -> Path:
-    """
-    Expand and resolve the absolute path to data_root
-    """
     return Path(p.data_root).resolve()
+
 
 def resolve_output_root(p: experimentParams) -> Path:
     base = Path(p.data_root).resolve()
@@ -159,3 +157,39 @@ def resolve_output_root(p: experimentParams) -> Path:
         else:
             return (base / p.output_root).resolve()
     return base / "results"   # sensible fallback
+
+def _resolve_path_maybe_relative(base: Path, rel_or_abs: Optional[str]) -> Optional[Path]:
+    if not rel_or_abs:
+        return None
+    s = str(rel_or_abs)
+    if s.startswith("/"):
+        return Path(s).resolve()
+    return (base / s).resolve()
+
+def resolve_intan_root(p: experimentParams) -> Path:
+    # Priority: absolute intan_root -> relative intan_root_rel -> data_root
+    if p.intan_root:
+        return _resolve_path_maybe_relative(Path("."), p.intan_root)  # handles absolute or {REPO_ROOT}-expanded
+    base = resolve_data_root(p)
+    return _resolve_path_maybe_relative(base, p.intan_root_rel) or base
+
+def resolve_session_intan_dir(p: experimentParams, session_key: str) -> Path:
+    base = resolve_intan_root(p)
+    sess_cfg = (p.sessions or {}).get(session_key, {})
+    return _resolve_path_maybe_relative(base, sess_cfg.get("intan_rel")) or base
+
+def resolve_probe_geom_path(p: experimentParams, repo_root: Path, session_key: Optional[str]=None) -> Path:
+    # If session is provided and has a probe, use its mapping/geom override
+    if session_key:
+        sess_cfg = (p.sessions or {}).get(session_key, {})
+        probe_name = (sess_cfg or {}).get("probe")
+        if probe_name:
+            probe_dict = (p.probes or {}).get(probe_name, {}) or {}
+            rel = probe_dict.get("mapping_mat_rel") or probe_dict.get("geom_mat_rel")
+            if rel:
+                return _resolve_path_maybe_relative(repo_root, rel)  # rel to repo_root
+    # Fallback: global geom_mat_rel, then global mapping_mat_rel
+    rel = p.geom_mat_rel or p.mapping_mat_rel
+    if rel:
+        return _resolve_path_maybe_relative(repo_root, rel)
+    raise FileNotFoundError("No geometry/mapping file specified (probe override and global fallback both missing).")

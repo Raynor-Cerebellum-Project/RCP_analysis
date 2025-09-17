@@ -1,5 +1,10 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:conda",
-    "python-envs.defaultPackageManager": "ms-python.python:conda",
-    "python-envs.pythonProjects": []
+    "python.languageServer": "Pylance",
+    "editor.semanticHighlighting.enabled": true,
+
+    "python.analysis.extraPaths": [
+    "/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/RCP_analysis",
+    "/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/RCP_analysis/RCP_analysis"
+    ],
+    "python.defaultInterpreterPath": "/home/bryan/miniconda3/envs/pipeline/bin/python"
 }
