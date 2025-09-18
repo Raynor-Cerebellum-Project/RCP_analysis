@@ -156,7 +156,7 @@ def plot_all_quads_for_session(
     stim_npz_path: Path | None = None,
     pre_s: float = 0.3,
     post_s: float = 0.3,
-    probe_ratio: float = 2.5,   # ← probe/sidebar width relative to grid (larger = wider probe)
+    probe_ratio: float = 2.5,
 ):
     """
     Layout matches quicklook_stim_grid:
@@ -171,6 +171,11 @@ def plot_all_quads_for_session(
     geom = load_stim_geometry(geom_path)
     perm = get_chanmap_perm_from_geom(geom)
     probe = make_identity_probe_from_geom(geom, radius_um=5.0)
+    
+    locs = probe.contact_positions
+    pad_x, pad_y = 25.0, 20.0  # µm margins
+    xmin, xmax = float(locs[:,0].min() - pad_x), float(locs[:,0].max() + pad_x)
+    ymin, ymax = float(locs[:,1].min() - pad_y), float(locs[:,1].max() + pad_y)
 
     rec = read_intan_recording(sess_folder, stream_name=neural_stream)
     rec = reorder_recording_to_geometry(rec, perm)

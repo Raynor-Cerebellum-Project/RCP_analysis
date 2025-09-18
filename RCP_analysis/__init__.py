@@ -36,8 +36,14 @@ from .python.functions.intan_preproc import (
     reorder_recording_to_geometry,
 )
 
+from .python.functions.artifact_correction_template_matching import (
+    correct_recording_with_stim_npz, TemplateParams
+)
+
 # plotting
-from .python.plotting.plotting import quicklook_stim_grid_all, plot_all_quads_for_session
+from .python.plotting.plotting import plot_all_quads_for_session
+
+
 
 __all__ = [
     # params
@@ -61,6 +67,8 @@ __all__ = [
     "make_identity_probe_from_geom",
     "reorder_recording_to_geometry",
     # plotting
-    "quicklook_stim_grid_all",
     "plot_all_quads_for_session",
+    # artifact correction
+    "TemplateParams", "extract_triggers_and_repeats",
+    "correct_recording_with_stim_npz",
 ]

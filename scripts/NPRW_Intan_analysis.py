@@ -34,6 +34,10 @@ from RCP_analysis import (
     resolve_probe_geom_path, resolve_session_intan_dir, plot_all_quads_for_session, 
 )
 
+from RCP_analysis import (
+    correct_recording_with_stim_npz, TemplateParams
+)
+
 # ---- PLOT-ONLY ENTRYPOINT ----------------------------------------------------
 def plot_selected_sessions(
     indices=(4, 5),
@@ -137,6 +141,17 @@ inner = float(probe_cfg.get("local_radius_inner", 30.0))
 outer = float(probe_cfg.get("local_radius_outer", 150.0))
 ANNULUS: Tuple[float, float] = (inner, outer)
 
+# Artifact correction parameters
+params = TemplateParams(
+    fs=30000.0,   # or 30000.0
+    buffer=25,
+    template_leeway=15,
+    stim_neural_delay=13,
+    med_filt_range=25,
+    gauss_filt_range=25,
+    pca_k=3,
+)
+
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
 
@@ -145,7 +160,7 @@ si.set_global_job_kwargs(**global_job_kwargs)
 # ==============================
 def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[int] = None):
     
-    plot_selected_sessions(indices=(4, 5), pre_s=0.30, post_s=0.30)
+    # plot_selected_sessions(indices=(4, 5), pre_s=0.30, post_s=0.30)
     
     # 1) Load geometry & mapping
     geom = load_stim_geometry(GEOM_PATH)
@@ -163,7 +178,7 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
     checkpoint_out.mkdir(parents=True, exist_ok=True)
     
     # 3) Preprocess, extract stim sessions and aux channels, save preprocessed Intan
-    for sess in enumerate(sess_folders):
+    for sess in sess_folders:
         print(f"=== Session: {sess.name} ===")
         
         bundles_root = OUT_BASE / "bundles" / "NPRW"
@@ -200,15 +215,30 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
         save_recording(rec_ref, out_dir)
         print(f"[{sess.name}] saved preprocessed -> {out_dir}")
 
-        del rec, rec_ref
+        del rec
+        stim_npz_path = bundles_root / f"{sess.name}_Intan_bundle" / "stim_stream.npz"
+
+        # 4) Artifact correction via PCA
+        rec_corr = correct_recording_with_stim_npz(
+            recording=rec_ref,
+            stim_npz_path=stim_npz_path,
+            params=params,
+            mode="pca",
+            channels=None,           # or a subset like range(128)
+            n_jobs=int(PARAMS.parallel_jobs),
+        )
+
+        # Save the artifact-corrected recording as the checkpoint for step 5
+        corr_dir = checkpoint_out / f"pp_local_{int(ANNULUS[0])}_{int(ANNULUS[1])}__AC_{sess.name}"
+        save_recording(rec_corr, corr_dir)
+        print(f"[ArtCorr] saved artifact-corrected -> {corr_dir}")
+        del rec_ref, rec_corr
         gc.collect()
 
-        preproc_paths.append(out_dir)
+        preproc_paths.append(corr_dir)
 
     if not preproc_paths:
         raise RuntimeError("No Intan sessions processed; nothing to concatenate.")
-
-    # 4) Artifact correction via PCA
     
     # 5) Concatenate
     print("Concatenating preprocessed sessions...")
