@@ -7,7 +7,7 @@ import spikeinterface as si
 import spikeinterface.extractors as se
 import spikeinterface.preprocessing as spre
 from probeinterface import Probe
-
+from .stim_preproc import StimTriggerConfig, extract_stim_triggers_and_blocks
 
 # ----------------------
 # Geometry / mapping
@@ -131,12 +131,26 @@ def _iter_recording_chunks(rec: si.BaseRecording, chunk_s: float):
         X = rec.get_traces(start_frame=start, end_frame=end, return_in_uV=True)
         yield (f'chunk_{k:04d}', X)
 
+def _append_npz_arrays(npz_path, arrays_dict):
+    """
+    Append arrays into an existing .npz (a zip). Keys become <key>.npy entries.
+    Non-destructive for existing entries.
+    """
+    # write .npy bytes into the zip without touching existing members
+    with zipfile.ZipFile(npz_path, mode="a", compression=zipfile.ZIP_DEFLATED) as zf:
+        for key, arr in arrays_dict.items():
+            with io.BytesIO() as buf:
+                np.save(buf, arr)
+                zf.writestr(f"{key}.npy", buf.getvalue())
+
 def extract_and_save_stim_npz(
     sess_folder: Path,
     out_root: Path,
     stim_stream_name: str = "Stim channel",
     chunk_s: float = 60.0,
     chanmap_perm: np.ndarray | None = None,
+    buffer_ms: float = 0.6,         # << how much pre/post “buffer” (samples) your MATLAB code used
+    detect_on_channel: int | None = None,  # << optionally force detection channel
 ):
     bundle_dir = out_root / f"{sess_folder.name}_Intan_bundle"
     bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -158,6 +172,8 @@ def extract_and_save_stim_npz(
         perm_device_to_geom = None
 
     fs = float(rec.get_sampling_frequency())
+
+    # ------------ save the raw stim stream in chunked form (unchanged) ------------
     meta = dict(
         session=sess_folder.name,
         stream_name=stim_stream_name,
@@ -176,6 +192,61 @@ def extract_and_save_stim_npz(
     out_npz = bundle_dir / "stim_stream.npz"
     _save_npz_streaming(out_npz, _iter_recording_chunks(rec, chunk_s), meta)
     print(f"[STIM] saved stim stream -> {out_npz}")
+
+    # ------------ compute triggers/blocks from the stim stream ------------
+    # For simplicity and robustness here, load the full stim stream into memory for detection.
+    # (If this is too big, we can stream-detect later.)
+    seg = 0
+    n_samp = int(rec.get_num_samples(segment_index=seg))
+    stim_traces = rec.get_traces(
+        start_frame=0,
+        end_frame=n_samp,
+        channel_ids=None,   # all channels
+        segment_index=seg,
+        return_scaled=True
+    )
+    # stim_preproc expects (n_channels, n_samples)
+    stim_data = stim_traces.T
+    buffer_samples = int(round(buffer_ms * fs))
+    cfg = StimTriggerConfig(buffer_samples=buffer_samples)
+
+    res = extract_stim_triggers_and_blocks(
+        stim_data=stim_data,
+        fs=fs,
+        cfg=cfg,
+        use_first_active_channel=(detect_on_channel is None),
+        channel_index=detect_on_channel,
+    )
+
+    # match MATLAB’s repeat_gap_threshold = 2 * (2*buffer + 1)
+    repeat_gap_threshold_samples = np.array(
+        2 * (2 * buffer_samples + 1), dtype=np.int64
+    )
+
+    # ------------ append results into the SAME NPZ ------------
+    extras = {
+        "active_channels": res.active_channels.astype(np.int64),
+        "trigger_pairs": res.trigger_pairs.astype(np.int64),     # (n_events, 2)
+        "trigger_starts": res.trigger_starts.astype(np.int64),   # (n_events,)
+        "block_boundaries": res.block_boundaries.astype(np.int64),  # (n_blocks+1,)
+        "repeat_gap_threshold_samples": repeat_gap_threshold_samples,
+        "buffer_samples": np.array(buffer_samples, dtype=np.int64),
+    }
+    _append_npz_arrays(out_npz, extras)
+
+    # also drop a few meta hints so downstream code can discover the fields easily
+    # (we add/overwrite a tiny JSON sidecar inside the zip as text)
+    try:
+        import json, io, zipfile
+        hints = {
+            "stim_analysis_keys": list(extras.keys()),
+            "stim_detection_channel": int(res.active_channels[0]) if res.active_channels.size else None,
+        }
+        with zipfile.ZipFile(out_npz, mode="a", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("stim_analysis_meta.json", json.dumps(hints, indent=2))
+    except Exception as e:
+        print(f"[STIM] warning: could not write stim_analysis_meta.json: {e}")
+
     return out_npz
 
 def extract_and_save_other_streams_npz(

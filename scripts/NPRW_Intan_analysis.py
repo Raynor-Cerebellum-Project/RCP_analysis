@@ -2,11 +2,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Tuple
 import gc
+import numpy as np
 
 # SpikeInterface
 import spikeinterface as si
 import spikeinterface.sorters as ss
-import spikeinterface.preprocessing as spre
 from spikeinterface.core import concatenate_recordings
 from spikeinterface.exporters import export_to_phy
 
@@ -16,7 +16,6 @@ from RCP_analysis import load_experiment_params, resolve_data_root
 # Intan helpers
 from RCP_analysis import (
     load_stim_geometry,
-    make_probe_from_geom,
     read_intan_recording,
     local_cm_reference,
     save_recording,
@@ -30,41 +29,45 @@ from RCP_analysis import (
 
 # Package API
 from RCP_analysis import (
-    load_experiment_params, resolve_data_root, resolve_output_root,
-    resolve_probe_geom_path, resolve_session_intan_dir, plot_all_quads_for_session, 
+    resolve_output_root, resolve_probe_geom_path, plot_all_quads_for_session, 
 )
 
 from RCP_analysis import (
-    correct_recording_with_stim_npz, TemplateParams
+    #correct_recording_with_stim_npz, TemplateParams,
+    remove_stim_pca, ArtifactParams
 )
 
 # ---- PLOT-ONLY ENTRYPOINT ----------------------------------------------------
 def plot_selected_sessions(
-    indices=(4, 5),
+    indices=(0,),            # e.g. (3,) or (4, 5)
     pre_s: float = 0.30,
     post_s: float = 0.30,
     chunk_s: float = 60.0,
+    preproc_root: Path = Path("/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis/Nike/NRR_RW001/results/checkpoints"),
 ):
     """
-    Plot 4×4 panels + probe for selected Intan sessions (0-based indices).
-    Uses existing stim bundles if present; creates them if missing.
-    Does NOT run any preprocessing or Kilosort.
+    Plot 4×4 panels + probe for selected sessions using the artifact-corrected checkpoints.
+    Also ensures a stim bundle exists (creates if missing).
     """
-    # geometry / perm (for stim bundle reordering, same as your pipeline)
+    # geometry / perm
     geom = load_stim_geometry(GEOM_PATH)
     perm = get_chanmap_perm_from_geom(geom)
 
-    # where to write figures + find/create stim bundles
     figs_dir = OUT_BASE / "figures" / "NPRW"
     figs_dir.mkdir(parents=True, exist_ok=True)
     bundles_root = OUT_BASE / "bundles" / "NPRW"
     bundles_root.mkdir(parents=True, exist_ok=True)
 
-    # session list
     sess_folders = list_intan_sessions(INTAN_ROOT)
     if not sess_folders:
         print("No Intan sessions found.")
         return
+
+    # normalize indices to an iterable of ints
+    if isinstance(indices, int):
+        indices = [indices]
+    else:
+        indices = list(indices)
 
     for i in indices:
         if i < 0 or i >= len(sess_folders):
@@ -74,10 +77,9 @@ def plot_selected_sessions(
         sess = sess_folders[i]
         print(f"--- Plotting session #{i}: {sess.name} ---")
 
-        # expected stim bundle path
+        # ensure stim bundle exists
         stim_npz_path = bundles_root / f"{sess.name}_Intan_bundle" / "stim_stream.npz"
         if not stim_npz_path.exists():
-            # create stim bundle only (reordered to geometry so plotting aligns)
             stim_npz_path = extract_and_save_stim_npz(
                 sess_folder=sess,
                 out_root=bundles_root,
@@ -86,7 +88,7 @@ def plot_selected_sessions(
                 chanmap_perm=perm,
             )
 
-        # make the figures (uses raw Intan + geometry; no dependency on preproc)
+        # plot from artifact-corrected checkpoints
         try:
             plot_all_quads_for_session(
                 sess_folder=sess,
@@ -97,9 +99,72 @@ def plot_selected_sessions(
                 stim_npz_path=stim_npz_path,
                 pre_s=pre_s,
                 post_s=post_s,
+                preproc_root=preproc_root,
             )
         except Exception as e:
             print(f"[WARN] plotting failed for {sess.name}: {e}")
+
+# def plot_selected_sessions(
+#     indices=(4, 5),
+#     pre_s: float = 0.30,
+#     post_s: float = 0.30,
+#     chunk_s: float = 60.0,
+# ):
+#     """
+#     Plot 4×4 panels + probe for selected Intan sessions (0-based indices).
+#     Uses existing stim bundles if present; creates them if missing.
+#     Does NOT run any preprocessing or Kilosort.
+#     """
+#     # geometry / perm (for stim bundle reordering, same as your pipeline)
+#     geom = load_stim_geometry(GEOM_PATH)
+#     perm = get_chanmap_perm_from_geom(geom)
+
+#     # where to write figures + find/create stim bundles
+#     figs_dir = OUT_BASE / "figures" / "NPRW"
+#     figs_dir.mkdir(parents=True, exist_ok=True)
+#     bundles_root = OUT_BASE / "bundles" / "NPRW"
+#     bundles_root.mkdir(parents=True, exist_ok=True)
+
+#     # session list
+#     sess_folders = list_intan_sessions(INTAN_ROOT)
+#     if not sess_folders:
+#         print("No Intan sessions found.")
+#         return
+
+#     for i in indices:
+#         if i < 0 or i >= len(sess_folders):
+#             print(f"[WARN] index {i} out of range (0..{len(sess_folders)-1}). Skipping.")
+#             continue
+
+#         sess = sess_folders[i]
+#         print(f"--- Plotting session #{i}: {sess.name} ---")
+
+#         # expected stim bundle path
+#         stim_npz_path = bundles_root / f"{sess.name}_Intan_bundle" / "stim_stream.npz"
+#         if not stim_npz_path.exists():
+#             # create stim bundle only (reordered to geometry so plotting aligns)
+#             stim_npz_path = extract_and_save_stim_npz(
+#                 sess_folder=sess,
+#                 out_root=bundles_root,
+#                 stim_stream_name=STIM_STREAM,
+#                 chunk_s=chunk_s,
+#                 chanmap_perm=perm,
+#             )
+
+#         # make the figures (uses raw Intan + geometry; no dependency on preproc)
+#         try:
+#             plot_all_quads_for_session(
+#                 sess_folder=sess,
+#                 geom_path=GEOM_PATH,
+#                 neural_stream=INTAN_STREAM,
+#                 stim_stream=STIM_STREAM,
+#                 out_dir=figs_dir,
+#                 stim_npz_path=stim_npz_path,
+#                 pre_s=pre_s,
+#                 post_s=post_s,
+#             )
+#         except Exception as e:
+#             print(f"[WARN] plotting failed for {sess.name}: {e}")
 
 
 # ==============================
@@ -142,15 +207,49 @@ outer = float(probe_cfg.get("local_radius_outer", 150.0))
 RADII: Tuple[float, float] = (inner, outer)
 
 # Artifact correction parameters
-params = TemplateParams(
-    fs=30000.0,   # or 30000.0
-    buffer=25,
-    template_leeway=15,
-    stim_neural_delay=13,
-    med_filt_range=25,
-    gauss_filt_range=25,
-    pca_k=3,
+params = ArtifactParams(
+    pca_k=3, exclude_first_n_for_pca=1, first_pulse_special=True,
+    rolling_median_ms=15, gaussian_sigma_ms=5, gaussian_len_ms=31,
+    ms_before=0.6, ms_after=3.2, scale_amplitude=True,
+    interp_ramp=True, ramp_tail_ms=1.0, ramp_fraction=1.0,
 )
+
+def load_stim_triggers_from_npz(stim_npz_path: Path):
+    """
+    Returns:
+      trigs : np.ndarray[int64]              # rising edges (or event starts), shape (n_events,)
+      blocks: np.ndarray[int64]              # block boundaries as indices into trigs (len = n_blocks+1)
+      meta  : dict | None                    # optional, None if meta.json missing
+    """
+    stim_npz_path = Path(stim_npz_path)
+    trigs = None
+    blocks = None
+    meta = None
+
+    # np.load works because we stored .npy members in a zip (it strips the .npy suffix for keys)
+    with np.load(stim_npz_path, allow_pickle=False) as z:
+        # These keys were written by extract_and_save_stim_npz()
+        if "trigger_starts" in z:
+            trigs = z["trigger_starts"].astype(np.int64)
+        elif "trigger_pairs" in z:
+            # fallback: if only pairs exist, use the first column as "starts"
+            trigs = z["trigger_pairs"][:, 0].astype(np.int64)
+        else:
+            trigs = np.zeros((0,), dtype=np.int64)
+
+        if "block_boundaries" in z:
+            blocks = z["block_boundaries"].astype(np.int64)
+
+    # try to read meta.json (nice-to-have)
+    try:
+        import json, zipfile, io
+        with zipfile.ZipFile(stim_npz_path, "r") as zf:
+            with zf.open("meta.json") as f:
+                meta = json.load(f)
+    except Exception:
+        meta = None
+
+    return trigs, blocks, meta
 
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
@@ -160,7 +259,7 @@ si.set_global_job_kwargs(**global_job_kwargs)
 # ==============================
 def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[int] = None):
     
-    # plot_selected_sessions(indices=(4, 5), pre_s=0.30, post_s=0.30)
+    plot_selected_sessions(indices=(2), pre_s=0.05, post_s=0.15)
     
     # 1) Load geometry & mapping
     geom = load_stim_geometry(GEOM_PATH)
@@ -177,7 +276,7 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
     checkpoint_out = OUT_BASE / "checkpoints" / "NPRW"
     checkpoint_out.mkdir(parents=True, exist_ok=True)
     
-    # 3) Preprocess, extract stim sessions and aux channels, save preprocessed Intan
+    # 3) Extract stim sessions and aux channels, preprocess and save
     for sess in sess_folders:
         print(f"=== Session: {sess.name} ===")
         
@@ -202,40 +301,51 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
             chanmap_perm=perm,
         )
         
-        # Load Intan
+        stim_npz_path = bundles_root / f"{sess.name}_Intan_bundle" / "stim_stream.npz"
+        trigs, blocks, _ = load_stim_triggers_from_npz(stim_npz_path)
+
+        # Load Intan neural stream
         rec = read_intan_recording(sess, stream_name=INTAN_STREAM)
         rec = reorder_recording_to_geometry(rec, perm)
         rec = rec.set_probe(probe, in_place=False)
+        
+        # import cProfile, pstats, io, time
 
-        # 3) Local CMR (inner/outer radius)
-        rec_ref = local_cm_reference(rec, freq_min=float(PARAMS.highpass_hz), inner_outer_radius_um=RADII)
+        # pr = cProfile.Profile()
+        # pr.enable()
 
-        # Save preprocessed session
-        out_dir = checkpoint_out / f"pp_local_{int(RADII[0])}_{int(RADII[1])}__{sess.name}"
-        save_recording(rec_ref, out_dir)
-        print(f"[{sess.name}] saved preprocessed -> {out_dir}")
+        # t0 = time.perf_counter()
+        # rec_clean = remove_stim_pca(recording=rec, params=params, list_triggers=[trigs])
+        # # Force a full pass to exercise the code paths:
+        # _ = rec_clean.get_traces(0, rec_clean.get_num_samples(), slice(None))
+        # elapsed = time.perf_counter() - t0
 
-        del rec
-        stim_npz_path = bundles_root / f"{sess.name}_Intan_bundle" / "stim_stream.npz"
+        # pr.disable()
 
-        # 4) Artifact correction via PCA
-        rec_corr = correct_recording_with_stim_npz(
-            recording=rec_ref,
-            stim_npz_path=stim_npz_path,
-            params=params,
-            mode="pca",
-            channels=None,
-            n_jobs=int(PARAMS.parallel_jobs),
+        # print(f"Elapsed: {elapsed:.3f} s")
+        # s = io.StringIO()
+        # pstats.Stats(pr, stream=s).sort_stats("cumtime").print_stats(40)  # top 40 by cumulative time
+        # print(s.getvalue())
+
+        # # Save to file to inspect later with snakeviz/qcachegrind
+        # pstats.Stats(pr).dump_stats("artifact_profile.prof")
+
+
+        # Local CMR
+        rec_ref = local_cm_reference(
+            rec,
+            freq_min=float(PARAMS.highpass_hz),
+            inner_outer_radius_um=RADII
         )
+        # Save preprocessed session (artifact-corrected + referenced)
+        out_dir = checkpoint_out / f"pp_local_{int(RADII[0])}_{int(RADII[1])}__AC_{sess.name}"
+        save_recording(rec_ref, out_dir)
+        print(f"[{sess.name}] saved artifact-corrected -> {out_dir}")
 
-        # Save the artifact-corrected recording as the checkpoint for step 5
-        corr_dir = checkpoint_out / f"pp_local_{int(RADII[0])}_{int(RADII[1])}__AC_{sess.name}"
-        save_recording(rec_corr, corr_dir)
-        print(f"[ArtCorr] saved artifact-corrected -> {corr_dir}")
-        del rec_ref, rec_corr
+        del rec, rec_clean, rec_ref
         gc.collect()
 
-        preproc_paths.append(corr_dir)
+        preproc_paths.append(out_dir)
 
     if not preproc_paths:
         raise RuntimeError("No Intan sessions processed; nothing to concatenate.")
