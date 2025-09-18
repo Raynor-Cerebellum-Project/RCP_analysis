@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional, Sequence, Dict, Any, Tuple
-
+from typing import Dict, Tuple
+import io, json, re, zipfile
 import numpy as np
 import spikeinterface as si
 import spikeinterface.extractors as se
@@ -42,7 +42,6 @@ def load_stim_geometry(mat_or_csv: Path) -> Dict[str, np.ndarray]:
             out["device_index_1based"] = df["device_index_1based"].to_numpy(int)
 
     return out
-
 
 def make_probe_from_geom(geom: Dict[str, np.ndarray], radius_um: float = 5.0) -> Probe:
     x = np.asarray(geom["x"], float).ravel()
@@ -108,6 +107,158 @@ def save_recording(rec: si.BaseRecording, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     rec.save(folder=out_dir, overwrite=True)
 
+_SAN = re.compile(r'[^0-9A-Za-z_]+')
+def _safe(s: str) -> str:
+    return _SAN.sub('_', s).strip('_')
+
+def _save_npz_streaming(npz_path: Path, items, meta: dict):
+    """Write a streaming NPZ: items yields (name, np.ndarray). Meta is stored as JSON inside the zip."""
+    with zipfile.ZipFile(str(npz_path), mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
+        # meta.json
+        zf.writestr('meta.json', json.dumps(meta, indent=2))
+        # each chunk becomes its own .npy inside the NPZ
+        for key, arr in items:
+            bio = io.BytesIO()
+            np.lib.format.write_array(bio, np.asanyarray(arr), allow_pickle=False)
+            zf.writestr(f'{_safe(key)}.npy', bio.getvalue())
+
+def _iter_recording_chunks(rec: si.BaseRecording, chunk_s: float):
+    fs = float(rec.get_sampling_frequency())
+    step = int(max(1, round(chunk_s * fs)))
+    n = int(rec.get_num_samples())
+    for k, start in enumerate(range(0, n, step)):
+        end = min(n, start + step)
+        X = rec.get_traces(start_frame=start, end_frame=end, return_in_uV=True)
+        yield (f'chunk_{k:04d}', X)
+
+def extract_and_save_stim_npz(
+    sess_folder: Path,
+    out_root: Path,
+    stim_stream_name: str = "Stim channel",
+    chunk_s: float = 60.0,
+    chanmap_perm: np.ndarray | None = None,
+):
+    bundle_dir = out_root / f"{sess_folder.name}_Intan_bundle"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    rec = read_intan_recording(sess_folder, stream_name=stim_stream_name)
+
+    # Guarded reordering (only if counts match)
+    if chanmap_perm is not None and rec.get_num_channels() == chanmap_perm.size:
+        rec = reorder_recording_to_geometry(rec, chanmap_perm)
+        order = "geometry"
+        perm_geom_to_device = chanmap_perm.tolist()
+        perm_device_to_geom = np.argsort(chanmap_perm).tolist()
+    else:
+        if chanmap_perm is not None:
+            print(f"[{sess_folder.name}] '{stim_stream_name}': skip reordering "
+                  f"(n_ch={rec.get_num_channels()} vs perm={chanmap_perm.size})")
+        order = "device"
+        perm_geom_to_device = None
+        perm_device_to_geom = None
+
+    fs = float(rec.get_sampling_frequency())
+    meta = dict(
+        session=sess_folder.name,
+        stream_name=stim_stream_name,
+        fs_hz=fs,
+        n_channels=int(rec.get_num_channels()),
+        channel_ids=[str(x) for x in rec.get_channel_ids()],
+        dtype=str(rec.get_dtype()),
+        chunk_seconds=chunk_s,
+        shape=[int(rec.get_num_samples()), int(rec.get_num_channels())],
+        order=order,
+        perm_geom_to_device=perm_geom_to_device,
+        perm_device_to_geom=perm_device_to_geom,
+        units="uV",
+        note="Data stored as multiple .npy chunks inside this .npz (chunk_0000.npy, ...).",
+    )
+    out_npz = bundle_dir / "stim_stream.npz"
+    _save_npz_streaming(out_npz, _iter_recording_chunks(rec, chunk_s), meta)
+    print(f"[STIM] saved stim stream -> {out_npz}")
+    return out_npz
+
+def extract_and_save_other_streams_npz(
+    sess_folder: Path,
+    out_root: Path,
+    include_streams: tuple[str, ...] = ("USB board ADC input channel",),
+    exclude_streams: tuple[str, ...] = ("Stim channel",),
+    chunk_s: float = 60.0,
+    chanmap_perm: np.ndarray | None = None,
+):
+    bundle_dir = out_root / f"{sess_folder.name}_Intan_bundle"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    saved = []
+    for stream_name in include_streams:
+        if stream_name in exclude_streams:
+            continue
+        try:
+            rec = read_intan_recording(sess_folder, stream_name=stream_name)
+
+            if chanmap_perm is not None and rec.get_num_channels() == chanmap_perm.size:
+                rec = reorder_recording_to_geometry(rec, chanmap_perm)
+                order = "geometry"
+                perm_geom_to_device = chanmap_perm.tolist()
+                perm_device_to_geom = np.argsort(chanmap_perm).tolist()
+            else:
+                if chanmap_perm is not None:
+                    print(f"[{sess_folder.name}] '{stream_name}': skip reordering "
+                          f"(n_ch={rec.get_num_channels()} vs perm={chanmap_perm.size})")
+                order = "device"
+                perm_geom_to_device = None
+                perm_device_to_geom = None
+
+        except Exception as e:
+            print(f"[{sess_folder.name}] skip stream '{stream_name}': {e}")
+            continue
+
+        fs = float(rec.get_sampling_frequency())
+        meta = dict(
+            session=sess_folder.name,
+            stream_name=stream_name,
+            fs_hz=fs,
+            n_channels=int(rec.get_num_channels()),
+            channel_ids=[str(x) for x in rec.get_channel_ids()],
+            dtype=str(rec.get_dtype()),
+            chunk_seconds=chunk_s,
+            shape=[int(rec.get_num_samples()), int(rec.get_num_channels())],
+            order=order,
+            perm_geom_to_device=perm_geom_to_device,
+            perm_device_to_geom=perm_device_to_geom,
+            units="uV",
+            note="Data stored as multiple .npy chunks inside this .npz (chunk_0000.npy, ...).",
+        )
+        out_npz = bundle_dir / f"{_safe(stream_name)}.npz"
+        _save_npz_streaming(out_npz, _iter_recording_chunks(rec, chunk_s), meta)
+        print(f"[AUX] saved stream '{stream_name}' -> {out_npz}")
+        saved.append(out_npz)
+    return saved
+
+def get_chanmap_perm_from_geom(geom: dict) -> np.ndarray:
+    # geometry→device 0-based indices (normalized in loader)
+    if "device_index_0based" in geom:
+        return np.asarray(geom["device_index_0based"], int).ravel()
+    if "device_index_1based" in geom:
+        return np.asarray(geom["device_index_1based"], int).ravel() - 1
+    raise ValueError("No chanmap in geometry.")
+
+def make_identity_probe_from_geom(geom: dict, radius_um: float = 5.0):
+    pr = make_probe_from_geom(geom, radius_um=radius_um)
+    # Identity: channel i ↔ contact i (after you reorder the recording)
+    pr.set_device_channel_indices(np.arange(pr.get_contact_count(), dtype=int))
+    return pr
+
+def reorder_recording_to_geometry(rec: si.BaseRecording, perm: np.ndarray) -> si.BaseRecording:
+    ids = list(rec.get_channel_ids())
+    if len(ids) != perm.size:
+        raise ValueError(f"Perm length {perm.size} != {len(ids)} channels.")
+    ordered_ids = [ids[i] for i in perm]        # put data into geometry order
+    try:
+        return rec.channel_slice(channel_ids=ordered_ids)
+    except Exception:
+        from spikeinterface.core import ChannelSliceRecording
+        return ChannelSliceRecording(rec, channel_ids=ordered_ids)
 
 # ----------------------
 # Convenience

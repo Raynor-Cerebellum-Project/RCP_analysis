@@ -38,7 +38,7 @@ data and outputs can be chosen to be other directories in config
 
 ---
 
-### 1. **TODO** Neural data processing (Intan / Neuropixel Read/Write (NPRW))
+### 1. Neural data processing (Intan / Neuropixel Read/Write (NPRW))
 Neural spike sorting and preprocessing are handled in Python using [SpikeInterface](https://spikeinterface.readthedocs.io/)
 
 **Steps:**
@@ -46,8 +46,11 @@ Neural spike sorting and preprocessing are handled in Python using [SpikeInterfa
 2. Load geometry and mapping (.mat file)
 3. Preprocess Intan (.rhs) data (high-pass filter, common local median reference default radius: 30, 150)  
 4. Build bundles for data other then neural data (save as .npz file) (2 sync channels) (`intan_preproc.build_intan_bundle`) - TODO: Convert to NWB format
-5. **TODO** Extract stim data (save as .npz file)
+5. Extract stim data (save as .npz file)
 6. Save per-session preprocessed data
+
+Try plotting per channel + probe
+
 7. **TODO** Artifact correction via PCA fitting
 8. Concatenate sessions for sorting  
 9. Run Kilosort4 (KS4) with Intan geometry and mapping

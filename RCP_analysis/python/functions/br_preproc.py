@@ -1,4 +1,3 @@
-# RCP_analysis/br_preproc.py
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
@@ -8,7 +7,8 @@ import pandas as pd
 import spikeinterface as si
 import spikeinterface.extractors as se
 from spikeinterface.sortingcomponents.peak_detection import detect_peaks
-from scipy.ndimage import gaussian_filter1d
+from scipy.signal import butter, filtfilt
+
 
 # ---------- Session discovery ----------
 def list_br_sessions(data_root: Path, blackrock_rel: str) -> list[Path]:
@@ -285,10 +285,10 @@ def build_blackrock_bundle(sess: Path) -> dict:
 
     return bundle
 
-def save_bundle_npz(sess_name: str, bundle: dict, out_dir: Path):
+def save_UA_bundle_npz(sess_name: str, bundle: dict, out_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
-        out_dir / f"{sess_name}_bundle.npz",
+        out_dir / f"{sess_name}_UA_bundle.npz",
         aux_fs=np.array(bundle["aux"]["fs"] if bundle["aux"]["fs"] is not None else np.nan, dtype=np.float64),
         camera_sync=bundle["aux"]["camera_sync"] if bundle["aux"]["camera_sync"] is not None else np.array([]),
         intan_sync=bundle["aux"]["intan_sync"] if bundle["aux"]["intan_sync"] is not None else np.array([]),
@@ -378,9 +378,27 @@ def threshold_mua_rates(
     counts_cat = np.concatenate(counts_all, axis=1)
     t_cat_ms   = np.concatenate(t_all)
 
-    # 3) Smooth → Hz
-    counts_smooth = gaussian_filter1d(counts_cat.astype(float), sigma=sigma_bins, axis=1, mode="nearest")
-    rate_hz = counts_smooth * (1000.0 / bin_ms)
+    # 3) Zero-phase smoothing (Butterworth + filtfilt) → Hz
+    # Sampling rate in the binned domain:
+    fs_bins = 1000.0 / float(bin_ms)  # bins per second
+    # Map Gaussian sigma (in bins) to approx -3 dB cutoff for Butterworth:
+    # f_3dB (cycles/sample) ≈ sqrt(ln 2) / (2π * sigma_bins)
+    # Normalize for butter() (0..1 where 1 = Nyquist): Wn = 2 * f_3dB = sqrt(ln 2)/(π * sigma_bins)
+    if sigma_bins <= 0 or counts_cat.shape[1] < 4:
+        # no smoothing or too short
+        counts_smooth = counts_cat.astype(float, copy=False)
+    else:
+        Wn = float(np.sqrt(np.log(2.0)) / (np.pi * max(sigma_bins, 1e-6)))
+        Wn = max(1e-6, min(Wn, 0.99))  # clamp
+        b, a = butter(N=4, Wn=Wn, btype="low")  # 4th-order lowpass
+        # padlen must be < n_samples; compute safe padlen
+        n_t = counts_cat.shape[1]
+        padlen = min(3 * max(len(a), len(b)), n_t - 1) if n_t > 1 else 0
+        if padlen < 1:
+            counts_smooth = counts_cat.astype(float, copy=False)
+        else:
+            counts_smooth = filtfilt(b, a, counts_cat.astype(float), axis=1, padlen=padlen)
+    rate_hz = counts_smooth * fs_bins  # counts/bin → Hz
 
     return rate_hz, t_cat_ms, counts_cat
 
@@ -389,6 +407,6 @@ __all__ = [
     "list_br_sessions", "ua_excel_path",
     "load_ns6_spikes", "load_ns5_aux", "load_ns2_digi",
     "load_UA_mapping_from_excel", "apply_ua_mapping_properties",
-    "build_blackrock_bundle", "save_bundle_npz",
+    "build_blackrock_bundle", "save_UA_bundle_npz",
     "threshold_mua_rates",
 ]

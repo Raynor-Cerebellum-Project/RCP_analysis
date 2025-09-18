@@ -1,34 +1,12 @@
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib import gridspec
+from matplotlib import gridspec, patches
+import io, json, zipfile
+from probeinterface.plotting import plot_probe
 
 # import helpers from sibling modules
-from ..functions.intan_preproc import load_stim_geometry
-
-
-def _probe_sidebar(ax, rec_sess, sel_indices=None, stim_ids=None, title="Probe"):
-    # TODO: draw probe; for now keep it minimal
-    ax.axis("off")
-    ax.set_title(title, fontsize=10)
-
-
-def _pulse_onsets_from_stim_row(stim_row, eps=1e-12, min_gap=1):
-    """
-    Return indices where the stimulation goes from ~0 to non-zero (pulse onsets).
-    eps: zero threshold. min_gap: debounce in samples (>=1).
-    """
-    x = np.asarray(stim_row, float).ravel()
-    is_on = np.abs(x) > eps
-    idx = np.flatnonzero((~is_on[:-1]) & (is_on[1:])) + 1
-    if idx.size and min_gap > 1:
-        keep = [idx[0]]
-        for j in idx[1:]:
-            if j - keep[-1] >= min_gap:
-                keep.append(j)
-        idx = np.asarray(keep, dtype=int)
-    return idx
-
+from ..functions.intan_preproc import load_stim_geometry, get_chanmap_perm_from_geom, reorder_recording_to_geometry, read_intan_recording, make_identity_probe_from_geom
 
 def get_stimulated_channel_ids_from_geom(sess_folder: Path, rec_geom) -> set[str]:
     """
@@ -47,224 +25,288 @@ def get_stimulated_channel_ids_from_geom(sess_folder: Path, rec_geom) -> set[str
     ids_geom = list(rec_geom.get_channel_ids())  # geometry order
     return {ids_geom[i] for i in active_rows if 0 <= i < len(ids_geom)}
 
+def _first_stim_time_from_npz(stim_npz: Path) -> float | None:
+    """
+    Returns first stim time (seconds from start), or None if not found.
+    Uses rising-edge detection per chunk (5th/95th percentile midpoint).
+    """
+    if not stim_npz.exists():
+        return None
+    with zipfile.ZipFile(str(stim_npz), "r") as zf:
+        meta = json.loads(zf.read("meta.json").decode("utf-8"))
+        fs = float(meta.get("fs_hz", 1.0))
+        chunk_s = float(meta.get("chunk_seconds", 0.0)) or None
+        chunk_files = sorted(n for n in zf.namelist() if n.startswith("chunk_") and n.endswith(".npy"))
+        if not chunk_files:
+            return None
 
-def quicklook_stim_grid(
-    rec_sess,
-    sess_folder: Path,
-    out_dir: Path,
-    fs: float,
-    stim_num: int,
-    nrows: int = 4,
-    ncols: int = 4,
-    pre_s: float = 0.015,
-    post_s: float = 0.020,
-    bar_ms: float = 20,
-    dig_line=None,
-    pick="top",
-    sel_indices=None,
-    name_suffix="",
-    show_probe=True,
-):
-    out_dir.mkdir(parents=True, exist_ok=True)
-    sess_name = sess_folder.name
-    bar = float(bar_ms) / 1000.0
+        t_offset = 0.0
+        for cf in chunk_files:
+            X = np.load(io.BytesIO(zf.read(cf)))  # (frames, channels)
+            # thresholds per channel
+            p5  = np.nanpercentile(X, 5, axis=0)
+            p95 = np.nanpercentile(X, 95, axis=0)
+            thr = 0.5 * (p5 + p95)
+            above = X > thr
+            if X.shape[0] >= 2:
+                rising = above[1:] & (~above[:-1])  # (frames-1, ch)
+                idx = np.where(rising.any(axis=1))[0]
+                if idx.size:
+                    edge_idx = int(idx[0] + 1)
+                    t_chunk = edge_idx / fs
+                    return t_offset + t_chunk
+            # advance offset
+            if chunk_s is not None:
+                t_offset += chunk_s
+            else:
+                t_offset += X.shape[0] / fs
+    return None
+def _detect_stim_channels_from_npz(
+    stim_npz_path: Path,
+    max_seconds: float = 2.0,   # scan up to this much data
+    eps: float = 1e-12,         # near-zero threshold
+    min_edges: int = 1,         # require at least this many 0→nonzero edges
+) -> np.ndarray:
+    """
+    Return GEOMETRY-ORDERED indices of channels that actually received stim,
+    detected from stim_npz_path by counting 0→nonzero rising edges.
 
-    # ---- load stim_data (geometry-ordered) ----
-    stim_geom_full = load_stim_geometry(sess_folder)
-    if stim_geom_full is None:
-        print(f"[{sess_name}] stim_data missing; skipping.")
-        return
+    Uses per-channel mid-threshold: 0.5 * (p5 + p95) on each scanned chunk.
+    Respects meta['order'] and perm_* mappings to emit GEOMETRY indices.
+    """
+    stim_npz_path = Path(stim_npz_path)
+    if not stim_npz_path.exists():
+        return np.array([], dtype=int)
 
-    # ---- choose first active stim row (as in your MATLAB) ----
-    active_rows = np.flatnonzero(np.any(stim_geom_full != 0, axis=1))
-    if active_rows.size == 0:
-        print(f"[{sess_name}] no active stim rows; skipping.")
-        return
-    chosen_row = int(active_rows[0])
-    stim_trace = stim_geom_full[chosen_row, :]
+    import io, json, zipfile
+    with zipfile.ZipFile(str(stim_npz_path), "r") as zf:
+        meta = json.loads(zf.read("meta.json").decode("utf-8"))
+        fs = float(meta.get("fs_hz", 1.0))
+        order = meta.get("order", "device")
+        pg2d = meta.get("perm_geom_to_device")         # geometry -> device
+        pd2g = meta.get("perm_device_to_geom")         # device   -> geometry
+        if pd2g is None and pg2d is not None:
+            # build inverse if only forward is present
+            inv = np.argsort(np.asarray(pg2d, dtype=int))
+            pd2g = inv.tolist()
 
-    # ---- onsets from stim_data only (first falling edge / 0->nonzero) ----
-    onsets = _pulse_onsets_from_stim_row(stim_trace, eps=1e-12, min_gap=1)
-    if onsets.size < stim_num:
-        print(
-            f"[{sess_name}] only {onsets.size} pulses in stim_data; need {stim_num}. Skipping."
-        )
-        return
+        # which chunks to read?
+        chunk_s = float(meta.get("chunk_seconds", 0.0)) or None
+        chunks = sorted(n for n in zf.namelist() if n.startswith("chunk_") and n.endswith(".npy"))
+        if not chunks:
+            return np.array([], dtype=int)
 
-    # pick the requested pulse as time-zero
-    stim_idx = int(onsets[stim_num - 1])
+        # limit how much we scan
+        max_chunks = len(chunks)
+        if chunk_s is not None and max_seconds is not None:
+            max_chunks = max(1, int(np.ceil(max_seconds / chunk_s)))
 
-    # ---- slice window centered on chosen stim ----
-    s0 = max(0, stim_idx - int(pre_s * fs))
-    s1 = min(int(rec_sess.get_num_frames()), stim_idx + int(post_s * fs))
-    n = s1 - s0
-    if n <= 1:
-        print(f"[{sess_name}] WARN: empty window; skipping.")
-        return
-    t_rel = (np.arange(n) + s0 - stim_idx) / fs
+        # accumulate rising-edge counts per channel
+        # lazily sized after first chunk read
+        rising_counts = None
 
-    # onsets in this window, relative to t=0
-    ts = ((onsets[(onsets >= s0) & (onsets < s1)] - stim_idx) / fs).astype(float)
-    ts.sort()
+        for cf in chunks[:max_chunks]:
+            X = np.load(io.BytesIO(zf.read(cf)))  # (frames, channels)
+            if X.ndim != 2 or X.shape[0] < 2:
+                continue
 
-    # ----- GEOMETRY-ORDERED CHANNEL SELECTION -----
-    ids = list(rec_sess.get_channel_ids())
-    pos = rec_sess.get_probe().contact_positions  # (nch, 2): [:,1] = y
-    order = np.lexsort((pos[:, 0], pos[:, 1]))  # y then x (ascending)
+            # per-channel threshold: midpoint between p5 and p95
+            p5  = np.nanpercentile(X, 5, axis=0)
+            p95 = np.nanpercentile(X, 95, axis=0)
+            thr = 0.5 * (p5 + p95)
 
-    k = nrows * ncols
-    if sel_indices is None:
-        if pick == "bottom":
-            sel = order[-k:][::-1]
-        elif pick == "center":
-            y = pos[:, 1]
-            near = np.argsort(np.abs(y - np.median(y)))[:k]
-            sel = near[np.lexsort((pos[near, 0], y[near]))]
+            above  = X > thr
+            rising = above[1:] & (~above[:-1])    # (frames-1, ch)
+            rc = rising.sum(axis=0)               # count per channel this chunk
+
+            if rising_counts is None:
+                rising_counts = rc.astype(np.int64, copy=True)
+            else:
+                rising_counts += rc.astype(np.int64)
+
+        if rising_counts is None:
+            return np.array([], dtype=int)
+
+        # which columns are active in the data *as stored*?
+        active_cols = np.where(rising_counts >= int(min_edges))[0].astype(int)
+
+        # map to GEOMETRY index space
+        if order == "geometry":
+            geom_idx = active_cols
+        elif order == "device" and pd2g is not None:
+            pd2g = np.asarray(pd2g, dtype=int)
+            geom_idx = pd2g[active_cols]
         else:
-            sel = order[:k]  # 'top'
-    else:
-        sel = np.array(sel_indices, dtype=int)
-        if sel.size != k:
-            print(
-                f"[{sess_name}] sel_indices has size {sel.size}, expected {k}. Skipping."
-            )
-            return
+            # no mapping info → best effort: return as-is
+            geom_idx = active_cols
 
-    ch_ids = [ids[i] for i in sel]
-    traces = rec_sess.get_traces(start_frame=s0, end_frame=s1, channel_ids=ch_ids)
-
-    stim_set_total = get_stimulated_channel_ids_from_geom(sess_folder, rec_sess)
-
-    # ---------- figure layout: grid + optional probe sidebar ----------
-    if show_probe:
-        fig = plt.figure(figsize=(20, 10))
-        gs = gridspec.GridSpec(1, 2, width_ratios=[5, 1], wspace=0.15)
-        gs_grid = gridspec.GridSpecFromSubplotSpec(
-            nrows, ncols, subplot_spec=gs[0, 0], wspace=0.05, hspace=0.15
-        )
-        axes = np.array(
-            [[plt.subplot(gs_grid[r, c]) for c in range(ncols)] for r in range(nrows)]
-        )
-        ax_probe = plt.subplot(gs[0, 1])
-    else:
-        fig, axes = plt.subplots(nrows, ncols, figsize=(16, 10), sharex=True)
-        ax_probe = None
-
-    axes = np.atleast_2d(axes)
-
-    # ----- plot the nrows×ncols traces -----
-    for k_idx, cid in enumerate(ch_ids):
-        r, c = divmod(k_idx, ncols)
-        r = nrows - 1 - r  # flip vertical indexing
-        ax = axes[r, c]
-        ych = traces[:, k_idx]
-        med = np.median(ych)
-        mad = np.median(np.abs(ych - med)) + 1e-9
-
-        ax.plot(t_rel, ych, lw=0.8)
-        ax.axhline(med, lw=0.3, alpha=0.3)
-
-        # dashed lines + shaded spans at stim onsets (from stim_data only)
-        if ts.size:
-            for t in ts:
-                ax.axvline(t, color="tab:blue", linestyle="--", lw=0.6, alpha=0.6)
-
-            gap_thresh = max(2.0 * bar, 0.010)
-            diffs = np.diff(ts)
-            cut = np.where(diffs > gap_thresh)[0]
-            starts = np.r_[0, cut + 1]
-            ends = np.r_[cut, ts.size - 1]
-            for a_i, b_i in zip(starts, ends):
-                ax.axvspan(
-                    ts[a_i], ts[b_i] + bar, facecolor="tab:blue", alpha=0.10, zorder=-1
-                )
-
-        stim_tag = " (Stim)" if cid in stim_set_total else ""
-        ax.set_title(f"{cid}{stim_tag}", fontsize=9)
-        ax.set_ylim(med - 6 * mad, med + 6 * mad)
-        if r < nrows - 1:
-            ax.tick_params(labelbottom=False)
-        if c > 0:
-            ax.tick_params(labelleft=False)
-
-    axes[-1, 0].set_xlabel(f"Time relative to stim #{stim_num} (s)")
-    axes[-1, 0].set_ylabel("µV")
-
-    fig.suptitle(
-        f"{sess_name} — {nrows}×{ncols} channels by geometry "
-        f"(pre {pre_s:.3f}s / post {post_s:.3f}s){name_suffix}",
-        y=0.995,
-    )
-
-    if show_probe and ax_probe is not None:
-        _probe_sidebar(
-            ax_probe,
-            rec_sess,
-            sel_indices=sel,
-            stim_ids=stim_set_total,
-            title="Probe (stim=red, viewed=blue box)",
-        )
-
-    fig.tight_layout()
-    suffix = f"_{name_suffix.strip('_')}" if name_suffix else ""
-    out_png = (
-        out_dir
-        / f"quicklook_grid_{sess_name}_stim{stim_num}_{nrows}x{ncols}{suffix}.png"
-    )
-    fig.savefig(out_png, dpi=180, bbox_inches="tight")
-    plt.close(fig)
-    print(f"[{sess_name}] grid quicklook -> {out_png}")
+        geom_idx = np.asarray(geom_idx, dtype=int)
+        # keep only valid indices
+        geom_idx = geom_idx[(geom_idx >= 0)]
+        return np.unique(geom_idx)
 
 
-def quicklook_stim_grid_all(
-    rec_sess,
+def plot_all_quads_for_session(
     sess_folder: Path,
+    geom_path: Path,
+    neural_stream: str,
+    stim_stream: str,
     out_dir: Path,
-    fs: float,
-    stim_num: int,
-    nrows: int = 4,
-    ncols: int = 4,
-    pre_s: float = 0.015,
-    post_s: float = 0.020,
-    bar_ms: float = 20,
-    dig_line=None,
-    stride: int | None = None,
-    show_probe=True,
+    duration_s: float = 1.0,
+    stim_npz_path: Path | None = None,
+    pre_s: float = 0.3,
+    post_s: float = 0.3,
+    probe_ratio: float = 2.5,   # ← probe/sidebar width relative to grid (larger = wider probe)
 ):
-    """Generate multiple 4x4 panels down the probe (top -> bottom).
-    stride: how many channels to move between panels (default = nrows*ncols for no overlap).
-            Use smaller (e.g., 8) for 50% overlap.
+    """
+    Layout matches quicklook_stim_grid:
+      - 1×2 figure: left = 4×4 traces, right = probe sidebar
+      - Channels grouped by geometry order (y, then x)
+      - Vertical flip of 4×4 grid (first channels at bottom row)
+      - Probe sidebar shows all contacts, circles likely 'stim' channels, and boxes the 16 shown
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    ids = list(rec_sess.get_channel_ids())
-    pos = rec_sess.get_probe().contact_positions
-    order = np.lexsort((pos[:, 0], pos[:, 1]))  # y then x
-    group = nrows * ncols
-    if stride is None:
-        stride = group  # no overlap by default
 
-    n = len(ids)
-    panel_idx = 0
-    for start in range(0, max(1, n - group + 1), stride):
-        sel = order[start : start + group]
-        if sel.size < group:
-            break
-        name_suffix = f"_p{panel_idx:02d}_ch{start:03d}-{start + group - 1:03d}"
-        quicklook_stim_grid(
-            rec_sess=rec_sess,
-            sess_folder=sess_folder,
-            out_dir=out_dir,
-            fs=fs,
-            stim_num=stim_num,
-            nrows=nrows,
-            ncols=ncols,
-            pre_s=pre_s,
-            post_s=post_s,
-            bar_ms=bar_ms,
-            dig_line=dig_line,
-            pick="top",
-            sel_indices=sel,
-            name_suffix=name_suffix,
-            show_probe=show_probe,
+    # --- geometry + reorder to geometry order (identity probe mapping) ---
+    geom = load_stim_geometry(geom_path)
+    perm = get_chanmap_perm_from_geom(geom)
+    probe = make_identity_probe_from_geom(geom, radius_um=5.0)
+
+    rec = read_intan_recording(sess_folder, stream_name=neural_stream)
+    rec = reorder_recording_to_geometry(rec, perm)
+    rec = rec.set_probe(probe, in_place=False)
+
+    fs = float(rec.get_sampling_frequency())
+    # SI versions differ: get_num_frames([seg]) vs get_num_samples()
+    try:
+        n_total = rec.get_num_frames()
+    except TypeError:
+        n_total = rec.get_num_frames(0) if hasattr(rec, "get_num_frames") else rec.get_num_samples()
+
+    locs = rec.get_channel_locations()
+    chan_ids = [str(x) for x in rec.get_channel_ids()]
+
+    if stim_npz_path is not None:
+        try:
+            t0 = _first_stim_time_from_npz(stim_npz_path) or 0.0
+        except Exception:
+            print(f"[WARN] could not read stim_npz at {stim_npz_path}; centering at t=0")
+            t0 = 0.0
+    else:
+        print("[WARN] stim_npz_path=None; centering at t=0 and skipping stim site coloring.")
+        t0 = 0.0
+
+    # window around stim
+    start = max(0, int(round((t0 - pre_s) * fs)))
+    end   = min(n_total, int(round((t0 + post_s) * fs)))
+    if end <= start:
+        end = min(n_total, start + int(round(max(0.3, pre_s + post_s) * fs)))
+
+    Xwin = rec.get_traces(start_frame=start, end_frame=end, return_in_uV=True)
+    t = (np.arange(Xwin.shape[0], dtype=float) + start) / fs - t0
+
+    # --- actual stim site detection from NPZ (geometry indices) ---
+    stim_idx = np.array([], dtype=int)
+    if stim_npz_path is not None:
+        try:
+            stim_idx = _detect_stim_channels_from_npz(
+                stim_npz_path, max_seconds=2.0, eps=1e-12, min_edges=1
+            )
+        except Exception as e:
+            print(f"[WARN] stim site detection failed: {e}")
+            stim_idx = np.array([], dtype=int)
+
+
+    # --- group channels by geometry order (y then x) into 16s ---
+    order = np.lexsort((locs[:, 0], locs[:, 1]))  # ascending y, then x
+    nrows, ncols = 4, 4
+    group = nrows * ncols
+    groups = [order[i:i + group] for i in range(0, order.size, group)]
+    # If the last group is short, we still render it (unused axes are blanked)
+
+    for gi, sel in enumerate(groups):
+        # --- figure: 1×2 (grid + probe) like quicklook, with adjustable probe width ---
+        fig = plt.figure(figsize=(20, 10), constrained_layout=True)
+        # left pane weight = 5, right/probe = probe_ratio (e.g., 2.5 → nice wide probe)
+        gs_main = gridspec.GridSpec(1, 2, figure=fig, width_ratios=[5, probe_ratio], wspace=0.15)
+        gs_grid = gridspec.GridSpecFromSubplotSpec(nrows, ncols, subplot_spec=gs_main[0, 0],
+                                                   wspace=0.05, hspace=0.15)
+        axes = np.array([[plt.subplot(gs_grid[r, c]) for c in range(ncols)] for r in range(nrows)])
+        ax_probe = plt.subplot(gs_main[0, 1])
+
+        # --- 4×4 traces, vertical flip like quicklook_stim_grid ---
+        for k_idx in range(group):
+            r0, c0 = divmod(k_idx, ncols)
+            r = nrows - 1 - r0  # flip vertically
+            ax = axes[r, c0]
+            if k_idx >= sel.size:
+                ax.axis("off")
+                continue
+            ch = int(sel[k_idx])
+            y = Xwin[:, ch]
+            med = np.median(y)
+            mad = np.median(np.abs(y - med)) + 1e-9
+
+            ax.plot(t, y, lw=0.8)
+            ax.axhline(med, lw=0.3, alpha=0.3)
+            ax.axvline(0.0, linestyle="--", linewidth=0.8)
+
+            ax.set_title(chan_ids[ch], fontsize=9)
+            ax.set_ylim(med - 6 * mad, med + 6 * mad)
+            # ↓ labels only on the true bottom row/left column after flipping
+            if r != nrows - 1:
+                ax.tick_params(labelbottom=False)
+            if c0 != 0:
+                ax.tick_params(labelleft=False)
+
+        axes[-1, 0].set_xlabel("Time (s) rel. first stim")
+        axes[-1, 0].set_ylabel("µV")
+
+        # --- probe sidebar using probeinterface (red = stim) ---
+        n_contacts = probe.get_contact_count()
+        contacts_colors = np.array(["none"] * n_contacts, dtype=object)
+        if stim_idx.size:
+            # clip in case of any stray indices
+            stim_idx_clipped = stim_idx[(stim_idx >= 0) & (stim_idx < n_contacts)]
+            contacts_colors[stim_idx_clipped] = "tab:red"
+
+        plot_probe(
+            probe,
+            ax=ax_probe,
+            with_contact_id=False,
+            contacts_colors=contacts_colors,
         )
-        panel_idx += 1
+
+        # blue box around the 16 channels shown in the 4×4 grid
+        xs, ys = locs[sel, 0], locs[sel, 1]
+        pad = max(6.0, 0.03 * float(max(xs.max() - xs.min(), ys.max() - ys.min())))
+        rect = patches.Rectangle(
+            (xs.min() - pad, ys.min() - pad),
+            (xs.max() - xs.min()) + 2 * pad,
+            (ys.max() - ys.min()) + 2 * pad,
+            linewidth=2.0, edgecolor="tab:blue", facecolor="none", zorder=4
+        )
+        ax_probe.add_patch(rect)
+
+        # set aspect/limits AFTER plot_probe (it can reset them)
+        ax_probe.set_aspect("equal", adjustable="box")
+        x_min, x_max = float(locs[:, 0].min()), float(locs[:, 0].max())
+        y_min, y_max = float(locs[:, 1].min()), float(locs[:, 1].max())
+        mx, my = 0.06 * (x_max - x_min + 1e-6), 0.06 * (y_max - y_min + 1e-6)
+        ax_probe.set_xlim(x_min - mx, x_max + mx)
+        ax_probe.set_ylim(y_min - my, y_max + my)
+        ax_probe.set_xticks([]); ax_probe.set_yticks([])
+
+        n_stim = int(stim_idx.size)
+        if hasattr(fig, "set_constrained_layout_pads"):
+            # inches between elements + relative hspace/wspace
+            fig.set_constrained_layout_pads(w_pad=0.06, h_pad=0.06, wspace=0.20, hspace=0.30)
+
+        st = fig.suptitle(
+            f"{sess_folder.name} — {neural_stream} (panel {gi:02d}) • stim sites: {n_stim}",
+            y=1.02, fontsize=12
+        )
+
+        out_png = out_dir / f"{sess_folder.name}_probe+4x4_panel{gi:02d}.png"
+        fig.savefig(out_png, dpi=180, bbox_inches="tight", bbox_extra_artists=[st])
+        plt.close(fig)

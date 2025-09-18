@@ -17,7 +17,7 @@ from .python.functions.br_preproc import (
     load_UA_mapping_from_excel,
     apply_ua_mapping_properties,
     build_blackrock_bundle,
-    save_bundle_npz,
+    save_UA_bundle_npz,
     threshold_mua_rates,
 )
 
@@ -29,10 +29,15 @@ from .python.functions.intan_preproc import (
     local_cm_reference,
     save_recording,
     list_intan_sessions,
+    extract_and_save_stim_npz,
+    extract_and_save_other_streams_npz,
+    get_chanmap_perm_from_geom,
+    make_identity_probe_from_geom,
+    reorder_recording_to_geometry,
 )
 
 # plotting
-from .python.plotting.plotting import quicklook_stim_grid_all
+from .python.plotting.plotting import quicklook_stim_grid_all, plot_all_quads_for_session
 
 __all__ = [
     # params
@@ -42,7 +47,7 @@ __all__ = [
     "list_br_sessions", "ua_excel_path",
     "load_ns6_spikes", "load_ns5_aux", "load_ns2_digi",
     "load_UA_mapping_from_excel", "apply_ua_mapping_properties",
-    "build_blackrock_bundle", "save_bundle_npz",
+    "build_blackrock_bundle", "save_UA_bundle_npz",
     "threshold_mua_rates",
     # Intan
     "read_intan_recording", "load_stim_geometry",
@@ -50,6 +55,12 @@ __all__ = [
     "local_cm_reference",
     "save_recording",
     "list_intan_sessions",
+    "extract_and_save_stim_npz",
+    "extract_and_save_other_streams_npz",
+    "get_chanmap_perm_from_geom",
+    "make_identity_probe_from_geom",
+    "reorder_recording_to_geometry",
     # plotting
     "quicklook_stim_grid_all",
+    "plot_all_quads_for_session",
 ]

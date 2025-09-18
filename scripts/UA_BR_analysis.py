@@ -19,7 +19,7 @@ from RCP_analysis import (
     # BR/UA helpers
     list_br_sessions, ua_excel_path, load_ns6_spikes,
     load_UA_mapping_from_excel, apply_ua_mapping_properties,
-    build_blackrock_bundle, save_bundle_npz, threshold_mua_rates, # Not sure why this isn't color coded
+    build_blackrock_bundle, save_UA_bundle_npz, threshold_mua_rates, # Not sure why this isn't color coded
 )
 
 # INTAN HELPERS HERE
@@ -51,8 +51,8 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
     if ua_map is None:
         raise RuntimeError("UA mapping required for mapping on NS6.")
 
-    bundles_out = OUT_BASE / "bundles"
-    checkpoint_out = OUT_BASE / "checkpoints/UA/"
+    bundles_out = OUT_BASE / "bundles" / "UA"
+    checkpoint_out = OUT_BASE / "checkpoints" / "UA"
     checkpoint_out.mkdir(parents=True, exist_ok=True)
     saved_paths: list[Path] = []
 
@@ -61,7 +61,7 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
         print(f"=== Session: {sess.name} ===")
     
         bundle = build_blackrock_bundle(sess)
-        save_bundle_npz(sess.name, bundle, bundles_out)
+        save_UA_bundle_npz(sess.name, bundle, bundles_out)
 
         rec_ns6 = load_ns6_spikes(sess)
         apply_ua_mapping_properties(rec_ns6, ua_map["mapped_nsp"])  # metadata only
