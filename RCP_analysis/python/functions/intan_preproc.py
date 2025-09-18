@@ -85,6 +85,43 @@ def read_intan_recording(
         rec = spre.astype(rec, dtype="int16")
     return rec
 
+def load_stim_triggers_from_npz(stim_npz_path: Path):
+    """
+    Returns:
+      trigs : np.ndarray[int64]              # rising edges (or event starts), shape (n_events,)
+      blocks: np.ndarray[int64]              # block boundaries as indices into trigs (len = n_blocks+1)
+      meta  : dict | None                    # optional, None if meta.json missing
+    """
+    stim_npz_path = Path(stim_npz_path)
+    trigs = None
+    blocks = None
+    meta = None
+
+    # np.load works because we stored .npy members in a zip (it strips the .npy suffix for keys)
+    with np.load(stim_npz_path, allow_pickle=False) as z:
+        # These keys were written by extract_and_save_stim_npz()
+        if "trigger_starts" in z:
+            trigs = z["trigger_starts"].astype(np.int64)
+        elif "trigger_pairs" in z:
+            # fallback: if only pairs exist, use the first column as "starts"
+            trigs = z["trigger_pairs"][:, 0].astype(np.int64)
+        else:
+            trigs = np.zeros((0,), dtype=np.int64)
+
+        if "block_boundaries" in z:
+            blocks = z["block_boundaries"].astype(np.int64)
+
+    # try to read meta.json (nice-to-have)
+    try:
+        import json, zipfile, io
+        with zipfile.ZipFile(stim_npz_path, "r") as zf:
+            with zf.open("meta.json") as f:
+                meta = json.load(f)
+    except Exception:
+        meta = None
+
+    return trigs, blocks, meta
+
 
 # ----------------------
 # Preprocessing

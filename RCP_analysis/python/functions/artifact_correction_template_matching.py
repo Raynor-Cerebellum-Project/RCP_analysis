@@ -15,8 +15,8 @@ from spikeinterface.preprocessing.basepreprocessor import BasePreprocessor, Base
 @dataclass
 class ArtifactParams:
     # Windowing around triggers
-    ms_before: float = 0.5
-    ms_after: float = 3.0
+    samples_before: int = 13
+    samples_after: int = 15
 
     # Global drift removal
     rolling_median_ms: float = 15.0
@@ -167,8 +167,8 @@ class RemoveStimPCARecording(BasePreprocessor):
 
         self.params = params or ArtifactParams()
         self.fs = float(recording.get_sampling_frequency())
-        self.nbefore = int(round(self.params.ms_before * self.fs / 1000.0))
-        self.nafter  = int(round(self.params.ms_after  * self.fs / 1000.0))
+        self.nbefore = int(round(self.params.samples_before))
+        self.nafter  = int(round(self.params.samples_after))
         self.win_len = self.nbefore + self.nafter + 1
 
         nseg = recording.get_num_segments()

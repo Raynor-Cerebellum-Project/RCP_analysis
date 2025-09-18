@@ -8,7 +8,7 @@ from probeinterface.plotting import plot_probe
 import spikeinterface as si
 
 # import helpers from sibling modules
-from ..functions.intan_preproc import load_stim_geometry, get_chanmap_perm_from_geom, reorder_recording_to_geometry, read_intan_recording, make_identity_probe_from_geom
+from ..functions.intan_preproc import load_stim_geometry, get_chanmap_perm_from_geom, reorder_recording_to_geometry, read_intan_recording, make_identity_probe_from_geom, load_stim_triggers_from_npz
 
 def get_stimulated_channel_ids_from_geom(sess_folder: Path, rec_geom) -> set[str]:
     """
@@ -187,24 +187,23 @@ def _load_cached_recording(ac_dir: Path):
 def plot_all_quads_for_session(
     sess_folder: Path,
     geom_path: Path,
-    neural_stream: str,      # kept for title consistency
+    neural_stream: str,
     stim_stream: str,
     out_dir: Path,
-    duration_s: float = 1.0, # unused but kept for API compatibility
+    duration_s: float = 1.0,
     stim_npz_path: Path | None = None,
     pre_s: float = 0.3,
     post_s: float = 0.3,
-    probe_ratio: float = 2.5,
+    probe_ratio: float = 0.4,
     preproc_root: Path = Path("/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis/Nike/NRR_RW001/results/checkpoints"),
+    show_pca_windows: bool = True,
+    show_blocks: bool = True,
+    template_samples_before: float | None = None,
+    template_samples_after: float | None = None,
 ):
-    """
-    Now plots from artifact-corrected (and locally referenced) checkpoints in:
-      <preproc_root>/NPRW/pp_*__AC_<session_name>
-    If the saved recording lacks probe geometry, we set it from `geom_path`.
-    """
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1) find & load the AC checkpoint
+    # 1) load AC checkpoint
     ac_dir = _find_ac_dir_for_session(preproc_root, sess_folder.name)
     if ac_dir is None:
         raise FileNotFoundError(
@@ -213,7 +212,7 @@ def plot_all_quads_for_session(
         )
     rec = _load_cached_recording(ac_dir)
 
-    # 2) ensure probe is present (older saves may not embed it)
+    # 2) ensure probe present / geometry order
     try:
         probe = rec.get_probe()
     except Exception:
@@ -225,14 +224,14 @@ def plot_all_quads_for_session(
 
     fs = float(rec.get_sampling_frequency())
     try:
-        n_total = rec.get_num_frames()        # newer SI
+        n_total = rec.get_num_frames()
     except TypeError:
         n_total = rec.get_num_frames(0) if hasattr(rec, "get_num_frames") else rec.get_num_samples()
 
     locs = rec.get_channel_locations()
     chan_ids = [str(x) for x in rec.get_channel_ids()]
 
-    # 3) choose time window around first stim
+    # 3) pick window around first stim
     if stim_npz_path is not None:
         try:
             t0 = _first_stim_time_from_npz(stim_npz_path) or 0.0
@@ -248,20 +247,61 @@ def plot_all_quads_for_session(
     if end <= start:
         end = min(n_total, start + int(round(max(0.3, pre_s + post_s) * fs)))
 
+    # MISSING BEFORE: get traces and timebase
     Xwin = rec.get_traces(start_frame=start, end_frame=end, return_in_uV=True)
     t = (np.arange(Xwin.shape[0], dtype=float) + start) / fs - t0
 
-    # 4) stim-channel highlighting (optional)
+    # --- Load triggers/blocks + build visible trigger times
+    trig_t = np.array([], dtype=float)
+    blocks = None
+    if stim_npz_path is not None:
+        try:
+            trigs, blocks, _meta = load_stim_triggers_from_npz(stim_npz_path)
+            if trigs is None:
+                trigs = np.zeros((0,), dtype=np.int64)
+            trig_t = trigs.astype(float) / fs - t0  # seconds relative to t0
+        except Exception as e:
+            print(f"[WARN] could not load trig/block info: {e}")
+            trig_t = np.array([], dtype=float)
+            blocks = None
+
+    # Template window (ms) – prefer explicit args, else fall back to global params if present
+    if template_samples_before is None or template_samples_after is None:
+        tb, ta = 15, 15   # samples (fallback)
+    else:
+        tb, ta = int(template_samples_before), int(template_samples_after)
+
+    tb_s, ta_s = tb / fs, ta / fs   # samples -> seconds
+
+    if trig_t.size:
+        vis = (trig_t >= t[0] - tb_s) & (trig_t <= t[-1] + ta_s)
+        trig_t_vis = trig_t[vis]
+    else:
+        trig_t_vis = np.array([], dtype=float)
+
+    # --- Stim-channel highlighting (optional)
     stim_idx = np.array([], dtype=int)
     if stim_npz_path is not None:
         try:
             stim_idx = _detect_stim_channels_from_npz(
-                stim_npz_path, max_seconds=2.0, eps=1e-12, min_edges=1
+                stim_npz_path, max_seconds=None, eps=1e-12, min_edges=1
             )
         except Exception as e:
             print(f"[WARN] stim site detection failed: {e}")
 
-    # 5) group channels by geometry order into 4×4 blocks and plot
+    # --- Build block edge times for shading (if any)
+    block_edges_t = None
+    if show_blocks and (blocks is not None) and (trig_t.size > 0) and (blocks.size >= 2):
+        edges = []
+        for bi in blocks:
+            if 0 <= bi < trig_t.size:
+                edges.append(trig_t[bi])
+            elif bi == trig_t.size and trig_t.size > 0:
+                # sentinel a bit after the last trigger
+                edges.append(trig_t[-1] + (tb_s + ta_s))
+        block_edges_t = np.array(sorted(edges), dtype=float)
+
+    # 5) group channels by geometry order and plot
     order = np.lexsort((locs[:, 0], locs[:, 1]))  # ascending y, then x
     nrows, ncols = 4, 4
     group = nrows * ncols
@@ -286,9 +326,33 @@ def plot_all_quads_for_session(
             med = np.median(y)
             mad = np.median(np.abs(y - med)) + 1e-9
 
-            ax.plot(t, y, lw=0.8)
-            ax.axhline(med, lw=0.3, alpha=0.3)
-            ax.axvline(0.0, linestyle="--", linewidth=0.8)
+            # --- Block shading (behind trace)
+            if block_edges_t is not None and block_edges_t.size >= 2:
+                x0, x1 = float(t[0]), float(t[-1])
+                edges = np.concatenate([[x0], block_edges_t, [x1]])
+                for si_ in range(0, len(edges) - 1):
+                    a, b = edges[si_], edges[si_ + 1]
+                    if b <= x0 or a >= x1:
+                        continue
+                    a = max(a, x0); b = min(b, x1)
+                    if si_ % 2 == 1:
+                        ax.axvspan(a, b, color="0.92", alpha=0.6, zorder=0)
+
+            # --- Trace + reference lines
+            ax.plot(t, y, lw=0.8, zorder=1)
+            ax.axhline(med, lw=0.3, alpha=0.3, zorder=1)
+            ax.axvline(0.0, linestyle="--", linewidth=0.8, zorder=2)
+
+            # --- PCA template windows
+            if show_pca_windows and trig_t_vis.size:
+                for tt in trig_t_vis:
+                    a = tt - tb_s
+                    b = tt + ta_s
+                    if b < t[0] or a > t[-1]:
+                        continue
+                    ax.axvspan(max(a, t[0]), min(b, t[-1]),
+                               color="tab:green", alpha=0.15, lw=0, zorder=0.5)
+                    ax.axvline(tt, color="tab:green", lw=0.6, alpha=0.6, zorder=2)
 
             ax.set_title(chan_ids[ch], fontsize=9)
             ax.set_ylim(med - 6 * mad, med + 6 * mad)
@@ -300,14 +364,15 @@ def plot_all_quads_for_session(
         axes[-1, 0].set_xlabel("Time (s) rel. first stim")
         axes[-1, 0].set_ylabel("µV")
 
+        # --- probe coloring for stim sites
         n_contacts = probe.get_contact_count()
         contacts_colors = np.array(["none"] * n_contacts, dtype=object)
         if stim_idx.size:
             stim_idx_clipped = stim_idx[(stim_idx >= 0) & (stim_idx < n_contacts)]
             contacts_colors[stim_idx_clipped] = "tab:red"
-
         plot_probe(probe, ax=ax_probe, with_contact_id=False, contacts_colors=contacts_colors)
 
+        # blue box around the 16 channels shown
         xs, ys = locs[sel, 0], locs[sel, 1]
         pad = max(6.0, 0.03 * float(max(xs.max() - xs.min(), ys.max() - ys.min())))
         rect = patches.Rectangle(

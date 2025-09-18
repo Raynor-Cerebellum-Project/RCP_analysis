@@ -4,10 +4,11 @@
 This repository contains the analysis pipeline for processing, quantifying, and comparing stimulation trials from the Raynor experiments.  
 
 The workflow supports:
-- Behavioral trial segmentation with and without stimulation  
-- Calculation of behavioral metrics (endpoint error, velocity, variability, etc.) - TODO: Convert from MATLAB
+- Calculation of behavioral metrics- TODO: Convert from MATLAB
 - Visualization of stimulation on behavior
-- Neural data preprocessing (artifact correction, template subtraction) - TODO: Convert from MATLAB
+- Neural data preprocessing for Utah Array (UA) and Neuropixel read/write probe (NPRW)
+- Artifact correction using template subtraction of stimulation artifacts
+- Plotting functions
 
 [Summary of recorded signals](https://docs.google.com/document/d/1C4-xSWL8n7P_mMrYqlUxQR6blz9WIHDU4B7O9bxhMnE/edit?tab=t.0)
 
@@ -34,7 +35,7 @@ The folder structure is as follows:
 └── README.md
 ```
 
-data and outputs can be chosen to be other directories in config
+data and outputs can be chosen to be other directories in config.
 
 ---
 

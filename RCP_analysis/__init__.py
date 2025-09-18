@@ -34,6 +34,7 @@ from .python.functions.intan_preproc import (
     get_chanmap_perm_from_geom,
     make_identity_probe_from_geom,
     reorder_recording_to_geometry,
+    load_stim_triggers_from_npz,
 )
 
 # artifact correction (PCA template subtraction) — requires list_triggers now
@@ -70,7 +71,7 @@ __all__ = [
     "local_cm_reference", "save_recording", "list_intan_sessions",
     "extract_and_save_stim_npz", "extract_and_save_other_streams_npz",
     "get_chanmap_perm_from_geom", "make_identity_probe_from_geom",
-    "reorder_recording_to_geometry",
+    "reorder_recording_to_geometry", "load_stim_triggers_from_npz",
 
     # plotting
     "plot_all_quads_for_session",

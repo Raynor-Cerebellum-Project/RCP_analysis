@@ -25,6 +25,7 @@ from RCP_analysis import (
     get_chanmap_perm_from_geom,
     make_identity_probe_from_geom,
     reorder_recording_to_geometry,
+    load_stim_triggers_from_npz,
 )
 
 # Package API
@@ -44,6 +45,8 @@ def plot_selected_sessions(
     post_s: float = 0.30,
     chunk_s: float = 60.0,
     preproc_root: Path = Path("/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis/Nike/NRR_RW001/results/checkpoints"),
+    template_samples_before: float | None = None,
+    template_samples_after: float | None = None,
 ):
     """
     Plot 4×4 panels + probe for selected sessions using the artifact-corrected checkpoints.
@@ -100,9 +103,12 @@ def plot_selected_sessions(
                 pre_s=pre_s,
                 post_s=post_s,
                 preproc_root=preproc_root,
+                template_samples_before=template_samples_before,
+                template_samples_after=template_samples_after,
             )
         except Exception as e:
             print(f"[WARN] plotting failed for {sess.name}: {e}")
+        print(f"[Plot] Plotted session #{i}: {sess.name}")
 
 # def plot_selected_sessions(
 #     indices=(4, 5),
@@ -210,46 +216,9 @@ RADII: Tuple[float, float] = (inner, outer)
 params = ArtifactParams(
     pca_k=3, exclude_first_n_for_pca=1, first_pulse_special=True,
     rolling_median_ms=15, gaussian_sigma_ms=5, gaussian_len_ms=31,
-    ms_before=0.6, ms_after=3.2, scale_amplitude=True,
+    samples_before=15, samples_after=15, scale_amplitude=True,
     interp_ramp=True, ramp_tail_ms=1.0, ramp_fraction=1.0,
 )
-
-def load_stim_triggers_from_npz(stim_npz_path: Path):
-    """
-    Returns:
-      trigs : np.ndarray[int64]              # rising edges (or event starts), shape (n_events,)
-      blocks: np.ndarray[int64]              # block boundaries as indices into trigs (len = n_blocks+1)
-      meta  : dict | None                    # optional, None if meta.json missing
-    """
-    stim_npz_path = Path(stim_npz_path)
-    trigs = None
-    blocks = None
-    meta = None
-
-    # np.load works because we stored .npy members in a zip (it strips the .npy suffix for keys)
-    with np.load(stim_npz_path, allow_pickle=False) as z:
-        # These keys were written by extract_and_save_stim_npz()
-        if "trigger_starts" in z:
-            trigs = z["trigger_starts"].astype(np.int64)
-        elif "trigger_pairs" in z:
-            # fallback: if only pairs exist, use the first column as "starts"
-            trigs = z["trigger_pairs"][:, 0].astype(np.int64)
-        else:
-            trigs = np.zeros((0,), dtype=np.int64)
-
-        if "block_boundaries" in z:
-            blocks = z["block_boundaries"].astype(np.int64)
-
-    # try to read meta.json (nice-to-have)
-    try:
-        import json, zipfile, io
-        with zipfile.ZipFile(stim_npz_path, "r") as zf:
-            with zf.open("meta.json") as f:
-                meta = json.load(f)
-    except Exception:
-        meta = None
-
-    return trigs, blocks, meta
 
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
@@ -259,7 +228,10 @@ si.set_global_job_kwargs(**global_job_kwargs)
 # ==============================
 def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[int] = None):
     
-    plot_selected_sessions(indices=(2), pre_s=0.05, post_s=0.15)
+    plot_selected_sessions(indices=(2), pre_s=0.02, post_s=0.12, 
+        template_samples_before = params.samples_before,
+        template_samples_after = params.samples_after
+    )
     
     # 1) Load geometry & mapping
     geom = load_stim_geometry(GEOM_PATH)
