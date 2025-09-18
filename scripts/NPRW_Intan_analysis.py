@@ -55,7 +55,7 @@ def plot_selected_sessions(
     perm = get_chanmap_perm_from_geom(geom)
 
     # where to write figures + find/create stim bundles
-    figs_dir = OUT_BASE / "figs" / "NPRW"
+    figs_dir = OUT_BASE / "figures" / "NPRW"
     figs_dir.mkdir(parents=True, exist_ok=True)
     bundles_root = OUT_BASE / "bundles" / "NPRW"
     bundles_root.mkdir(parents=True, exist_ok=True)
@@ -135,11 +135,11 @@ GEOM_PATH = (
 INTAN_STREAM = getattr(PARAMS, "neural_data_stream", "RHS2000 amplifier channel")
 STIM_STREAM = getattr(PARAMS, "stim_data_stream", "Stim channel")
 
-# === Local reference annulus (µm) ===
+# === Local reference radii (µm) ===
 probe_cfg = (PARAMS.probes or {}).get("NPRW", {})
 inner = float(probe_cfg.get("local_radius_inner", 30.0))
 outer = float(probe_cfg.get("local_radius_outer", 150.0))
-ANNULUS: Tuple[float, float] = (inner, outer)
+RADII: Tuple[float, float] = (inner, outer)
 
 # Artifact correction parameters
 params = TemplateParams(
@@ -208,10 +208,10 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
         rec = rec.set_probe(probe, in_place=False)
 
         # 3) Local CMR (inner/outer radius)
-        rec_ref = local_cm_reference(rec, freq_min=float(PARAMS.highpass_hz), inner_outer_radius_um=ANNULUS)
+        rec_ref = local_cm_reference(rec, freq_min=float(PARAMS.highpass_hz), inner_outer_radius_um=RADII)
 
         # Save preprocessed session
-        out_dir = checkpoint_out / f"pp_local_{int(ANNULUS[0])}_{int(ANNULUS[1])}__{sess.name}"
+        out_dir = checkpoint_out / f"pp_local_{int(RADII[0])}_{int(RADII[1])}__{sess.name}"
         save_recording(rec_ref, out_dir)
         print(f"[{sess.name}] saved preprocessed -> {out_dir}")
 
@@ -224,12 +224,12 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
             stim_npz_path=stim_npz_path,
             params=params,
             mode="pca",
-            channels=None,           # or a subset like range(128)
+            channels=None,
             n_jobs=int(PARAMS.parallel_jobs),
         )
 
         # Save the artifact-corrected recording as the checkpoint for step 5
-        corr_dir = checkpoint_out / f"pp_local_{int(ANNULUS[0])}_{int(ANNULUS[1])}__AC_{sess.name}"
+        corr_dir = checkpoint_out / f"pp_local_{int(RADII[0])}_{int(RADII[1])}__AC_{sess.name}"
         save_recording(rec_corr, corr_dir)
         print(f"[ArtCorr] saved artifact-corrected -> {corr_dir}")
         del rec_ref, rec_corr
