@@ -15,27 +15,26 @@ from RCP_analysis import load_experiment_params, resolve_data_root
 
 # Intan helpers
 from RCP_analysis import (
-    load_stim_geometry,
+    # PP
     read_intan_recording,
     local_cm_reference,
     save_recording,
     list_intan_sessions,
-    extract_and_save_stim_npz,
     extract_and_save_other_streams_npz,
+    # Probes
+    load_stim_geometry,
     get_chanmap_perm_from_geom,
     make_identity_probe_from_geom,
     reorder_recording_to_geometry,
+    # Stim
+    extract_and_save_stim_npz,
     load_stim_triggers_from_npz,
+    remove_stim_pca, ArtifactParams
 )
 
 # Package API
 from RCP_analysis import (
     resolve_output_root, resolve_probe_geom_path, plot_all_quads_for_session, 
-)
-
-from RCP_analysis import (
-    #correct_recording_with_stim_npz, TemplateParams,
-    remove_stim_pca, ArtifactParams
 )
 
 # ---- PLOT-ONLY ENTRYPOINT ----------------------------------------------------
@@ -228,7 +227,7 @@ si.set_global_job_kwargs(**global_job_kwargs)
 # ==============================
 def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[int] = None):
     
-    plot_selected_sessions(indices=(2), pre_s=0.02, post_s=0.12, 
+    plot_selected_sessions(indices=(2), pre_s=0.005, post_s=0.01, 
         template_samples_before = params.samples_before,
         template_samples_after = params.samples_after
     )
@@ -280,6 +279,8 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
         rec = read_intan_recording(sess, stream_name=INTAN_STREAM)
         rec = reorder_recording_to_geometry(rec, perm)
         rec = rec.set_probe(probe, in_place=False)
+        
+        
         
         # import cProfile, pstats, io, time
 

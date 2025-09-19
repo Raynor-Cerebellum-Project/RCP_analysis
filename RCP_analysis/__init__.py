@@ -35,19 +35,15 @@ from .python.functions.intan_preproc import (
     make_identity_probe_from_geom,
     reorder_recording_to_geometry,
     load_stim_triggers_from_npz,
+    StimTriggerConfig,
+    StimTriggerResult,
+    extract_stim_triggers_and_blocks,
 )
 
 # artifact correction (PCA template subtraction) — requires list_triggers now
 from .python.functions.artifact_correction_template_matching import (
     remove_stim_pca,
     ArtifactParams,
-)
-
-# stim preprocessing (trigger detection & block grouping)
-from .python.functions.stim_preproc import (
-    StimTriggerConfig,
-    StimTriggerResult,
-    extract_stim_triggers_and_blocks,
 )
 
 # plotting

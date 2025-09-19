@@ -8,6 +8,8 @@ import spikeinterface.extractors as se
 import spikeinterface.preprocessing as spre
 from probeinterface import Probe
 from .stim_preproc import StimTriggerConfig, extract_stim_triggers_and_blocks
+from dataclasses import dataclass
+
 
 # ----------------------
 # Geometry / mapping
@@ -65,7 +67,30 @@ def make_probe_from_geom(geom: Dict[str, np.ndarray], radius_um: float = 5.0) ->
 
     return pr
 
+def get_chanmap_perm_from_geom(geom: dict) -> np.ndarray:
+    # geometry→device 0-based indices (normalized in loader)
+    if "device_index_0based" in geom:
+        return np.asarray(geom["device_index_0based"], int).ravel()
+    if "device_index_1based" in geom:
+        return np.asarray(geom["device_index_1based"], int).ravel() - 1
+    raise ValueError("No chanmap in geometry.")
 
+def make_identity_probe_from_geom(geom: dict, radius_um: float = 5.0):
+    pr = make_probe_from_geom(geom, radius_um=radius_um)
+    # Identity: channel i ↔ contact i (after you reorder the recording)
+    pr.set_device_channel_indices(np.arange(pr.get_contact_count(), dtype=int))
+    return pr
+
+def reorder_recording_to_geometry(rec: si.BaseRecording, perm: np.ndarray) -> si.BaseRecording:
+    ids = list(rec.get_channel_ids())
+    if len(ids) != perm.size:
+        raise ValueError(f"Perm length {perm.size} != {len(ids)} channels.")
+    ordered_ids = [ids[i] for i in perm]        # put data into geometry order
+    try:
+        return rec.channel_slice(channel_ids=ordered_ids)
+    except Exception:
+        from spikeinterface.core import ChannelSliceRecording
+        return ChannelSliceRecording(rec, channel_ids=ordered_ids)
 
 # ----------------------
 # Intan loading
@@ -86,24 +111,14 @@ def read_intan_recording(
     return rec
 
 def load_stim_triggers_from_npz(stim_npz_path: Path):
-    """
-    Returns:
-      trigs : np.ndarray[int64]              # rising edges (or event starts), shape (n_events,)
-      blocks: np.ndarray[int64]              # block boundaries as indices into trigs (len = n_blocks+1)
-      meta  : dict | None                    # optional, None if meta.json missing
-    """
     stim_npz_path = Path(stim_npz_path)
     trigs = None
     blocks = None
+    pulse_sizes = None
     meta = None
 
-    # np.load works because we stored .npy members in a zip (it strips the .npy suffix for keys)
     with np.load(stim_npz_path, allow_pickle=False) as z:
-        # These keys were written by extract_and_save_stim_npz()
-        if "trigger_starts" in z:
-            trigs = z["trigger_starts"].astype(np.int64)
-        elif "trigger_pairs" in z:
-            # fallback: if only pairs exist, use the first column as "starts"
+        if "trigger_pairs" in z:
             trigs = z["trigger_pairs"][:, 0].astype(np.int64)
         else:
             trigs = np.zeros((0,), dtype=np.int64)
@@ -111,17 +126,18 @@ def load_stim_triggers_from_npz(stim_npz_path: Path):
         if "block_boundaries" in z:
             blocks = z["block_boundaries"].astype(np.int64)
 
-    # try to read meta.json (nice-to-have)
+        if "pulse_sizes" in z:
+            pulse_sizes = z["pulse_sizes"].astype(np.int64)
+
+    # try meta.json
     try:
-        import json, zipfile, io
         with zipfile.ZipFile(stim_npz_path, "r") as zf:
             with zf.open("meta.json") as f:
                 meta = json.load(f)
     except Exception:
         meta = None
 
-    return trigs, blocks, meta
-
+    return trigs, blocks, pulse_sizes, meta
 
 # ----------------------
 # Preprocessing
@@ -180,111 +196,164 @@ def _append_npz_arrays(npz_path, arrays_dict):
                 np.save(buf, arr)
                 zf.writestr(f"{key}.npy", buf.getvalue())
 
+# ----------------------
+# Stim stuff
+# ----------------------
+
+@dataclass
+class StimTriggerConfig:
+    """
+    Parameters that affect repeat (block) grouping.
+    buffer_samples: The buffer used on each side of a pulse when building snippets (in SAMPLES)
+                    Same as template_params.buffer in MATLAB
+    """
+    buffer_samples: int
+
+@dataclass
+class StimTriggerResult:
+    active_channels: np.ndarray            # (n_active_channels,)
+    trigger_pairs: np.ndarray              # (n_events, 2) [start_sample, end_sample]
+    block_boundaries: np.ndarray           # (n_blocks+1,) event indices; blocks are [i:k) in event index space
+    pulse_sizes: np.ndarray                # (n_events,) length of each pulse in samples
+
+def extract_stim_triggers_and_blocks(
+    stim_data: np.ndarray,   # (n_channels, n_samples)
+) -> StimTriggerResult:
+    """
+    Detect stimulation pulses and group them into repeating blocks.
+
+    Parameters
+    ----------
+    stim_data : array, shape (n_channels, n_samples)
+        Raw stim stream (as saved from Intan/USB ADC/etc.). Zero means baseline.
+    fs : float
+        Sampling rate (Hz).
+    cfg : StimTriggerConfig
+        Configuration including buffer size in SAMPLES (same semantics as MATLAB template_params.buffer).
+
+    Returns
+    -------
+    StimTriggerResult
+    """
+    if stim_data.ndim != 2:
+        raise ValueError("stim_data must be (n_channels, n_samples)")
+
+    # 1) return active channels
+    active_channels = np.flatnonzero((stim_data != 0).any(axis=1))
+    if active_channels.size == 0:
+        # nothing to do
+        return StimTriggerResult(
+            active_channels=np.array([], dtype=int),
+            trigger_pairs=np.empty((0, 2), dtype=np.int64),
+            block_boundaries=np.array([0], dtype=int),
+            pulse_sizes=np.array([], dtype=int),
+        )
+    det_ch = int(active_channels[0])
+
+    stim_signal = np.asarray(stim_data[det_ch, :], dtype=np.float64)
+    if stim_signal.size < 2:
+        return StimTriggerResult(
+            active_channels=active_channels,
+            trigger_pairs=np.empty((0, 2), dtype=np.int64),
+            block_boundaries=np.array([0], dtype=int),
+            pulse_sizes=np.array([], dtype=int),
+        )
+
+    # 2) edge detection
+    diff = np.diff(stim_signal)
+    falling_edge = np.flatnonzero(diff < 0) + 1
+    rising_edge   = np.flatnonzero(diff > 0) + 1
+
+    # For each falling edge, find the first subsequent return-to-zero
+    rz = []
+    for idx in falling_edge:
+        end_of_pulse = np.flatnonzero(stim_signal[idx:] == 0)
+        if end_of_pulse.size:
+            rz.append(idx + end_of_pulse[0])  # absolute index where it returns to zero
+    rz = np.asarray(rz, dtype=np.int64)
+
+    beg = falling_edge
+    if rising_edge.size > falling_edge.size:
+        beg = rising_edge
+    beg = beg[::2] # two falling edgers per biphasic pulse
+    end_ = rz[1::2] # take every second return-to-zero, since it's biphasic
+
+    n = int(min(beg.size, end_.size)) # number of pulses
+    if n == 0:
+        trigger_pairs = np.empty((0, 2), dtype=np.int64)
+        pulse_sizes = np.array([], dtype=int)
+    else:
+        trigger_pairs = np.column_stack([beg[:n], end_[:n]]).astype(np.int64)
+        pulse_sizes = trigger_pairs[:, 1] - trigger_pairs[:, 0]
+
+    # --- 3) block (repeat) boundaries
+    if trigger_pairs.shape[0] == 0:
+        block_boundaries = np.array([0], dtype=int)
+    else:
+        # use median pulse size as representative
+        pulse_size_ref = int(np.median(pulse_sizes))
+        repeat_gap_threshold = 3 * pulse_size_ref
+        starts = trigger_pairs[:, 0]
+        gaps = np.diff(starts)
+        cut_points = np.flatnonzero(gaps > repeat_gap_threshold) + 1
+        block_boundaries = np.concatenate([[0], cut_points, [trigger_pairs.shape[0]]]).astype(int)
+
+    return StimTriggerResult(
+        active_channels=active_channels,
+        trigger_pairs=trigger_pairs,
+        block_boundaries=block_boundaries,
+        pulse_sizes=pulse_sizes,
+    )
+
 def extract_and_save_stim_npz(
     sess_folder: Path,
     out_root: Path,
     stim_stream_name: str = "Stim channel",
-    chunk_s: float = 60.0,
     chanmap_perm: np.ndarray | None = None,
-    buffer_ms: float = 0.6,         # << how much pre/post “buffer” (samples) your MATLAB code used
-    detect_on_channel: int | None = None,  # << optionally force detection channel
 ):
     bundle_dir = out_root / f"{sess_folder.name}_Intan_bundle"
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
     rec = read_intan_recording(sess_folder, stream_name=stim_stream_name)
+    fs = float(rec.get_sampling_frequency())
 
-    # Guarded reordering (only if counts match)
+    # reorder if needed
     if chanmap_perm is not None and rec.get_num_channels() == chanmap_perm.size:
         rec = reorder_recording_to_geometry(rec, chanmap_perm)
         order = "geometry"
-        perm_geom_to_device = chanmap_perm.tolist()
-        perm_device_to_geom = np.argsort(chanmap_perm).tolist()
     else:
-        if chanmap_perm is not None:
-            print(f"[{sess_folder.name}] '{stim_stream_name}': skip reordering "
-                  f"(n_ch={rec.get_num_channels()} vs perm={chanmap_perm.size})")
         order = "device"
-        perm_geom_to_device = None
-        perm_device_to_geom = None
 
-    fs = float(rec.get_sampling_frequency())
+    # load stim traces into memory
+    stim_traces = rec.get_traces(return_scaled=True).T  # (n_channels, n_samples)
+    stim_ext = extract_stim_triggers_and_blocks(stim_data=stim_traces)
 
-    # ------------ save the raw stim stream in chunked form (unchanged) ------------
+    # collect everything you want to save
+    arrays = {
+        "stim_traces": stim_traces.astype(np.float32),
+        "active_channels": stim_ext.active_channels.astype(np.int64),
+        "trigger_pairs": stim_ext.trigger_pairs.astype(np.int64),
+        "block_boundaries": stim_ext.block_boundaries.astype(np.int64),
+        "pulse_sizes": stim_ext.pulse_sizes.astype(np.int64),
+    }
     meta = dict(
         session=sess_folder.name,
         stream_name=stim_stream_name,
         fs_hz=fs,
         n_channels=int(rec.get_num_channels()),
-        channel_ids=[str(x) for x in rec.get_channel_ids()],
-        dtype=str(rec.get_dtype()),
-        chunk_seconds=chunk_s,
-        shape=[int(rec.get_num_samples()), int(rec.get_num_channels())],
         order=order,
-        perm_geom_to_device=perm_geom_to_device,
-        perm_device_to_geom=perm_device_to_geom,
-        units="uV",
-        note="Data stored as multiple .npy chunks inside this .npz (chunk_0000.npy, ...).",
+        note="Raw stim stream and derived trigger/block outputs."
     )
+
     out_npz = bundle_dir / "stim_stream.npz"
-    _save_npz_streaming(out_npz, _iter_recording_chunks(rec, chunk_s), meta)
-    print(f"[STIM] saved stim stream -> {out_npz}")
-
-    # ------------ compute triggers/blocks from the stim stream ------------
-    # For simplicity and robustness here, load the full stim stream into memory for detection.
-    # (If this is too big, we can stream-detect later.)
-    seg = 0
-    n_samp = int(rec.get_num_samples(segment_index=seg))
-    stim_traces = rec.get_traces(
-        start_frame=0,
-        end_frame=n_samp,
-        channel_ids=None,   # all channels
-        segment_index=seg,
-        return_scaled=True
-    )
-    # stim_preproc expects (n_channels, n_samples)
-    stim_data = stim_traces.T
-    buffer_samples = int(round(buffer_ms * fs))
-    cfg = StimTriggerConfig(buffer_samples=buffer_samples)
-
-    res = extract_stim_triggers_and_blocks(
-        stim_data=stim_data,
-        fs=fs,
-        cfg=cfg,
-        use_first_active_channel=(detect_on_channel is None),
-        channel_index=detect_on_channel,
-    )
-
-    # match MATLAB’s repeat_gap_threshold = 2 * (2*buffer + 1)
-    repeat_gap_threshold_samples = np.array(
-        2 * (2 * buffer_samples + 1), dtype=np.int64
-    )
-
-    # ------------ append results into the SAME NPZ ------------
-    extras = {
-        "active_channels": res.active_channels.astype(np.int64),
-        "trigger_pairs": res.trigger_pairs.astype(np.int64),     # (n_events, 2)
-        "trigger_starts": res.trigger_starts.astype(np.int64),   # (n_events,)
-        "block_boundaries": res.block_boundaries.astype(np.int64),  # (n_blocks+1,)
-        "repeat_gap_threshold_samples": repeat_gap_threshold_samples,
-        "buffer_samples": np.array(buffer_samples, dtype=np.int64),
-    }
-    _append_npz_arrays(out_npz, extras)
-
-    # also drop a few meta hints so downstream code can discover the fields easily
-    # (we add/overwrite a tiny JSON sidecar inside the zip as text)
-    try:
-        import json, io, zipfile
-        hints = {
-            "stim_analysis_keys": list(extras.keys()),
-            "stim_detection_channel": int(res.active_channels[0]) if res.active_channels.size else None,
-        }
-        with zipfile.ZipFile(out_npz, mode="a", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("stim_analysis_meta.json", json.dumps(hints, indent=2))
-    except Exception as e:
-        print(f"[STIM] warning: could not write stim_analysis_meta.json: {e}")
-
+    np.savez_compressed(out_npz, **arrays, meta=json.dumps(meta))
+    print(f"[STIM] saved stim stream + triggers -> {out_npz}")
     return out_npz
+
+
+# ----------------------
+# Other streams
+# ----------------------
 
 def extract_and_save_other_streams_npz(
     sess_folder: Path,
@@ -342,31 +411,6 @@ def extract_and_save_other_streams_npz(
         print(f"[AUX] saved stream '{stream_name}' -> {out_npz}")
         saved.append(out_npz)
     return saved
-
-def get_chanmap_perm_from_geom(geom: dict) -> np.ndarray:
-    # geometry→device 0-based indices (normalized in loader)
-    if "device_index_0based" in geom:
-        return np.asarray(geom["device_index_0based"], int).ravel()
-    if "device_index_1based" in geom:
-        return np.asarray(geom["device_index_1based"], int).ravel() - 1
-    raise ValueError("No chanmap in geometry.")
-
-def make_identity_probe_from_geom(geom: dict, radius_um: float = 5.0):
-    pr = make_probe_from_geom(geom, radius_um=radius_um)
-    # Identity: channel i ↔ contact i (after you reorder the recording)
-    pr.set_device_channel_indices(np.arange(pr.get_contact_count(), dtype=int))
-    return pr
-
-def reorder_recording_to_geometry(rec: si.BaseRecording, perm: np.ndarray) -> si.BaseRecording:
-    ids = list(rec.get_channel_ids())
-    if len(ids) != perm.size:
-        raise ValueError(f"Perm length {perm.size} != {len(ids)} channels.")
-    ordered_ids = [ids[i] for i in perm]        # put data into geometry order
-    try:
-        return rec.channel_slice(channel_ids=ordered_ids)
-    except Exception:
-        from spikeinterface.core import ChannelSliceRecording
-        return ChannelSliceRecording(rec, channel_ids=ordered_ids)
 
 # ----------------------
 # Convenience
