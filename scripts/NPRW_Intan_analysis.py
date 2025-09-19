@@ -29,7 +29,7 @@ from RCP_analysis import (
     # Stim
     extract_and_save_stim_npz,
     load_stim_triggers_from_npz,
-    remove_stim_pca, ArtifactParams
+    remove_stim_pca_offline, cleaned_numpy_to_recording, PCAArtifactParams,
 )
 
 # Package API
@@ -212,12 +212,30 @@ outer = float(probe_cfg.get("local_radius_outer", 150.0))
 RADII: Tuple[float, float] = (inner, outer)
 
 # Artifact correction parameters
-params = ArtifactParams(
-    pca_k=3, exclude_first_n_for_pca=1, first_pulse_special=True,
-    rolling_median_ms=15, gaussian_sigma_ms=5, gaussian_len_ms=31,
-    samples_before=15, samples_after=15, scale_amplitude=True,
-    interp_ramp=True, ramp_tail_ms=1.0, ramp_fraction=1.0,
+params = PCAArtifactParams(
+    # drift removal
+    rolling_median_ms=15.0,
+    gaussian_sigma_ms=5.0,
+    gaussian_len_ms=31.0,
+
+    # pulse-aligned window: start = start-13, end = end+15
+    pre_samples=13,
+    post_pad_samples=15,
+
+    # PCA/template
+    center_snippets=True,
+    first_pulse_special=True,
+    exclude_first_n_for_pca=1,
+
+    # subtraction
+    scale_amplitude=True,
+
+    # interp ramp
+    interp_ramp=True,
+    ramp_tail_ms=1.0,
+    ramp_fraction=1.0,
 )
+
 
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
@@ -227,10 +245,10 @@ si.set_global_job_kwargs(**global_job_kwargs)
 # ==============================
 def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[int] = None):
     
-    plot_selected_sessions(indices=(2), pre_s=0.005, post_s=0.01, 
-        template_samples_before = params.samples_before,
-        template_samples_after = params.samples_after
-    )
+    # plot_selected_sessions(indices=(2), pre_s=0.005, post_s=0.01, 
+    #     template_samples_before = params.samples_before,
+    #     template_samples_after = params.samples_after
+    # )
     
     # 1) Load geometry & mapping
     geom = load_stim_geometry(GEOM_PATH)
@@ -259,7 +277,6 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
             sess_folder=sess,
             out_root=bundles_root,
             stim_stream_name=STIM_STREAM,
-            chunk_s=60.0,
             chanmap_perm=perm,
         )
 
@@ -273,40 +290,28 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
         )
         
         stim_npz_path = bundles_root / f"{sess.name}_Intan_bundle" / "stim_stream.npz"
-        trigs, blocks, _ = load_stim_triggers_from_npz(stim_npz_path)
+        trigs, blocks, pulse_sizes, _ = load_stim_triggers_from_npz(stim_npz_path)
 
         # Load Intan neural stream
         rec = read_intan_recording(sess, stream_name=INTAN_STREAM)
         rec = reorder_recording_to_geometry(rec, perm)
         rec = rec.set_probe(probe, in_place=False)
         
-        
-        
-        # import cProfile, pstats, io, time
+        print(f"[ARTCORR] Starting artifact correction")
+        # Artifact removal
+        clean_np = remove_stim_pca_offline(
+            recording=rec,
+            stim_npz_path=stim_npz_path,
+            params=params,          # PCAArtifactParams(...)
+            segment_index=0,        # adjust if needed
+        )
 
-        # pr = cProfile.Profile()
-        # pr.enable()
-
-        # t0 = time.perf_counter()
-        # rec_clean = remove_stim_pca(recording=rec, params=params, list_triggers=[trigs])
-        # # Force a full pass to exercise the code paths:
-        # _ = rec_clean.get_traces(0, rec_clean.get_num_samples(), slice(None))
-        # elapsed = time.perf_counter() - t0
-
-        # pr.disable()
-
-        # print(f"Elapsed: {elapsed:.3f} s")
-        # s = io.StringIO()
-        # pstats.Stats(pr, stream=s).sort_stats("cumtime").print_stats(40)  # top 40 by cumulative time
-        # print(s.getvalue())
-
-        # # Save to file to inspect later with snakeviz/qcachegrind
-        # pstats.Stats(pr).dump_stats("artifact_profile.prof")
-
+        # Wrap in SpikeInterface Recording
+        rec_clean = cleaned_numpy_to_recording(clean_np, recording_like=rec)
 
         # Local CMR
         rec_ref = local_cm_reference(
-            rec,
+            rec_clean,
             freq_min=float(PARAMS.highpass_hz),
             inner_outer_radius_um=RADII
         )

@@ -42,8 +42,8 @@ from .python.functions.intan_preproc import (
 
 # artifact correction (PCA template subtraction) — requires list_triggers now
 from .python.functions.artifact_correction_template_matching import (
-    remove_stim_pca,
-    ArtifactParams,
+    remove_stim_pca_offline, cleaned_numpy_to_recording,
+    PCAArtifactParams
 )
 
 # plotting

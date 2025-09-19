@@ -7,9 +7,7 @@ import spikeinterface as si
 import spikeinterface.extractors as se
 import spikeinterface.preprocessing as spre
 from probeinterface import Probe
-from .stim_preproc import StimTriggerConfig, extract_stim_triggers_and_blocks
 from dataclasses import dataclass
-
 
 # ----------------------
 # Geometry / mapping
@@ -184,18 +182,6 @@ def _iter_recording_chunks(rec: si.BaseRecording, chunk_s: float):
         X = rec.get_traces(start_frame=start, end_frame=end, return_in_uV=True)
         yield (f'chunk_{k:04d}', X)
 
-def _append_npz_arrays(npz_path, arrays_dict):
-    """
-    Append arrays into an existing .npz (a zip). Keys become <key>.npy entries.
-    Non-destructive for existing entries.
-    """
-    # write .npy bytes into the zip without touching existing members
-    with zipfile.ZipFile(npz_path, mode="a", compression=zipfile.ZIP_DEFLATED) as zf:
-        for key, arr in arrays_dict.items():
-            with io.BytesIO() as buf:
-                np.save(buf, arr)
-                zf.writestr(f"{key}.npy", buf.getvalue())
-
 # ----------------------
 # Stim stuff
 # ----------------------
@@ -349,7 +335,6 @@ def extract_and_save_stim_npz(
     np.savez_compressed(out_npz, **arrays, meta=json.dumps(meta))
     print(f"[STIM] saved stim stream + triggers -> {out_npz}")
     return out_npz
-
 
 # ----------------------
 # Other streams
