@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 import gc
 import numpy as np
+import os
 
 # SpikeInterface
 import spikeinterface as si
@@ -51,6 +52,9 @@ def plot_selected_sessions(
     Plot 4×4 panels + probe for selected sessions using the artifact-corrected checkpoints.
     Also ensures a stim bundle exists (creates if missing).
     """
+    if os.name == 'nt': # adjust if on Windows
+        preproc_root = Path("\\\\10.16.59.34\\CullenLab_Server\\Current Project Databases - NHP\\2025 Cerebellum prosthesis\\Nike\\NRR_RW001\\results\\checkpoints")
+
     # geometry / perm
     geom = load_stim_geometry(GEOM_PATH)
     perm = get_chanmap_perm_from_geom(geom)
@@ -176,7 +180,11 @@ def plot_selected_sessions(
 # Config
 # ==============================
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
+
+if os.name == 'nt': # if Windows
+    PARAMS = load_experiment_params(REPO_ROOT / "config" / "params_nikita.yaml", repo_root=REPO_ROOT)
+else:
+    PARAMS = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
 OUT_BASE = resolve_output_root(PARAMS)
 OUT_BASE.mkdir(parents=True, exist_ok=True)
 DATA_ROOT = resolve_data_root(PARAMS)
