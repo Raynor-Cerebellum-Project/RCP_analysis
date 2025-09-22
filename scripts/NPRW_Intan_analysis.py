@@ -158,7 +158,7 @@ params = PCAArtifactParams(
 
     # pulse-aligned window: start = start-13, end = end+15
     pre_samples=13,
-    post_pad_samples=15,
+    post_pad_samples=30,
 
     # PCA/template
     center_snippets=True,
@@ -310,6 +310,9 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
     sa.compute("random_spikes", method="uniform", max_spikes_per_unit=1000, seed=0)
     sa.compute("waveforms", ms_before=1.0, ms_after=2.0,
                n_jobs=int(PARAMS.parallel_jobs), chunk_duration=str(PARAMS.chunk), progress_bar=True)
+    
+    # TODO can use something similar to cilantro postprocessing in custom_metrics.py to filter out bad waveforms
+    
     sa.compute("templates")
     sa.compute("principal_components", n_components=5, mode="by_channel_local",
                n_jobs=int(PARAMS.parallel_jobs), chunk_duration=str(PARAMS.chunk), progress_bar=True)

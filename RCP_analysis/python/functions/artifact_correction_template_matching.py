@@ -104,7 +104,6 @@ def _global_drift_remove_pool(traces: np.ndarray, fs: float, p: PCAArtifactParam
 
     return out.astype(orig_dtype, copy=False)
 
-
 def _block_window_lengths(trigger_pairs_window: np.ndarray, pre: int, post_pad: int) -> np.ndarray:
     """
     For a block: per-pulse target window length = (end + post_pad) - (start - pre) + 1
@@ -236,7 +235,6 @@ def _pca_template_per_channel(
         pca_pack.append({"base": base, "components": comps})
 
     return templates, pca_pack
-
 
 # TODO: make sure we're not going between blocks
 def _apply_interp_ramp(buf: np.ndarray, start_idx: int, end_idx: int, frac: float):
@@ -405,10 +403,6 @@ def remove_stim_pca_offline(
 
     return clean
 
-        # TODO projection = PCA.inverse_transform(PCA.transform(clean[a:bnd, ch]))
-        # TODO clean[temp_beg:temp_end, ch] -= projection
-        # TODO to get the final corrected data
-            
 # # ------------------------------ wrap as SI recording ----------------
 def cleaned_numpy_to_recording(
     cleaned: np.ndarray, recording_like: si.BaseRecording
