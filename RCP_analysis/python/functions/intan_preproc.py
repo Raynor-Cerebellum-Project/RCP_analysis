@@ -117,15 +117,15 @@ def load_stim_triggers_from_npz(stim_npz_path: Path):
 
     with np.load(stim_npz_path, allow_pickle=False) as z:
         if "trigger_pairs" in z:
-            trigs = z["trigger_pairs"][:, 0].astype(np.int64)
+            trigs = z["trigger_pairs"][:, 0].astype(np.int32)
         else:
-            trigs = np.zeros((0,), dtype=np.int64)
+            trigs = np.zeros((0,), dtype=np.int32)
 
         if "block_boundaries" in z:
-            blocks = z["block_boundaries"].astype(np.int64)
+            blocks = z["block_boundaries"].astype(np.int32)
 
         if "pulse_sizes" in z:
-            pulse_sizes = z["pulse_sizes"].astype(np.int64)
+            pulse_sizes = z["pulse_sizes"].astype(np.int32)
 
     # try meta.json
     try:
@@ -230,17 +230,17 @@ def extract_stim_triggers_and_blocks(
         # nothing to do
         return StimTriggerResult(
             active_channels=np.array([], dtype=int),
-            trigger_pairs=np.empty((0, 2), dtype=np.int64),
+            trigger_pairs=np.empty((0, 2), dtype=np.int32),
             block_boundaries=np.array([0], dtype=int),
             pulse_sizes=np.array([], dtype=int),
         )
     det_ch = int(active_channels[0])
 
-    stim_signal = np.asarray(stim_data[det_ch, :], dtype=np.float64)
+    stim_signal = np.asarray(stim_data[det_ch, :], dtype=np.float32)
     if stim_signal.size < 2:
         return StimTriggerResult(
             active_channels=active_channels,
-            trigger_pairs=np.empty((0, 2), dtype=np.int64),
+            trigger_pairs=np.empty((0, 2), dtype=np.int32),
             block_boundaries=np.array([0], dtype=int),
             pulse_sizes=np.array([], dtype=int),
         )
@@ -256,7 +256,7 @@ def extract_stim_triggers_and_blocks(
         end_of_pulse = np.flatnonzero(stim_signal[idx:] == 0)
         if end_of_pulse.size:
             rz.append(idx + end_of_pulse[0])  # absolute index where it returns to zero
-    rz = np.asarray(rz, dtype=np.int64)
+    rz = np.asarray(rz, dtype=np.int32)
 
     beg = falling_edge
     if rising_edge.size > falling_edge.size:
@@ -266,10 +266,10 @@ def extract_stim_triggers_and_blocks(
 
     n = int(min(beg.size, end_.size)) # number of pulses
     if n == 0:
-        trigger_pairs = np.empty((0, 2), dtype=np.int64)
+        trigger_pairs = np.empty((0, 2), dtype=np.int32)
         pulse_sizes = np.array([], dtype=int)
     else:
-        trigger_pairs = np.column_stack([beg[:n], end_[:n]]).astype(np.int64)
+        trigger_pairs = np.column_stack([beg[:n], end_[:n]]).astype(np.int32)
         pulse_sizes = trigger_pairs[:, 1] - trigger_pairs[:, 0]
 
     # --- 3) block (repeat) boundaries
@@ -317,10 +317,10 @@ def extract_and_save_stim_npz(
     # collect everything you want to save
     arrays = {
         "stim_traces": stim_traces.astype(np.float32),
-        "active_channels": stim_ext.active_channels.astype(np.int64),
-        "trigger_pairs": stim_ext.trigger_pairs.astype(np.int64),
-        "block_boundaries": stim_ext.block_boundaries.astype(np.int64),
-        "pulse_sizes": stim_ext.pulse_sizes.astype(np.int64),
+        "active_channels": stim_ext.active_channels.astype(np.int32),
+        "trigger_pairs": stim_ext.trigger_pairs.astype(np.int32),
+        "block_boundaries": stim_ext.block_boundaries.astype(np.int32),
+        "pulse_sizes": stim_ext.pulse_sizes.astype(np.int32),
     }
     meta = dict(
         session=sess_folder.name,
