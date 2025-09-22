@@ -30,7 +30,8 @@ from RCP_analysis import (
     # Stim
     extract_and_save_stim_npz,
     load_stim_triggers_from_npz,
-    remove_stim_pca_offline, cleaned_numpy_to_recording, PCAArtifactParams,
+    remove_stim_pca_offline, cleaned_numpy_to_recording, 
+    PCAArtifactParams,
 )
 
 # Package API
@@ -113,69 +114,6 @@ def plot_selected_sessions(
             print(f"[WARN] plotting failed for {sess.name}: {e}")
         print(f"[Plot] Plotted session #{i}: {sess.name}")
 
-# def plot_selected_sessions(
-#     indices=(4, 5),
-#     pre_s: float = 0.30,
-#     post_s: float = 0.30,
-#     chunk_s: float = 60.0,
-# ):
-#     """
-#     Plot 4×4 panels + probe for selected Intan sessions (0-based indices).
-#     Uses existing stim bundles if present; creates them if missing.
-#     Does NOT run any preprocessing or Kilosort.
-#     """
-#     # geometry / perm (for stim bundle reordering, same as your pipeline)
-#     geom = load_stim_geometry(GEOM_PATH)
-#     perm = get_chanmap_perm_from_geom(geom)
-
-#     # where to write figures + find/create stim bundles
-#     figs_dir = OUT_BASE / "figures" / "NPRW"
-#     figs_dir.mkdir(parents=True, exist_ok=True)
-#     bundles_root = OUT_BASE / "bundles" / "NPRW"
-#     bundles_root.mkdir(parents=True, exist_ok=True)
-
-#     # session list
-#     sess_folders = list_intan_sessions(INTAN_ROOT)
-#     if not sess_folders:
-#         print("No Intan sessions found.")
-#         return
-
-#     for i in indices:
-#         if i < 0 or i >= len(sess_folders):
-#             print(f"[WARN] index {i} out of range (0..{len(sess_folders)-1}). Skipping.")
-#             continue
-
-#         sess = sess_folders[i]
-#         print(f"--- Plotting session #{i}: {sess.name} ---")
-
-#         # expected stim bundle path
-#         stim_npz_path = bundles_root / f"{sess.name}_Intan_bundle" / "stim_stream.npz"
-#         if not stim_npz_path.exists():
-#             # create stim bundle only (reordered to geometry so plotting aligns)
-#             stim_npz_path = extract_and_save_stim_npz(
-#                 sess_folder=sess,
-#                 out_root=bundles_root,
-#                 stim_stream_name=STIM_STREAM,
-#                 chunk_s=chunk_s,
-#                 chanmap_perm=perm,
-#             )
-
-#         # make the figures (uses raw Intan + geometry; no dependency on preproc)
-#         try:
-#             plot_all_quads_for_session(
-#                 sess_folder=sess,
-#                 geom_path=GEOM_PATH,
-#                 neural_stream=INTAN_STREAM,
-#                 stim_stream=STIM_STREAM,
-#                 out_dir=figs_dir,
-#                 stim_npz_path=stim_npz_path,
-#                 pre_s=pre_s,
-#                 post_s=post_s,
-#             )
-#         except Exception as e:
-#             print(f"[WARN] plotting failed for {sess.name}: {e}")
-
-
 # ==============================
 # Config
 # ==============================
@@ -228,7 +166,7 @@ params = PCAArtifactParams(
 
     # pulse-aligned window: start = start-13, end = end+15
     pre_samples=13,
-    post_pad_samples=15,
+    post_pad_samples=30,
 
     # PCA/template
     center_snippets=True,
@@ -253,10 +191,10 @@ si.set_global_job_kwargs(**global_job_kwargs)
 # ==============================
 def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[int] = None):
     
-    # plot_selected_sessions(indices=(2), pre_s=0.005, post_s=0.01, 
-    #     template_samples_before = params.samples_before,
-    #     template_samples_after = params.samples_after
-    # )
+    plot_selected_sessions(indices=(2), pre_s=0.005, post_s=0.01, 
+        template_samples_before = params.pre_samples,
+        template_samples_after = params.post_pad_samples
+    )
     
     # 1) Load geometry & mapping
     geom = load_stim_geometry(GEOM_PATH)
@@ -307,12 +245,18 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
         
         print(f"[ARTCORR] Starting artifact correction")
         # Artifact removal
+        
+        import time
+
+        t0 = time.time()
         clean_np = remove_stim_pca_offline(
             recording=rec,
             stim_npz_path=stim_npz_path,
             params=params,          # PCAArtifactParams(...)
             segment_index=0,        # adjust if needed
         )
+        t1 = time.time()
+        print(f"ARTCORR took {t1 - t0:.2f} seconds")
 
         # Wrap in SpikeInterface Recording
         rec_clean = cleaned_numpy_to_recording(clean_np, recording_like=rec)
@@ -374,6 +318,9 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
     sa.compute("random_spikes", method="uniform", max_spikes_per_unit=1000, seed=0)
     sa.compute("waveforms", ms_before=1.0, ms_after=2.0,
                n_jobs=int(PARAMS.parallel_jobs), chunk_duration=str(PARAMS.chunk), progress_bar=True)
+    
+    # TODO can use something similar to cilantro postprocessing in custom_metrics.py to filter out bad waveforms
+    
     sa.compute("templates")
     sa.compute("principal_components", n_components=5, mode="by_channel_local",
                n_jobs=int(PARAMS.parallel_jobs), chunk_duration=str(PARAMS.chunk), progress_bar=True)

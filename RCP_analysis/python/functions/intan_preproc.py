@@ -109,33 +109,33 @@ def read_intan_recording(
     return rec
 
 def load_stim_triggers_from_npz(stim_npz_path: Path):
+    """
+    Load trigger starts, block boundaries, pulse sizes, and meta
+    from the NPZ produced by extract_and_save_stim_npz().
+    """
     stim_npz_path = Path(stim_npz_path)
-    trigs = None
-    blocks = None
-    pulse_sizes = None
-    meta = None
 
     with np.load(stim_npz_path, allow_pickle=False) as z:
+        # arrays
         if "trigger_pairs" in z:
-            trigs = z["trigger_pairs"][:, 0].astype(np.int32)
+            trigs = z["trigger_pairs"][:, 0].astype(np.int64)
         else:
-            trigs = np.zeros((0,), dtype=np.int32)
+            trigs = np.zeros((0,), dtype=np.int64)
 
-        if "block_boundaries" in z:
-            blocks = z["block_boundaries"].astype(np.int32)
+        blocks = z["block_boundaries"].astype(np.int64) if "block_boundaries" in z else None
+        pulse_sizes = z["pulse_sizes"].astype(np.int64) if "pulse_sizes" in z else None
 
-        if "pulse_sizes" in z:
-            pulse_sizes = z["pulse_sizes"].astype(np.int32)
-
-    # try meta.json
-    try:
-        with zipfile.ZipFile(stim_npz_path, "r") as zf:
-            with zf.open("meta.json") as f:
-                meta = json.load(f)
-    except Exception:
+        # meta as JSON string saved under key "meta"
         meta = None
+        if "meta" in z:
+            try:
+                meta_raw = z["meta"].item()
+                meta = json.loads(meta_raw) if isinstance(meta_raw, (str, bytes)) else dict(meta_raw)
+            except Exception:
+                meta = None
 
     return trigs, blocks, pulse_sizes, meta
+
 
 # ----------------------
 # Preprocessing
