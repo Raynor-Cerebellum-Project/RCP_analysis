@@ -3,13 +3,10 @@ from pathlib import Path
 from typing import Optional, Tuple
 import gc
 import numpy as np
-import os
 
 # SpikeInterface
 import spikeinterface as si
-import spikeinterface.sorters as ss
-from spikeinterface.core import concatenate_recordings
-from spikeinterface.exporters import export_to_phy
+from sklearn.decomposition import PCA
 
 # Project config
 from RCP_analysis import load_experiment_params, resolve_data_root
@@ -29,8 +26,8 @@ from RCP_analysis import (
     reorder_recording_to_geometry,
     # Stim
     extract_and_save_stim_npz,
-    remove_stim_pca_offline, cleaned_numpy_to_recording, 
     PCAArtifactParams,
+    threshold_mua_rates, load_stim_detection,
 )
 
 # Package API
@@ -52,9 +49,6 @@ def plot_selected_sessions(
     Plot 4×4 panels + probe for selected sessions using the artifact-corrected checkpoints.
     Also ensures a stim bundle exists (creates if missing).
     """
-    if os.name == 'nt': # adjust if on Windows
-        preproc_root = Path("\\\\10.16.59.34\\CullenLab_Server\\Current Project Databases - NHP\\2025 Cerebellum prosthesis\\Nike\\NRR_RW001\\results\\checkpoints")
-
     # geometry / perm
     geom = load_stim_geometry(GEOM_PATH)
     perm = get_chanmap_perm_from_geom(geom)
@@ -117,11 +111,7 @@ def plot_selected_sessions(
 # Config
 # ==============================
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-if os.name == 'nt': # if Windows
-    PARAMS = load_experiment_params(REPO_ROOT / "config" / "params_nikita.yaml", repo_root=REPO_ROOT)
-else:
-    PARAMS = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
+PARAMS = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
 OUT_BASE = resolve_output_root(PARAMS)
 OUT_BASE.mkdir(parents=True, exist_ok=True)
 DATA_ROOT = resolve_data_root(PARAMS)
@@ -181,7 +171,12 @@ params = PCAArtifactParams(
     ramp_fraction=1.0,
 )
 
-
+RATES = PARAMS.intan_rate_est or {}
+BIN_MS     = float(RATES.get("bin_ms", 1.0))
+SIGMA_MS   = float(RATES.get("sigma_ms", 25.0))
+THRESH     = float(RATES.get("detect_threshold", 4.5))
+PEAK_SIGN  = str(RATES.get("peak_sign", "neg"))
+        
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
 
@@ -189,12 +184,10 @@ si.set_global_job_kwargs(**global_job_kwargs)
 # Pipeline
 # ==============================
 def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[int] = None):
-    
-    plot_selected_sessions(indices=(2), pre_s=0.005, post_s=0.01, 
-        template_samples_before = params.pre_samples,
-        template_samples_after = params.post_pad_samples
-    )
-    
+    # plot_selected_sessions(indices=(2), pre_s=0.1, post_s=0.2, 
+    #         template_samples_before = params.pre_samples,
+    #         template_samples_after = params.post_pad_samples
+    # )
     # 1) Load geometry & mapping
     geom = load_stim_geometry(GEOM_PATH)
     perm = get_chanmap_perm_from_geom(geom)
@@ -212,8 +205,7 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
     
     # 3) Extract stim sessions and aux channels, preprocess and save
     for sess in sess_folders:
-        print(f"=== Session: {sess.name} ===")
-        
+        print(f"[RUN] session {sess.name}")
         bundles_root = OUT_BASE / "bundles" / "NPRW"
         bundles_root.mkdir(parents=True, exist_ok=True)
 
@@ -241,93 +233,118 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
         rec = reorder_recording_to_geometry(rec, perm)
         rec = rec.set_probe(probe, in_place=False)
         
-        print(f"[ARTCORR] Starting artifact correction")
-        # Artifact removal
-        
-        clean_np = remove_stim_pca_offline(
-            recording=rec,
-            stim_npz_path=stim_npz_path,
-            params=params,          # PCAArtifactParams(...)
-            segment_index=0,        # adjust if needed
-        )
-
-        # Wrap in SpikeInterface Recording
-        rec_clean = cleaned_numpy_to_recording(clean_np, recording_like=rec)
-
         # Local CMR
         rec_ref = local_cm_reference(
-            rec_clean,
+            rec,
             freq_min=float(PARAMS.highpass_hz),
             inner_outer_radius_um=RADII
         )
-        # Save preprocessed session (artifact-corrected + referenced)
-        out_dir = checkpoint_out / f"pp_local_{int(RADII[0])}_{int(RADII[1])}__AC_{sess.name}"
-        save_recording(rec_ref, out_dir)
-        print(f"[{sess.name}] saved artifact-corrected -> {out_dir}")
+        stim_data = load_stim_detection(stim_npz_path)
+        block_bounds = stim_data["block_boundaries"]
 
-        del rec, rec_clean, rec_ref
+        rec_interp = rec_ref  # fallback: no interpolation
+        if block_bounds is not None and block_bounds.size > 0:
+            # handle both (B,2) sample-space and (B+1,) index-space cases
+            if block_bounds.ndim == 2 and block_bounds.shape[1] == 2:
+                starts = block_bounds[:, 0].astype(int)
+            else:
+                # fall back to using indices if only index boundaries are available
+                starts = block_bounds.astype(int)
+
+            if np.any(starts > 0):
+                list_triggers = [starts.tolist()]
+                rec_interp = si.preprocessing.remove_artifacts(
+                    rec_ref,
+                    list_triggers,
+                    ms_before=5.0,
+                    ms_after=105.0,
+                    mode="linear",
+                )
+            else:
+                print("[WARN] block_bounds only contains zeros, skipping artifact removal.")
+        else:
+            print("[WARN] no block boundaries found, skipping artifact removal.")
+
+        figs_dir_during = OUT_BASE / "figures" / "NPRW" / "interp"
+        figs_dir_after = OUT_BASE / "figures" / "NPRW" / "after_interp"
+        preproc_root = OUT_BASE / "checkpoints" / "NPRW"
+        plot_all_quads_for_session(
+            sess_folder=sess,
+            geom_path=GEOM_PATH,
+            neural_stream=INTAN_STREAM,
+            stim_stream=STIM_STREAM,
+            out_dir=figs_dir_during,
+            stim_npz_path=stim_npz_path,
+            pre_s=0.1,
+            post_s=0.2,
+            preproc_root=preproc_root,
+            template_samples_before=params.pre_samples,
+            template_samples_after=params.post_pad_samples
+        )
+        plot_all_quads_for_session(
+            sess_folder=sess,
+            geom_path=GEOM_PATH,
+            neural_stream=INTAN_STREAM,
+            stim_stream=STIM_STREAM,
+            out_dir=figs_dir_after,
+            stim_npz_path=stim_npz_path,
+            pre_s=-0.9,
+            post_s=0.4,
+            preproc_root=preproc_root,
+            template_samples_before=params.pre_samples,
+            template_samples_after=params.post_pad_samples
+        )
+        # Save preprocessed session (artifact-corrected + referenced)
+        out_dir = checkpoint_out / f"pp_local_{int(RADII[0])}_{int(RADII[1])}__interp_{sess.name}"
+        save_recording(rec_interp, out_dir)
+        print(f"[{sess.name}] saved interpolated -> {out_dir}")
+
+        del rec, rec_ref
         gc.collect()
 
-        preproc_paths.append(out_dir)
+        rate_hz, t_ms, counts = threshold_mua_rates(
+            rec_interp,
+            detect_threshold=THRESH,
+            peak_sign=PEAK_SIGN,
+            bin_ms=BIN_MS,
+            sigma_ms=SIGMA_MS,
+            n_jobs=PARAMS.parallel_jobs,
+        )
+        # rate_hz is (n_channels, n_bins) → transpose to (n_bins, n_channels)
+        X = rate_hz.T
 
-    if not preproc_paths:
-        raise RuntimeError("No Intan sessions processed; nothing to concatenate.")
-    
-    # 5) Concatenate
-    print("Concatenating preprocessed sessions...")
-    recs = []
-    for p in preproc_paths:
-        try:
-            r = si.load(p)
-        except Exception:
-            r = si.load_extractor(p / "si_folder.json")
-        recs.append(r)
-    rec_concat = concatenate_recordings(recs)
-    gc.collect()
+        # PCA for visualization
+        pca = PCA(n_components=5, random_state=0)
+        pcs = pca.fit_transform(X)            # shape: (n_bins, 5)
+        explained_var = pca.explained_variance_ratio_  # shape: (5,)
 
-    # 6) KS4
-    ks4_out = OUT_BASE / "kilosort4"
-    sorting_ks4 = ss.run_sorter(
-        "kilosort4",
-        recording=rec_concat,
-        folder=str(ks4_out),
-        remove_existing_folder=True,
-        verbose=True,
-    ) # TODO: Check if geometry is used
+        # Transpose back to (n_components, n_bins) for consistency
+        pcs_T = pcs.T.astype(np.float32)
+        
+        out_npz = checkpoint_out / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
+        np.savez_compressed(
+            out_npz,
+            rate_hz=rate_hz.astype(np.float32),
+            t_ms=t_ms.astype(np.float32),
+            counts=counts.astype(np.uint16),
+            pcs=pcs_T,                                  # (5, n_bins)
+            explained_var=explained_var.astype(np.float32),
+            meta=dict(
+                detect_threshold=THRESH,
+                peak_sign=PEAK_SIGN,
+                bin_ms=BIN_MS,
+                sigma_ms=SIGMA_MS,
+                fs=float(rec_interp.get_sampling_frequency()),
+                n_channels=int(rec_interp.get_num_channels()),
+                session=str(sess.name),
+            ),
+        )
+        print(f"[{sess.name}] saved rate matrix + PCA -> {out_npz}")
 
-    # 7) Export to Phy
-    sa_folder = OUT_BASE / "sorting_ks4_analyzer"
-    phy_folder = OUT_BASE / "phy_ks4"
-
-    sa = si.create_sorting_analyzer(
-        sorting=sorting_ks4,
-        recording=rec_concat,
-        folder=sa_folder,
-        overwrite=True,
-        sparse=True,
-    )
-
-    # Phy needs at least waveforms/templates/PCs; random_spikes makes it deterministic
-    sa.compute("random_spikes", method="uniform", max_spikes_per_unit=1000, seed=0)
-    sa.compute("waveforms", ms_before=1.0, ms_after=2.0,
-               n_jobs=int(PARAMS.parallel_jobs), chunk_duration=str(PARAMS.chunk), progress_bar=True)
-    
-    # TODO can use something similar to cilantro postprocessing in custom_metrics.py to filter out bad waveforms
-    
-    sa.compute("templates")
-    sa.compute("principal_components", n_components=5, mode="by_channel_local",
-               n_jobs=int(PARAMS.parallel_jobs), chunk_duration=str(PARAMS.chunk), progress_bar=True)
-    sa.compute("spike_amplitudes")
-
-    export_to_phy(sa, output_folder=phy_folder, copy_binary=True, remove_if_exists=True)
-    print(f"Phy export ready: {phy_folder}")
-
-
-
-    # SLAy
-    #TODO Separate by condition
-    #TODO Firing rate (FR) estimation using Gaussian filter?
-    #TODO Align with BR using two sync pulses (one from BR side)
+        # cleanup to keep memory stable on long batches
+        del rec_interp, rate_hz, t_ms, counts
+        gc.collect()
+        # TODO make plots firing rate
 
 if __name__ == "__main__":
     main(limit_sessions=None)

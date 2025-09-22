@@ -78,7 +78,8 @@ class experimentParams:
     mapping_mat_rel: Optional[str] = None
     dig_line: Optional[str] = None
     stim_nums: Dict[str, int] = field(default_factory=dict)
-    rates: Dict[str, Any] = field(default_factory=dict) # Threshold MUA params
+    intan_rate_est: Dict[str, Any] = field(default_factory=dict)
+    UA_rate_est: Dict[str, Any] = field(default_factory=dict)
     # Intan-specific
     intan_root_rel: Optional[str] = None
     intan_root: Optional[str] = None
@@ -136,7 +137,8 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
         stim_nums=cfg.get("stim_nums", {}) or {},
         
         # Thresholding
-        rates=cfg.get("rates", {}) or {},
+        intan_rate_est=cfg.get("intan_rate_est", {}) or {},
+        UA_rate_est=cfg.get("UA_rate_est", {}) or {},
         # Intan-specific
         intan_root_rel=cfg.get("intan_root_rel"),
         intan_root=cfg.get("intan_root"),

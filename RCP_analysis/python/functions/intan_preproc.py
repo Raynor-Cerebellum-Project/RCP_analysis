@@ -108,34 +108,26 @@ def read_intan_recording(
         rec = spre.astype(rec, dtype="int16")
     return rec
 
-def load_stim_triggers_from_npz(stim_npz_path: Path):
+def load_stim_detection(npz_path: Path) -> Dict[str, np.ndarray]:
     """
-    Load trigger starts, block boundaries, pulse sizes, and meta
-    from the NPZ produced by extract_and_save_stim_npz().
+    Required fields (your new format):
+      - active_channels     : (n_active,)
+      - trigger_pairs       : (n_pulses, 2) [start, end] in Intan index space
+      - block_boundaries    : (n_blocks+1,) boundaries in pulse index space
+      - pulse_sizes         : (n_pulses,)
     """
-    stim_npz_path = Path(stim_npz_path)
+    with np.load(npz_path, allow_pickle=False) as z:
+        active_channels = z.get("active_channels", np.array([], dtype=np.int32)).astype(np.int32)
+        trigger_pairs = z["trigger_pairs"].astype(np.int32)
+        block_boundaries = z["block_boundaries"].astype(np.int32)
+        pulse_sizes = z["pulse_sizes"].astype(np.int32)
 
-    with np.load(stim_npz_path, allow_pickle=False) as z:
-        # arrays
-        if "trigger_pairs" in z:
-            trigs = z["trigger_pairs"][:, 0].astype(np.int64)
-        else:
-            trigs = np.zeros((0,), dtype=np.int64)
-
-        blocks = z["block_boundaries"].astype(np.int64) if "block_boundaries" in z else None
-        pulse_sizes = z["pulse_sizes"].astype(np.int64) if "pulse_sizes" in z else None
-
-        # meta as JSON string saved under key "meta"
-        meta = None
-        if "meta" in z:
-            try:
-                meta_raw = z["meta"].item()
-                meta = json.loads(meta_raw) if isinstance(meta_raw, (str, bytes)) else dict(meta_raw)
-            except Exception:
-                meta = None
-
-    return trigs, blocks, pulse_sizes, meta
-
+    return dict(
+        active_channels=active_channels,
+        trigger_pairs=trigger_pairs,
+        block_boundaries=block_boundaries,
+        pulse_sizes=pulse_sizes,
+    )
 
 # ----------------------
 # Preprocessing
@@ -274,15 +266,19 @@ def extract_stim_triggers_and_blocks(
 
     # --- 3) block (repeat) boundaries
     if trigger_pairs.shape[0] == 0:
-        block_boundaries = np.array([0], dtype=int)
+        block_boundaries_pulse_num = np.array([0], dtype=int)
     else:
         # use median pulse size as representative
         pulse_size_ref = int(np.median(pulse_sizes))
-        repeat_gap_threshold = 3 * pulse_size_ref
+        repeat_gap_threshold = 50 * pulse_size_ref
         starts = trigger_pairs[:, 0]
+        ends   = trigger_pairs[:, 1]
         gaps = np.diff(starts)
         cut_points = np.flatnonzero(gaps > repeat_gap_threshold) + 1
-        block_boundaries = np.concatenate([[0], cut_points, [trigger_pairs.shape[0]]]).astype(int)
+        block_boundaries_pulse_num = np.concatenate([[0], cut_points, [trigger_pairs.shape[0]]]).astype(int)
+        block_starts = starts[block_boundaries_pulse_num[:-1]]
+        block_ends   = ends[block_boundaries_pulse_num[1:] - 1]
+        block_boundaries = np.column_stack([block_starts, block_ends]).astype(np.int64)
 
     return StimTriggerResult(
         active_channels=active_channels,
@@ -358,6 +354,7 @@ def extract_and_save_other_streams_npz(
         try:
             rec = read_intan_recording(sess_folder, stream_name=stream_name)
 
+            # TODO Do we need to reorder the aux streams?
             if chanmap_perm is not None and rec.get_num_channels() == chanmap_perm.size:
                 rec = reorder_recording_to_geometry(rec, chanmap_perm)
                 order = "geometry"

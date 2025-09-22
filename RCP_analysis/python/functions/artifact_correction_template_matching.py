@@ -19,7 +19,7 @@ class PCAArtifactParams:
 
     # 2) Pulse-aligned matrices
     pre_samples: int = 13            # window start = trig_start - 13
-    post_pad_samples: int = 15       # window end   = trig_end   + 15
+    post_pad_samples: int = 30       # window end   = trig_end   + 15
 
     # 3) PCA template options
     center_snippets: bool = True
@@ -317,6 +317,8 @@ def remove_stim_pca_offline(
         else:
             use_rows = np.arange(tp_block.shape[0])
 
+        # TODO implement first pulse artifact correction
+        
         if use_rows.size == 0:
             templates_by_block[block] = np.zeros((pulse_len, clean.shape[1]), dtype=np.float32)
             pca_by_block[block] = [
@@ -403,6 +405,39 @@ def remove_stim_pca_offline(
 
     return clean
 
+
+# def interpolate_between_blocks(
+#     clean: np.ndarray,
+#     trigger_pairs: np.ndarray,
+#     block_boundaries: np.ndarray,
+#     fs: float,
+#     tail_ms: float = 1.0,
+#     ramp_fraction: float = 1.0,
+# ):
+#     """
+#     Apply interp ramp from (artifact_end + tail) to next trigger, but only between blocks.
+#     """
+#     if trigger_pairs.shape[0] == 0 or block_boundaries.size < 2:
+#         return
+
+#     ramp_tail = int(round(tail_ms * fs / 1000.0))
+#     n_total_pulses = trigger_pairs.shape[0]
+#     n_blocks = block_boundaries.size - 1
+
+#     for block in range(n_blocks - 1):
+#         block_beg, block_end = int(block_boundaries[block]), int(block_boundaries[block + 1])
+#         if block_end <= block_beg or block_end >= n_total_pulses:
+#             continue
+#         last_pulse_in_block = block_end - 1
+
+#         trig_end = int(trigger_pairs[last_pulse_in_block, 1])
+#         ramp_start = min(trig_end + ramp_tail, clean.shape[0] - 1)
+
+#         next_start = int(trigger_pairs[block_end, 0])
+#         if next_start > ramp_start:
+#             _apply_interp_ramp(clean, ramp_start, next_start, ramp_fraction)
+            
+
 # # ------------------------------ wrap as SI recording ----------------
 def cleaned_numpy_to_recording(
     cleaned: np.ndarray, recording_like: si.BaseRecording
@@ -441,4 +476,3 @@ def cleaned_numpy_to_recording(
         pass
 
     return rec
-

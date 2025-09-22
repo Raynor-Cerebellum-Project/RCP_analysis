@@ -40,9 +40,9 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
         session_folders = session_folders[:limit_sessions]
     print("Found session folders:", len(session_folders))
 
-    RATES = PARAMS.rates or {}
+    RATES = PARAMS.UA_rate_est or {}
     BIN_MS     = float(RATES.get("bin_ms", 1.0))
-    SIGMA_MS   = float(RATES.get("sigma_ms", 20.0))
+    SIGMA_MS   = float(RATES.get("sigma_ms", 50.0))
     THRESH     = float(RATES.get("detect_threshold", 4.5))
     PEAK_SIGN  = str(RATES.get("peak_sign", "neg"))
         

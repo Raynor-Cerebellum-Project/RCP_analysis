@@ -8,7 +8,7 @@ from probeinterface.plotting import plot_probe
 import spikeinterface as si
 
 # import helpers from sibling modules
-from ..functions.intan_preproc import load_stim_geometry, get_chanmap_perm_from_geom, reorder_recording_to_geometry, read_intan_recording, make_identity_probe_from_geom, load_stim_triggers_from_npz
+from ..functions.intan_preproc import load_stim_geometry, get_chanmap_perm_from_geom, reorder_recording_to_geometry, read_intan_recording, make_identity_probe_from_geom, load_stim_detection
 
 def get_stimulated_channel_ids_from_geom(sess_folder: Path, rec_geom) -> set[str]:
     """
@@ -96,16 +96,16 @@ def _detect_stim_channels_from_npz(
         return np.unique(active)
 
 
-def _find_ac_dir_for_session(preproc_root: Path, sess_name: str) -> Path | None:
+def _find_interp_dir_for_session(preproc_root: Path, sess_name: str) -> Path | None:
     """
     Find the artifact-corrected checkpoint directory like:
-      pp_local_<rmin>_<rmax>__AC_<sess_name>
+      pp_local_<rmin>_<rmax>__interp_<sess_name>
     Returns the newest match if multiple exist.
     """
     root = Path(preproc_root) / "NPRW"
     if not root.exists():
         return None
-    pat = re.compile(rf"^pp_.*__AC_{re.escape(sess_name)}$")
+    pat = re.compile(rf"^pp_.*__interp_{re.escape(sess_name)}$")
     cands = [p for p in root.iterdir() if p.is_dir() and pat.match(p.name)]
     if not cands:
         return None
@@ -152,11 +152,11 @@ def plot_all_quads_for_session(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 1) load AC checkpoint
-    ac_dir = _find_ac_dir_for_session(preproc_root, sess_folder.name)
+    ac_dir = _find_interp_dir_for_session(preproc_root, sess_folder.name)
     if ac_dir is None:
         raise FileNotFoundError(
             f"No artifact-corrected checkpoint found for session '{sess_folder.name}' "
-            f"in {preproc_root/'NPRW'} (looked for 'pp_*__AC_{sess_folder.name}')"
+            f"in {preproc_root/'NPRW'} (looked for 'pp_*__interp_{sess_folder.name}')"
         )
     rec = _load_cached_recording(ac_dir)
 
@@ -199,13 +199,22 @@ def plot_all_quads_for_session(
     Xwin = rec.get_traces(start_frame=start, end_frame=end, return_in_uV=True)
     t = (np.arange(Xwin.shape[0], dtype=float) + start) / fs - t0
 
+    # --- compute a global y-axis range across all channels ---
+    meds = np.median(Xwin, axis=0)
+    mads = np.median(np.abs(Xwin - meds), axis=0) + 1e-9
+    ymins = meds - 4 * mads
+    ymaxs = meds + 4 * mads
+    global_ylim = (float(ymins.min()), float(ymaxs.max()))
+
     # --- Load triggers/blocks + build visible trigger times
     trig_t = np.array([], dtype=float)
     blocks = None
     if stim_npz_path is not None:
         try:
             # load all four; ignore pulse_sizes/meta if you don’t need them
-            trigs, blocks, pulse_sizes, _meta = load_stim_triggers_from_npz(stim_npz_path)
+            stim_data = load_stim_detection(stim_npz_path)
+            trigs = stim_data["trigger_pairs"][:,0]        # (n_pulses, 2)
+            blocks  = stim_data["block_boundaries"][:,0]     # (n_blocks+1,)
             if trigs is None:
                 trigs = np.zeros((0,), dtype=np.int64)
             trig_t = trigs.astype(float) / fs - t0  # seconds relative to t0
@@ -305,7 +314,7 @@ def plot_all_quads_for_session(
                     ax.axvline(tt, color="tab:green", lw=0.6, alpha=0.6, zorder=2)
 
             ax.set_title(chan_ids[ch], fontsize=9)
-            ax.set_ylim(med - 6 * mad, med + 6 * mad)
+            ax.set_ylim(*global_ylim)
             if r != nrows - 1:
                 ax.tick_params(labelbottom=False)
             if c0 != 0:
@@ -349,6 +358,6 @@ def plot_all_quads_for_session(
             y=1.02, fontsize=12
         )
 
-        out_png = out_dir / f"{sess_folder.name}_AC_probe+4x4_panel{gi:02d}.png"
+        out_png = out_dir / f"{sess_folder.name}_interp_probe+4x4_panel{gi:02d}.png"
         fig.savefig(out_png, dpi=180, bbox_inches="tight", bbox_extra_artists=[st])
         plt.close(fig)

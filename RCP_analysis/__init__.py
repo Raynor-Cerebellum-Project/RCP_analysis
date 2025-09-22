@@ -34,7 +34,6 @@ from .python.functions.intan_preproc import (
     get_chanmap_perm_from_geom,
     make_identity_probe_from_geom,
     reorder_recording_to_geometry,
-    load_stim_triggers_from_npz,
     StimTriggerConfig,
     StimTriggerResult,
     extract_stim_triggers_and_blocks,
@@ -43,12 +42,11 @@ from .python.functions.intan_preproc import (
 # artifact correction (PCA template subtraction) — requires list_triggers now
 from .python.functions.artifact_correction_template_matching import (
     remove_stim_pca_offline, cleaned_numpy_to_recording,
-    PCAArtifactParams
+    PCAArtifactParams, load_stim_detection
 )
 
 # plotting
 from .python.plotting.plotting import plot_all_quads_for_session
-
 
 __all__ = [
     # params
@@ -67,14 +65,14 @@ __all__ = [
     "local_cm_reference", "save_recording", "list_intan_sessions",
     "extract_and_save_stim_npz", "extract_and_save_other_streams_npz",
     "get_chanmap_perm_from_geom", "make_identity_probe_from_geom",
-    "reorder_recording_to_geometry", "load_stim_triggers_from_npz",
+    "reorder_recording_to_geometry", "load_stim_detection",
 
     # plotting
     "plot_all_quads_for_session",
 
     # artifact correction
-    "ArtifactParams", "remove_stim_pca",
+    "PCAArtifactParams", "remove_stim_pca_offline", "load_stim_detection", "cleaned_numpy_to_recording",
 
     # stim preprocessing
-    "StimTriggerConfig", "StimTriggerResult", "extract_stim_triggers_and_blocks",
+    "StimTriggerConfig", "StimTriggerResult", "extract_stim_triggers_and_blocks"
 ]

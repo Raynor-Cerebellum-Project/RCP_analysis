@@ -34,12 +34,19 @@ parallel_jobs: 6
 threads_per_worker: 1
 chunk: "4s"
 
-# ---- firing rate (threshold MUA) ----
-rates:
+# ---- Intan firing rate (threshold MUA) ----
+intan_rate_est:
   bin_ms: 1.0          # bin width for counts
-  sigma_ms: 20.0       # Gaussian kernel std
+  sigma_ms: 25.0       # Gaussian kernel std
   detect_threshold: 4.5
-  peak_sign: "neg"     # "neg" | "pos" | "both"
+  peak_sign: "both"     # "neg" | "pos" | "both"
+
+# ---- BR firing rate (threshold MUA) ----
+UA_rate_est:
+  bin_ms: 1.0          # bin width for counts
+  sigma_ms: 50.0       # Gaussian kernel std
+  detect_threshold: 4.5
+  peak_sign: "both"     # "neg" | "pos" | "both"
   
 # ---- plotting ----
 win_pre_s: 0.050
