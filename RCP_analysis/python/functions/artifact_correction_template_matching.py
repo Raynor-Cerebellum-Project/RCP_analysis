@@ -41,19 +41,19 @@ def load_stim_detection(npz_path: Path) -> Dict[str, np.ndarray]:
     Required fields (your new format):
       - active_channels     : (n_active,)
       - trigger_pairs       : (n_pulses, 2) [start, end] in Intan index space
-      - block_boundaries    : (n_blocks+1,) boundaries in pulse index space
+      - block_bounds_samples    : (n_blocks, 2) boundaries in Intan index space
       - pulse_sizes         : (n_pulses,)
     """
     with np.load(npz_path, allow_pickle=False) as z:
         active_channels = z.get("active_channels", np.array([], dtype=np.int32)).astype(np.int32)
-        trigger_pairs = z["trigger_pairs"].astype(np.int32)
-        block_boundaries = z["block_boundaries"].astype(np.int32)
+        trigger_pairs = z["trigger_pairs"].astype(np.int64)
+        block_bounds_samples = z["block_bounds_samples"].astype(np.int64)
         pulse_sizes = z["pulse_sizes"].astype(np.int32)
 
     return dict(
         active_channels=active_channels,
         trigger_pairs=trigger_pairs,
-        block_boundaries=block_boundaries,
+        block_bounds_samples=block_bounds_samples,
         pulse_sizes=pulse_sizes,
     )
 
@@ -285,37 +285,78 @@ def remove_stim_pca_offline(
     # Load stim detection data
     stim_data = load_stim_detection(stim_npz_path)
     trigger_pairs = stim_data["trigger_pairs"]        # (n_pulses, 2)
-    block_bounds  = stim_data["block_boundaries"]     # (n_blocks+1,)
+    block_bounds_samples  = stim_data["block_bounds_samples"] # (n_blocks, 2) in sample space
     # pulse_sizes  = stim_data["pulse_sizes"]         # not needed explicitly here
 
-    if trigger_pairs.shape[0] == 0 or block_bounds.size < 2:
-        return clean  # nothing to do
+    if trigger_pairs.shape[0] == 0 or block_bounds_samples.ndim != 2 or block_bounds_samples.shape[0] == 0:
+        return clean
 
     # Build per-block templates
     # We will (a) compute a uniform L per block = max window length among pulses in the block
     #     and (b) build PCA template using 2 to end pulses
     n_total_pulses = trigger_pairs.shape[0]
-    n_blocks = block_bounds.size - 1
+    n_blocks = int(block_bounds_samples.shape[0])
+
     templates_by_block: Dict[int, np.ndarray] = {}
     pca_by_block: Dict[int, List[Dict[str, np.ndarray]]] = {}
     pulse_len_each_block: Dict[int, int] = {}
 
     for block in range(n_blocks):
-        block_beg, block_end = int(block_bounds[block]), int(block_bounds[block + 1])
-        if block_end <= block_beg:
+        bs = int(block_bounds_samples[block, 0])  # block start in samples
+        be = int(block_bounds_samples[block, 1])  # block end in samples
+        if be <= bs:
             continue
-        tp_block = trigger_pairs[block_beg:block_end, :]
 
-        # Uniform window length per block (max of per-pulse [start-pre : end+post]), assuming pulse lengths are the same within a block
+        # Pulses whose START lies inside the block span (you can also require end<=be if you prefer)
+        starts = trigger_pairs[:, 0]
+        mask = (starts >= bs) & (starts <= be)
+        if not np.any(mask):
+            # No pulses in this block: keep empty template pack for consistency
+            L_dummy = pca_params.pre_samples + pca_params.post_pad_samples + 1
+            templates_by_block[block] = np.zeros((L_dummy, clean.shape[1]), dtype=np.float32)
+            pca_by_block[block] = [
+                {"base": np.zeros((L_dummy,), dtype=np.float32),
+                "components": np.zeros((0, L_dummy), dtype=np.float32)}
+                for _ in range(clean.shape[1])
+            ]
+            pulse_len_each_block[block] = L_dummy
+            continue
+
+        tp_block = trigger_pairs[mask, :]  # (m, 2) pulses in this block
+
+        # Uniform window length per block
         all_pulse_len = _block_window_lengths(tp_block, pre=pca_params.pre_samples, post_pad=pca_params.post_pad_samples)
         pulse_len = int(np.max(all_pulse_len))
         pulse_len_each_block[block] = pulse_len
 
-        # Pulses used for PCA template (optionally drop first one (or N))
+        # Exclude first N pulses in the block if requested
+        use_rows = np.arange(tp_block.shape[0])
         if pca_params.first_pulse_special and pca_params.exclude_first_n_for_pca > 0:
-            use_rows = np.arange(tp_block.shape[0])[pca_params.exclude_first_n_for_pca:]
+            use_rows = use_rows[pca_params.exclude_first_n_for_pca:]
+        if use_rows.size == 0:
+            templates_by_block[block] = np.zeros((pulse_len, clean.shape[1]), dtype=np.float32)
+            pca_by_block[block] = [
+                {"base": np.zeros((pulse_len,), dtype=np.float32),
+                "components": np.zeros((0, pulse_len), dtype=np.float32)}
+                for _ in range(clean.shape[1])
+            ]
+            continue
+
+        snips_block, keep_mask, L_real = _extract_pulse_snippets(
+            clean, tp_block[use_rows], pre=pca_params.pre_samples,
+            post_pad=pca_params.post_pad_samples, target_len=pulse_len
+        )
+        if snips_block.shape[0] == 0:
+            templates_by_block[block] = np.zeros((pulse_len, clean.shape[1]), dtype=np.float32)
+            pca_by_block[block] = [
+                {"base": np.zeros((pulse_len,), dtype=np.float32),
+                "components": np.zeros((0, pulse_len), dtype=np.float32)}
+                for _ in range(clean.shape[1])
+            ]
         else:
-            use_rows = np.arange(tp_block.shape[0])
+            templ_block, pcap_block = _pca_template_per_channel(snips_block, center=pca_params.center_snippets)
+            templates_by_block[block] = templ_block
+            pca_by_block[block] = pcap_block
 
         # TODO implement first pulse artifact correction
         
@@ -348,7 +389,15 @@ def remove_stim_pca_offline(
     # Subtract templates pulse-by-pulse (with optional per-channel amplitude scaling)
     # Also apply interp ramp from (artifact_end + tail) to next trigger
     for pulse in range(n_total_pulses):
-        block = int(np.searchsorted(block_bounds[1:], pulse, side="right"))
+        # find which block this pulse belongs to via sample-span test
+        trig_start = int(trigger_pairs[pulse, 0])
+        # (vectorized over B blocks)
+        bs = block_bounds_samples[:, 0]
+        be = block_bounds_samples[:, 1]
+        in_block = (trig_start >= bs) & (trig_start <= be)
+        if not np.any(in_block):
+            continue
+        block = int(np.flatnonzero(in_block)[0])
         if block not in templates_by_block:
             continue
 
@@ -405,39 +454,6 @@ def remove_stim_pca_offline(
 
     return clean
 
-
-# def interpolate_between_blocks(
-#     clean: np.ndarray,
-#     trigger_pairs: np.ndarray,
-#     block_boundaries: np.ndarray,
-#     fs: float,
-#     tail_ms: float = 1.0,
-#     ramp_fraction: float = 1.0,
-# ):
-#     """
-#     Apply interp ramp from (artifact_end + tail) to next trigger, but only between blocks.
-#     """
-#     if trigger_pairs.shape[0] == 0 or block_boundaries.size < 2:
-#         return
-
-#     ramp_tail = int(round(tail_ms * fs / 1000.0))
-#     n_total_pulses = trigger_pairs.shape[0]
-#     n_blocks = block_boundaries.size - 1
-
-#     for block in range(n_blocks - 1):
-#         block_beg, block_end = int(block_boundaries[block]), int(block_boundaries[block + 1])
-#         if block_end <= block_beg or block_end >= n_total_pulses:
-#             continue
-#         last_pulse_in_block = block_end - 1
-
-#         trig_end = int(trigger_pairs[last_pulse_in_block, 1])
-#         ramp_start = min(trig_end + ramp_tail, clean.shape[0] - 1)
-
-#         next_start = int(trigger_pairs[block_end, 0])
-#         if next_start > ramp_start:
-#             _apply_interp_ramp(clean, ramp_start, next_start, ramp_fraction)
-            
-
 # # ------------------------------ wrap as SI recording ----------------
 def cleaned_numpy_to_recording(
     cleaned: np.ndarray, recording_like: si.BaseRecording
@@ -466,7 +482,7 @@ def cleaned_numpy_to_recording(
     rec = NumpyRecording(
         traces_list=[traces],
         sampling_frequency=fs,
-        channel_ids=chan_ids,
+        channel_ids=chan_ids.tolist(),
     )
 
     # Propagate probe / properties if available

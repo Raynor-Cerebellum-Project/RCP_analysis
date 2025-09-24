@@ -113,21 +113,16 @@ def load_stim_detection(npz_path: Path) -> Dict[str, np.ndarray]:
     Required fields (your new format):
       - active_channels     : (n_active,)
       - trigger_pairs       : (n_pulses, 2) [start, end] in Intan index space
-      - block_boundaries    : (n_blocks+1,) boundaries in pulse index space
+      - block_bounds_samples: (n_blocks, 2) [start, end] in Intan index space
       - pulse_sizes         : (n_pulses,)
     """
     with np.load(npz_path, allow_pickle=False) as z:
-        active_channels = z.get("active_channels", np.array([], dtype=np.int32)).astype(np.int32)
-        trigger_pairs = z["trigger_pairs"].astype(np.int32)
-        block_boundaries = z["block_boundaries"].astype(np.int32)
-        pulse_sizes = z["pulse_sizes"].astype(np.int32)
-
-    return dict(
-        active_channels=active_channels,
-        trigger_pairs=trigger_pairs,
-        block_boundaries=block_boundaries,
-        pulse_sizes=pulse_sizes,
-    )
+        return dict(
+            active_channels=z["active_channels"].astype(np.int32),
+            trigger_pairs=z["trigger_pairs"].astype(np.int64),
+            block_bounds_samples=z["block_bounds_samples"].astype(np.int64),
+            pulse_sizes=z["pulse_sizes"].astype(np.int32),
+        )
 
 # ----------------------
 # Preprocessing
@@ -190,9 +185,9 @@ class StimTriggerConfig:
 @dataclass
 class StimTriggerResult:
     active_channels: np.ndarray            # (n_active_channels,)
-    trigger_pairs: np.ndarray              # (n_events, 2) [start_sample, end_sample]
-    block_boundaries: np.ndarray           # (n_blocks+1,) event indices; blocks are [i:k) in event index space
-    pulse_sizes: np.ndarray                # (n_events,) length of each pulse in samples
+    trigger_pairs: np.ndarray              # (n_pulses, 2) [start_sample, end_sample]
+    block_bounds_samples: np.ndarray       # (n_blocks, 2) [block_start_sample, block_end_sample]
+    pulse_sizes: np.ndarray                # (n_pulses,)
 
 def extract_stim_triggers_and_blocks(
     stim_data: np.ndarray,   # (n_channels, n_samples)
@@ -222,8 +217,8 @@ def extract_stim_triggers_and_blocks(
         # nothing to do
         return StimTriggerResult(
             active_channels=np.array([], dtype=int),
-            trigger_pairs=np.empty((0, 2), dtype=np.int32),
-            block_boundaries=np.array([0], dtype=int),
+            trigger_pairs=np.empty((0, 2), dtype=np.int64),
+            block_bounds_samples=np.empty((0, 2), dtype=np.int64),
             pulse_sizes=np.array([], dtype=int),
         )
     det_ch = int(active_channels[0])
@@ -232,8 +227,8 @@ def extract_stim_triggers_and_blocks(
     if stim_signal.size < 2:
         return StimTriggerResult(
             active_channels=active_channels,
-            trigger_pairs=np.empty((0, 2), dtype=np.int32),
-            block_boundaries=np.array([0], dtype=int),
+            trigger_pairs=np.empty((0, 2), dtype=np.int64),
+            block_bounds_samples=np.empty((0, 2), dtype=np.int64),
             pulse_sizes=np.array([], dtype=int),
         )
 
@@ -266,26 +261,28 @@ def extract_stim_triggers_and_blocks(
 
     # --- 3) block (repeat) boundaries
     if trigger_pairs.shape[0] == 0:
-        block_boundaries_pulse_num = np.array([0], dtype=int)
+        block_bounds_samples = np.empty((0, 2), dtype=np.int64)
     else:
-        # use median pulse size as representative
         pulse_size_ref = int(np.median(pulse_sizes))
         repeat_gap_threshold = 50 * pulse_size_ref
+
         starts = trigger_pairs[:, 0]
         ends   = trigger_pairs[:, 1]
+
         gaps = np.diff(starts)
         cut_points = np.flatnonzero(gaps > repeat_gap_threshold) + 1
-        block_boundaries_pulse_num = np.concatenate([[0], cut_points, [trigger_pairs.shape[0]]]).astype(int)
-        block_starts = starts[block_boundaries_pulse_num[:-1]]
-        block_ends   = ends[block_boundaries_pulse_num[1:] - 1]
-        block_boundaries = np.column_stack([block_starts, block_ends]).astype(np.int64)
+        block_boundaries_idx = np.concatenate([[0], cut_points, [trigger_pairs.shape[0]]]).astype(int)
+
+        block_starts = starts[block_boundaries_idx[:-1]]
+        block_ends   = ends[block_boundaries_idx[1:] - 1]
+        block_bounds_samples = np.column_stack([block_starts, block_ends]).astype(np.int64)
 
     return StimTriggerResult(
         active_channels=active_channels,
         trigger_pairs=trigger_pairs,
-        block_boundaries=block_boundaries,
+        block_bounds_samples=block_bounds_samples,
         pulse_sizes=pulse_sizes,
-    )
+)
 
 def extract_and_save_stim_npz(
     sess_folder: Path,
@@ -314,8 +311,8 @@ def extract_and_save_stim_npz(
     arrays = {
         "stim_traces": stim_traces.astype(np.float32),
         "active_channels": stim_ext.active_channels.astype(np.int32),
-        "trigger_pairs": stim_ext.trigger_pairs.astype(np.int32),
-        "block_boundaries": stim_ext.block_boundaries.astype(np.int32),
+        "trigger_pairs": stim_ext.trigger_pairs.astype(np.int64),
+        "block_bounds_samples": stim_ext.block_bounds_samples.astype(np.int64),
         "pulse_sizes": stim_ext.pulse_sizes.astype(np.int32),
     }
     meta = dict(

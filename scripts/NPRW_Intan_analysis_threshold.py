@@ -239,35 +239,40 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
             freq_min=float(PARAMS.highpass_hz),
             inner_outer_radius_um=RADII
         )
-        stim_data = load_stim_detection(stim_npz_path)
-        block_bounds = stim_data["block_boundaries"]
+        # block_bounds_samples: shape (B, 2) in absolute samples
+        stim = load_stim_detection(stim_npz_path)
+        block_bounds = np.asarray(stim.get("block_bounds_samples", []), dtype=int)
 
-        rec_interp = rec_ref  # fallback: no interpolation
-        if block_bounds is not None and block_bounds.size > 0:
-            # handle both (B,2) sample-space and (B+1,) index-space cases
-            if block_bounds.ndim == 2 and block_bounds.shape[1] == 2:
-                starts = block_bounds[:, 0].astype(int)
-            else:
-                # fall back to using indices if only index boundaries are available
-                starts = block_bounds.astype(int)
-
-            if np.any(starts > 0):
-                list_triggers = [starts.tolist()]
-                rec_interp = si.preprocessing.remove_artifacts(
+        rec_interp = rec_ref  # fallback
+        if block_bounds.size:
+            # keep only proper intervals
+            valid = block_bounds[:, 1] > block_bounds[:, 0]
+            spans = block_bounds[valid]
+            if spans.size:
+                list_periods = [[(int(s), int(e)) for s, e in spans]]  # one segment
+                rec_interp = si.preprocessing.silence_periods(
                     rec_ref,
-                    list_triggers,
-                    ms_before=5.0,
-                    ms_after=105.0,
-                    mode="linear",
+                    list_periods,
+                    mode="zeros",   # or "noise"
                 )
             else:
-                print("[WARN] block_bounds only contains zeros, skipping artifact removal.")
+                print("[WARN] all block spans are empty; skipping artifact removal.")
         else:
-            print("[WARN] no block boundaries found, skipping artifact removal.")
+            print("[WARN] no block spans found; skipping artifact removal.")
+
 
         figs_dir_during = OUT_BASE / "figures" / "NPRW" / "interp"
         figs_dir_after = OUT_BASE / "figures" / "NPRW" / "after_interp"
-        preproc_root = OUT_BASE / "checkpoints" / "NPRW"
+        preproc_root = OUT_BASE / "checkpoints"
+        
+        # Save preprocessed session (artifact-corrected + referenced)
+        out_dir = checkpoint_out / f"pp_local_{int(RADII[0])}_{int(RADII[1])}__interp_{sess.name}"
+        save_recording(rec_interp, out_dir)
+        print(f"[{sess.name}] saved interpolated -> {out_dir}")
+
+        del rec, rec_ref
+        gc.collect()
+
         plot_all_quads_for_session(
             sess_folder=sess,
             geom_path=GEOM_PATH,
@@ -294,14 +299,7 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
             template_samples_before=params.pre_samples,
             template_samples_after=params.post_pad_samples
         )
-        # Save preprocessed session (artifact-corrected + referenced)
-        out_dir = checkpoint_out / f"pp_local_{int(RADII[0])}_{int(RADII[1])}__interp_{sess.name}"
-        save_recording(rec_interp, out_dir)
-        print(f"[{sess.name}] saved interpolated -> {out_dir}")
-
-        del rec, rec_ref
-        gc.collect()
-
+        
         rate_hz, t_ms, counts = threshold_mua_rates(
             rec_interp,
             detect_threshold=THRESH,

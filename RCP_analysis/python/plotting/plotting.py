@@ -10,23 +10,6 @@ import spikeinterface as si
 # import helpers from sibling modules
 from ..functions.intan_preproc import load_stim_geometry, get_chanmap_perm_from_geom, reorder_recording_to_geometry, read_intan_recording, make_identity_probe_from_geom, load_stim_detection
 
-def get_stimulated_channel_ids_from_geom(sess_folder: Path, rec_geom) -> set[str]:
-    """
-    Detect active stim rows from a GEOMETRY-ordered stim matrix,
-    return the corresponding channel IDs from rec_geom (also geometry-ordered).
-    """
-    stim_geom = load_stim_geometry(sess_folder)
-    if stim_geom is None or stim_geom.ndim != 2:
-        return set()
-
-    # any nonzero at any time -> stimulated row
-    active_rows = np.flatnonzero(np.any(stim_geom != 0, axis=1)).astype(int)
-    if active_rows.size == 0:
-        return set()
-
-    ids_geom = list(rec_geom.get_channel_ids())  # geometry order
-    return {ids_geom[i] for i in active_rows if 0 <= i < len(ids_geom)}
-
 def _first_stim_time_from_npz(stim_npz: Path) -> float | None:
     """
     Return first stim time (s) using 'trigger_pairs' and 'meta' in the NPZ.
@@ -131,6 +114,20 @@ def _load_cached_recording(ac_dir: Path):
     raise FileNotFoundError(f"Could not load SpikeInterface recording from {ac_dir} "
                             f"(no si_folder.json found and si.load() failed).")
 
+def _pick_window_frames(fs, n_total, t0, pre_s, post_s, view_s=None):
+    if view_s is not None:
+        v0, v1 = float(view_s[0]), float(view_s[1])
+        if v1 < v0:
+            v0, v1 = v1, v0  # swap
+        start = max(0, int(round((t0 + v0) * fs)))
+        end   = min(n_total, int(round((t0 + v1) * fs)))
+    else:
+        start = max(0, int(round((t0 - pre_s) * fs)))
+        end   = min(n_total, int(round((t0 + post_s) * fs)))
+    if end <= start:
+        end = min(n_total, start + int(round(0.3 * fs)))  # 300 ms fallback
+    return start, end
+
 
 def plot_all_quads_for_session(
     sess_folder: Path,
@@ -148,6 +145,7 @@ def plot_all_quads_for_session(
     show_blocks: bool = True,
     template_samples_before: float | None = None,
     template_samples_after: float | None = None,
+    view_s: tuple[float, float] | None = None,
 ):
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -180,25 +178,25 @@ def plot_all_quads_for_session(
     chan_ids = [str(x) for x in rec.get_channel_ids()]
 
     # 3) pick window around first stim
+    t0 = None
     if stim_npz_path is not None:
         try:
-            t0 = _first_stim_time_from_npz(stim_npz_path) or 0.0
+            t0 = _first_stim_time_from_npz(stim_npz_path)  # keep None if no triggers
         except Exception:
             print(f"[WARN] could not read stim_npz at {stim_npz_path}; centering at t=0")
-            t0 = 0.0
-    else:
-        print("[WARN] stim_npz_path=None; centering at t=0 and skipping stim site coloring.")
+            t0 = None
+
+    if t0 is None:
+        print("[WARN] no stim found; centering at t=0 and ignoring view_s")
         t0 = 0.0
+        has_stim = False
+    else:
+        has_stim = True
 
-    start = max(0, int(round((t0 - pre_s) * fs)))
-    end   = min(n_total, int(round((t0 + post_s) * fs)))
-    if end <= start:
-        end = min(n_total, start + int(round(max(0.3, pre_s + post_s) * fs)))
-
-    # MISSING BEFORE: get traces and timebase
+    start, end = _pick_window_frames(fs, n_total, t0, pre_s, post_s, view_s=(view_s if has_stim else None))
     Xwin = rec.get_traces(start_frame=start, end_frame=end, return_in_uV=True)
-    t = (np.arange(Xwin.shape[0], dtype=float) + start) / fs - t0
-
+    t = (np.arange(Xwin.shape[0], dtype=float) + start) / fs - t0  # axis still relative to stim
+    
     # --- compute a global y-axis range across all channels ---
     meds = np.median(Xwin, axis=0)
     mads = np.median(np.abs(Xwin - meds), axis=0) + 1e-9
@@ -208,20 +206,34 @@ def plot_all_quads_for_session(
 
     # --- Load triggers/blocks + build visible trigger times
     trig_t = np.array([], dtype=float)
-    blocks = None
+    block_edges_t = None
+
     if stim_npz_path is not None:
         try:
-            # load all four; ignore pulse_sizes/meta if you don’t need them
-            stim_data = load_stim_detection(stim_npz_path)
-            trigs = stim_data["trigger_pairs"][:,0]        # (n_pulses, 2)
-            blocks  = stim_data["block_boundaries"][:,0]     # (n_blocks+1,)
-            if trigs is None:
-                trigs = np.zeros((0,), dtype=np.int64)
-            trig_t = trigs.astype(float) / fs - t0  # seconds relative to t0
+            stim = load_stim_detection(stim_npz_path)
+
+            # triggers: take start column if present
+            tp = np.asarray(stim.get("trigger_pairs", []))
+            if tp.ndim == 2 and tp.shape[1] == 2 and tp.size:
+                trigs_start = tp[:, 0].astype(np.int64)
+                trig_t = trigs_start.astype(float) / fs - t0
+            else:
+                trig_t = np.array([], dtype=float)
+
+            # blocks: use (B,2) sample-space directly
+            bb = np.asarray(stim.get("block_bounds_samples", []))
+            if bb.ndim == 2 and bb.shape[1] == 2 and bb.size:
+                starts_s = bb[:, 0].astype(np.int64) / fs - t0  # seconds
+                ends_s   = bb[:, 1].astype(np.int64) / fs - t0
+                # flatten to edges [start1, end1, start2, end2, ...] and sort
+                block_edges_t = np.sort(np.concatenate([starts_s, ends_s]))
+            else:
+                block_edges_t = None
+
         except Exception as e:
             print(f"[WARN] could not load trig/block info: {e}")
             trig_t = np.array([], dtype=float)
-            blocks = None
+            block_edges_t = None
 
     # Template window (ms) – prefer explicit args, else fall back to global params if present
     if template_samples_before is None or template_samples_after is None:
@@ -247,18 +259,6 @@ def plot_all_quads_for_session(
             )
         except Exception as e:
             print(f"[WARN] stim site detection failed: {e}")
-
-    # --- Build block edge times for shading (if any)
-    block_edges_t = None
-    if show_blocks and (blocks is not None) and (trig_t.size > 0) and (blocks.size >= 2):
-        edges = []
-        for bi in blocks:
-            if 0 <= bi < trig_t.size:
-                edges.append(trig_t[bi])
-            elif bi == trig_t.size and trig_t.size > 0:
-                # sentinel a bit after the last trigger
-                edges.append(trig_t[-1] + (tb_s + ta_s))
-        block_edges_t = np.array(sorted(edges), dtype=float)
 
     # 5) group channels by geometry order and plot
     order = np.lexsort((locs[:, 0], locs[:, 1]))  # ascending y, then x
@@ -360,4 +360,54 @@ def plot_all_quads_for_session(
 
         out_png = out_dir / f"{sess_folder.name}_interp_probe+4x4_panel{gi:02d}.png"
         fig.savefig(out_png, dpi=180, bbox_inches="tight", bbox_extra_artists=[st])
+        plt.close(fig)
+        
+def plot_all_quads_firing_rate(
+    fr_hz: np.ndarray,         # (n_units, n_bins)
+    t: np.ndarray,             # (n_bins,)
+    locs: np.ndarray,          # (n_units, 2) geometry positions
+    stim_times: np.ndarray = None,
+    out_dir: Path = Path("fr_plots"),
+    probe_ratio: float = 0.4,
+    title: str = "Firing rate (Hz)"
+):
+    out_dir.mkdir(exist_ok=True, parents=True)
+
+    order = np.lexsort((locs[:,0], locs[:,1]))
+    nrows, ncols = 4, 4
+    group = nrows * ncols
+    groups = [order[i:i+group] for i in range(0, order.size, group)]
+
+    for gi, sel in enumerate(groups):
+        fig = plt.figure(figsize=(20,10), constrained_layout=True)
+        gs_main = gridspec.GridSpec(1, 2, figure=fig, width_ratios=[5, probe_ratio])
+        gs_grid = gridspec.GridSpecFromSubplotSpec(
+            nrows, ncols, subplot_spec=gs_main[0,0], wspace=0.05, hspace=0.15
+        )
+        axes = np.array([[plt.subplot(gs_grid[r,c]) for c in range(ncols)] for r in range(nrows)])
+        ax_probe = plt.subplot(gs_main[0,1])
+
+        for k_idx, unit in enumerate(sel):
+            r0, c0 = divmod(k_idx, ncols)
+            r = nrows - 1 - r0
+            ax = axes[r,c0]
+            if k_idx >= sel.size:
+                ax.axis("off"); continue
+            y = fr_hz[unit,:]
+            ax.plot(t, y, lw=1.0)
+            if stim_times is not None:
+                for st in stim_times:
+                    ax.axvline(st, color="red", lw=0.5, alpha=0.5)
+            ax.set_title(f"unit {unit}", fontsize=8)
+
+        ax_probe.scatter(locs[:,0], locs[:,1], s=10, c="k")
+        xs, ys = locs[sel,0], locs[sel,1]
+        rect = patches.Rectangle((xs.min(), ys.min()), xs.ptp(), ys.ptp(),
+                                 edgecolor="blue", facecolor="none")
+        ax_probe.add_patch(rect)
+        ax_probe.set_aspect("equal")
+
+        fig.suptitle(f"{title} – panel {gi}")
+        out_png = out_dir / f"fr_panel{gi:02d}.png"
+        fig.savefig(out_png, dpi=150)
         plt.close(fig)
