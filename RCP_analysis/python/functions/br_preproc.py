@@ -7,7 +7,7 @@ import pandas as pd
 import spikeinterface as si
 import spikeinterface.extractors as se
 from spikeinterface.sortingcomponents.peak_detection import detect_peaks
-from scipy.signal import butter, filtfilt
+from scipy.ndimage import gaussian_filter1d
 
 
 # ---------- Session discovery ----------
@@ -306,7 +306,7 @@ def threshold_mua_rates(
     n_jobs: int,
 ):
     """
-    Threshold-crossing MUA → binned + smoothed firing rates.
+    Threshold-crossing MUA → binned + Gaussian-smoothed firing rates.
 
     Returns
     -------
@@ -334,17 +334,10 @@ def threshold_mua_rates(
         noise_levels=noise_levels,
         n_jobs=n_jobs,
     )
-
-    # --- robust field picking across SI versions ---
-    def _pick_field(peaks, candidates):
-        for f in candidates:
-            if f in peaks.dtype.names:
-                return f
-        raise KeyError(f"Expected one of {candidates}, got {peaks.dtype.names}")
-
-    ch_field   = _pick_field(peaks, ("channel_ind", "channel_index", "channel_id", "channel"))
-    samp_field = _pick_field(peaks, ("sample_ind", "sample_index", "sample"))
-    seg_field  = _pick_field(peaks, ("segment_ind", "segment_index", "segment"))
+    
+    ch_field   = "channel_index"
+    samp_field = "sample_index"
+    seg_field  = "segment_index"
 
     # 2) Bin counts per segment
     counts_all, t_all = [], []
@@ -378,28 +371,25 @@ def threshold_mua_rates(
     counts_cat = np.concatenate(counts_all, axis=1)
     t_cat_ms   = np.concatenate(t_all)
 
-    # 3) Zero-phase smoothing (Butterworth + filtfilt) → Hz
+    # 3) Gaussian smoothing → Hz
     # Sampling rate in the binned domain:
     fs_bins = 1000.0 / float(bin_ms)  # bins per second
-    # Map Gaussian sigma (in bins) to approx -3 dB cutoff for Butterworth:
-    # f_3dB (cycles/sample) ≈ sqrt(ln 2) / (2π * sigma_bins)
-    # Normalize for butter() (0..1 where 1 = Nyquist): Wn = 2 * f_3dB = sqrt(ln 2)/(π * sigma_bins)
-    if sigma_bins <= 0 or counts_cat.shape[1] < 4:
+
+    if sigma_bins <= 0 or counts_cat.shape[1] < 2:
         # no smoothing or too short
         counts_smooth = counts_cat.astype(float, copy=False)
     else:
-        Wn = float(np.sqrt(np.log(2.0)) / (np.pi * max(sigma_bins, 1e-6)))
-        Wn = max(1e-6, min(Wn, 0.99))  # clamp
-        b, a = butter(N=4, Wn=Wn, btype="low")  # 4th-order lowpass
-        # padlen must be < n_samples; compute safe padlen
-        n_t = counts_cat.shape[1]
-        padlen = min(3 * max(len(a), len(b)), n_t - 1) if n_t > 1 else 0
-        if padlen < 1:
-            counts_smooth = counts_cat.astype(float, copy=False)
-        else:
-            counts_smooth = filtfilt(b, a, counts_cat.astype(float), axis=1, padlen=padlen)
-    rate_hz = counts_smooth * fs_bins  # counts/bin → Hz
+        # gaussian_filter1d is zero-phase (symmetric kernel) and fast
+        # mode='nearest' avoids edge dips; adjust if you prefer 'reflect'
+        counts_smooth = gaussian_filter1d(
+            counts_cat.astype(float, copy=False),
+            sigma=sigma_bins,
+            axis=1,
+            mode="nearest",
+            truncate=4.0,   # ≈ 4σ kernel half-width (common default)
+        )
 
+    rate_hz = counts_smooth * fs_bins  # counts/bin → Hz
     return rate_hz, t_cat_ms, counts_cat
 
 

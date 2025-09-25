@@ -191,7 +191,7 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
     # 1) Load geometry & mapping
     geom = load_stim_geometry(GEOM_PATH)
     perm = get_chanmap_perm_from_geom(geom)
-    probe = make_identity_probe_from_geom(geom, radius_um=5.0)
+    probe = make_identity_probe_from_geom(geom, radius_um=5.0) # Radius is for visualization of the channel contacts
 
     # 2) Find sessions & load each Intan folder
     sess_folders = list_intan_sessions(INTAN_ROOT)
@@ -244,22 +244,34 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
         block_bounds = np.asarray(stim.get("block_bounds_samples", []), dtype=int)
 
         rec_interp = rec_ref  # fallback
+
         if block_bounds.size:
-            # keep only proper intervals
-            valid = block_bounds[:, 1] > block_bounds[:, 0]
-            spans = block_bounds[valid]
-            if spans.size:
-                list_periods = [[(int(s), int(e)) for s, e in spans]]  # one segment
-                rec_interp = si.preprocessing.silence_periods(
+            fs = float(rec_ref.get_sampling_frequency())
+            n_total = rec_ref.get_num_frames() if hasattr(rec_ref, "get_num_frames") else rec_ref.get_num_samples()
+
+            starts_samp = block_bounds[:, 0].astype(int)
+            ends_samp   = block_bounds[:, 1].astype(int)
+
+            valid = (ends_samp > starts_samp) & (starts_samp >= 0) & (starts_samp < n_total)
+            starts_samp = starts_samp[valid]
+            ends_samp   = ends_samp[valid]
+
+            if starts_samp.size:
+                dur_ms = (ends_samp - starts_samp) * 1000.0 / fs
+                tail_ms = 5.0
+                ms_before_each = 5.0
+
+                rec_interp = si.preprocessing.remove_artifacts(
                     rec_ref,
-                    list_periods,
-                    mode="zeros",   # or "noise"
+                    list_triggers=[starts_samp.tolist()],
+                    ms_before=ms_before_each,
+                    ms_after=float(dur_ms.max() + tail_ms),  # one size
+                    mode="zeros",
                 )
             else:
-                print("[WARN] all block spans are empty; skipping artifact removal.")
+                print("[WARN] all block spans invalid or empty; skipping artifact removal.")
         else:
             print("[WARN] no block spans found; skipping artifact removal.")
-
 
         figs_dir_during = OUT_BASE / "figures" / "NPRW" / "interp"
         figs_dir_after = OUT_BASE / "figures" / "NPRW" / "after_interp"
