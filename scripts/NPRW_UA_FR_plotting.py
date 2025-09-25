@@ -410,6 +410,22 @@ def average_across_trials(zeroed_segments: np.ndarray):
     """
     return zeroed_segments.mean(axis=0)
 
+def _probe_from_locs(locs, radius_um: float = 5.0):
+    """Create a ProbeInterface Probe from (n_ch, 2) contact positions."""
+    from probeinterface import Probe
+    pr = Probe(ndim=2)
+    pr.set_contacts(
+        positions=np.asarray(locs, float),
+        shapes="circle",
+        shape_params={"radius": float(radius_um)},
+    )
+    try:
+        pr.create_auto_shape()
+    except Exception:
+        pass
+    return pr
+
+
 def plot_channel_heatmap(
     avg_change: np.ndarray,           # (n_ch, n_twin)
     rel_time_ms: np.ndarray,          # (n_twin,)
@@ -419,6 +435,8 @@ def plot_channel_heatmap(
     cmap: str = "jet",
     vmin: float | None = None,
     vmax: float | None = None,
+    blackrock_file: str | None = None,
+    intan_file: str | None = None,
 ):
     plt.figure(figsize=(12, 6))
     plt.imshow(
@@ -433,7 +451,17 @@ def plot_channel_heatmap(
     plt.colorbar(label="Δ Firing rate (Hz)")
     plt.xlabel("Time (ms) rel. stim")   # <-- ms axis label
     plt.ylabel("Channel index")
-    plt.title(f"{title} (n={n_trials} trials)")  # <-- include trial count
+    plt.title(f"{title} (n={n_trials} trials)")
+    file_info = []
+    if blackrock_file:
+        file_info.append(f"Blackrock: {Path(blackrock_file).name}")
+    if intan_file:
+        file_info.append(f"Intan: {Path(intan_file).name}")
+    if file_info:
+        plt.figtext(
+            0.5, -0.05, " | ".join(file_info),
+            ha="center", va="top", fontsize=9, style="italic"
+        )
     plt.axvline(0.0, color="k", alpha=0.8, linewidth=1.2)
     plt.axvspan(0.0, 100.0, color="gray", alpha=0.2, zorder=2)  # shaded 0–100 ms region
     plt.tight_layout()
@@ -450,7 +478,9 @@ def run_one_file(
     min_trials=1,
     save_npz=True,
     stim_ms: np.ndarray | None = None,
-    debug_channel: int | None = None,    # <-- NEW
+    debug_channel: int | None = None,
+    blackrock_idx: int | None = None,   # <—
+    intan_idx: int | None = None,
 ):
     rate_hz, t_ms, _ = load_rate_npz(npz_path)
     stim_ms = np.asarray(stim_ms, dtype=float).ravel()
@@ -480,9 +510,12 @@ def run_one_file(
     n_trials = segments.shape[0]   # number of kept trials
 
     out_png = out_dir / f"{stem}__peri_stim_heatmap.png"
-    plot_channel_heatmap(avg_change, rel_time_ms, out_png,
-                        n_trials=n_trials,
-                        vmin=-500, vmax=1000)
+    plot_channel_heatmap(
+        avg_change, rel_time_ms, out_png,
+        n_trials=n_trials, vmin=-500, vmax=1000,
+        blackrock_file=(f"BR_File_{blackrock_idx:03d}" if blackrock_idx is not None else None),
+        intan_file=(f"Intan_File_{intan_idx:03d}" if intan_idx is not None else None),
+    )
     if save_npz:
         out_npz = out_dir / f"{stem}__peri_stim_avg.npz"
         np.savez_compressed(
@@ -494,6 +527,8 @@ def run_one_file(
                 win_ms=win_ms,
                 baseline_first_ms=baseline_first_ms,
                 n_trials=int(segments.shape[0]),
+                br_file_index=blackrock_idx,
+                intan_file_index=intan_idx,
             ),
         )
         print(f"Saved averaged peri-stim data -> {out_npz}")
@@ -598,6 +633,7 @@ if __name__ == "__main__":
         try:
             session = session_from_rates_path(rates_npz)
 
+            intan_idx = session_to_intan_idx.get(session)
             # -------- INTAN: stim onsets from USB ADC bundle --------
             usb_adc_npz = nprw_bundles / f"{session}_Intan_bundle" / "USB_board_ADC_input_channel.npz"
             if not usb_adc_npz.exists():
@@ -619,6 +655,8 @@ if __name__ == "__main__":
                     save_npz=True,
                     stim_ms=stim_ms_intan,
                     debug_channel=(0 if i == 1 else None),
+                    blackrock_idx=None,
+                    intan_idx=intan_idx,
                 )
 
             # -------- UA: map Intan->BR, load UA rates + UA bundle TTLs, plot --------
@@ -663,6 +701,8 @@ if __name__ == "__main__":
                                     save_npz=True,
                                     stim_ms=stim_ms_ua,
                                     debug_channel=None,
+                                    blackrock_idx=br_idx,     # number from CSV mapping
+                                    intan_idx=intan_idx
                                 )
 
             n_ok += 1

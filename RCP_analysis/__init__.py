@@ -46,7 +46,7 @@ from .python.functions.artifact_correction_template_matching import (
 )
 
 # plotting
-from .python.plotting.plotting import plot_all_quads_for_session
+from .python.plotting.plotting import plot_all_quads_for_session, load_stim_ms_from_stimstream, detect_stim_channels_from_npz, run_one_Intan_FR_heatmap
 
 __all__ = [
     # params
@@ -68,7 +68,7 @@ __all__ = [
     "reorder_recording_to_geometry", "load_stim_detection",
 
     # plotting
-    "plot_all_quads_for_session",
+    "plot_all_quads_for_session", "load_stim_ms_from_stimstream", "build_probe_and_locs_from_geom", "run_one_Intan_FR_heatmap", "detect_stim_channels_from_npz",
 
     # artifact correction
     "PCAArtifactParams", "remove_stim_pca_offline", "load_stim_detection", "cleaned_numpy_to_recording",

@@ -94,7 +94,6 @@ def plot_selected_sessions(
                 sess_folder=sess,
                 geom_path=GEOM_PATH,
                 neural_stream=INTAN_STREAM,
-                stim_stream=STIM_STREAM,
                 out_dir=figs_dir,
                 stim_npz_path=stim_npz_path,
                 pre_s=pre_s,
@@ -275,6 +274,7 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
 
         figs_dir_during = OUT_BASE / "figures" / "NPRW" / "interp"
         figs_dir_after = OUT_BASE / "figures" / "NPRW" / "after_interp"
+        figs_dir_after2 = OUT_BASE / "figures" / "NPRW" / "after_interp2"
         preproc_root = OUT_BASE / "checkpoints"
         
         # Save preprocessed session (artifact-corrected + referenced)
@@ -284,13 +284,23 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
 
         del rec, rec_ref
         gc.collect()
-
+        
+        rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms = threshold_mua_rates(
+            rec_interp,
+            detect_threshold=THRESH,
+            peak_sign=PEAK_SIGN,
+            bin_ms=BIN_MS,
+            sigma_ms=SIGMA_MS,
+            n_jobs=PARAMS.parallel_jobs,
+        )
+        
         plot_all_quads_for_session(
             sess_folder=sess,
             geom_path=GEOM_PATH,
             neural_stream=INTAN_STREAM,
-            stim_stream=STIM_STREAM,
             out_dir=figs_dir_during,
+            peaks=peaks,                 # structured array from SI
+            peak_t_s=peak_t_ms / 1000.0,  # convert once here
             stim_npz_path=stim_npz_path,
             pre_s=0.1,
             post_s=0.2,
@@ -302,24 +312,29 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
             sess_folder=sess,
             geom_path=GEOM_PATH,
             neural_stream=INTAN_STREAM,
-            stim_stream=STIM_STREAM,
             out_dir=figs_dir_after,
+            peaks=peaks,
+            peak_t_s=peak_t_ms / 1000.0,
             stim_npz_path=stim_npz_path,
-            pre_s=-0.9,
-            post_s=0.4,
             preproc_root=preproc_root,
             template_samples_before=params.pre_samples,
-            template_samples_after=params.post_pad_samples
+            template_samples_after=params.post_pad_samples,
+            view_s=(0.95, 1.1)
+        )
+        plot_all_quads_for_session(
+            sess_folder=sess,
+            geom_path=GEOM_PATH,
+            neural_stream=INTAN_STREAM,
+            out_dir=figs_dir_after2,
+            peaks=peaks,
+            peak_t_s=peak_t_ms / 1000.0,
+            stim_npz_path=stim_npz_path,
+            preproc_root=preproc_root,
+            template_samples_before=params.pre_samples,
+            template_samples_after=params.post_pad_samples,
+            view_s=(0.98, 1.05)
         )
         
-        rate_hz, t_ms, counts = threshold_mua_rates(
-            rec_interp,
-            detect_threshold=THRESH,
-            peak_sign=PEAK_SIGN,
-            bin_ms=BIN_MS,
-            sigma_ms=SIGMA_MS,
-            n_jobs=PARAMS.parallel_jobs,
-        )
         # rate_hz is (n_channels, n_bins) → transpose to (n_bins, n_channels)
         X = rate_hz.T
 
@@ -335,8 +350,8 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
         np.savez_compressed(
             out_npz,
             rate_hz=rate_hz.astype(np.float32),
-            t_ms=t_ms.astype(np.float32),
-            counts=counts.astype(np.uint16),
+            t_ms=t_cat_ms.astype(np.float32),
+            counts=counts_cat.astype(np.uint16),
             pcs=pcs_T,                                  # (5, n_bins)
             explained_var=explained_var.astype(np.float32),
             meta=dict(
@@ -352,9 +367,8 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
         print(f"[{sess.name}] saved rate matrix + PCA -> {out_npz}")
 
         # cleanup to keep memory stable on long batches
-        del rec_interp, rate_hz, t_ms, counts
+        del rec_interp, rate_hz, t_cat_ms, counts_cat
         gc.collect()
-        # TODO make plots firing rate
 
 if __name__ == "__main__":
     main(limit_sessions=None)

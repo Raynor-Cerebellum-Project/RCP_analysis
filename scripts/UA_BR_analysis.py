@@ -81,8 +81,7 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
         rec_ref.save(folder=out_geom, overwrite=True)
         print(f"[{sess.name}] (ns6) saved preprocessed -> {out_geom}")
 
-        
-        rate_hz, t_ms, counts = threshold_mua_rates(
+        rate_hz, t_cat_ms, counts_cat, _, _ = threshold_mua_rates(
             rec_ref,
             detect_threshold=THRESH,
             peak_sign=PEAK_SIGN,
@@ -105,8 +104,8 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
         np.savez_compressed(
             out_npz,
             rate_hz=rate_hz.astype(np.float32),
-            t_ms=t_ms.astype(np.float32),
-            counts=counts.astype(np.uint16),
+            t_ms=t_cat_ms.astype(np.float32),
+            counts=counts_cat.astype(np.uint16),
             pcs=pcs_T,                                  # (5, n_bins)
             explained_var=explained_var.astype(np.float32),
             meta=dict(
@@ -122,7 +121,7 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
         print(f"[{sess.name}] saved rate matrix + PCA -> {out_npz}")
 
         # cleanup to keep memory stable on long batches
-        del bundle, rec_ns6, rec_hp, rec_ref, rate_hz, t_ms, counts
+        del bundle, rec_ns6, rec_hp, rec_ref, rate_hz, t_cat_ms, counts_cat
         gc.collect()
 
         saved_paths.append(out_geom)

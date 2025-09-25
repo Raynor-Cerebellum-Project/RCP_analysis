@@ -38,15 +38,15 @@ chunk: "4s"
 intan_rate_est:
   bin_ms: 1.0          # bin width for counts
   sigma_ms: 10.0       # Gaussian kernel std
-  detect_threshold: 4.5
-  peak_sign: "both"     # "neg" | "pos" | "both"
+  detect_threshold: 3
+  peak_sign: "both"
 
 # ---- BR firing rate (threshold MUA) ----
 UA_rate_est:
   bin_ms: 2.0          # bin width for counts
   sigma_ms: 20.0       # Gaussian kernel std
   detect_threshold: 4.5
-  peak_sign: "both"     # "neg" | "pos" | "both"
+  peak_sign: "both"
   
 # ---- plotting ----
 win_pre_s: 0.050

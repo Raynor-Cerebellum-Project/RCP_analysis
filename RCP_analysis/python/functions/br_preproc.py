@@ -310,22 +310,23 @@ def threshold_mua_rates(
 
     Returns
     -------
-    rate_hz : np.ndarray
-        (n_channels, n_bins) Gaussian-smoothed firing rate in Hz.
-    t_ms : np.ndarray
-        (n_bins,) bin-center times in ms.
-    counts : np.ndarray
-        (n_channels, n_bins) raw spike counts per bin.
+    rate_hz : (n_channels, n_bins) float
+    t_ms    : (n_bins,) float   # bin-center times in ms (concatenated across segments)
+    counts  : (n_channels, n_bins) int
+    peaks   : np.ndarray        # structured array from SpikeInterface (unchanged)
+    peak_t_ms : (n_peaks,) float
+        Global peak times in ms (segment offsets applied).
     """
-    fs = recording.get_sampling_frequency()
-    n_ch = recording.get_num_channels()
-    n_seg = recording.get_num_segments()
+    fs = float(recording.get_sampling_frequency())
+    n_ch = int(recording.get_num_channels())
+    n_seg = int(recording.get_num_segments())
+
     bin_samps = int(round(bin_ms * 1e-3 * fs))
     if bin_samps < 1:
         raise ValueError("bin_ms too small for sampling rate")
 
     # 1) Detect peaks
-    noise_levels = si.get_noise_levels(recording)
+    noise_levels = si.get_noise_levels(recording, method="mad", return_in_uV=False) # They didn't write return_in_uV in their documentation
     peaks = detect_peaks(
         recording,
         method="by_channel_torch",
@@ -334,10 +335,26 @@ def threshold_mua_rates(
         noise_levels=noise_levels,
         n_jobs=n_jobs,
     )
-    
+
+    # Hard-coded fields (OK if your SI version uses these names)
     ch_field   = "channel_index"
     samp_field = "sample_index"
     seg_field  = "segment_index"
+
+    # 1b) Build global peak time array in ms
+    # Compute cumulative sample offsets per segment: [0, n0, n0+n1, ...]
+    seg_n_samps = [int(recording.get_num_frames(s)) for s in range(n_seg)]
+    seg_offsets_samp = np.cumsum([0] + seg_n_samps[:-1]).astype(np.int64)
+
+    if seg_field in peaks.dtype.names:
+        seg_idx = peaks[seg_field].astype(np.int64, copy=False)
+    else:
+        if n_seg != 1:
+            raise RuntimeError("No segment field in peaks for multi-segment recording.")
+        seg_idx = np.zeros(peaks.shape[0], dtype=np.int64)
+
+    peak_samp_global = peaks[samp_field].astype(np.int64, copy=False) + seg_offsets_samp[seg_idx]
+    peak_t_ms = peak_samp_global.astype(np.float64) * (1000.0 / fs)
 
     # 2) Bin counts per segment
     counts_all, t_all = [], []
@@ -345,7 +362,7 @@ def threshold_mua_rates(
     bin_offset = 0
 
     for seg in range(n_seg):
-        n_samps = recording.get_num_frames(seg)
+        n_samps = seg_n_samps[seg]
         seg_bins = int(np.ceil(n_samps / bin_samps))
         counts = np.zeros((n_ch, seg_bins), dtype=np.int32)
 
@@ -358,13 +375,13 @@ def threshold_mua_rates(
                 raise RuntimeError("No segment field in peaks for multi-segment recording.")
 
         if seg_peaks.size > 0:
-            ch_idx = seg_peaks[ch_field].astype(np.int64)
-            samp   = seg_peaks[samp_field].astype(np.int64)
+            ch_idx = seg_peaks[ch_field].astype(np.int64, copy=False)
+            samp   = seg_peaks[samp_field].astype(np.int64, copy=False)
             bins   = np.clip(samp // bin_samps, 0, seg_bins - 1)
             np.add.at(counts, (ch_idx, bins), 1)
 
         counts_all.append(counts)
-        t_ms = (np.arange(seg_bins) + 0.5 + bin_offset) * bin_ms
+        t_ms = (np.arange(seg_bins, dtype=np.float64) + 0.5 + bin_offset) * bin_ms
         t_all.append(t_ms)
         bin_offset += seg_bins
 
@@ -372,26 +389,20 @@ def threshold_mua_rates(
     t_cat_ms   = np.concatenate(t_all)
 
     # 3) Gaussian smoothing → Hz
-    # Sampling rate in the binned domain:
     fs_bins = 1000.0 / float(bin_ms)  # bins per second
-
     if sigma_bins <= 0 or counts_cat.shape[1] < 2:
-        # no smoothing or too short
         counts_smooth = counts_cat.astype(float, copy=False)
     else:
-        # gaussian_filter1d is zero-phase (symmetric kernel) and fast
-        # mode='nearest' avoids edge dips; adjust if you prefer 'reflect'
         counts_smooth = gaussian_filter1d(
             counts_cat.astype(float, copy=False),
             sigma=sigma_bins,
             axis=1,
             mode="nearest",
-            truncate=4.0,   # ≈ 4σ kernel half-width (common default)
+            truncate=4.0,
         )
 
     rate_hz = counts_smooth * fs_bins  # counts/bin → Hz
-    return rate_hz, t_cat_ms, counts_cat
-
+    return rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms
 
 __all__ = [
     "list_br_sessions", "ua_excel_path",
