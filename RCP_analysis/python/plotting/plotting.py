@@ -286,7 +286,7 @@ def plot_all_quads_for_session(
 
     for gi, sel in enumerate(groups):
         fig = plt.figure(figsize=(20, 10), constrained_layout=True)
-        gs_main = gridspec.GridSpec(1, 2, figure=fig, width_ratios=[5, probe_ratio], wspace=0.15)
+        gs_main = gridspec.GridSpec(1, 2, figure=fig, width_ratios=[5, probe_ratio], wspace=0.05)
         gs_grid = gridspec.GridSpecFromSubplotSpec(nrows, ncols, subplot_spec=gs_main[0, 0],
                                                    wspace=0.05, hspace=0.15)
         axes = np.array([[plt.subplot(gs_grid[r, c]) for c in range(ncols)] for r in range(nrows)])
@@ -544,7 +544,7 @@ def plot_channel_heatmap(
     padding: float = 15.0,
 ):
     fig = plt.figure(figsize=(16, 6), constrained_layout=True)
-    gs = gridspec.GridSpec(1, 2, figure=fig, width_ratios=[5, probe_ratio], wspace=0.20)
+    gs = gridspec.GridSpec(1, 2, figure=fig, width_ratios=[5, probe_ratio], wspace=0.05)
 
     # --- heatmap (left) ---
     ax_hm = fig.add_subplot(gs[0, 0])
@@ -559,9 +559,8 @@ def plot_channel_heatmap(
         vmin=vmin,
         vmax=vmax,
     )
-
-    # If you want channel 0 at the TOP:
-    ax_hm.set_ylim(n_ch, 0)           # or: ax_hm.invert_yaxis()
+    
+    ax_hm.set_ylim(0, n_ch)
     cbar = fig.colorbar(im, ax=ax_hm); cbar.set_label("Δ Firing rate (Hz)")
     ax_hm.set_xlabel("Time (ms) rel. stim")
     ax_hm.set_ylabel("Channel index")
@@ -635,24 +634,6 @@ def plot_debug_channel_traces(
     plt.close()
     print(f"[debug] Saved overlay for ch {ch} -> {out_png}")
 
-    # 2) trial-by-time image (x-axis in ms)
-    plt.figure(figsize=(10, 5))
-    plt.imshow(
-        y, aspect="auto", cmap="hot",
-        extent=[rel_time_ms[0], rel_time_ms[-1], n_trials, 0],
-        origin="upper"
-    )
-    plt.colorbar(label="Δ Firing rate (Hz)")
-    plt.axvline(0.0, color="k", alpha=0.6, linewidth=1.0)
-    plt.xlabel("Time (ms) rel. stim")
-    plt.ylabel("Trial index")
-    plt.title(f"Channel {ch}: trials × time")
-    plt.tight_layout()
-    out_png2 = out_png_base.with_name(out_png_base.stem + f"__ch{ch:03d}_trials.png")
-    plt.savefig(out_png2, dpi=150)
-    plt.close()
-    print(f"[debug] Saved trials×time for ch {ch} -> {out_png2}")
-
 def run_one_Intan_FR_heatmap(
     npz_path: Path,
     out_dir: Path,
@@ -661,10 +642,11 @@ def run_one_Intan_FR_heatmap(
     min_trials=1,
     save_npz=True,
     stim_ms: np.ndarray | None = None,
-    debug_channel: int | None = None,
     intan_file=None,
     geom_path: Path | None = None,
     stim_idx: np.ndarray | None = None,
+    debug_chans: list[int] | None = None,                 # e.g. [0..15]
+    debug_window_ms: tuple[float, float] | None = None,   # e.g. (0, 250)
 ):
     rate_hz, t_ms, _ = load_rate_npz(npz_path)
     stim_ms = np.asarray(stim_ms, dtype=float).ravel()
@@ -676,16 +658,24 @@ def run_one_Intan_FR_heatmap(
     zeroed = baseline_zero_each_trial(
         segments=segments, rel_time_ms=rel_time_ms, baseline_first_ms=baseline_first_ms
     )
-
-    # -------- DEBUG: single-channel quick look --------
-    if debug_channel is not None:
-        # print some shapes/numbers to stdout
-        dt = float(np.median(np.diff(t_ms)))
-        print(f"[debug] segments shape={segments.shape} (trials, ch, timebins); dt={dt} ms")
-        print(f"[debug] rel_time_ms: {rel_time_ms[0]} .. {rel_time_ms[-1]} (n={rel_time_ms.size})")
-        out_base = (Path(out_dir) / npz_path.stem)
-        plot_debug_channel_traces(zeroed, rel_time_ms, debug_channel, out_base)
-    # ---------------------------------------------------
+    
+    # -------- NEW: multi-channel, windowed trial debug --------
+    if debug_chans is not None and len(debug_chans):
+        w0, w1 = (debug_window_ms if debug_window_ms is not None
+                  else (rel_time_ms[0], rel_time_ms[-1]))
+        mask = (rel_time_ms >= float(w0)) & (rel_time_ms <= float(w1))
+        if not np.any(mask):
+            print(f"[debug] requested window {w0}..{w1} ms has 0 bins — skipping.")
+        else:
+            z = zeroed[:, :, mask]
+            rt = rel_time_ms[mask]
+            out_base = (Path(out_dir) / (npz_path.stem + f"__debug_trials_{int(w0)}to{int(w1)}ms"))
+            for ch in debug_chans:
+                try:
+                    plot_debug_channel_traces(z, rt, ch, out_base)
+                except AssertionError as e:
+                    print(f"[debug] skip ch {ch}: {e}")
+    # -----------------------------------------------------------
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -704,7 +694,7 @@ def run_one_Intan_FR_heatmap(
         intan_file=intan_file,
         locs=locs,
         probe=probe,
-        probe_ratio=0.1,
+        probe_ratio=1.2,
         stim_idx=stim_idx,
         padding=15.0,
     )
@@ -722,3 +712,120 @@ def run_one_Intan_FR_heatmap(
             ),
         )
         print(f"Saved averaged peri-stim data -> {out_npz}")
+
+def _extract_trial_windows_raw(rec, fs, stim_start_samples, ch, window_ms=(0.0, 250.0), n_show=4):
+    w0_ms, w1_ms = float(window_ms[0]), float(window_ms[1])
+    w0_s,  w1_s  = w0_ms / 1000.0, w1_ms / 1000.0
+    n_total = rec.get_num_frames() if hasattr(rec, "get_num_frames") else rec.get_num_samples()
+
+    starts, ends, s0_list = [], [], []   # <— keep the stim start for each chosen trial
+    for s0 in np.asarray(stim_start_samples, dtype=np.int64):
+        i0 = int(s0 + round(w0_s * fs))
+        i1 = int(s0 + round(w1_s * fs))
+        if 0 <= i0 < i1 <= n_total:
+            starts.append(i0); ends.append(i1); s0_list.append(int(s0))
+            if len(starts) >= n_show:
+                break
+    if not starts:
+        raise RuntimeError("No trials fit into the requested window.")
+
+    n_time = ends[0] - starts[0]
+    t_ms = np.arange(n_time, dtype=float) / fs * 1000.0 + w0_ms
+
+    traces = np.empty((len(starts), n_time), dtype=float)
+    ch_id = rec.get_channel_ids()[ch]
+
+    for k, (i0, i1) in enumerate(zip(starts, ends)):
+        try:
+            y = rec.get_traces(start_frame=i0, end_frame=i1, channel_ids=[ch_id], return_in_uV=True)
+        except TypeError:
+            y = rec.get_traces(start_frame=i0, end_frame=i1, channel_ids=[ch_id], return_scaled=True)
+        traces[k, :] = np.asarray(y).squeeze()
+
+    return traces, t_ms, np.asarray(s0_list, dtype=np.int64)   # <— also return s0 per trial
+
+
+
+def plot_single_channel_trial_quad_raw(
+    rec,
+    fs: float,
+    stim_start_samples: np.ndarray,
+    ch: int,
+    out_png: Path,
+    window_ms=(90.0, 300.0),
+    n_show: int = 4,
+    title_prefix: str = "Stim-aligned raw traces",
+    peak_ch: np.ndarray | None = None,
+    peak_t_ms: np.ndarray | None = None,
+):
+    """
+    2×2 panel: 4 trials of raw voltage for one channel, with optional spike overlays.
+    """
+        # ---- Normalize overlay inputs to 1-D arrays ----
+    if peak_ch is not None:
+        peak_ch = np.atleast_1d(np.asarray(peak_ch)).astype(int)
+    if peak_t_ms is not None:
+        peak_t_ms = np.atleast_1d(np.asarray(peak_t_ms)).astype(float)
+
+    # Handle length mismatches / broadcasting-friendly behavior
+    if peak_ch is not None and peak_t_ms is not None:
+        if peak_ch.size != peak_t_ms.size:
+            if peak_ch.size == 1:
+                peak_ch = np.full_like(peak_t_ms, int(peak_ch[0]), dtype=int)
+            elif peak_t_ms.size == 1:
+                peak_t_ms = np.full_like(peak_ch, float(peak_t_ms[0]))
+            else:
+                n = min(peak_ch.size, peak_t_ms.size)
+                peak_ch = peak_ch[:n]
+                peak_t_ms = peak_t_ms[:n]
+                
+    Y, t_ms, s0_list = _extract_trial_windows_raw(
+        rec, fs, stim_start_samples, ch, window_ms=window_ms, n_show=n_show
+    )
+
+    n_show = Y.shape[0]
+    nrows, ncols = 2, 2
+    fig, axes = plt.subplots(nrows, ncols, figsize=(10, 6), sharex=True, sharey=True)
+
+    # y-lims (you can keep your robust MAD logic if you prefer)
+    ylim = (-100, 100)
+    dt_ms = 1000.0 / fs
+    w0_ms, w1_ms = float(window_ms[0]), float(window_ms[1])
+
+    for k in range(nrows * ncols):
+        r, c = divmod(k, ncols)
+        ax = axes[r, c]
+        if k < n_show:
+            ax.plot(t_ms, Y[k], lw=1.0)
+            # draw vline at 0 only if inside the window
+            if w0_ms <= 0.0 <= w1_ms:
+                ax.axvline(0.0, color="k", alpha=0.6, lw=0.8)
+            ax.set_ylim(*ylim)
+            ax.set_title(f"Trial {k}", fontsize=9)
+
+            # --------- spike overlay (optional) ----------
+            if (peak_ch is not None) and (peak_t_ms is not None) and (peak_ch.size > 0) and (peak_t_ms.size > 0):
+                s0_ms = (float(s0_list[k]) / fs) * 1000.0
+                m = (peak_ch == int(ch))
+                t_abs = peak_t_ms[m]
+                in_win = (t_abs >= s0_ms + w0_ms) & (t_abs <= s0_ms + w1_ms)
+                if np.any(in_win):
+                    x_ms = t_abs[in_win] - s0_ms
+                    idx = np.clip(np.round((x_ms - w0_ms) / dt_ms).astype(int), 0, Y.shape[1] - 1)
+                    ax.scatter(x_ms, Y[k, idx], s=12, zorder=3, alpha=0.9, color="red")
+
+
+        else:
+            ax.axis("off")
+
+    for ax in axes[-1, :]:
+        ax.set_xlabel("Time (ms) rel. stim")
+    for ax in axes[:, 0]:
+        ax.set_ylabel("µV")
+
+    fig.suptitle(f"{title_prefix} • ch {ch} • {w0_ms:.0f}–{w1_ms:.0f} ms", y=0.98)
+    fig.tight_layout()
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+

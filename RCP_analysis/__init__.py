@@ -46,7 +46,7 @@ from .python.functions.artifact_correction_template_matching import (
 )
 
 # plotting
-from .python.plotting.plotting import plot_all_quads_for_session, load_stim_ms_from_stimstream, detect_stim_channels_from_npz, run_one_Intan_FR_heatmap
+from .python.plotting.plotting import plot_all_quads_for_session, load_stim_ms_from_stimstream, detect_stim_channels_from_npz, run_one_Intan_FR_heatmap, plot_single_channel_trial_quad_raw, load_stim_detection, _find_interp_dir_for_session, _load_cached_recording
 
 __all__ = [
     # params
@@ -68,7 +68,7 @@ __all__ = [
     "reorder_recording_to_geometry", "load_stim_detection",
 
     # plotting
-    "plot_all_quads_for_session", "load_stim_ms_from_stimstream", "build_probe_and_locs_from_geom", "run_one_Intan_FR_heatmap", "detect_stim_channels_from_npz",
+    "plot_all_quads_for_session", "load_stim_ms_from_stimstream", "build_probe_and_locs_from_geom", "run_one_Intan_FR_heatmap", "detect_stim_channels_from_npz", "plot_single_channel_trial_quad_raw", "load_stim_detection", "_find_interp_dir_for_session", "_load_cached_recording"
 
     # artifact correction
     "PCAArtifactParams", "remove_stim_pca_offline", "load_stim_detection", "cleaned_numpy_to_recording",

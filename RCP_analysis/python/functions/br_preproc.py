@@ -327,6 +327,7 @@ def threshold_mua_rates(
 
     # 1) Detect peaks
     noise_levels = si.get_noise_levels(recording, method="mad", return_in_uV=False) # They didn't write return_in_uV in their documentation
+    
     peaks = detect_peaks(
         recording,
         method="by_channel_torch",

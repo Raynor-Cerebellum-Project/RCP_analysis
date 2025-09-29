@@ -203,7 +203,10 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
     checkpoint_out.mkdir(parents=True, exist_ok=True)
     
     # 3) Extract stim sessions and aux channels, preprocess and save
-    for sess in sess_folders:
+    #for sess in sess_folders:
+    for k, sess in enumerate(sess_folders, start=1):
+        # if k != 3:
+        #     continue
         print(f"[RUN] session {sess.name}")
         bundles_root = OUT_BASE / "bundles" / "NPRW"
         bundles_root.mkdir(parents=True, exist_ok=True)
@@ -272,9 +275,9 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
         else:
             print("[WARN] no block spans found; skipping artifact removal.")
 
-        figs_dir_during = OUT_BASE / "figures" / "NPRW" / "interp"
         figs_dir_after = OUT_BASE / "figures" / "NPRW" / "after_interp"
         figs_dir_after2 = OUT_BASE / "figures" / "NPRW" / "after_interp2"
+        figs_dir_after3 = OUT_BASE / "figures" / "NPRW" / "after_interp3"
         preproc_root = OUT_BASE / "checkpoints"
         
         # Save preprocessed session (artifact-corrected + referenced)
@@ -294,20 +297,6 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
             n_jobs=PARAMS.parallel_jobs,
         )
         
-        plot_all_quads_for_session(
-            sess_folder=sess,
-            geom_path=GEOM_PATH,
-            neural_stream=INTAN_STREAM,
-            out_dir=figs_dir_during,
-            peaks=peaks,                 # structured array from SI
-            peak_t_s=peak_t_ms / 1000.0,  # convert once here
-            stim_npz_path=stim_npz_path,
-            pre_s=0.1,
-            post_s=0.2,
-            preproc_root=preproc_root,
-            template_samples_before=params.pre_samples,
-            template_samples_after=params.post_pad_samples
-        )
         plot_all_quads_for_session(
             sess_folder=sess,
             geom_path=GEOM_PATH,
@@ -334,6 +323,19 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
             template_samples_after=params.post_pad_samples,
             view_s=(0.98, 1.05)
         )
+        plot_all_quads_for_session(
+            sess_folder=sess,
+            geom_path=GEOM_PATH,
+            neural_stream=INTAN_STREAM,
+            out_dir=figs_dir_after3,
+            peaks=peaks,
+            peak_t_s=peak_t_ms / 1000.0,
+            stim_npz_path=stim_npz_path,
+            preproc_root=preproc_root,
+            template_samples_before=params.pre_samples,
+            template_samples_after=params.post_pad_samples,
+            view_s=(1.05, 1.15)
+        )        
         
         # rate_hz is (n_channels, n_bins) → transpose to (n_bins, n_channels)
         X = rate_hz.T
@@ -347,12 +349,27 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
         pcs_T = pcs.T.astype(np.float32)
         
         out_npz = checkpoint_out / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
-        np.savez_compressed(
-            out_npz,
+        # infer common field names across SI versions
+        names = peaks.dtype.names
+        samp_f = "sample_index" if "sample_index" in names else ("sample_ind" if "sample_ind" in names else None)
+        chan_f = "channel_index" if "channel_index" in names else ("channel_ind" if "channel_ind" in names else None)
+        amp_f  = "amplitude" if "amplitude" in names else None
+
+        # convenience arrays (optional)
+        peak_sample = peaks[samp_f].astype(np.int64)   if samp_f else None
+        peak_ch     = peaks[chan_f].astype(np.int16)   if chan_f else None
+        peak_amp    = peaks[amp_f].astype(np.float32)  if amp_f  else None
+
+        # if you didn’t precompute peak_t_ms, derive it (ms) from samples + fs
+        # peak_t_ms = (peak_sample / fs) * 1000.0 if peak_sample is not None else peak_t_ms
+
+        save = dict(
             rate_hz=rate_hz.astype(np.float32),
             t_ms=t_cat_ms.astype(np.float32),
-            counts=counts_cat.astype(np.uint16),
-            pcs=pcs_T,                                  # (5, n_bins)
+            counts=counts_cat.astype(np.uint32),  # or uint16 if guaranteed small
+            peaks=peaks,                          # <-- keep structured dtype
+            peak_t_ms=peak_t_ms.astype(np.float32),
+            pcs=pcs_T.astype(np.float32),
             explained_var=explained_var.astype(np.float32),
             meta=dict(
                 detect_threshold=THRESH,
@@ -362,12 +379,20 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
                 fs=float(rec_interp.get_sampling_frequency()),
                 n_channels=int(rec_interp.get_num_channels()),
                 session=str(sess.name),
+                samp_field=samp_f, chan_field=chan_f, amp_field=amp_f,  # doc field names
             ),
         )
+
+        if peak_sample is not None: save["peak_sample"] = peak_sample
+        if peak_ch is not None:     save["peak_ch"] = peak_ch
+        if peak_amp is not None:    save["peak_amp"] = peak_amp
+
+        np.savez_compressed(out_npz, **save)
+
         print(f"[{sess.name}] saved rate matrix + PCA -> {out_npz}")
 
         # cleanup to keep memory stable on long batches
-        del rec_interp, rate_hz, t_cat_ms, counts_cat
+        del rec_interp, rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms
         gc.collect()
 
 if __name__ == "__main__":
