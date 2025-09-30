@@ -105,9 +105,9 @@ def plot_selected_sessions(
 # ==============================
 # Config
 # ==============================
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-OUT_BASE = resolve_output_root(PARAMS)
+REPO_ROOT = Path(__file__).resolve().parents[1] # Base directory
+PARAMS = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT) # Params directory
+OUT_BASE = resolve_output_root(PARAMS) # Output directory
 OUT_BASE.mkdir(parents=True, exist_ok=True)
 DATA_ROOT = resolve_data_root(PARAMS)
 INTAN_ROOT = (
