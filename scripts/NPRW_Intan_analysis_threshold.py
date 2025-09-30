@@ -8,9 +8,6 @@ import numpy as np
 import spikeinterface as si
 from sklearn.decomposition import PCA
 
-# Project config
-from RCP_analysis import load_experiment_params, resolve_data_root
-
 # Intan helpers
 from RCP_analysis import (
     # PP
@@ -28,14 +25,13 @@ from RCP_analysis import (
     extract_and_save_stim_npz,
     PCAArtifactParams,
     threshold_mua_rates, load_stim_detection,
-)
-
-# Package API
-from RCP_analysis import (
+    # Config
+    load_experiment_params, resolve_data_root,
+    # 
     resolve_output_root, resolve_probe_geom_path, plot_all_quads_for_session, 
 )
 
-# ---- PLOT-ONLY ENTRYPOINT ----------------------------------------------------
+# Temporary plotting function
 def plot_selected_sessions(
     indices=(0,),            # e.g. (3,) or (4, 5)
     pre_s: float = 0.30,
@@ -114,8 +110,6 @@ PARAMS = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=
 OUT_BASE = resolve_output_root(PARAMS)
 OUT_BASE.mkdir(parents=True, exist_ok=True)
 DATA_ROOT = resolve_data_root(PARAMS)
-
-# --- Intan root ---
 INTAN_ROOT = (
     Path(PARAMS.intan_root).resolve()
     if getattr(PARAMS, "intan_root", None) and str(PARAMS.intan_root).startswith("/")
@@ -126,7 +120,7 @@ INTAN_ROOT = (
 if INTAN_ROOT is None:
     raise ValueError("No Intan root specified. Set 'intan_root_rel' or 'intan_root' in params.yaml.")
 
-# --- Geometry path ---
+# --- Geometry path (for both UA and NPRW) ---
 GEOM_PATH = (
     Path(PARAMS.geom_mat_rel).resolve()
     if getattr(PARAMS, "geom_mat_rel", None) and str(PARAMS.geom_mat_rel).startswith("/")
@@ -136,8 +130,9 @@ GEOM_PATH = (
 )
 
 # === Intan stream name ===
-INTAN_STREAM = getattr(PARAMS, "neural_data_stream", "RHS2000 amplifier channel")
-STIM_STREAM = getattr(PARAMS, "stim_data_stream", "Stim channel")
+INTAN_STREAM = getattr(PARAMS, "neural_data_stream", "RHS2000 amplifier channel") # Neural data
+STIM_STREAM = getattr(PARAMS, "stim_data_stream", "Stim channel") # Stim channel
+# Auxiliary channels are grouped and saved
 
 # === Local reference radii (µm) ===
 probe_cfg = (PARAMS.probes or {}).get("NPRW", {})
