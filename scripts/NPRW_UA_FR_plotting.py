@@ -2,14 +2,24 @@
 from __future__ import annotations
 from pathlib import Path
 import numpy as np
-import json
+import json, csv, re, io, codecs
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from RCP_analysis import load_experiment_params, resolve_output_root, load_stim_detection
-import csv
-import re
-# ---------- TTL helpers for Intan USB-ADC and UA bundles ----------
+
+# ---- spikeinterface for BR .ns5 ----
+try:
+    from spikeinterface.extractors import read_blackrock
+    _HAS_SI = True
+except Exception:
+    _HAS_SI = False
+
+# ---- your params helpers ----
+from RCP_analysis import load_experiment_params, resolve_output_root
+
+# ===========================
+# Small utilities
+# ===========================
 
 def _npz_meta_dict(arr):
     if arr is None:
@@ -25,166 +35,169 @@ def _npz_meta_dict(arr):
             return {}
     return obj if isinstance(obj, dict) else {}
 
-def _find_matrix_2d(z):
-    # Try common keys, else any 2D array
-    for k in ("adc", "board_adc_data", "data", "traces", "signal", "values", "digital_in"):
-        if k in z.files and getattr(z[k], "ndim", 0) == 2:
-            return z[k], k
-    for k in z.files:
-        a = z[k]
-        if getattr(a, "ndim", 0) == 2:
-            return a, k
-    return None, None
-
-def _find_names(z):
-    for k in ("chan_names", "channel_names", "names", "labels", "channels"):
-        if k in z.files:
-            try:
-                return [str(x) for x in z[k].tolist()]
-            except Exception:
-                pass
-    return None
+def _ensure_channels_first(arr2d: np.ndarray) -> np.ndarray:
+    n0, n1 = arr2d.shape
+    if n0 <= 512 and n1 > n0:
+        return arr2d.T
+    if n1 <= 512 and n0 > n1:
+        return arr2d
+    return arr2d.T if n0 <= n1 else arr2d
 
 def _pick_fs_hz(meta, z):
     for k in ("fs_hz","fs","sampling_rate_hz","sampling_rate","sample_rate_hz","sample_rate"):
-        if k in meta:
+        if isinstance(meta, dict) and k in meta:
             try: return float(meta[k])
             except Exception: pass
-    if "t" in z.files:
+    if z is not None and "t" in z.files:
         t = np.asarray(z["t"], dtype=float)
         dt = np.median(np.diff(t))
         if dt > 0:
             return 1.0/dt
     return None
 
-def _detect_rising_onsets(x, fs_hz, min_gap_ms=5.0, auto_threshold=True, threshold=None):
-    x = np.asarray(x, dtype=float)
-    if auto_threshold or threshold is None:
-        p5, p95 = np.nanpercentile(x, [5, 95])
-        threshold = 0.5*(p5+p95)
-    hi = x > float(threshold)
-    d  = np.diff(hi.astype(np.int8), prepend=0)
-    idx = np.flatnonzero(d == +1)
-    if idx.size == 0:
-        return idx
-    min_gap = int(round(min_gap_ms*fs_hz/1000.0))
-    keep = [idx[0]]
-    for k in idx[1:]:
-        if (k - keep[-1]) >= min_gap:
-            keep.append(k)
-    return np.asarray(keep, dtype=np.int64)
+def _z(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, float)
+    return (x - x.mean()) / (x.std() + 1e-12)
 
-def _group_into_blocks(onsets_samp, fs_hz, gap_ms=200.0):
-    if onsets_samp.size == 0:
-        return onsets_samp
-    gap = int(round(gap_ms*fs_hz/1000.0))
-    starts = [onsets_samp[0]]
-    for a,b in zip(onsets_samp[:-1], onsets_samp[1:]):
-        if (b - a) > gap:
-            starts.append(b)
-    return np.asarray(starts, dtype=np.int64)
+def _range_norm(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, float)
+    rng = x.max() - x.min()
+    return (x - x.mean()) / (rng + 1e-12)
 
-def load_stim_ms_from_intan_usb_adc(
-    usb_adc_npz: Path,
-    channel_name_hint: str | None = "stim",   # use substring match if names exist
-    channel_index: int | None = None,         # set directly if you know it
-    group_to_blocks: bool = True,
-    block_gap_ms: float = 200.0,
-) -> np.ndarray:
+def xcorr_normalized(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    xz, yz = _z(x), _z(y)
+    c = np.correlate(xz, yz, mode="full")
+    if c.size:
+        c /= (np.max(np.abs(c)) + 1e-12)
+    lags = np.arange(-(y.size - 1), x.size)
+    return c, lags
+
+def peak_lags(corr: np.ndarray, lags: np.ndarray, height: float = 0.95) -> np.ndarray:
+    try:
+        from scipy.signal import find_peaks
+        idx, _ = find_peaks(corr, height=height)
+        return lags[idx].astype(int)
+    except Exception:
+        mid = np.arange(1, corr.size - 1)
+        mask = (corr[mid-1] < corr[mid]) & (corr[mid] >= corr[mid+1]) & (corr[mid] >= height)
+        return lags[mid[mask]].astype(int)
+
+def best_shift_rms_range_on_intan(a: np.ndarray, b: np.ndarray, center: int,
+                                  search: int = 1000, win: int = 30000) -> tuple[int, float]:
     """
-    From .../NPRW/<SESSION>_Intan_bundle/USB_board_ADC_input_channel.npz
-    -> rising-edge TTL onsets (ms). If group_to_blocks=True, returns block starts.
+    MATLAB-style: minimize RMS(  b[win+n] - range_norm(a[win])  ), search n in [-search, +search]
+    a = Intan reference (triangle if present, else lock)
+    b = BR intan_sync
+    center = sample (in Intan timebase) around which to search (first 'loc')
+    Returns (n_best, err_min). Positive n => BR lags Intan (b needs to be advanced by n to align).
     """
-    with np.load(usb_adc_npz, allow_pickle=True) as z:
-        meta = _npz_meta_dict(z["meta"]) if "meta" in z.files else {}
+    i0 = max(0, center - win)
+    i1 = min(len(a), center + win + 1)
+    aw = a[i0:i1]
+    L = aw.size
+    if L < 10:
+        return 0, float("nan")
 
-        # Prefer the analog USB ADC matrix if present
-        if "board_adc_data" in z.files and getattr(z["board_adc_data"], "ndim", 0) == 2:
-            mat, key = z["board_adc_data"], "board_adc_data"
-        else:
-            mat, key = _find_matrix_2d(z)
-        if mat is None:
-            raise KeyError(f"No 2D matrix in {usb_adc_npz}; keys={z.files}")
-        if mat.shape[0] < mat.shape[1]:
-            adc = mat
-        else:
-            adc = mat.T
-        names = _find_names(z) or [f"ADC{i}" for i in range(adc.shape[0])]
-        fs_hz = _pick_fs_hz(meta, z)
-        if not (fs_hz and np.isfinite(fs_hz)):
-            raise ValueError(f"Sampling rate not found in {usb_adc_npz}")
+    tri = _range_norm(aw)
+    best_n, best_err = 0, float("inf")
+    for n in range(-search, search + 1):
+        j0, j1 = i0 + n, i1 + n
+        if j0 < 0 or j1 > len(b):
+            continue
+        ua = b[j0:j1].astype(float)
+        err = float(np.sqrt(np.mean((ua - tri) ** 2)))
+        if err < best_err:
+            best_err, best_n = err, n
+    return best_n, best_err
 
-        # choose channel
-        if channel_index is not None:
-            ch = int(channel_index)
-        elif channel_name_hint is not None:
-            low = [s.lower() for s in names]
-            hit = [i for i,s in enumerate(low) if channel_name_hint.lower() in s]
-            ch  = hit[0] if hit else int(np.argmax([np.percentile(adc[i],95)-np.percentile(adc[i],5) for i in range(adc.shape[0])]))
-        else:
-            ch  = int(np.argmax([np.percentile(adc[i],95)-np.percentile(adc[i],5) for i in range(adc.shape[0])]))
+# ===========================
+# Data loading
+# ===========================
 
-        onsets = _detect_rising_onsets(adc[ch], fs_hz)
-        if group_to_blocks:
-            onsets = _group_into_blocks(onsets, fs_hz, gap_ms=block_gap_ms)
-        stim_ms = onsets.astype(float)*(1000.0/fs_hz)
-        return np.unique(np.sort(stim_ms))
-
-def load_stim_ms_from_ua_bundle(
-    ua_npz: Path,
-    channel_name_hint: str | None = "ttl",
-    channel_index: int | None = None,
-    group_to_blocks: bool = True,
-    block_gap_ms: float = 200.0,
-) -> np.ndarray:
+def load_intan_adc_2ch(npz_path: Path) -> tuple[np.ndarray, np.ndarray, float]:
     """
-    From .../UA/NRR_RW_001_<IDX>_UA_bundle.npz -> rising-edge TTL onsets (ms).
+    Returns (adc_triangle, adc_lock, fs) from Intan USB ADC bundle (.npz).
+    If only a generic 2D matrix is present, returns channel 0 as 'triangle', 1 as 'lock'.
     """
-    with np.load(ua_npz, allow_pickle=True) as z:
-        meta = _npz_meta_dict(z["meta"]) if "meta" in z.files else {}
+    z = np.load(npz_path, allow_pickle=True, mmap_mode="r")
+    meta = _npz_meta_dict(z["meta"]) if "meta" in z.files else {}
+    fs = float(_pick_fs_hz(meta, z) or 30000.0)
 
-        # Prefer digital TTLs if present
-        if "digital_in" in z.files and getattr(z["digital_in"], "ndim", 0) == 2:
-            mat, key = z["digital_in"], "digital_in"
-        else:
-            mat, key = _find_matrix_2d(z)
-        if mat is None:
-            raise KeyError(f"No 2D matrix in {ua_npz}; keys={z.files}")
+    # prefer chunk_* (samples x 2) or board_adc_data
+    if any(k.startswith("chunk_") for k in z.files):
+        keys = sorted(k for k in z.files if k.startswith("chunk_"))
+        ch0, ch1 = [], []
+        for k in keys:
+            a = z[k]
+            if a.ndim == 2 and a.shape[1] >= 2:
+                ch0.append(a[:,0].astype(np.float64))
+                ch1.append(a[:,1].astype(np.float64))
+            elif a.ndim == 1:
+                ch0.append(a.astype(np.float64))  # single-chan chunk as ch0
+        if not ch0:
+            raise RuntimeError("No usable chunk_* arrays in ADC NPZ")
+        tri = np.concatenate(ch0)
+        lock = np.concatenate(ch1) if ch1 else tri * 0.0
+        return tri, lock, fs
 
-        # shape -> (n_chan, n_samp)
-        adc = mat if mat.shape[0] < mat.shape[1] else mat.T
-        names = _find_names(z) or [f"CH{i}" for i in range(adc.shape[0])]
-        fs_hz = _pick_fs_hz(meta, z)
-        if not (fs_hz and np.isfinite(fs_hz)):
-            raise ValueError(f"Sampling rate not found in {ua_npz}")
+    if "board_adc_data" in z.files and getattr(z["board_adc_data"], "ndim", 0) == 2:
+        A = z["board_adc_data"]
+    else:
+        # fallback: any 2D
+        A = None
+        for k in z.files:
+            a = z[k]
+            if hasattr(a, "ndim") and a.ndim == 2:
+                A = a; break
+        if A is None:
+            raise RuntimeError(f"No 2D array in {npz_path}")
 
-        if channel_index is not None:
-            ch = int(channel_index)
-        elif channel_name_hint is not None:
-            low = [s.lower() for s in names]
-            hit = [i for i,s in enumerate(low) if channel_name_hint.lower() in s or "stim" in s]
-            ch  = hit[0] if hit else int(np.argmax([np.percentile(adc[i],95)-np.percentile(adc[i],5) for i in range(adc.shape[0])]))
-        else:
-            ch  = int(np.argmax([np.percentile(adc[i],95)-np.percentile(adc[i],5) for i in range(adc.shape[0])]))
+    chxT = _ensure_channels_first(np.asarray(A))
+    if chxT.shape[0] < 2:
+        # duplicate if only 1 channel
+        chxT = np.vstack([chxT, np.zeros_like(chxT)])
+    return chxT[0].astype(np.float64), chxT[1].astype(np.float64), fs
 
-        onsets = _detect_rising_onsets(adc[ch], fs_hz)
-        if group_to_blocks:
-            onsets = _group_into_blocks(onsets, fs_hz, gap_ms=block_gap_ms)
-        stim_ms = onsets.astype(float)*(1000.0/fs_hz)
-        return np.unique(np.sort(stim_ms))
+def load_br_intan_sync_ns5(ns5_path: Path, intan_sync_chan_id: int = 134) -> tuple[np.ndarray, float]:
+    """
+    Load BR intan_sync (channel id=134) from an .ns5 with spikeinterface.
+    Returns (signal, fs_hz).
+    """
+    if not _HAS_SI:
+        raise ImportError("spikeinterface is required to read .ns5 (pip install spikeinterface[full])")
+    rec = read_blackrock(ns5_path, stream_id="5")  # nsx5
+    fs = float(rec.get_sampling_frequency())
+    # channel ids are strings in SI; map to index
+    ids = np.array(rec.get_channel_ids()).astype(str)
+    if str(intan_sync_chan_id) not in ids:
+        raise KeyError(f"Channel id {intan_sync_chan_id} not found in {ns5_path.name} (have: {ids.tolist()})")
+    col = int(np.where(ids == str(intan_sync_chan_id))[0][0])
+    S = rec.get_traces(0, 0, rec.get_num_frames(0)).astype(np.float32)  # (T, n_ch)
+    return S[:, col].ravel(), fs
+
+# ===========================
+# Template matching on Intan (lock)
+# ===========================
+
+def load_template(template_mat_path: Path) -> np.ndarray:
+    from scipy.io import loadmat
+    m = loadmat(str(template_mat_path))
+    if "template" not in m:
+        raise KeyError("'template' not found in template.mat")
+    return np.asarray(m["template"], float).squeeze()
+
+def find_locs_via_template(adc_lock: np.ndarray, template: np.ndarray, fs: float, peak=0.95) -> np.ndarray:
+    corr, lags = xcorr_normalized(adc_lock, template)
+    locs = peak_lags(corr, lags, height=peak)
+    return locs
+
+# ===========================
+# CSV mapping helpers
+# ===========================
 
 def read_intan_to_br_map(csv_path: Path) -> dict[int, int]:
-    """
-    Read NRR_RW001_metadata.csv and return {Intan_File -> BR_File},
-    robust to Excel encodings and header variations.
-    """
-    import io, codecs, csv, re
-
     def norm(s: str) -> str:
-        # lower + remove non-alnum (spaces/underscores/hyphens vanish)
         return re.sub(r"[^a-z0-9]", "", s.lower())
-
-    # --- robust decode the file ---
     raw = csv_path.read_bytes()
     try_order = []
     if raw.startswith(codecs.BOM_UTF8):
@@ -197,518 +210,317 @@ def read_intan_to_br_map(csv_path: Path) -> dict[int, int]:
     text = None
     for enc in try_order:
         try:
-            text = raw.decode(enc)
-            break
+            text = raw.decode(enc); break
         except UnicodeDecodeError:
             continue
     if text is None:
         text = raw.decode("latin1", errors="replace")
-
     rdr = csv.DictReader(io.StringIO(text))
-    fieldnames = [f for f in (rdr.fieldnames or []) if f is not None]
-    fieldmap = {norm(k): k for k in fieldnames}
+    if not rdr.fieldnames:
+        raise ValueError("CSV has no header row")
+    fmap = {norm(k): k for k in rdr.fieldnames if k}
 
-    # Accept common aliases for each logical field
-    aliases = {
-        "br_file":     ["br_file", "brfile", "br", "brindex", "brfileindex"],
-        "intan_file":  ["intan_file", "intanfile", "intan", "intanindex", "intanfileindex"],
-    }
+    def pick(*names):
+        for n in names:
+            if n in fmap: return fmap[n]
+        raise KeyError(f"CSV missing one of: {names}")
 
-    resolved: dict[str, str] = {}
-    for logical, cands in aliases.items():
-        for c in cands:
-            if c in fieldmap:
-                resolved[logical] = fieldmap[c]
-                break
-        if logical not in resolved:
-            raise KeyError(
-                f"CSV missing required column like '{logical}' "
-                f"(have headers: {rdr.fieldnames})"
-            )
+    col_intan = pick("intan_file","intanfile","intan","intanindex","intanfileindex")
+    col_br    = pick("br_file","brfile","br","brindex","brfileindex")
 
-    mapping: dict[int, int] = {}
+    out = {}
     for row in rdr:
         try:
-            intan_idx = int(str(row[resolved["intan_file"]]).strip())
-            br_idx    = int(str(row[resolved["br_file"]]).strip())
+            out[int(str(row[col_intan]).strip())] = int(str(row[col_br]).strip())
         except Exception:
-            continue
-        mapping[intan_idx] = br_idx
-
-    if not mapping:
-        raise ValueError(f"No rows parsed from {csv_path}")
-
-    print(f"[UA-map] Header mapping: Intan_File='{resolved['intan_file']}', BR_File='{resolved['br_file']}'")
-    return mapping
+            pass
+    if not out:
+        raise ValueError("No (Intan, BR) rows parsed")
+    return out
 
 def parse_intan_session_dtkey(session: str) -> int:
-    """
-    Convert 'NRR_RW001_YYMMDD_HHMMSS' -> sortable integer key YYMMDDHHMMSS.
-    Fallback to lexical sort if pattern not found.
-    """
     m = re.search(r"(\d{6})_(\d{6})$", session)
     if not m:
-        return int("9"*12)  # push unknowns to end
+        return int("9"*12)
     return int(m.group(1) + m.group(2))
 
 def build_session_index_map(intan_sessions: list[str]) -> dict[str, int]:
-    """
-    Given unique NPRW session names, return {session -> Intan_File index (1-based)}
-    using timestamp sort so index aligns with acquisition order used in your CSV.
-    """
     ordered = sorted(intan_sessions, key=parse_intan_session_dtkey)
-    return {sess: i+1 for i, sess in enumerate(ordered)}
+    return {sess: i+1 for i, sess in enumerate(ordered)}, {i+1: s for i, s in enumerate(ordered)}
 
-def find_ua_rates_by_index(ua_root: Path, br_idx: int) -> Path | None:
-    """
-    Find the UA rates file for BR index (e.g., 7 -> 'rates__NRR_RW_001_007__*.npz').
-    Prefer sigma25ms if multiple; else pick highest sigma.
-    """
-    patt = f"rates__NRR_RW_001_{br_idx:03d}__*.npz"
-    candidates = sorted(ua_root.glob(patt))
-    if not candidates:
-        return None
-    pref = [p for p in candidates if "__sigma25ms" in p.stem]
-    if pref:
-        return pref[0]
-    def sigma_from_name(p: Path) -> int:
-        m = re.search(r"sigma(\d+)ms", p.stem)
-        return int(m.group(1)) if m else -1
-    candidates.sort(key=sigma_from_name, reverse=True)
-    return candidates[0]
+# ===========================
+# Plots (debug)
+# ===========================
 
-def inspect_npz_fields(npz_path: Path) -> None:
-    """Print a concise summary of arrays and a few meta fields (if present)."""
-    with np.load(npz_path, allow_pickle=True) as z:
-        print(f"[UA] Inspecting {npz_path.name}:")
-        for key in z.files:
-            val = z[key]
-            if isinstance(val, np.ndarray):
-                print(f"   - {key}: shape={val.shape}, dtype={val.dtype}")
-            else:
-                print(f"   - {key}: type={type(val)}")
-        if "meta" in z.files:
-            meta = z["meta"]
-            try:
-                meta_obj = meta.item() if hasattr(meta, "item") else meta
-            except Exception:
-                meta_obj = meta
-            if isinstance(meta_obj, (bytes, str)):
-                try:
-                    import json as _json
-                    meta_obj = _json.loads(meta_obj)
-                except Exception:
-                    pass
-            if isinstance(meta_obj, dict):
-                keys = ["bin_ms", "sigma_ms", "fs", "fs_hz", "n_channels", "session"]
-                sel = {k: meta_obj.get(k) for k in keys if k in meta_obj}
-                print(f"   - meta (selected): {sel if sel else '(dict)'}")
-            else:
-                print("   - meta: (unparsed)")
+def plot_lock_template_overlay(lock, template, center, fs, pad, out_path):
+    i0 = max(0, center - pad)
+    i1 = min(len(lock), center + pad)
+    lock_seg = lock[i0:i1]
+    t = (np.arange(i0, i1) - center) / fs
 
-def load_rate_npz(npz_path: Path):
-    d = np.load(npz_path, allow_pickle=True)
-    rate_hz = d["rate_hz"]           # (n_ch, n_bins_total)
-    t_ms    = d["t_ms"]              # (n_bins_total,)
-    meta    = d.get("meta", None)
-    return rate_hz, t_ms, (meta.item() if hasattr(meta, "item") else meta)
+    # place template starting at 'center'
+    templ_overlay = np.full_like(lock_seg, np.nan, dtype=float)
+    templ_start = center
+    templ_end   = center + len(template)
+    ov0 = max(i0, templ_start)
+    ov1 = min(i1, templ_end)
+    if ov1 > ov0:
+        w0 = ov0 - i0
+        w1 = ov1 - i0
+        t0 = ov0 - templ_start
+        t1 = t0 + (w1 - w0)
+        templ_overlay[w0:w1] = _z(template[t0:t1])
 
-def load_stim_ms_from_stimstream(stim_npz_path: Path) -> np.ndarray:
-    """
-    Load stimulation *block onset times* in ms from stim_stream.npz.
-    Uses 'block_bounds_samples[:,0]' (Intan sample indices) and converts
-    to milliseconds using meta['fs_hz'].
-    """
-    with np.load(stim_npz_path, allow_pickle=False) as z:
-        if "block_bounds_samples" not in z or "meta" not in z:
-            raise KeyError(f"{stim_npz_path} missing 'block_bounds_samples' or 'meta'.")
+    plt.figure(figsize=(12, 3.6))
+    plt.plot(t, _z(lock_seg), label="Intan lock (z)", linewidth=1)
+    plt.plot(t, templ_overlay, label="template (z)", linewidth=1)
+    plt.axvline(0, linestyle="--", color="k", linewidth=1)
+    plt.xlabel("Time from first loc (s)")
+    plt.ylabel("z-score")
+    plt.title(f"Lock vs template overlay (±{pad} samples)")
+    plt.legend()
+    plt.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=160, bbox_inches="tight")
+    plt.close()
 
-        blocks = z["block_bounds_samples"].astype(np.int64)  # (n_blocks, 2)
-        if blocks.size == 0:
-            raise ValueError(f"No block boundaries found in {stim_npz_path}.")
-
-        # Parse meta
-        meta_json = z["meta"].item() if hasattr(z["meta"], "item") else z["meta"]
-        meta = json.loads(meta_json)
-        fs_hz = float(meta.get("fs_hz"))
-        if not np.isfinite(fs_hz):
-            raise ValueError("meta['fs_hz'] missing or non-finite in stim_stream.npz")
-
-        # Use block starts only
-        onset_samples = blocks[:, 0]
-        t_ms = onset_samples.astype(float) * (1000.0 / fs_hz)
-        return np.unique(np.sort(t_ms))
-
-def extract_peristim_segments(
-    rate_hz: np.ndarray,
-    t_ms: np.ndarray,
-    stim_ms: np.ndarray,
-    win_ms=(-800.0, 1200.0),
-    min_trials: int = 1,
-):
-    """
-    Return segments shape (n_trials, n_ch, n_twin) and rel_time_ms shape (n_twin,).
-    Skips triggers whose window falls outside t_ms.
-    """
-    t_min, t_max = float(t_ms[0]), float(t_ms[-1])
-    seg_len_ms = win_ms[1] - win_ms[0]
-
-    # Relative timebase for a *perfectly* aligned segment (used only for plotting/logic)
-    # We will slice on t_ms for each trial, so segment lengths are equal if t_ms is uniform.
-    # Assume uniform binning for rates:
-    dt = float(np.median(np.diff(t_ms)))  # ms per bin
-    n_twin = int(round(seg_len_ms / dt))
-    rel_time_ms = np.arange(n_twin) * dt + win_ms[0]
-
-    segments = []
-    kept = 0
-    for s in np.asarray(stim_ms, dtype=float):
-        start_ms = s + win_ms[0]
-        end_ms   = s + win_ms[1]
-        if start_ms < t_min or end_ms > t_max:
-            continue  # skip partial windows
-
-        # slice indices on t_ms
-        i0 = int(np.searchsorted(t_ms, start_ms, side="left"))
-        i1 = int(np.searchsorted(t_ms, end_ms,   side="left"))
-        seg = rate_hz[:, i0:i1]  # (n_ch, n_twin)
-        # Safety: ensure equal length (can happen if boundary falls between bins)
-        if seg.shape[1] != n_twin:
+def plot_shift_curve_err(a, b, center, fs, search, win, out_path):
+    i0 = max(0, center - win)
+    i1 = min(len(a), center + win + 1)
+    aw = a[i0:i1]
+    tri = _range_norm(aw)
+    shifts, errs = [], []
+    for n in range(-search, search + 1):
+        j0, j1 = i0 + n, i1 + n
+        if j0 < 0 or j1 > len(b):
             continue
+        ua = b[j0:j1].astype(float)
+        err = float(np.sqrt(np.mean((ua - tri) ** 2)))
+        shifts.append(n); errs.append(err)
+    shifts = np.array(shifts); errs = np.array(errs)
+    nbest = int(shifts[np.argmin(errs)]) if len(shifts) else 0
 
-        segments.append(seg)
-        kept += 1
-
-    if kept < min_trials:
-        raise RuntimeError(f"Only {kept} peri-stim segments available (min_trials={min_trials}).")
-
-    segments = np.stack(segments, axis=0)  # (n_trials, n_ch, n_twin)
-    return segments, rel_time_ms
-
-def baseline_zero_each_trial(
-    segments: np.ndarray,
-    rel_time_ms: np.ndarray,
-    baseline_first_ms: float = 100.0,
-):
-    """
-    For each trial & channel, subtract the mean over the first `baseline_first_ms`
-    of the segment (i.e., from window start to start+baseline_first_ms).
-    segments: (n_trials, n_ch, n_twin)
-    """
-    # mask for first 100 ms of the segment window (e.g., [-800, -700))
-    t0 = rel_time_ms[0]
-    mask = (rel_time_ms >= t0) & (rel_time_ms < t0 + baseline_first_ms)
-    if mask.sum() < 1:
-        raise ValueError("Baseline window has 0 bins — check your timebase and dt.")
-    base = segments[:, :, mask].mean(axis=2, keepdims=True)  # (n_trials, n_ch, 1)
-    return segments - base
-
-def average_across_trials(zeroed_segments: np.ndarray):
-    """
-    Average across trials per channel.
-    Input: (n_trials, n_ch, n_twin) -> returns (n_ch, n_twin)
-    """
-    return zeroed_segments.mean(axis=0)
-
-def _probe_from_locs(locs, radius_um: float = 5.0):
-    """Create a ProbeInterface Probe from (n_ch, 2) contact positions."""
-    from probeinterface import Probe
-    pr = Probe(ndim=2)
-    pr.set_contacts(
-        positions=np.asarray(locs, float),
-        shapes="circle",
-        shape_params={"radius": float(radius_um)},
-    )
-    try:
-        pr.create_auto_shape()
-    except Exception:
-        pass
-    return pr
-
-
-def plot_channel_heatmap(
-    avg_change: np.ndarray,           # (n_ch, n_twin)
-    rel_time_ms: np.ndarray,          # (n_twin,)
-    out_png: Path,
-    n_trials: int,
-    title: str = "Peri-stim avg Δ rate (baseline=first 100 ms)",
-    cmap: str = "jet",
-    vmin: float | None = None,
-    vmax: float | None = None,
-    blackrock_file: str | None = None,
-    intan_file: str | None = None,
-):
-    plt.figure(figsize=(12, 6))
-    plt.imshow(
-        avg_change,
-        aspect="auto",
-        cmap=cmap,
-        extent=[rel_time_ms[0], rel_time_ms[-1], avg_change.shape[0], 0],  # <-- ms
-        origin="upper",
-        vmin=vmin,
-        vmax=vmax,
-    )
-    plt.colorbar(label="Δ Firing rate (Hz)")
-    plt.xlabel("Time (ms) rel. stim")   # <-- ms axis label
-    plt.ylabel("Channel index")
-    plt.title(f"{title} (n={n_trials} trials)")
-    file_info = []
-    if blackrock_file:
-        file_info.append(f"Blackrock: {Path(blackrock_file).name}")
-    if intan_file:
-        file_info.append(f"Intan: {Path(intan_file).name}")
-    if file_info:
-        plt.figtext(
-            0.5, -0.05, " | ".join(file_info),
-            ha="center", va="top", fontsize=9, style="italic"
-        )
-    plt.axvline(0.0, color="k", alpha=0.8, linewidth=1.2)
-    plt.axvspan(0.0, 100.0, color="gray", alpha=0.2, zorder=2)  # shaded 0–100 ms region
+    plt.figure(figsize=(12, 3.2))
+    plt.plot(shifts, errs, linewidth=1)
+    plt.axvline(nbest, color="r", linestyle="--", linewidth=1,
+                label=f"best n={nbest} (~{nbest/fs:.4f}s)")
+    plt.xlabel("Shift n (samples)  [Intan[t] vs BR[t+n]]")
+    plt.ylabel("RMS error (BR − range-norm Intan)")
+    plt.title("Intan vs BR: RMS error by shift")
+    plt.legend()
     plt.tight_layout()
-    out_png.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_png, dpi=150)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=160, bbox_inches="tight")
     plt.close()
-    print(f"Saved heatmap -> {out_png}")
 
-def run_one_file(
-    npz_path: Path,
-    out_dir: Path,
-    win_ms=(-800.0, 1200.0),
-    baseline_first_ms=100.0,
-    min_trials=1,
-    save_npz=True,
-    stim_ms: np.ndarray | None = None,
-    debug_channel: int | None = None,
-    blackrock_idx: int | None = None,   # <—
-    intan_idx: int | None = None,
-):
-    rate_hz, t_ms, _ = load_rate_npz(npz_path)
-    stim_ms = np.asarray(stim_ms, dtype=float).ravel()
+def best_shift_corr_z(a: np.ndarray, b: np.ndarray, center: int,
+                      search: int = 1000, win: int = 30000) -> tuple[int, float]:
+    """
+    Maximize z-score correlation between Intan window (a) and BR window (b shifted by n).
+    Returns (n_best, corr_max). Positive n means BR lags Intan (b needs advancing).
+    """
+    i0 = max(0, center - win)
+    i1 = min(len(a), center + win + 1)
+    aw = a[i0:i1]
+    L = aw.size
+    if L < 10:
+        return 0, float("nan")
 
-    segments, rel_time_ms = extract_peristim_segments(
-        rate_hz=rate_hz, t_ms=t_ms, stim_ms=stim_ms, win_ms=win_ms, min_trials=min_trials
-    )
+    awz = _z(aw)
+    best_n, best_corr = 0, -np.inf
+    for n in range(-search, search + 1):
+        j0, j1 = i0 + n, i1 + n
+        if j0 < 0 or j1 > len(b):
+            continue
+        bw = b[j0:j1].astype(float)
+        bwz = _z(bw)
+        # normalized dot product (equivalent to Pearson corr since both z-scored)
+        corr = float(np.dot(awz, bwz) / L)
+        if corr > best_corr:
+            best_corr, best_n = corr, n
+    return best_n, best_corr
 
-    zeroed = baseline_zero_each_trial(
-        segments=segments, rel_time_ms=rel_time_ms, baseline_first_ms=baseline_first_ms
-    )
 
-    # -------- DEBUG: single-channel quick look --------
-    if debug_channel is not None:
-        # print some shapes/numbers to stdout
-        dt = float(np.median(np.diff(t_ms)))
-        print(f"[debug] segments shape={segments.shape} (trials, ch, timebins); dt={dt} ms")
-        print(f"[debug] rel_time_ms: {rel_time_ms[0]} .. {rel_time_ms[-1]} (n={rel_time_ms.size})")
-        out_base = (Path(out_dir) / npz_path.stem)
-        plot_debug_channel_traces(zeroed, rel_time_ms, debug_channel, out_base)
-    # ---------------------------------------------------
+def plot_shift_curve_corr(a, b, center, fs, search, win, out_path):
+    """Plot z-score correlation vs shift n (Intan[t] vs BR[t+n])."""
+    i0 = max(0, center - win)
+    i1 = min(len(a), center + win + 1)
+    aw = a[i0:i1].astype(float)
+    awz = _z(aw)
+    L = awz.size
 
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stem = npz_path.stem
-    avg_change = average_across_trials(zeroed)
-    n_trials = segments.shape[0]   # number of kept trials
+    shifts, corrs = [], []
+    for n in range(-search, search + 1):
+        j0, j1 = i0 + n, i1 + n
+        if j0 < 0 or j1 > len(b):
+            continue
+        bw = b[j0:j1].astype(float)
+        bwz = _z(bw)
+        corrs.append(float(np.dot(awz, bwz) / L))
+        shifts.append(n)
 
-    out_png = out_dir / f"{stem}__peri_stim_heatmap.png"
-    plot_channel_heatmap(
-        avg_change, rel_time_ms, out_png,
-        n_trials=n_trials, vmin=-500, vmax=1000,
-        blackrock_file=(f"BR_File_{blackrock_idx:03d}" if blackrock_idx is not None else None),
-        intan_file=(f"Intan_File_{intan_idx:03d}" if intan_idx is not None else None),
-    )
-    if save_npz:
-        out_npz = out_dir / f"{stem}__peri_stim_avg.npz"
-        np.savez_compressed(
-            out_npz,
-            avg_change=avg_change.astype(np.float32),
-            rel_time_ms=rel_time_ms.astype(np.float32),
-            meta=dict(
-                source_file=str(npz_path),
-                win_ms=win_ms,
-                baseline_first_ms=baseline_first_ms,
-                n_trials=int(segments.shape[0]),
-                br_file_index=blackrock_idx,
-                intan_file_index=intan_idx,
-            ),
-        )
-        print(f"Saved averaged peri-stim data -> {out_npz}")
+    shifts = np.asarray(shifts)
+    corrs  = np.asarray(corrs)
+    nbest = int(shifts[np.argmax(corrs)]) if shifts.size else 0
 
-def plot_debug_channel_traces(
-    zeroed_segments: np.ndarray,   # (n_trials, n_ch, n_twin)
-    rel_time_ms: np.ndarray,       # (n_twin,)
-    ch: int,
-    out_png_base: Path,
-):
-    n_trials, n_ch, n_twin = zeroed_segments.shape
-    assert 0 <= ch < n_ch, f"debug channel {ch} out of range [0, {n_ch-1}]"
-
-    y = zeroed_segments[:, ch, :]  # (n_trials, n_twin)
-
-    # 1) overlay all trials + mean (x-axis in ms)
-    plt.figure(figsize=(10, 5))
-    for i in range(n_trials):
-        plt.plot(rel_time_ms, y[i], alpha=0.25, linewidth=0.8)
-    plt.plot(rel_time_ms, y.mean(axis=0), linewidth=2.0, label="mean")
-    plt.axvline(0.0, color="k", alpha=0.6, linewidth=1.0)
-    plt.xlabel("Time (ms) rel. stim")
-    plt.ylabel("Δ Firing rate (Hz)")
-    plt.title(f"Channel {ch}: peri-stim trials (n={n_trials})")
-    plt.legend(loc="upper right")
+    plt.figure(figsize=(12, 3.2))
+    plt.plot(shifts, corrs, linewidth=1)
+    plt.axvline(nbest, color="r", linestyle="--", linewidth=1,
+                label=f"best n={nbest} (~{nbest/fs:.4f}s)")
+    plt.xlabel("Shift n (samples)  [Intan[t] vs BR[t+n]]")
+    plt.ylabel("z-corr")
+    plt.title("Intan vs BR: z-score correlation by shift")
+    plt.legend()
     plt.tight_layout()
-    out_png = out_png_base.with_name(out_png_base.stem + f"__ch{ch:03d}_overlay.png")
-    plt.savefig(out_png, dpi=150)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=160, bbox_inches="tight")
     plt.close()
-    print(f"[debug] Saved overlay for ch {ch} -> {out_png}")
 
-    # 2) trial-by-time image (x-axis in ms)
-    plt.figure(figsize=(10, 5))
-    plt.imshow(
-        y, aspect="auto", cmap="hot",
-        extent=[rel_time_ms[0], rel_time_ms[-1], n_trials, 0],
-        origin="upper"
-    )
-    plt.colorbar(label="Δ Firing rate (Hz)")
-    plt.axvline(0.0, color="k", alpha=0.6, linewidth=1.0)
-    plt.xlabel("Time (ms) rel. stim")
-    plt.ylabel("Trial index")
-    plt.title(f"Channel {ch}: trials × time")
-    plt.tight_layout()
-    out_png2 = out_png_base.with_name(out_png_base.stem + f"__ch{ch:03d}_trials.png")
-    plt.savefig(out_png2, dpi=150)
-    plt.close()
-    print(f"[debug] Saved trials×time for ch {ch} -> {out_png2}")
 
+# ===========================
+# MAIN
+# ===========================
 
 if __name__ == "__main__":
-    # ==============================
-    # Config & roots
-    # ==============================
+    # ---------- CONFIG ----------
     REPO_ROOT = Path(__file__).resolve().parents[1]
-    PARAMS = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-    OUT_BASE = resolve_output_root(PARAMS)
+    PARAMS    = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
+    TEMPLATE  = REPO_ROOT / "config" / "template.mat"
+    OUT_BASE  = resolve_output_root(PARAMS)
     OUT_BASE.mkdir(parents=True, exist_ok=True)
 
-    nprw_ckpt_root   = OUT_BASE / "checkpoints" / "NPRW"
-    ua_ckpt_root     = OUT_BASE / "checkpoints" / "UA"
-    nprw_bundles     = OUT_BASE / "bundles" / "NPRW"
-    ua_bundles       = OUT_BASE / "bundles" / "UA"
-    figs_nprw_root   = OUT_BASE / "figures" / "peri_stim" / "NPRW"
-    figs_ua_root     = OUT_BASE / "figures" / "peri_stim" / "UA"
-    figs_nprw_root.mkdir(parents=True, exist_ok=True)
-    figs_ua_root.mkdir(parents=True, exist_ok=True)
+    BR_ROOT   = OUT_BASE.parent / "Blackrock"
+    NPRW_BUNDLES = OUT_BASE / "bundles" / "NPRW"
+    PLOTS_ROOT   = OUT_BASE / "figures" / "align_BR_to_Intan"
+    PLOTS_ROOT.mkdir(parents=True, exist_ok=True)
 
-    # Metadata CSV: .../Nike/NRR_RW001/Metadata/NRR_RW001_metadata.csv
-    metadata_csv = OUT_BASE.parent / "Metadata" / "NRR_RW001_metadata.csv"
-    if metadata_csv.exists():
-        try:
-            intan_to_br = read_intan_to_br_map(metadata_csv)
-            print(f"[UA-map] Loaded Intan->BR map ({len(intan_to_br)} rows).")
-        except Exception as e:
-            print(f"[UA-map][warn] Could not read mapping: {e}")
-            intan_to_br = None
-    else:
-        print(f"[UA-map][warn] Not found: {metadata_csv}")
-        intan_to_br = None
+    # Metadata CSV with Intan_File ↔ BR_File mapping
+    METADATA_CSV = OUT_BASE.parent / "Metadata" / "NRR_RW001_metadata.csv"
+    if not METADATA_CSV.exists():
+        raise SystemExit(f"[error] mapping CSV not found: {METADATA_CSV}")
 
-    # Build NPRW session -> sequential Intan index (1-based), ordered by timestamp
+    # ---------- discover Intan sessions (from NPRW checkpoints/rates) ----------
     def session_from_rates_path(p: Path) -> str:
-        stem = p.stem  # rates__NRR_RW001_250915_160649__bin1ms_sigma25ms
+        # rates__NRR_RW001_250915_160649__bin1ms_sigma25ms.npz -> NRR_RW001_250915_160649
+        stem = p.stem
         body = stem[len("rates__"):]
         return body.split("__bin", 1)[0]
 
-    all_sessions = sorted({
-        session_from_rates_path(p) for p in nprw_ckpt_root.rglob("rates__*.npz")
-    })
-    session_to_intan_idx = build_session_index_map(all_sessions)
-
-    # Gather NPRW rate files
+    nprw_ckpt_root = OUT_BASE / "checkpoints" / "NPRW"
     rate_files = sorted(nprw_ckpt_root.rglob("rates__*.npz"))
-    if not rate_files:
-        raise SystemExit(f"[error] No rates__*.npz under {nprw_ckpt_root}")
+    sessions = sorted({ session_from_rates_path(p) for p in rate_files })
+    if not sessions:
+        raise SystemExit(f"[error] No NPRW rate files under {nprw_ckpt_root}")
 
-    n_ok, n_skip = 0, 0
-    print(f"[info] Found {len(rate_files)} NPRW rate files. Processing...")
+    sess_to_intan_idx, intan_idx_to_sess = build_session_index_map(sessions)
 
-    for i, rates_npz in enumerate(rate_files, 1):
+    # ---------- mapping CSV ----------
+    intan_to_br = read_intan_to_br_map(METADATA_CSV)
+    print(f"[map] Loaded Intan→BR rows: {len(intan_to_br)}")
+
+    template = load_template(TEMPLATE)
+
+    # ---------- iterate pairs, compute shifts ----------
+    out_rows = []
+    for intan_idx, br_idx in sorted(intan_to_br.items()):
+        session = intan_idx_to_sess.get(intan_idx)
+        if session is None:
+            print(f"[warn] No session name for Intan_File={intan_idx} (skipping)")
+            continue
+
+        # Intan USB-ADC bundle
+        adc_npz = NPRW_BUNDLES / f"{session}_Intan_bundle" / "USB_board_ADC_input_channel.npz"
+        if not adc_npz.exists():
+            print(f"[warn] Intan ADC bundle missing: {adc_npz} (skip pair Intan {intan_idx} → BR {br_idx})")
+            continue
+
+        # Load Intan signals
         try:
-            session = session_from_rates_path(rates_npz)
-
-            intan_idx = session_to_intan_idx.get(session)
-            # -------- INTAN: stim onsets from USB ADC bundle --------
-            usb_adc_npz = nprw_bundles / f"{session}_Intan_bundle" / "USB_board_ADC_input_channel.npz"
-            if not usb_adc_npz.exists():
-                print(f"[warn] No USB ADC bundle for {session}: {usb_adc_npz} -> skipping INTAN plot")
-            else:
-                stim_ms_intan = load_stim_ms_from_intan_usb_adc(
-                    usb_adc_npz,
-                    channel_name_hint="stim",   # tweak if your name differs
-                    group_to_blocks=True,
-                    block_gap_ms=200.0,
-                )
-                print(f"[NPRW] {session}: {stim_ms_intan.size} stim onsets (Intan USB-ADC)")
-                run_one_file(
-                    npz_path=rates_npz,
-                    out_dir=figs_nprw_root,
-                    win_ms=(-800.0, 1200.0),
-                    baseline_first_ms=100.0,
-                    min_trials=1,
-                    save_npz=True,
-                    stim_ms=stim_ms_intan,
-                    debug_channel=(0 if i == 1 else None),
-                    blackrock_idx=None,
-                    intan_idx=intan_idx,
-                )
-
-            # -------- UA: map Intan->BR, load UA rates + UA bundle TTLs, plot --------
-            if intan_to_br is None:
-                print(f"[UA-map][skip] No mapping loaded; skipping UA for {session}")
-            else:
-                intan_idx = session_to_intan_idx.get(session)
-                if intan_idx is None:
-                    print(f"[UA-map][warn] No Intan index for {session}")
-                else:
-                    br_idx = intan_to_br.get(intan_idx)
-                    if br_idx is None:
-                        print(f"[UA-map][warn] Intan_File {intan_idx} not mapped to a BR_File")
-                    else:
-                        # UA rates file (choose sigma25ms if multiple)
-                        ua_rates = None
-                        patt = f"rates__NRR_RW_001_{br_idx:03d}__*.npz"
-                        cands = sorted(ua_ckpt_root.glob(patt))
-                        if cands:
-                            pref = [p for p in cands if "__sigma25ms" in p.stem]
-                            ua_rates = (pref[0] if pref else cands[-1])
-                        if ua_rates is None:
-                            print(f"[UA-map][warn] No UA rates for BR_File {br_idx:03d} in {ua_ckpt_root}")
-                        else:
-                            ua_bundle = ua_bundles / f"NRR_RW_001_{br_idx:03d}_UA_bundle.npz"
-                            if not ua_bundle.exists():
-                                print(f"[UA][warn] UA bundle not found: {ua_bundle} — skipping UA peri-stim")
-                            else:
-                                stim_ms_ua = load_stim_ms_from_ua_bundle(
-                                    ua_bundle,
-                                    channel_name_hint="ttl",   # or "stim" if that matches your names
-                                    group_to_blocks=True,
-                                    block_gap_ms=200.0,
-                                )
-                                print(f"[UA] BR_File {br_idx:03d}: {stim_ms_ua.size} stim onsets (UA bundle)")
-                                run_one_file(
-                                    npz_path=ua_rates,
-                                    out_dir=figs_ua_root,
-                                    win_ms=(-800.0, 1200.0),
-                                    baseline_first_ms=100.0,
-                                    min_trials=1,
-                                    save_npz=True,
-                                    stim_ms=stim_ms_ua,
-                                    debug_channel=None,
-                                    blackrock_idx=br_idx,     # number from CSV mapping
-                                    intan_idx=intan_idx
-                                )
-
-            n_ok += 1
-
+            adc_triangle, adc_lock, fs_intan = load_intan_adc_2ch(adc_npz)
         except Exception as e:
-            print(f"[error] Failed on {rates_npz}: {e}")
-            n_skip += 1
+            print(f"[error] load_intan_adc_2ch failed for {adc_npz}: {e}")
+            continue
 
-    print(f"[done] processed={n_ok}, skipped={n_skip}, figs at: {figs_nprw_root} and {figs_ua_root}")
+        # Pick reference series 'ref_intan': prefer triangle if it has bigger dynamic range
+        rng_tri = float(np.percentile(adc_triangle, 99) - np.percentile(adc_triangle, 1))
+        rng_loc = float(np.percentile(adc_lock,     99) - np.percentile(adc_lock,     1))
+        ref_intan = adc_triangle if rng_tri > 0.6 * rng_loc else adc_lock
+
+        # Template-match on LOCK to get block starts
+        locs = find_locs_via_template(adc_lock, template, fs_intan, peak=0.95)
+        print(f"[locs] peaks ≥0.95: {locs.size} | first 10: {locs[:10].tolist() if locs.size else []}")
+        
+        if locs.size == 0:
+            print(f"[warn] No template peaks found for {session}; skipping.")
+            continue
+        center = int(locs[0])
+
+        # BR .ns5 for this BR index
+        br_ns5 = BR_ROOT / f"NRR_RW_001_{br_idx:03d}.ns5"
+        if not br_ns5.exists():
+            print(f"[warn] BR file not found: {br_ns5} (skip)")
+            continue
+        try:
+            br_sync, fs_br = load_br_intan_sync_ns5(br_ns5, intan_sync_chan_id=134)  # 134 = intan_sync
+        except Exception as e:
+            print(f"[error] load_br_intan_sync_ns5 failed for {br_ns5}: {e}")
+            continue
+
+        # Check rates (expect 30 kHz both sides)
+        if int(round(fs_intan)) != int(round(fs_br)):
+            print(f"[note] fs mismatch (Intan={fs_intan:g} Hz, BR={fs_br:g} Hz). Proceeding.")
+
+        # Compute best shift around first loc (z-corr)
+        n_best, corr = best_shift_corr_z(
+            a=ref_intan, b=br_sync, center=center,
+            search=1000, win=30000
+        )
+        shift_sec = n_best / fs_intan
+        print(f"[align] Intan_File={intan_idx:03d} ↔ BR_File={br_idx:03d} : n_best={n_best:+d} samp  ({shift_sec:+.6f} s)  z-corr={corr:.4f}")
+
+        # ------ debug plots (for ALL locs) ------
+        dbg_dir = PLOTS_ROOT / f"{session}__BR{br_idx:03d}"
+        dbg_dir.mkdir(parents=True, exist_ok=True)
+
+        # how many locs to visualize (set None for all)
+        DEBUG_LOC_LIMIT = None  # e.g., 200 to cap
+        loc_indices = range(locs.size) if DEBUG_LOC_LIMIT is None else range(min(locs.size, DEBUG_LOC_LIMIT))
+
+        # Per-loc results (so you can inspect consistency across the session)
+        per_loc_rows = []
+
+        # write per-loc CSV for this pair
+        per_loc_csv = dbg_dir / "per_loc_shifts.csv"
+        if per_loc_rows:
+            with per_loc_csv.open("w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=list(per_loc_rows[0].keys()))
+                w.writeheader()
+                w.writerows(per_loc_rows)
+            print(f"[debug] wrote per-loc shifts → {per_loc_csv}")
+
+        # keep the session-level summary row based on the FIRST loc
+        out_rows.append(dict(
+            session=session,
+            intan_idx=intan_idx,
+            br_idx=br_idx,
+            fs_intan=float(fs_intan),
+            fs_br=float(fs_br),
+            center_sample=int(center),
+            n_best_samples=int(n_best),
+            shift_seconds=float(shift_sec),
+            corr_max=float(corr),  # <-- was rms_min
+            ref_signal=("triangle" if ref_intan is adc_triangle else "lock"),
+            adc_npz=str(adc_npz),
+            br_ns5=str(br_ns5),
+        ))
+
+    # ---------- write CSV summary ----------
+    if out_rows:
+        out_csv = PLOTS_ROOT / "br_to_intan_shifts.csv"
+        with out_csv.open("w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(out_rows[0].keys()))
+            w.writeheader()
+            w.writerows(out_rows)
+        print(f"[done] wrote shifts → {out_csv}")
+    else:
+        print("[done] no rows to write (nothing aligned).")

@@ -9,7 +9,6 @@ import spikeinterface.extractors as se
 from spikeinterface.sortingcomponents.peak_detection import detect_peaks
 from scipy.ndimage import gaussian_filter1d
 
-
 # ---------- Session discovery ----------
 def list_br_sessions(data_root: Path, blackrock_rel: str) -> list[Path]:
     """
@@ -234,13 +233,13 @@ def apply_ua_mapping_properties(recording, mapped_nsp: np.ndarray):
 def build_blackrock_bundle(sess: Path) -> dict:
     """
     Build a bundle of non-NS6 streams -- TODO: Load this in NWB format
-      - aux:  ns5 (camera_sync ch134, intan_sync ch138)
+      - aux:  ns5 (intan_sync ch134,  camera_sync ch138)
       - digi:  ns2 (channels 129..133,135..137,139..144)
     Returns a dict of signals + sampling rates
     """
     bundle: Dict[str, Any] = {}
 
-    # ns5: camera_sync (134), intan_sync (138)
+    # ns5: intan_sync (134), camera_sync (138)
     camera_sync = None
     intan_sync  = None
     fs_ns5 = None
@@ -256,9 +255,9 @@ def build_blackrock_bundle(sess: Path) -> dict:
             for col in cols:
                 ch_id = int(ids[col])
                 if ch_id == 134:
-                    camera_sync = tr[:, col]
-                elif ch_id == 138:
                     intan_sync = tr[:, col]
+                elif ch_id == 138:
+                    camera_sync = tr[:, col]
     except FileNotFoundError:
         print("[WARN] ns5 not found; aux syncs unavailable.")
     bundle["aux"] = {"fs": fs_ns5, "camera_sync": camera_sync, "intan_sync": intan_sync}

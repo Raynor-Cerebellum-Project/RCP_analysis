@@ -8,9 +8,8 @@ import numpy as np
 import spikeinterface as si
 from sklearn.decomposition import PCA
 
-# Intan helpers
 from RCP_analysis import (
-    # PP
+    # Preproc
     read_intan_recording,
     local_cm_reference,
     save_recording,
@@ -24,11 +23,14 @@ from RCP_analysis import (
     # Stim
     extract_and_save_stim_npz,
     PCAArtifactParams,
-    threshold_mua_rates, load_stim_detection,
-    # Config
-    load_experiment_params, resolve_data_root,
-    # 
-    resolve_output_root, resolve_probe_geom_path, plot_all_quads_for_session, 
+    threshold_mua_rates,
+    load_stim_detection,
+    # Config / params
+    load_experiment_params,
+    resolve_data_root,
+    resolve_output_root,
+    resolve_probe_geom_path,
+    resolve_intan_root,
 )
 
 # Temporary plotting function
@@ -105,29 +107,13 @@ def plot_selected_sessions(
 # ==============================
 # Config
 # ==============================
-REPO_ROOT = Path(__file__).resolve().parents[1] # Base directory
-PARAMS = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT) # Params directory
-OUT_BASE = resolve_output_root(PARAMS) # Output directory
-OUT_BASE.mkdir(parents=True, exist_ok=True)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PARAMS = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
 DATA_ROOT = resolve_data_root(PARAMS)
-INTAN_ROOT = (
-    Path(PARAMS.intan_root).resolve()
-    if getattr(PARAMS, "intan_root", None) and str(PARAMS.intan_root).startswith("/")
-    else (DATA_ROOT / PARAMS.intan_root_rel).resolve()
-    if getattr(PARAMS, "intan_root_rel", None)
-    else None
-)
-if INTAN_ROOT is None:
-    raise ValueError("No Intan root specified. Set 'intan_root_rel' or 'intan_root' in params.yaml.")
-
-# --- Geometry path (for both UA and NPRW) ---
-GEOM_PATH = (
-    Path(PARAMS.geom_mat_rel).resolve()
-    if getattr(PARAMS, "geom_mat_rel", None) and str(PARAMS.geom_mat_rel).startswith("/")
-    else (REPO_ROOT / PARAMS.geom_mat_rel).resolve()
-    if getattr(PARAMS, "geom_mat_rel", None)
-    else resolve_probe_geom_path(PARAMS, REPO_ROOT, session_key=None)
-)
+OUT_BASE  = resolve_output_root(PARAMS)
+OUT_BASE.mkdir(parents=True, exist_ok=True)
+INTAN_ROOT = resolve_intan_root(PARAMS)
+GEOM_PATH = resolve_probe_geom_path(PARAMS, REPO_ROOT)
 
 # === Intan stream name ===
 INTAN_STREAM = getattr(PARAMS, "neural_data_stream", "RHS2000 amplifier channel") # Neural data
@@ -177,11 +163,15 @@ si.set_global_job_kwargs(**global_job_kwargs)
 # ==============================
 # Pipeline
 # ==============================
-def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[int] = None):
+def main(limit_sessions: Optional[int] = None):
+    # set limit_session to run only a few conditions
+    # 
+    
     # plot_selected_sessions(indices=(2), pre_s=0.1, post_s=0.2, 
     #         template_samples_before = params.pre_samples,
     #         template_samples_after = params.post_pad_samples
     # )
+    
     # 1) Load geometry & mapping
     geom = load_stim_geometry(GEOM_PATH)
     perm = get_chanmap_perm_from_geom(geom)
@@ -193,15 +183,11 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
         sess_folders = sess_folders[:limit_sessions]
     print(f"Found Intan sessions: {len(sess_folders)}")
 
-    preproc_paths: list[Path] = []
-    checkpoint_out = OUT_BASE / "checkpoints" / "NPRW"
+    checkpoint_out = OUT_BASE / "checkpoints" / "NPRW" # Save location for checkpoints
     checkpoint_out.mkdir(parents=True, exist_ok=True)
     
     # 3) Extract stim sessions and aux channels, preprocess and save
-    #for sess in sess_folders:
-    for k, sess in enumerate(sess_folders, start=1):
-        # if k != 3:
-        #     continue
+    for sess in sess_folders:
         print(f"[RUN] session {sess.name}")
         bundles_root = OUT_BASE / "bundles" / "NPRW"
         bundles_root.mkdir(parents=True, exist_ok=True)
@@ -214,7 +200,7 @@ def main(use_br: bool = False, use_intan: bool = True, limit_sessions: Optional[
             chanmap_perm=perm,
         )
 
-        # extract aux streams
+        # extract auxiliary streams (Sync channels etc.)
         extract_and_save_other_streams_npz(
             sess_folder=sess,
             out_root=bundles_root,

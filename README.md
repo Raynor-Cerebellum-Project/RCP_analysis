@@ -1,4 +1,4 @@
-# Analysis Codes: Behavioral and Neural Pipeline for the Raynor Project
+# Analysis Code: Behavioral and Neural Pipeline for the Raynor Project
 
 ## Pipeline Overview
 This repository contains the analysis pipeline for processing, quantifying, and comparing stimulation trials from the Raynor experiments.  

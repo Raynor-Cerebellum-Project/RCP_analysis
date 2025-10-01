@@ -4,7 +4,6 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 import yaml
 
-
 # ---------------- Params model ----------------
 @dataclass
 class experimentParams:
@@ -87,7 +86,7 @@ class experimentParams:
     
     output_root: Optional[str] = None
 
-
+# Loading params.yaml
 def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams:
     """
     Load yaml data into the data class experimentParams.
@@ -146,52 +145,66 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
         output_root=cfg.get("output_root"),
     )
 
-
-def resolve_data_root(p: experimentParams) -> Path:
-    return Path(p.data_root).resolve()
-
-
-def resolve_output_root(p: experimentParams) -> Path:
-    base = Path(p.data_root).resolve()
-    if p.output_root:
-        if str(p.output_root).startswith("/"):
-            return Path(p.output_root).resolve()
-        else:
-            return (base / p.output_root).resolve()
-    return base / "results"   # sensible fallback
-
-def _resolve_path_maybe_relative(base: Path, rel_or_abs: Optional[str]) -> Optional[Path]:
+def _resolve_path(base: Path, rel_or_abs: Optional[str]) -> Optional[Path]:
+    """
+    Resolve a path, handling both absolute and relative cases.
+    Returns None if rel_or_abs is falsy.
+    """
     if not rel_or_abs:
         return None
     s = str(rel_or_abs)
-    if s.startswith("/"):
-        return Path(s).resolve()
-    return (base / s).resolve()
+    return Path(s).resolve() if s.startswith("/") else (base / s).resolve()
 
-def resolve_intan_root(p: experimentParams) -> Path:
-    # Priority: absolute intan_root -> relative intan_root_rel -> data_root
-    if p.intan_root:
-        return _resolve_path_maybe_relative(Path("."), p.intan_root)  # handles absolute or {REPO_ROOT}-expanded
+def resolve_data_root(p) -> Path:
+    return Path(p.data_root).resolve()
+
+def resolve_output_root(p) -> Path:
+    """
+    Priority:
+    1. Absolute p.output_root
+    2. Relative to data_root
+    3. Fallback: data_root / "results"
+    """
     base = resolve_data_root(p)
-    return _resolve_path_maybe_relative(base, p.intan_root_rel) or base
+    return _resolve_path(base, p.output_root) or (base / "results")
 
-def resolve_session_intan_dir(p: experimentParams, session_key: str) -> Path:
+def resolve_intan_root(p) -> Path:
+    """
+    Priority:
+    1. p.intan_root (absolute or relative)
+    2. p.intan_root_rel (relative to data_root)
+    3. Fallback: data_root
+    """
+    if p.intan_root:
+        return _resolve_path(Path("."), p.intan_root)
+    base = resolve_data_root(p)
+    return _resolve_path(base, p.intan_root_rel) or base
+
+def resolve_session_intan_dir(p, session_key: str) -> Path:
+    """
+    Get Intan directory for a specific session. Falls back to global intan_root.
+    """
     base = resolve_intan_root(p)
     sess_cfg = (p.sessions or {}).get(session_key, {})
-    return _resolve_path_maybe_relative(base, sess_cfg.get("intan_rel")) or base
+    return _resolve_path(base, sess_cfg.get("intan_rel")) or base
 
-def resolve_probe_geom_path(p: experimentParams, repo_root: Path, session_key: Optional[str]=None) -> Path:
-    # If session is provided and has a probe, use its mapping/geom override
+def resolve_probe_geom_path(p, repo_root: Path, session_key: Optional[str]=None) -> Path:
+    """
+    Priority:
+    1. Session-level probe mapping/geom override (if session_key provided)
+    2. Global p.geom_mat_rel or p.mapping_mat_rel
+    """
     if session_key:
         sess_cfg = (p.sessions or {}).get(session_key, {})
-        probe_name = (sess_cfg or {}).get("probe")
+        probe_name = sess_cfg.get("probe") if sess_cfg else None
         if probe_name:
             probe_dict = (p.probes or {}).get(probe_name, {}) or {}
             rel = probe_dict.get("mapping_mat_rel") or probe_dict.get("geom_mat_rel")
             if rel:
-                return _resolve_path_maybe_relative(repo_root, rel)  # rel to repo_root
-    # Fallback: global geom_mat_rel, then global mapping_mat_rel
+                return _resolve_path(repo_root, rel)
+
     rel = p.geom_mat_rel or p.mapping_mat_rel
     if rel:
-        return _resolve_path_maybe_relative(repo_root, rel)
+        return _resolve_path(repo_root, rel)
+
     raise FileNotFoundError("No geometry/mapping file specified (probe override and global fallback both missing).")

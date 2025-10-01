@@ -153,22 +153,6 @@ def best_shift_around(a: np.ndarray, b: np.ndarray, center: int, search: int = 5
 
 # ------------------------------ plotting helpers -----------------------------
 
-def save_plot_template_xcorr(corr, lags, fs, locs, out_path):
-    tsec = lags / fs
-    plt.figure(figsize=(12, 3.2))
-    plt.plot(tsec, corr, linewidth=1)
-    plt.axhline(0.95, linestyle="--", linewidth=1, color="gray", label="0.95")
-    for L in locs:
-        plt.axvline(L/fs, color="r", alpha=0.4)
-    plt.xlabel("Lag (s)")
-    plt.ylabel("norm xcorr")
-    plt.title("Template match (lock ⨂ template)")
-    if locs.size:
-        plt.legend()
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=160, bbox_inches="tight")
-    plt.close()
-
 def save_plot_lock_template_overlay(lock, template, center, fs, pad, out_path):
     """
     Plot z-scored lock with a z-scored template overlaid, centered so that
@@ -259,7 +243,7 @@ def save_plot_triangle_overlay(adc_triangle, ua_sync, center, fs, n_best, pad, o
     y = _z(ua_sync[j0:j0+span])
 
     plt.figure(figsize=(12, 3.6))
-    plt.plot(t, x, label="Intan ADC ch0 triangle (z)", linewidth=1)
+    # plt.plot(t, x, label="Intan ADC ch0 triangle (z)", linewidth=1)
     plt.plot(t, y, label=f"UA intan_sync (z), n={n_best}", linewidth=1)
 
     plt.axvline(0, linestyle="--", color="k", linewidth=1)
@@ -273,13 +257,94 @@ def save_plot_triangle_overlay(adc_triangle, ua_sync, center, fs, n_best, pad, o
     return True
 
 # ----------------------------- main pipeline --------------------------------
-def _dbg_savefig(out_dir: Path, name: str):
-    out_path = out_dir / f"{name}.png"
+def _range_norm(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, float)
+    rng = x.max() - x.min()
+    return (x - x.mean()) / (rng + 1e-12)
+    
+def best_shift_rms_range_on_intan(a: np.ndarray, b: np.ndarray, center: int,
+                                  search: int = 500, win: int = 30000) -> tuple[int, float]:
+    """
+    MATLAB-style: for shifts n in [-search, search], compare
+    UA window (b) to range-normalized Intan window (a), both cut
+    from a ±win window centered at `center`. Return (n_best, rms_min).
+    
+    a := Intan triangle
+    b := UA intan_sync (raw)
+    """
+    i0 = max(0, center - win)
+    i1 = min(min(len(a), len(b)), center + win + 1)
+
+    aw = a[i0:i1]  # Intan window
+    L = aw.size
+    if L < 3:
+        return 0, float("nan")
+
+    best_n, best_err = 0, float("inf")
+    for n in range(-search, search + 1):
+        j0, j1 = i0 + n, i1 + n
+        if j0 < 0 or j1 > len(b):
+            continue
+        # Intan slice (range-normalized) vs UA slice (raw)
+        tri = _range_norm(aw)
+        ua  = b[j0:j1].astype(float)
+        err = float(np.sqrt(np.mean((ua - tri) ** 2)))  # RMS
+        if err < best_err:
+            best_err, best_n = err, n
+    return best_n, best_err
+
+def save_plot_shift_curve_err(a, b, center, fs, search, win, out_path):
+    i0 = max(0, center - win)
+    i1 = min(min(len(a), len(b)), center + win + 1)
+    aw = a[i0:i1]
+    shifts, errs = [], []
+    for n in range(-search, search + 1):
+        j0, j1 = i0 + n, i1 + n
+        if j0 < 0 or j1 > len(b):
+            continue
+        tri = _range_norm(aw)
+        ua  = b[j0:j1].astype(float)
+        err = float(np.sqrt(np.mean((ua - tri) ** 2)))
+        shifts.append(n); errs.append(err)
+    shifts = np.array(shifts); errs = np.array(errs)
+    nbest = int(shifts[np.argmin(errs)])
+
+    plt.figure(figsize=(12, 3.2))
+    plt.plot(shifts, errs, linewidth=1)
+    plt.axvline(nbest, color="r", linestyle="--", linewidth=1,
+                label=f"best n={nbest} (~{nbest/fs:.4f}s)")
+    plt.xlabel("Shift n (samples)  [Intan[t] vs UA[t+n]]")
+    plt.ylabel("RMS error (UA − range-norm Intan)")
+    plt.title("Triangle vs UA sync: RMS error by shift")
+    plt.legend()
     plt.tight_layout()
     plt.savefig(out_path, dpi=160, bbox_inches="tight")
     plt.close()
-    print(f"[debug] saved → {out_path}")
+def save_plot_triangle_overlay_matlab(adc_triangle, ua_sync, center, fs, n_best, pad, out_path):
+    i0 = max(0, center - pad)
+    i1 = min(len(adc_triangle), center + pad)
 
+    j0 = i0 + n_best
+    j1 = i1 + n_best
+    if j0 < 0 or j1 > len(ua_sync):
+        return False
+
+    tri = _range_norm(adc_triangle[i0:i1])
+    ua  = ua_sync[j0:j1].astype(float)
+
+    t = (np.arange(i1 - i0) + i0 - center) / fs
+    plt.figure(figsize=(12, 3.6))
+    plt.plot(t, tri, label="Intan triangle (range-norm)", linewidth=1)
+    plt.plot(t, ua,  label=f"UA intan_sync (raw), n={n_best}", linewidth=1, alpha=0.9)
+    plt.axvline(0, linestyle="--", color="k", linewidth=1)
+    plt.xlabel("Time from first loc (s)")
+    plt.ylabel("arb. units")
+    plt.title(f"Triangle vs UA overlay (MATLAB-style)  ±{pad} samples")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=160, bbox_inches="tight")
+    plt.close()
+    return True
 
 def align_and_save_plot(
     adc_npz_path: Path,
@@ -288,11 +353,17 @@ def align_and_save_plot(
     out_dir: Path,
     search_samples: int = 500,
     window_half_width: int = 30000,
+    align_to_ua: bool = False,   # NEW: default off
 ) -> tuple[np.ndarray, np.ndarray, int | None, dict]:
     """
     Returns:
       session_trigger (2 x T), locs (np.ndarray), best_shift (int or None),
       plot_paths (dict of Path)
+
+    Behavior:
+      - Always performs template matching on the lock channel to get `locs`.
+      - If `align_to_ua` is False (default), it STOPs here (best_shift=None).
+      - If `align_to_ua` is True, it proceeds to UA alignment/plots.
     """
     plot_paths = {}
 
@@ -306,47 +377,45 @@ def align_and_save_plot(
     locs = peak_lags(corr, lags, height=0.95)
     print(f"[locs] peaks ≥0.95: {locs.size} | first 10: {locs[:10].tolist() if locs.size else []}")
 
-    # Save: xcorr with peaks
     out_dir.mkdir(parents=True, exist_ok=True)
-    plot_paths["xcorr"] = out_dir / f"xcorr_{adc_npz_path.stem}__template.png"
-    save_plot_template_xcorr(corr, lags, fs_adc, locs, plot_paths["xcorr"])
-
     # Save: lock vs template overlay around first loc
     if locs.size:
         plot_paths["lock_template_overlay"] = out_dir / f"lock_template_overlay__{adc_npz_path.stem}.png"
         save_plot_lock_template_overlay(adc_lock, template, center=int(locs[0]),
                                         fs=fs_adc, pad=window_half_width,
                                         out_path=plot_paths["lock_template_overlay"])
+    else:
+        print("No peaks found in template matching; returning without UA alignment.")
+        return session_trigger, locs, None, plot_paths
 
-    # 3) Align triangles: Intan (adc_triangle) vs UA (ua_sync)
+    # ---- Early exit if we only want template matching ----
+    if not align_to_ua:
+        best_shift = None
+        return session_trigger, locs, best_shift, plot_paths
+
+    # 3) (Optional) Align triangles: Intan (adc_triangle) vs UA (ua_sync), deprecated for now, fix later after getting triangle sync waves
     ua_sync, fs_ua = load_ua_intan_sync(ua_npz_path)
     if int(round(fs_adc)) != int(round(fs_ua)):
         print(f"WARNING: sampling-rate mismatch (ADC={fs_adc:g} Hz, UA={fs_ua:g} Hz). Proceeding.")
 
-    best_shift = None
-    if locs.size == 0:
-        print("No locs found; skipping triangle alignment plots.")
-        return session_trigger, locs, best_shift, plot_paths
-
     center = int(locs[0])
-    best_shift, r = best_shift_around(adc_triangle, ua_sync, center,
-                                      search=search_samples, win=window_half_width)
-    print(f"[align] best shift near first loc: n={best_shift} (corr={r:.3f})")
+    best_shift, err = best_shift_rms_range_on_intan(
+        adc_triangle, ua_sync, center,
+        search=search_samples, win=window_half_width
+    )
+    print(f"[align] best shift near first loc: n={best_shift} (RMS={err:.4g})")
 
-    # Save: correlation vs shift curve
-    plot_paths["shift_curve"] = out_dir / f"shift_curve__{adc_npz_path.stem}__vs__{ua_npz_path.stem}.png"
-    save_plot_shift_curve(adc_triangle, ua_sync, center, fs_adc,
-                          search=search_samples, win=window_half_width,
-                          out_path=plot_paths["shift_curve"])
-
-    # Save: triangle vs intan_sync overlay with edge markers
+    # Save: triangle vs intan_sync overlay
     plot_paths["triangle_overlay"] = out_dir / (
         f"align_{adc_npz_path.stem}__vs__{ua_npz_path.stem}__firstloc_pm{window_half_width}.png"
     )
-    ok = save_plot_triangle_overlay(adc_triangle, ua_sync, center, fs_adc,
-                                    n_best=best_shift, pad=window_half_width,
-                                    out_path=plot_paths["triangle_overlay"])
+    ok = save_plot_triangle_overlay_matlab(
+        adc_triangle, ua_sync, center, fs_adc,
+        n_best=best_shift, pad=window_half_width,
+        out_path=plot_paths["triangle_overlay"]
+    )
     if not ok:
+        del plot_paths["triangle_overlay"]
         print("Shifted window has no overlap; triangle overlay not saved.")
 
     return session_trigger, locs, best_shift, plot_paths
@@ -370,7 +439,8 @@ if __name__ == "__main__":
         out_dir=PLOTS,
         search_samples=500,
         window_half_width=150000,
+        align_to_ua=False,   # <-- skip UA/triangle alignment
     )
-    print("Saved plots:")
+
     for k, v in paths.items():
         print(f"  {k}: {v}")
