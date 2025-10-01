@@ -744,8 +744,6 @@ def _extract_trial_windows_raw(rec, fs, stim_start_samples, ch, window_ms=(0.0, 
 
     return traces, t_ms, np.asarray(s0_list, dtype=np.int64)   # <— also return s0 per trial
 
-
-
 def plot_single_channel_trial_quad_raw(
     rec,
     fs: float,

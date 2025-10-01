@@ -1,12 +1,13 @@
-#!/usr/bin/env python3
 from pathlib import Path
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-
-# --- add: params loading & output root resolver ---
 from RCP_analysis import load_experiment_params
+
+""" This script plots the first 5 seconds of the Blackrock file, for plotting both UA/BR and NPRW/Intan use NPRW_UA_FR_plotting"""
+
+
 
 def resolve_output_root(p) -> Path:
     base = Path(p.data_root).resolve()
@@ -15,7 +16,6 @@ def resolve_output_root(p) -> Path:
         return Path(out).resolve() if str(out).startswith("/") else (base / out).resolve()
     # fallback if output_root not set in YAML
     return (base / "results").resolve()
-# --------------------------------------------------
 
 def save_rate_plots(npz_path: Path, out_dir: Path, channels=None, tlim=None):
     data = np.load(npz_path, allow_pickle=True)

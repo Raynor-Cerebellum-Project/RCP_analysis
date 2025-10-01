@@ -6,6 +6,7 @@ import matplotlib
 matplotlib.use("Agg")
 from RCP_analysis import load_experiment_params, resolve_output_root, load_stim_ms_from_stimstream, resolve_probe_geom_path, detect_stim_channels_from_npz, run_one_Intan_FR_heatmap, plot_single_channel_trial_quad_raw, load_stim_detection, _find_interp_dir_for_session, _load_cached_recording
 
+""" This script plots stim aligned average traces of the NPRW/Intan file, for plotting both UA/BR and NPRW/Intan use NPRW_UA_FR_plotting"""
 
 if __name__ == "__main__":
     # ==============================

@@ -57,6 +57,11 @@ from .python.plotting.plotting import (
     plot_single_channel_trial_quad_raw,
     _find_interp_dir_for_session,
     _load_cached_recording,
+    extract_peristim_segments,
+    baseline_zero_each_trial,
+    average_across_trials,
+    plot_channel_heatmap,
+    build_probe_and_locs_from_geom,
 )
 
 __all__ = [
@@ -101,7 +106,12 @@ __all__ = [
     "plot_single_channel_trial_quad_raw",
     "_find_interp_dir_for_session",
     "_load_cached_recording",
-
+    "extract_peristim_segments",
+    "baseline_zero_each_trial",
+    "average_across_trials",
+    "plot_channel_heatmap",
+    "build_probe_and_locs_from_geom",
+    
     # artifact correction
     "PCAArtifactParams",
     "remove_stim_pca_offline",
