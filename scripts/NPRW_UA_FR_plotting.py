@@ -75,13 +75,12 @@ def _stacked_heatmaps_two_t(intan_avg, ua_avg, t_intan, t_ua, out_png, title_top
     out_png.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_png, dpi=160, bbox_inches="tight"); plt.close(fig)
 
-
 def _ua_title_from_meta(meta: dict) -> str:
     """
     Build Utah array title from metadata.
     """
     if "br_idx" in meta and meta["br_idx"] is not None:
-        return f"NRR_RW_001_{int(meta['br_idx']):03d}"
+        return f"Blackrock / UA: NRR_RW_001_{int(meta['br_idx']):03d}"
     return "Utah/BR"
 
 if __name__ == "__main__":
@@ -146,7 +145,7 @@ if __name__ == "__main__":
 
             # ---------- produce stacked heatmap figure ----------
             out_png = FIG_ROOT / f"{sess}__Intan_vs_UA__peri_stim_heatmaps.png"
-            title_top = f"{sess} — NPRW/Intan (n={NPRW_segments.shape[0]} trials)"
+            title_top = f"NPRW/Intan: {sess} (n={NPRW_segments.shape[0]} trials)"
             title_bot = f"{_ua_title_from_meta(meta)} (n={UA_segments.shape[0]} trials)"
 
             # sanity checks (optional but helpful)

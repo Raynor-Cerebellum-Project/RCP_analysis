@@ -7,8 +7,6 @@ from RCP_analysis import load_experiment_params
 
 """ This script plots the first 5 seconds of the Blackrock file, for plotting both UA/BR and NPRW/Intan use NPRW_UA_FR_plotting"""
 
-
-
 def resolve_output_root(p) -> Path:
     base = Path(p.data_root).resolve()
     out = getattr(p, "output_root", None)

@@ -31,6 +31,7 @@ from RCP_analysis import (
     resolve_output_root,
     resolve_probe_geom_path,
     resolve_intan_root,
+    plot_all_quads_for_session,
 )
 
 # Temporary plotting function
@@ -226,7 +227,7 @@ def main(limit_sessions: Optional[int] = None):
         stim = load_stim_detection(stim_npz_path)
         block_bounds = np.asarray(stim.get("block_bounds_samples", []), dtype=int)
 
-        rec_interp = rec_ref  # fallback
+        rec_artif_removed = rec_ref  # fallback
 
         if block_bounds.size:
             fs = float(rec_ref.get_sampling_frequency())
@@ -244,7 +245,7 @@ def main(limit_sessions: Optional[int] = None):
                 tail_ms = 5.0
                 ms_before_each = 5.0
 
-                rec_interp = si.preprocessing.remove_artifacts(
+                rec_artif_removed = si.preprocessing.remove_artifacts(
                     rec_ref,
                     list_triggers=[starts_samp.tolist()],
                     ms_before=ms_before_each,
@@ -263,14 +264,14 @@ def main(limit_sessions: Optional[int] = None):
         
         # Save preprocessed session (artifact-corrected + referenced)
         out_dir = checkpoint_out / f"pp_local_{int(RADII[0])}_{int(RADII[1])}__interp_{sess.name}"
-        save_recording(rec_interp, out_dir)
+        save_recording(rec_artif_removed, out_dir)
         print(f"[{sess.name}] saved interpolated -> {out_dir}")
 
         del rec, rec_ref
         gc.collect()
         
         rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms = threshold_mua_rates(
-            rec_interp,
+            rec_artif_removed,
             detect_threshold=THRESH,
             peak_sign=PEAK_SIGN,
             bin_ms=BIN_MS,
@@ -357,8 +358,8 @@ def main(limit_sessions: Optional[int] = None):
                 peak_sign=PEAK_SIGN,
                 bin_ms=BIN_MS,
                 sigma_ms=SIGMA_MS,
-                fs=float(rec_interp.get_sampling_frequency()),
-                n_channels=int(rec_interp.get_num_channels()),
+                fs=float(rec_artif_removed.get_sampling_frequency()),
+                n_channels=int(rec_artif_removed.get_num_channels()),
                 session=str(sess.name),
                 samp_field=samp_f, chan_field=chan_f, amp_field=amp_f,  # doc field names
             ),
@@ -373,7 +374,7 @@ def main(limit_sessions: Optional[int] = None):
         print(f"[{sess.name}] saved rate matrix + PCA -> {out_npz}")
 
         # cleanup to keep memory stable on long batches
-        del rec_interp, rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms
+        del rec_artif_removed, rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms
         gc.collect()
 
 if __name__ == "__main__":
