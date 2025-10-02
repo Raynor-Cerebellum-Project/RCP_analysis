@@ -228,7 +228,6 @@ def apply_ua_mapping_properties(recording, mapped_nsp: np.ndarray):
     mapped = int((ua_elec_per_row > 0).sum())
     print(f"[MAP] stamped UA mapping on {mapped}/{n_ch} rows (no geometry).")
 
-
 # ---------- Bundles (NS5+NS2 only) ----------
 def build_blackrock_bundle(sess: Path) -> dict:
     """

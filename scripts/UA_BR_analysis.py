@@ -239,7 +239,7 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
     saved_paths: list[Path] = []
 
     # --- per session: save non-spike bundle + preproc ns6
-    for sess in session_folders:
+    for k, sess in enumerate(session_folders):
         print(f"=== Session: {sess.name} ===")
     
         bundle = build_blackrock_bundle(sess)
@@ -321,12 +321,73 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
                 )
             else:
                 print("[WARN] all artifact intervals invalid after shift; skipping artifact removal.")
+                # after apply_ua_mapping_properties(...) and before np.savez_compressed(...)
+            ua_elec_per_row = None
+            ua_nsp_per_row  = None
+            row_from_elec   = None
+
+            try:
+                ua_elec_per_row = rec_artif_removed.get_property("ua_electrode")
+            except Exception:
+                pass
+            try:
+                ua_nsp_per_row = rec_artif_removed.get_property("ua_nsp_channel")
+            except Exception:
+                pass
+            try:
+                row_from_elec = rec_artif_removed.get_annotation("ua_row_index_from_electrode")
+            except Exception:
+                pass
+
+            def _region_from_elec(e: int) -> int:
+                if e <= 0:      return -1   # missing
+                if e <= 64:     return 0    # SMA
+                if e <= 128:    return 1    # Dorsal premotor
+                if e <= 192:    return 2    # M1 inferior
+                return 3                    # M1 superior
+
+            ua_region_per_row = (
+                np.array([_region_from_elec(int(e)) for e in ua_elec_per_row], dtype=np.int8)
+                if ua_elec_per_row is not None else np.array([], dtype=np.int8)
+            )
+            ua_region_names = np.array(["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"], dtype=object)
+
         else:
             if not block_bounds.size:
                 print("[WARN] no block spans found; skipping artifact removal.")
             elif shifts_row is None:
                 print("[WARN] no shift row found for this BR index; skipping artifact removal.")
 
+            # --- ALWAYS extract UA mapping arrays (independent of artifact windows) ---
+            ua_elec_per_row = None
+            ua_nsp_per_row  = None
+            row_from_elec   = None
+
+            for src in (rec_artif_removed, rec_ref):
+                if ua_elec_per_row is None:
+                    try: ua_elec_per_row = np.asarray(src.get_property("ua_electrode"), dtype=int)
+                    except Exception: pass
+                if ua_nsp_per_row is None:
+                    try: ua_nsp_per_row = np.asarray(src.get_property("ua_nsp_channel"), dtype=int)
+                    except Exception: pass
+                if row_from_elec is None:
+                    try: row_from_elec = np.asarray(src.get_annotation("ua_row_index_from_electrode"), dtype=int)
+                    except Exception: pass
+
+            # Regions from electrode ID (1..256)
+            if ua_elec_per_row is not None:
+                e = ua_elec_per_row.astype(int)
+                ua_region_per_row = np.full(e.shape[0], -1, dtype=np.int8)
+                ua_region_per_row[(e >= 1)   & (e <= 64 )] = 0  # SMA
+                ua_region_per_row[(e >= 65)  & (e <= 128)] = 1  # Dorsal premotor
+                ua_region_per_row[(e >= 129) & (e <= 192)] = 2  # M1 inferior
+                ua_region_per_row[(e >= 193) & (e <= 256)] = 3  # M1 superior
+            else:
+                ua_region_per_row = np.array([], dtype=np.int8)
+
+            ua_region_names = np.array(["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"], dtype=object)
+
+        
         # save the cleaned preprocessed recording
         out_geom = checkpoint_out / f"pp_global__{sess.name}__NS6"
         out_geom.mkdir(parents=True, exist_ok=True)
@@ -334,7 +395,7 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
         print(f"[{sess.name}] (ns6) saved preprocessed -> {out_geom}")
 
         # compute rates FROM THE CLEANED RECORDING
-        rate_hz, t_cat_ms, counts_cat, _, _ = threshold_mua_rates(
+        rate_hz, t_cat_ms, counts_cat, peaks, peaks_t_ms = threshold_mua_rates(
             rec_artif_removed,
             detect_threshold=THRESH,
             peak_sign=PEAK_SIGN,
@@ -355,13 +416,32 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
         pcs_T = pcs.T.astype(np.float32)
         
         out_npz = checkpoint_out / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
-        np.savez_compressed(
-            out_npz,
+        
+        # infer common field names across SI versions
+        names = peaks.dtype.names
+        samp_f = "sample_index" if "sample_index" in names else ("sample_ind" if "sample_ind" in names else None)
+        chan_f = "channel_index" if "channel_index" in names else ("channel_ind" if "channel_ind" in names else None)
+        amp_f  = "amplitude" if "amplitude" in names else None
+
+        # convenience arrays (optional)
+        peak_sample = peaks[samp_f].astype(np.int64)   if samp_f else None
+        peak_ch     = peaks[chan_f].astype(np.int16)   if chan_f else None
+        peak_amp    = peaks[amp_f].astype(np.float32)  if amp_f  else None
+        
+        save = dict(
             rate_hz=rate_hz.astype(np.float32),
             t_ms=t_cat_ms.astype(np.float32),
             counts=counts_cat.astype(np.uint16),
-            pcs=pcs_T,                                  # (5, n_bins)
+            peaks=peaks,
+            peak_t_ms=peaks_t_ms.astype(np.float32),
+            
+            pcs=pcs_T,
             explained_var=explained_var.astype(np.float32),
+            ua_row_to_elec = (ua_elec_per_row.astype(np.int16) if ua_elec_per_row is not None else np.array([], dtype=np.int16)),
+            ua_row_to_nsp  = (ua_nsp_per_row.astype(np.int16)  if ua_nsp_per_row  is not None else np.array([], dtype=np.int16)),
+            ua_row_to_region = ua_region_per_row,   # 0..3 or -1
+            ua_region_names  = ua_region_names,     # ["SMA","Dorsal premotor","M1 inferior","M1 superior"]
+            ua_row_index_from_electrode = (row_from_elec.astype(np.int16) if row_from_elec is not None else np.array([], dtype=np.int16)),
             meta=dict(
                 detect_threshold=THRESH,
                 peak_sign=PEAK_SIGN,
@@ -372,6 +452,13 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
                 session=str(sess.name),
             ),
         )
+
+        if peak_sample is not None: save["peak_sample"] = peak_sample
+        if peak_ch is not None:     save["peak_ch"] = peak_ch
+        if peak_amp is not None:    save["peak_amp"] = peak_amp
+        
+        np.savez_compressed(out_npz, **save)
+
         print(f"[{sess.name}] saved rate matrix + PCA -> {out_npz}")
 
         # cleanup to keep memory stable on long batches

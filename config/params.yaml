@@ -45,7 +45,7 @@ intan_rate_est:
 UA_rate_est:
   bin_ms: 2.0          # bin width for counts
   sigma_ms: 20.0       # Gaussian kernel std
-  detect_threshold: 4.5
+  detect_threshold: 3
   peak_sign: "both"
   
 # ---- plotting ----
