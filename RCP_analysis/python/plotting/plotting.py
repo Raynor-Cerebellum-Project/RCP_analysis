@@ -684,7 +684,6 @@ def run_one_Intan_FR_heatmap(
     n_trials = segments.shape[0]   # number of kept trials
 
     out_png = out_dir / f"{stem}__peri_stim_heatmap.png"
-    
     probe, locs = build_probe_and_locs_from_geom(geom_path)
     
     plot_channel_heatmap(
@@ -742,7 +741,7 @@ def _extract_trial_windows_raw(rec, fs, stim_start_samples, ch, window_ms=(0.0, 
             y = rec.get_traces(start_frame=i0, end_frame=i1, channel_ids=[ch_id], return_scaled=True)
         traces[k, :] = np.asarray(y).squeeze()
 
-    return traces, t_ms, np.asarray(s0_list, dtype=np.int64)   # <— also return s0 per trial
+    return traces, t_ms, np.asarray(s0_list, dtype=np.int64)
 
 def plot_single_channel_trial_quad_raw(
     rec,

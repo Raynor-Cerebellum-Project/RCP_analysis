@@ -1,13 +1,12 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 from pathlib import Path
 import json
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import spikeinterface as si
 from RCP_analysis import load_experiment_params, resolve_output_root
+matplotlib.use("Agg")
 
 # ---- CONFIG ----
 REPO_ROOT = Path(__file__).resolve().parents[1]

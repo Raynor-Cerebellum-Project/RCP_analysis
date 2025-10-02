@@ -2,7 +2,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Tuple
 import gc
-import numpy as np
 import os
 
 # SpikeInterface

@@ -4,10 +4,6 @@ from pathlib import Path
 import numpy as np
 import json, csv, re, io, codecs
 
-# Headless matplotlib not required here; no plots by default
-# import matplotlib
-# matplotlib.use("Agg")
-
 # ---- spikeinterface for BR .ns5 (to record fs_br & durations) ----
 try:
     from spikeinterface.extractors import read_blackrock

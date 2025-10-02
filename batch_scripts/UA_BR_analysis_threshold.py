@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional
@@ -6,18 +5,18 @@ import gc
 import numpy as np
 import io, codecs, re
 import csv
+from sklearn.decomposition import PCA
 
 # SpikeInterface
 import spikeinterface as si
 import spikeinterface.preprocessing as spre
-from sklearn.decomposition import PCA
 
 from RCP_analysis import (
     load_experiment_params, resolve_data_root, resolve_output_root,
     # BR/UA helpers
     list_br_sessions, ua_excel_path, load_ns6_spikes,
     load_UA_mapping_from_excel, apply_ua_mapping_properties,
-    build_blackrock_bundle, save_UA_bundle_npz, threshold_mua_rates, # Not sure why this isn't color coded
+    build_blackrock_bundle, save_UA_bundle_npz, threshold_mua_rates,
     load_stim_detection,
 )
 

@@ -1,13 +1,13 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 from pathlib import Path
 import json
 import numpy as np
+import re
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import spikeinterface as si
 from RCP_analysis import load_experiment_params, resolve_output_root
+matplotlib.use("Agg")
 
 # ---- CONFIG ----
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -50,7 +50,6 @@ def _session_key_from_nprw_path(p: Path) -> str:
         cand = cand.split("__", 1)[0]
         return cand
     # Fallback: regex
-    import re
     m = re.search(r"(NRR[_A-Z0-9]*_\d{6}_\d{6})", name)
     if not m:
         raise ValueError(f"Could not parse Intan session key from folder name: {name}")

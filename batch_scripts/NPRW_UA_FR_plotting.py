@@ -5,19 +5,11 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+from matplotlib.gridspec import GridSpec
+from probeinterface.plotting import plot_probe
+from probeinterface import Probe
 matplotlib.use("Agg")
-
-from RCP_analysis import (
-    load_experiment_params,
-    resolve_output_root,
-    resolve_probe_geom_path,
-    extract_peristim_segments,
-    baseline_zero_each_trial,
-    average_across_trials,
-    build_probe_and_locs_from_geom,
-    detect_stim_channels_from_npz,
-    ua_excel_path, load_UA_mapping_from_excel,
-)
+import RCP_analysis as rcp
 
 def _ua_region_from_elec(e: int) -> int:
     if e <= 0:      return -1
@@ -111,8 +103,6 @@ def _stacked_heatmaps_two_t(
     ua_ids_1based: np.ndarray | None = None,
     ua_sort: str = "none",   # NEW: "none" | "elec" | "region_then_elec"
 ):
-    import matplotlib.pyplot as plt
-    from matplotlib.gridspec import GridSpec
 
     have_probe = (probe is not None) or (
         probe_locs is not None and np.asarray(probe_locs).ndim == 2 and len(probe_locs) > 0
@@ -177,13 +167,6 @@ def _stacked_heatmaps_two_t(
     fig.colorbar(im1, ax=ax_bot).set_label("Δ FR (Hz)")
     # ----- Probe inset: outline all contacts, fill ONLY stim sites -----
     if have_probe:
-        try:
-            from probeinterface.plotting import plot_probe
-            from probeinterface import Probe
-        except Exception:
-            plot_probe = None
-            Probe = None
-
         if probe is None and Probe is not None:
             # build a simple probe from locs
             pr = Probe(ndim=2)
@@ -249,8 +232,8 @@ def _ua_title_from_meta(meta: dict) -> str:
 if __name__ == "__main__":
     # ---------- CONFIG ----------
     REPO_ROOT = Path(__file__).resolve().parents[1]
-    PARAMS    = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-    OUT_BASE  = resolve_output_root(PARAMS)
+    PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
+    OUT_BASE  = rcp.resolve_output_root(PARAMS)
 
     ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
     FIG_ROOT     = OUT_BASE / "figures" / "peri_stim" / "Aligned"
@@ -261,8 +244,8 @@ if __name__ == "__main__":
     BASELINE_FIRST_MS = 100.0
     MIN_TRIALS        = 1
 
-    xls = ua_excel_path(REPO_ROOT, PARAMS.probes)
-    ua_map = load_UA_mapping_from_excel(xls) if xls else None
+    xls = rcp.ua_excel_path(REPO_ROOT, PARAMS.probes)
+    ua_map = rcp.load_UA_mapping_from_excel(xls) if xls else None
 
     # Intan probe (optional, only used if you later want a probe panel like NPRW)
     try:
@@ -271,9 +254,9 @@ if __name__ == "__main__":
             if getattr(PARAMS, "geom_mat_rel", None) and str(PARAMS.geom_mat_rel).startswith("/")
             else (REPO_ROOT / PARAMS.geom_mat_rel).resolve()
             if getattr(PARAMS, "geom_mat_rel", None)
-            else resolve_probe_geom_path(PARAMS, REPO_ROOT, session_key=None)
+            else rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT, session_key=None)
         )
-        probe, locs = build_probe_and_locs_from_geom(GEOM_PATH)
+        probe, locs = rcp.build_probe_and_locs_from_geom(GEOM_PATH)
     except Exception:
         probe, locs = None, None
 
@@ -314,24 +297,24 @@ if __name__ == "__main__":
             stim_ms = _aligned_stim_ms(stim_ms_abs, meta)
 
             # --- NPRW/Intan ---
-            NPRW_segments, rel_time_ms_i = extract_peristim_segments(
+            NPRW_segments, rel_time_ms_i = rcp.extract_peristim_segments(
                 rate_hz=NPRW_rate, t_ms=NPRW_t, stim_ms=stim_ms,
                 win_ms=WIN_MS, min_trials=MIN_TRIALS
             )
-            NPRW_zeroed = baseline_zero_each_trial(
+            NPRW_zeroed = rcp.baseline_zero_each_trial(
                 NPRW_segments, rel_time_ms_i, baseline_first_ms=BASELINE_FIRST_MS
             )
-            NPRW_avg = average_across_trials(NPRW_zeroed)
+            NPRW_avg = rcp.average_across_trials(NPRW_zeroed)
 
             # ---------- UA: same logic but keep its own rel_time_ms ----------
-            UA_segments, ua_rel_time_ms = extract_peristim_segments(
+            UA_segments, ua_rel_time_ms = rcp.extract_peristim_segments(
                 rate_hz=UA_rate, t_ms=UA_t, stim_ms=stim_ms,
                 win_ms=WIN_MS, min_trials=MIN_TRIALS
             )
-            UA_zeroed = baseline_zero_each_trial(
+            UA_zeroed = rcp.baseline_zero_each_trial(
                 UA_segments, ua_rel_time_ms, baseline_first_ms=BASELINE_FIRST_MS
             )
-            UA_avg = average_across_trials(UA_zeroed)
+            UA_avg = rcp.average_across_trials(UA_zeroed)
 
             # ---------- produce stacked heatmap figure ----------
             out_png = FIG_ROOT / f"{sess}__Intan_vs_UA__peri_stim_heatmaps.png"
@@ -350,7 +333,7 @@ if __name__ == "__main__":
             stim_idx = None
             if stim_npz.exists():
                 try:
-                    stim_idx = detect_stim_channels_from_npz(stim_npz, eps=1e-12, min_edges=1)
+                    stim_idx = rcp.detect_stim_channels_from_npz(stim_npz, eps=1e-12, min_edges=1)
                 except Exception as e:
                     print(f"[warn] stim-site detection failed for {sess}: {e}")
         
