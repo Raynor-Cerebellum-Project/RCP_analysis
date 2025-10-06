@@ -26,7 +26,7 @@ PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", rep
 OUT_BASE  = rcp.resolve_output_root(PARAMS)
 OUT_BASE.mkdir(parents=True, exist_ok=True)
 
-ALIGNED_DIR = OUT_BASE / "checkpoints" / "Aligned"
+ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
 PATH_NPRW_SI = OUT_BASE / "checkpoints" / "NPRW/" / INTAN_FOLDER
 OUT_DIR = OUT_BASE / "figures" / "debug_quads_aligned" / "NPRW" / INTAN_FOLDER
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -175,7 +175,7 @@ def main():
 
     # Find and load aligned npz by suffix (for the same BR index)
     session_key = _session_key_from_nprw_path(PATH_NPRW_SI)
-    PATH_ALIGNED_NPZ = _find_aligned_for_session(ALIGNED_DIR, session_key)
+    PATH_ALIGNED_NPZ = _find_aligned_for_session(ALIGNED_ROOT, session_key)
     z = np.load(PATH_ALIGNED_NPZ, allow_pickle=True)
 
     # Stim & anchor

@@ -25,7 +25,7 @@ PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", rep
 OUT_BASE  = rcp.resolve_output_root(PARAMS)
 OUT_BASE.mkdir(parents=True, exist_ok=True)
 
-ALIGNED_DIR = OUT_BASE / "checkpoints" / "Aligned"
+ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
 PATH_UA_SI = OUT_BASE / "checkpoints" / "UA" / f"pp_global__NRR_RW_001_{BR_IDX:03d}__NS6"
 OUT_DIR = OUT_BASE / "figures" / "debug_quads_aligned" / "UA" / f"BR_{BR_IDX:03d}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -131,7 +131,7 @@ def main():
     adjust_ms = (ADJUST_SAMPLES / fs_ua) * 1000.0
 
     # Find and load aligned npz by suffix (for the same BR index)
-    PATH_ALIGNED_NPZ = _find_aligned_file(ALIGNED_DIR, BR_IDX)
+    PATH_ALIGNED_NPZ = _find_aligned_file(ALIGNED_ROOT, BR_IDX)
     z = np.load(PATH_ALIGNED_NPZ, allow_pickle=True)
 
 
