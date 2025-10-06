@@ -1,41 +1,20 @@
 from pathlib import Path
 import re, numpy as np
 import matplotlib.pyplot as plt
-from matplotlib import gridspec, patches
-import io, json, zipfile
-from probeinterface.plotting import plot_probe
+from matplotlib import gridspec
+from matplotlib.patches import Rectangle
+
+import json
 import spikeinterface as si
+
+from probeinterface.plotting import plot_probe
+from probeinterface import Probe
 
 # import helpers from sibling modules
 from ..functions.intan_preproc import load_stim_geometry, make_identity_probe_from_geom, load_stim_detection
+from ..functions.utils import load_rate_npz, median_across_trials
 
-def _first_stim_time_from_npz(stim_npz: Path) -> float | None:
-    """
-    Return first stim time (s) using 'trigger_pairs' and 'meta' in the NPZ.
-    If no triggers are present, returns None.
-    """
-    stim_npz = Path(stim_npz)
-    if not stim_npz.exists():
-        return None
 
-    with np.load(stim_npz, allow_pickle=False) as z:
-        # fs from meta
-        fs_hz = 1.0
-        if "meta" in z:
-            try:
-                meta_raw = z["meta"].item()
-                meta = json.loads(meta_raw) if isinstance(meta_raw, (str, bytes)) else dict(meta_raw)
-                fs_hz = float(meta.get("fs_hz", 1.0))
-            except Exception:
-                pass
-
-        # first trigger start sample
-        if "trigger_pairs" in z and z["trigger_pairs"].size:
-            tp = z["trigger_pairs"]
-            first_start = int(tp[0, 0])
-            return first_start / fs_hz
-
-    return None
 
 def detect_stim_channels_from_npz(
     stim_npz_path: Path,
@@ -76,6 +55,37 @@ def detect_stim_channels_from_npz(
         # If order=='device' we don't have a perm in this NPZ; return as-is.
         # (extract_and_save_stim_npz normally sets geometry when it can.)
         return np.unique(active)
+
+## Plotting peak detection diagnoses -- deprecated?
+
+# ---- plotting helpers ----
+def _first_stim_time_from_npz(stim_npz: Path) -> float | None:
+    """
+    Return first stim time (s) using 'trigger_pairs' and 'meta' in the NPZ.
+    If no triggers are present, returns None.
+    """
+    stim_npz = Path(stim_npz)
+    if not stim_npz.exists():
+        return None
+
+    with np.load(stim_npz, allow_pickle=False) as z:
+        # fs from meta
+        fs_hz = 1.0
+        if "meta" in z:
+            try:
+                meta_raw = z["meta"].item()
+                meta = json.loads(meta_raw) if isinstance(meta_raw, (str, bytes)) else dict(meta_raw)
+                fs_hz = float(meta.get("fs_hz", 1.0))
+            except Exception:
+                pass
+
+        # first trigger start sample
+        if "trigger_pairs" in z and z["trigger_pairs"].size:
+            tp = z["trigger_pairs"]
+            first_start = int(tp[0, 0])
+            return first_start / fs_hz
+
+    return None
 
 def _find_interp_dir_for_session(preproc_root: Path, sess_name: str) -> Path | None:
     """
@@ -125,13 +135,6 @@ def _pick_window_frames(fs, n_total, t0, pre_s, post_s, view_s=None):
     if end <= start:
         end = min(n_total, start + int(round(0.3 * fs)))  # 300 ms fallback
     return start, end
-
-def build_probe_and_locs_from_geom(geom_path: Path, radius_um: float = 5.0):
-    """Load your saved geometry -> ProbeInterface Probe + (n_ch,2) locs."""
-    geom = load_stim_geometry(geom_path)                  # your project format
-    probe = make_identity_probe_from_geom(geom, radius_um=radius_um)  # ProbeInterface Probe
-    locs  = probe.contact_positions.astype(float)         # (n_ch, 2)
-    return probe, locs
 
 def plot_all_quads_for_session(
     sess_folder: Path,
@@ -374,7 +377,7 @@ def plot_all_quads_for_session(
         # blue box around the 16 channels shown (unchanged)
         xs, ys = locs[sel, 0], locs[sel, 1]
         pad = max(6.0, 0.03 * float(max(xs.max() - xs.min(), ys.max() - ys.min())))
-        rect = patches.Rectangle(
+        rect = Rectangle(
             (xs.min() - pad, ys.min() - pad),
             (xs.max() - xs.min()) + 2 * pad,
             (ys.max() - ys.min()) + 2 * pad,
@@ -406,8 +409,9 @@ def plot_all_quads_for_session(
         out_png = out_dir / f"{sess_folder.name}_interp_probe+4x4_panel{gi:02d}.png"
         fig.savefig(out_png, dpi=180, bbox_inches="tight", bbox_extra_artists=[st])
         plt.close(fig)
-        
 
+# ---- Plotting Intan only ----
+        
 def _probe_from_locs(locs, radius_um: float = 5.0):
     """Create a ProbeInterface Probe from (n_ch, 2) contact positions."""
     from probeinterface import Probe
@@ -422,13 +426,6 @@ def _probe_from_locs(locs, radius_um: float = 5.0):
     except Exception:
         pass
     return pr
-
-def load_rate_npz(npz_path: Path):
-    d = np.load(npz_path, allow_pickle=True)
-    rate_hz = d["rate_hz"]           # (n_ch, n_bins_total)
-    t_ms    = d["t_ms"]              # (n_bins_total,)
-    meta    = d.get("meta", None)
-    return rate_hz, t_ms, (meta.item() if hasattr(meta, "item") else meta)
 
 def load_stim_ms_from_stimstream(stim_npz_path: Path) -> np.ndarray:
     """
@@ -456,52 +453,6 @@ def load_stim_ms_from_stimstream(stim_npz_path: Path) -> np.ndarray:
         t_ms = onset_samples.astype(float) * (1000.0 / fs_hz)
         return np.unique(np.sort(t_ms))
 
-def extract_peristim_segments(
-    rate_hz: np.ndarray,
-    t_ms: np.ndarray,
-    stim_ms: np.ndarray,
-    win_ms=(-800.0, 1200.0),
-    min_trials: int = 1,
-):
-    """
-    Return segments shape (n_trials, n_ch, n_twin) and rel_time_ms shape (n_twin,).
-    Skips triggers whose window falls outside t_ms.
-    """
-    t_min, t_max = float(t_ms[0]), float(t_ms[-1])
-    seg_len_ms = win_ms[1] - win_ms[0]
-
-    # Relative timebase for a *perfectly* aligned segment (used only for plotting/logic)
-    # We will slice on t_ms for each trial, so segment lengths are equal if t_ms is uniform.
-    # Assume uniform binning for rates:
-    dt = float(np.median(np.diff(t_ms)))  # ms per bin
-    n_twin = int(round(seg_len_ms / dt))
-    rel_time_ms = np.arange(n_twin) * dt + win_ms[0]
-
-    segments = []
-    kept = 0
-    for s in np.asarray(stim_ms, dtype=float):
-        start_ms = s + win_ms[0]
-        end_ms   = s + win_ms[1]
-        if start_ms < t_min or end_ms > t_max:
-            continue  # skip partial windows
-
-        # slice indices on t_ms
-        i0 = int(np.searchsorted(t_ms, start_ms, side="left"))
-        i1 = int(np.searchsorted(t_ms, end_ms,   side="left"))
-        seg = rate_hz[:, i0:i1]  # (n_ch, n_twin)
-        # Safety: ensure equal length (can happen if boundary falls between bins)
-        if seg.shape[1] != n_twin:
-            continue
-
-        segments.append(seg)
-        kept += 1
-
-    if kept < min_trials:
-        raise RuntimeError(f"Only {kept} peri-stim segments available (min_trials={min_trials}).")
-
-    segments = np.stack(segments, axis=0)  # (n_trials, n_ch, n_twin)
-    return segments, rel_time_ms
-
 def baseline_zero_each_trial(
     segments: np.ndarray,
     rel_time_ms: np.ndarray,
@@ -519,13 +470,6 @@ def baseline_zero_each_trial(
         raise ValueError("Baseline window has 0 bins — check your timebase and dt.")
     base = segments[:, :, mask].mean(axis=2, keepdims=True)  # (n_trials, n_ch, 1)
     return segments - base
-
-def median_across_trials(zeroed_segments: np.ndarray):
-    """
-    Find median across trials per channel.
-    Input: (n_trials, n_ch, n_twin) -> returns (n_ch, n_twin)
-    """
-    return np.median(zeroed_segments, axis=0)
 
 def plot_channel_heatmap(
     avg_change: np.ndarray,           # (n_ch, n_twin)
@@ -633,6 +577,13 @@ def plot_debug_channel_traces(
     plt.savefig(out_png, dpi=150)
     plt.close()
     print(f"[debug] Saved overlay for ch {ch} -> {out_png}")
+
+def build_probe_and_locs_from_geom(geom_path: Path, radius_um: float = 5.0):
+    """Load your saved geometry -> ProbeInterface Probe + (n_ch,2) locs."""
+    geom = load_stim_geometry(geom_path)                  # your project format
+    probe = make_identity_probe_from_geom(geom, radius_um=radius_um)  # ProbeInterface Probe
+    locs  = probe.contact_positions.astype(float)         # (n_ch, 2)
+    return probe, locs
 
 def run_one_Intan_FR_heatmap(
     npz_path: Path,
@@ -826,3 +777,183 @@ def plot_single_channel_trial_quad_raw(
     fig.savefig(out_png, dpi=180, bbox_inches="tight")
     plt.close(fig)
 
+# ---- Plotting FR for both ----
+
+def _ua_region_from_elec(e: int) -> int:
+    if e <= 0:      return -1
+    if e <= 64:     return 0  # SMA
+    if e <= 128:    return 1  # Dorsal premotor
+    if e <= 192:    return 2  # M1 inferior
+    return 3                  # M1 superior
+
+def _add_ua_region_bar(
+    ax,
+    n_rows: int,
+    ua_chan_ids_1based: np.ndarray | None = None,  # length == n_rows; values in 1..256
+    x: float = -0.06,   # axes coords (left of plot)
+    width: float = 0.02
+):
+    """
+    Draw a contiguous vertical bar subdivided into the 4 UA regions.
+    If ua_chan_ids_1based is provided, segment heights are proportional
+    to how many rows belong to each region; otherwise equal quarters.
+    """
+    regions = [("SMA", 1, 64),
+               ("Dorsal premotor", 65, 128),
+               ("M1 inferior", 129, 192),
+               ("M1 superior", 193, 256)]
+
+    if ua_chan_ids_1based is not None and len(ua_chan_ids_1based) == n_rows:
+        ids = np.asarray(ua_chan_ids_1based, dtype=int)
+        counts = [int(((ids >= lo) & (ids <= hi)).sum()) for _, lo, hi in regions]
+        total = max(1, sum(counts))
+        splits = [c / total for c in counts]
+    else:
+        splits = [0.25, 0.25, 0.25, 0.25]
+
+    # Outer frame
+    ax.add_patch(Rectangle((x, 0.0), width, 1.0,
+                           transform=ax.transAxes, facecolor="none",
+                           edgecolor="k", lw=1.2, clip_on=False))
+
+    # Fill segments + labels
+    y0 = 0.0
+    for (label, _, _), frac in zip(regions, splits):
+        y1 = y0 + frac
+        ax.add_patch(Rectangle((x, y0), width, frac,
+                               transform=ax.transAxes, facecolor="0.92",
+                               edgecolor="none", clip_on=False))
+        ax.text(x - 0.01, 0.5*(y0 + y1), label, transform=ax.transAxes,
+                ha="right", va="center", fontsize=9)
+        y0 = y1
+
+    # 3 tick marks at the internal boundaries
+    for y in np.cumsum(splits)[:-1]:
+        ax.plot([x, x - 0.012], [y, y], transform=ax.transAxes,
+                color="k", lw=1.2, clip_on=False)
+
+def stacked_heatmaps_two_t(
+    intan_med, ua_med, t_intan, t_ua, out_svg, title_top, title_bot,
+    cmap="jet", vmin_intan=None, vmax_intan=None, vmin_ua=None, vmax_ua=None,
+    probe=None, probe_locs=None, stim_idx=None,
+    probe_title="Probe (Intan)", probe_width_ratio=0.35, probe_marker_size=28,
+    ua_ids_1based: np.ndarray | None = None,
+    ua_sort: str = "none",   # "none" | "elec" | "region_then_elec"
+):
+
+    have_probe = (probe is not None) or (
+        probe_locs is not None and np.asarray(probe_locs).ndim == 2 and len(probe_locs) > 0
+    )
+
+    if have_probe:
+        fig = plt.figure(figsize=(14, 8), constrained_layout=True)
+        gs = gridspec.GridSpec(nrows=2, ncols=3, figure=fig,
+                      width_ratios=[1.0, 0.0001, probe_width_ratio])
+        ax_top   = fig.add_subplot(gs[0, 0])
+        ax_bot   = fig.add_subplot(gs[1, 0], sharex=ax_top)
+        ax_probe = fig.add_subplot(gs[:, 2])
+    else:
+        fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(14, 8), constrained_layout=True)
+        ax_probe = None
+
+    # ----- Intan heatmap -----
+    im0 = ax_top.imshow(
+        intan_med, aspect="auto", cmap=cmap, origin="lower",
+        extent=[t_intan[0], t_intan[-1], 0, intan_med.shape[0]],
+        vmin=vmin_intan, vmax=vmax_intan
+    )
+    ax_top.axvline(0.0, color="k", alpha=0.8, linewidth=1.2)
+    ax_top.axvspan(0.0, 100.0, color="gray", alpha=0.2)
+    ax_top.set_title(title_top); ax_top.set_ylabel("Intan ch")
+    fig.colorbar(im0, ax=ax_top).set_label("Δ FR (Hz)")
+
+    # ----- UA heatmap -----
+    # Reorder indices
+    ua_plot = ua_med
+    ids_plot = ua_ids_1based
+    if ua_ids_1based is not None and ua_sort != "none":
+        ids = np.asarray(ua_ids_1based, int)
+        valid = ids > 0
+        if ua_sort == "elec":
+            order_valid = np.argsort(ids[valid], kind="stable")
+        elif ua_sort == "region_then_elec":
+            regs = np.array([_ua_region_from_elec(int(e)) for e in ids], int)
+            order_valid = np.lexsort((ids[valid], regs[valid]))  # by (region, electrode)
+        order = np.r_[np.where(valid)[0][order_valid], np.where(~valid)[0]]
+        ua_plot = ua_med[order, :]
+        ids_plot = ids[order]
+        
+    im1 = ax_bot.imshow(
+        ua_plot, aspect="auto", cmap=cmap, origin="lower",
+        extent=[t_ua[0], t_ua[-1], 0, ua_plot.shape[0]],
+        vmin=vmin_ua, vmax=vmax_ua
+    )
+    ax_bot.axvline(0.0, color="k", alpha=0.8, linewidth=1.2)
+    ax_bot.axvspan(0.0, 100.0, color="gray", alpha=0.2)
+    ax_bot.set_title(title_bot)
+    ax_bot.set_xlabel("Time (ms) rel. stim")
+
+    # Hide numeric y labels/ticks for UA panel
+    ax_bot.set_ylabel("")
+    ax_bot.set_yticks([])
+    ax_bot.tick_params(left=False, labelleft=False)
+
+    # Contiguous region bar; if ua_ids_1based is None it will fall back to equal quarters
+    _add_ua_region_bar(ax_bot, ua_plot.shape[0], ua_chan_ids_1based=ids_plot)
+
+    fig.colorbar(im1, ax=ax_bot).set_label("Δ FR (Hz) NOTE: SCALE")
+    # ----- Probe inset: outline all contacts, fill ONLY stim sites -----
+    if have_probe:
+        if probe is None and Probe is not None:
+            # build a simple probe from locs
+            pr = Probe(ndim=2)
+            pr.set_contacts(positions=np.asarray(probe_locs, float),
+                            shapes="circle", shape_params={"radius": 5.0})
+            try: pr.create_auto_shape()
+            except Exception: pass
+            probe = pr
+
+        # derive locs if missing
+        if probe_locs is None:
+            try:
+                probe_locs = probe.contact_positions.astype(float)
+            except Exception:
+                probe_locs = None
+
+        n_contacts = (probe.get_contact_count()
+                      if probe is not None else (0 if probe_locs is None else probe_locs.shape[0]))
+
+        # default: no fill everywhere
+        contacts_colors = ["none"] * n_contacts
+        # highlight stim contacts in red
+        if stim_idx is not None:
+            s = np.atleast_1d(np.asarray(stim_idx, int))
+            s = s[(s >= 0) & (s < n_contacts)]
+            for i in s:
+                contacts_colors[i] = "tab:red"
+
+        if plot_probe is not None and probe is not None:
+            plot_probe(
+                probe, ax=ax_probe, with_contact_id=False,
+                contacts_colors=contacts_colors,
+                probe_shape_kwargs={"facecolor": "none", "edgecolor": "black", "linewidth": 0.6},
+                contacts_kargs={"edgecolor": "k", "linewidth": 0.3},
+            )
+        else:
+            # fallback to scatter if plot_probe not available
+            locs = np.asarray(probe_locs)
+            ax_probe.scatter(locs[:, 0], locs[:, 1], s=probe_marker_size,
+                             facecolors="none", edgecolors="k", linewidths=0.3)
+            if stim_idx is not None and locs.size:
+                s = np.atleast_1d(np.asarray(stim_idx, int))
+                s = s[(s >= 0) & (s < locs.shape[0])]
+                ax_probe.scatter(locs[s, 0], locs[s, 1], s=probe_marker_size,
+                                 c="tab:red", edgecolors="k", linewidths=0.3)
+
+        ax_probe.set_title(probe_title, fontsize=10)
+        ax_probe.set_aspect("equal", adjustable="box")
+        ax_probe.set_xticks([]); ax_probe.set_yticks([])
+
+    
+    out_svg.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_svg, dpi=300, bbox_inches="tight"); plt.close(fig)

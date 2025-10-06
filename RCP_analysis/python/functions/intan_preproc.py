@@ -9,6 +9,47 @@ import spikeinterface.preprocessing as spre
 from probeinterface import Probe
 from dataclasses import dataclass
 
+# ---------- Intan utils ----------
+def list_intan_sessions(root: Path) -> list[Path]:
+    root = Path(root)
+    return sorted([p for p in root.iterdir() if p.is_dir()])
+
+def read_intan_recording(
+    folder: Path,
+    stream_name: str = "RHS2000 amplifier channel",
+) -> si.BaseRecording:
+    """
+    Read a single Intan session folder (RHS split files).
+    """
+    folder = Path(folder)
+    rec = se.read_split_intan_files(folder, mode="concatenate", stream_name=stream_name, use_names_as_ids=True)
+    # If UInt16, convert to signed int16 (common for Intan)
+    if rec.get_dtype().kind == "u":
+        rec = spre.unsigned_to_signed(rec)
+        rec = spre.astype(rec, dtype="int16")
+    return rec
+
+def load_stim_detection(npz_path: Path) -> Dict[str, np.ndarray]:
+    """
+    Required fields (your new format):
+      - active_channels     : (n_active,)
+      - trigger_pairs       : (n_pulses, 2) [start, end] in Intan index space
+      - block_bounds_samples: (n_blocks, 2) [start, end] in Intan index space
+      - pulse_sizes         : (n_pulses,)
+    """
+    with np.load(npz_path, allow_pickle=False) as z:
+        return dict(
+            active_channels=z["active_channels"].astype(np.int32),
+            trigger_pairs=z["trigger_pairs"].astype(np.int64),
+            block_bounds_samples=z["block_bounds_samples"].astype(np.int64),
+            pulse_sizes=z["pulse_sizes"].astype(np.int32),
+        )
+
+def save_recording(rec: si.BaseRecording, out_dir: Path) -> None:
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rec.save(folder=out_dir, overwrite=True)
+
 # ----------------------
 # Geometry / mapping
 # ----------------------
@@ -91,40 +132,6 @@ def reorder_recording_to_geometry(rec: si.BaseRecording, perm: np.ndarray) -> si
         return ChannelSliceRecording(rec, channel_ids=ordered_ids)
 
 # ----------------------
-# Intan loading
-# ----------------------
-def read_intan_recording(
-    folder: Path,
-    stream_name: str = "RHS2000 amplifier channel",
-) -> si.BaseRecording:
-    """
-    Read a single Intan session folder (RHS split files).
-    """
-    folder = Path(folder)
-    rec = se.read_split_intan_files(folder, mode="concatenate", stream_name=stream_name, use_names_as_ids=True)
-    # If UInt16, convert to signed int16 (common for Intan)
-    if rec.get_dtype().kind == "u":
-        rec = spre.unsigned_to_signed(rec)
-        rec = spre.astype(rec, dtype="int16")
-    return rec
-
-def load_stim_detection(npz_path: Path) -> Dict[str, np.ndarray]:
-    """
-    Required fields (your new format):
-      - active_channels     : (n_active,)
-      - trigger_pairs       : (n_pulses, 2) [start, end] in Intan index space
-      - block_bounds_samples: (n_blocks, 2) [start, end] in Intan index space
-      - pulse_sizes         : (n_pulses,)
-    """
-    with np.load(npz_path, allow_pickle=False) as z:
-        return dict(
-            active_channels=z["active_channels"].astype(np.int32),
-            trigger_pairs=z["trigger_pairs"].astype(np.int64),
-            block_bounds_samples=z["block_bounds_samples"].astype(np.int64),
-            pulse_sizes=z["pulse_sizes"].astype(np.int32),
-        )
-
-# ----------------------
 # Preprocessing
 # ----------------------
 def local_cm_reference(
@@ -139,11 +146,6 @@ def local_cm_reference(
     rmin, rmax = inner_outer_radius_um
     rec_lref = spre.common_reference(rec_hp, reference="local", operator="median", local_radius=(float(rmin), float(rmax)))
     return rec_lref
-
-def save_recording(rec: si.BaseRecording, out_dir: Path) -> None:
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    rec.save(folder=out_dir, overwrite=True)
 
 _SAN = re.compile(r'[^0-9A-Za-z_]+')
 def _safe(s: str) -> str:
@@ -390,11 +392,3 @@ def extract_and_save_other_streams_npz(
         print(f"[AUX] saved stream '{stream_name}' -> {out_npz}")
         saved.append(out_npz)
     return saved
-
-# ----------------------
-# Convenience
-# ----------------------
-def list_intan_sessions(root: Path) -> list[Path]:
-    root = Path(root)
-    return sorted([p for p in root.iterdir() if p.is_dir()])
-

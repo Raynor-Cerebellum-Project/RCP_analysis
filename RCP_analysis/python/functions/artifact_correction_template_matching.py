@@ -2,11 +2,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple, Dict, Optional, List
+
 import numpy as np
 from scipy.signal import filtfilt, medfilt, windows
 from sklearn.decomposition import PCA
-import spikeinterface as si
 from multiprocessing import Pool
+
+import spikeinterface as si
 from spikeinterface.core import NumpyRecording
 
 # ----------------------------- Params -----------------------------------------

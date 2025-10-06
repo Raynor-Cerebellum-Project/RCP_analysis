@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 from pathlib import Path
 import numpy as np
@@ -15,9 +14,9 @@ TEMPLATE  = REPO_ROOT / "config" / "br_intan_align_template.mat"
 OUT_BASE  = rcp.resolve_output_root(PARAMS)
 OUT_BASE.mkdir(parents=True, exist_ok=True)
 
-METADATA_ROOT        = OUT_BASE.parent / "Blackrock"
-METADATA_ROOT        = OUT_BASE.parent / "Metadata"
-METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+BR_ROOT        = OUT_BASE.parent / "Blackrock"
+BR_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_ROOT  = OUT_BASE.parent / "Metadata"
 NPRW_BUNDLES   = OUT_BASE / "bundles" / "NPRW"
 NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
 METADATA_CSV = OUT_BASE.parent / "Metadata" / "NRR_RW001_metadata.csv"
@@ -269,7 +268,7 @@ def main():
         dur_intan_sec = len(adc_triangle) / fs_intan
         dur_br_sec = float("nan")
 
-        br_ns5 = METADATA_ROOT / f"NRR_RW_001_{br_idx:03d}.ns5"
+        br_ns5 = BR_ROOT / f"NRR_RW_001_{br_idx:03d}.ns5"
         if br_ns5.exists():
             try:
                 br_sync, fs_br = load_br_intan_sync_ns5(br_ns5, intan_sync_chan_id=134)

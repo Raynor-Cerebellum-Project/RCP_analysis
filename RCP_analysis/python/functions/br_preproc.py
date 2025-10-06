@@ -9,7 +9,7 @@ import spikeinterface.extractors as se
 from spikeinterface.sortingcomponents.peak_detection import detect_peaks
 from scipy.ndimage import gaussian_filter1d
 
-# ---------- Session discovery ----------
+# ---------- BR utils ----------
 def list_br_sessions(data_root: Path, blackrock_rel: str) -> list[Path]:
     """
     List Blackrock sessions under data_root/blackrock_rel.
@@ -31,7 +31,6 @@ def list_br_sessions(data_root: Path, blackrock_rel: str) -> list[Path]:
         raise FileNotFoundError(f"No NSx/NEV files found under {root}.")
     bases = sorted({p.stem for p in nsx_nev})
     return [root / b for b in bases]
-
 
 def ua_excel_path(repo_root: Path, probes_cfg: dict | None) -> Optional[Path]:
     ua_cfg = (probes_cfg or {}).get("UA", {})
@@ -295,6 +294,7 @@ def save_UA_bundle_npz(sess_name: str, bundle: dict, out_dir: Path):
     )
     print(f"[SAVED] {out_dir / f'{sess_name}_bundle.npz'}")
 
+## This function used by Intan too
 def threshold_mua_rates(
     recording,
     detect_threshold: float,

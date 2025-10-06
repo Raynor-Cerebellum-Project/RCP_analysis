@@ -20,7 +20,7 @@ OUT_BASE = rcp.resolve_output_root(PARAMS)
 OUT_BASE.mkdir(parents=True, exist_ok=True)
 
 DATA_ROOT = rcp.resolve_data_root(PARAMS)
-SESSION_FOLDERS = rcp.list_br_sessions(DATA_ROOT, PARAMS.blackrock_rel)
+BR_SESSION_FOLDERS = rcp.list_br_sessions(DATA_ROOT, PARAMS.blackrock_rel)
 
 RATES = PARAMS.UA_rate_est or {}
 BIN_MS     = float(RATES.get("bin_ms", 1.0))
@@ -218,13 +218,14 @@ def load_anchor_for_session(out_base: Path, session: str) -> tuple[int, float]:
     return 0, 30000.0  # fallback if no row
 
 def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[int] = None):
-    if limit_sessions:
-        SESSION_FOLDERS = SESSION_FOLDERS[:limit_sessions]
-    print("Found session folders:", len(SESSION_FOLDERS))
+    br_session_folders = BR_SESSION_FOLDERS  # read the global into a local
+    if limit_sessions is not None:           # allow 0 cleanly
+        br_session_folders = br_session_folders[:limit_sessions]
+
+    print("Found session folders:", len(br_session_folders))
     saved_paths: list[Path] = []
 
-    # --- per session: save non-spike bundle + preproc ns6
-    for k, sess in enumerate(SESSION_FOLDERS):
+    for sess in br_session_folders:
         print(f"=== Session: {sess.name} ===")
     
         bundle = rcp.build_blackrock_bundle(sess)

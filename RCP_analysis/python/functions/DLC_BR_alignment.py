@@ -45,14 +45,11 @@ df_raw.columns = ["_".join(col).strip() for col in df_raw.columns]
 # Drop any unnecessary labels
 df_raw = df_raw.loc[:, ~df_raw.columns.str.contains("bodyparts_coords")]
 
-
 frame_idx = df_raw.index.to_numpy()  # use row index as frame numbers
-
 
 def simple_label(colname: str) -> str:
     parts = colname.split("_")
     return "_".join(parts[-2:]) if len(parts) >= 2 else colname
-
 
 # =========================
 # Load Blackrock File

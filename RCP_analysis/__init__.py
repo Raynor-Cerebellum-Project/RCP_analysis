@@ -48,7 +48,14 @@ from .python.functions.artifact_correction_template_matching import (
     load_stim_detection,
 )
 
-# plotting (do NOT import load_stim_detection here to avoid duplicate symbol)
+# utils
+from .python.functions.utils import (
+    load_rate_npz,
+    median_across_trials,
+    extract_peristim_segments,
+)
+
+# plotting
 from .python.plotting.plotting import (
     plot_all_quads_for_session,
     load_stim_ms_from_stimstream,
@@ -57,12 +64,12 @@ from .python.plotting.plotting import (
     plot_single_channel_trial_quad_raw,
     _find_interp_dir_for_session,
     _load_cached_recording,
-    extract_peristim_segments,
     baseline_zero_each_trial,
-    median_across_trials,
     plot_channel_heatmap,
     build_probe_and_locs_from_geom,
 )
+
+
 
 __all__ = [
     # params
@@ -97,20 +104,6 @@ __all__ = [
     "get_chanmap_perm_from_geom",
     "make_identity_probe_from_geom",
     "reorder_recording_to_geometry",
-
-    # plotting
-    "plot_all_quads_for_session",
-    "load_stim_ms_from_stimstream",
-    "detect_stim_channels_from_npz",
-    "run_one_Intan_FR_heatmap",
-    "plot_single_channel_trial_quad_raw",
-    "_find_interp_dir_for_session",
-    "_load_cached_recording",
-    "extract_peristim_segments",
-    "baseline_zero_each_trial",
-    "median_across_trials",
-    "plot_channel_heatmap",
-    "build_probe_and_locs_from_geom",
     
     # artifact correction
     "PCAArtifactParams",
@@ -122,4 +115,21 @@ __all__ = [
     "StimTriggerConfig",
     "StimTriggerResult",
     "extract_stim_triggers_and_blocks",
+    
+    # utils
+    "load_rate_npz",
+    "median_across_trials",
+    "extract_peristim_segments",
+    
+    # plotting
+    "plot_all_quads_for_session",
+    "load_stim_ms_from_stimstream",
+    "detect_stim_channels_from_npz",
+    "run_one_Intan_FR_heatmap",
+    "plot_single_channel_trial_quad_raw",
+    "_find_interp_dir_for_session",
+    "_load_cached_recording",
+    "baseline_zero_each_trial",
+    "plot_channel_heatmap",
+    "build_probe_and_locs_from_geom",
 ]
