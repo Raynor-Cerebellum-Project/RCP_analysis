@@ -96,8 +96,8 @@ def _add_ua_region_bar(
                 color="k", lw=1.2, clip_on=False)
 
 def _stacked_heatmaps_two_t(
-    intan_avg, ua_avg, t_intan, t_ua, out_png, title_top, title_bot,
-    cmap="jet", vmin=None, vmax=None,
+    intan_med, ua_med, t_intan, t_ua, out_png, title_top, title_bot,
+    cmap="jet", vmin_intan=None, vmax_intan=None, vmin_ua=None, vmax_ua=None,
     probe=None, probe_locs=None, stim_idx=None,
     probe_title="Probe (Intan)", probe_width_ratio=0.35, probe_marker_size=28,
     ua_ids_1based: np.ndarray | None = None,
@@ -121,9 +121,9 @@ def _stacked_heatmaps_two_t(
 
     # ----- Intan heatmap -----
     im0 = ax_top.imshow(
-        intan_avg, aspect="auto", cmap=cmap, origin="lower",
-        extent=[t_intan[0], t_intan[-1], 0, intan_avg.shape[0]],
-        vmin=vmin, vmax=vmax
+        intan_med, aspect="auto", cmap=cmap, origin="lower",
+        extent=[t_intan[0], t_intan[-1], 0, intan_med.shape[0]],
+        vmin=vmin_intan, vmax=vmax_intan
     )
     ax_top.axvline(0.0, color="k", alpha=0.8, linewidth=1.2)
     ax_top.axvspan(0.0, 100.0, color="gray", alpha=0.2)
@@ -132,7 +132,7 @@ def _stacked_heatmaps_two_t(
 
     # ----- UA heatmap -----
     # Reorder indices
-    ua_plot = ua_avg
+    ua_plot = ua_med
     ids_plot = ua_ids_1based
     if ua_ids_1based is not None and ua_sort != "none":
         ids = np.asarray(ua_ids_1based, int)
@@ -143,13 +143,13 @@ def _stacked_heatmaps_two_t(
             regs = np.array([_ua_region_from_elec(int(e)) for e in ids], int)
             order_valid = np.lexsort((ids[valid], regs[valid]))  # by (region, electrode)
         order = np.r_[np.where(valid)[0][order_valid], np.where(~valid)[0]]
-        ua_plot = ua_avg[order, :]
+        ua_plot = ua_med[order, :]
         ids_plot = ids[order]
         
     im1 = ax_bot.imshow(
         ua_plot, aspect="auto", cmap=cmap, origin="lower",
         extent=[t_ua[0], t_ua[-1], 0, ua_plot.shape[0]],
-        vmin=vmin, vmax=vmax
+        vmin=vmin_ua, vmax=vmax_ua
     )
     ax_bot.axvline(0.0, color="k", alpha=0.8, linewidth=1.2)
     ax_bot.axvspan(0.0, 100.0, color="gray", alpha=0.2)
@@ -164,7 +164,7 @@ def _stacked_heatmaps_two_t(
     # Contiguous region bar; if ua_ids_1based is None it will fall back to equal quarters
     _add_ua_region_bar(ax_bot, ua_plot.shape[0], ua_chan_ids_1based=ids_plot)
 
-    fig.colorbar(im1, ax=ax_bot).set_label("Δ FR (Hz)")
+    fig.colorbar(im1, ax=ax_bot).set_label("Δ FR (Hz) NOTE: SCALE")
     # ----- Probe inset: outline all contacts, fill ONLY stim sites -----
     if have_probe:
         if probe is None and Probe is not None:
@@ -304,7 +304,7 @@ if __name__ == "__main__":
             NPRW_zeroed = rcp.baseline_zero_each_trial(
                 NPRW_segments, rel_time_ms_i, baseline_first_ms=BASELINE_FIRST_MS
             )
-            NPRW_avg = rcp.average_across_trials(NPRW_zeroed)
+            NPRW_med = rcp.median_across_trials(NPRW_zeroed)
 
             # ---------- UA: same logic but keep its own rel_time_ms ----------
             UA_segments, ua_rel_time_ms = rcp.extract_peristim_segments(
@@ -314,18 +314,19 @@ if __name__ == "__main__":
             UA_zeroed = rcp.baseline_zero_each_trial(
                 UA_segments, ua_rel_time_ms, baseline_first_ms=BASELINE_FIRST_MS
             )
-            UA_avg = rcp.average_across_trials(UA_zeroed)
+            UA_med = rcp.median_across_trials(UA_zeroed)
 
             # ---------- produce stacked heatmap figure ----------
             out_png = FIG_ROOT / f"{sess}__Intan_vs_UA__peri_stim_heatmaps.png"
-            title_top = f"Avg Δ in firing rate (baseline = first 100ms)\nNPRW/Intan: {sess} (n={NPRW_segments.shape[0]} trials)"
+            title_top = f"Median Δ in firing rate (baseline = first 100ms)\nNPRW/Intan: {sess} (n={NPRW_segments.shape[0]} trials)"
             title_bot = f"{_ua_title_from_meta(meta)} (n={UA_segments.shape[0]} trials)"
 
             # sanity checks
-            assert NPRW_avg.shape[1] == rel_time_ms_i.size, "Intan avg vs time mismatch"
-            assert UA_avg.shape[1]   == ua_rel_time_ms.size, "UA avg vs time mismatch"
+            assert NPRW_med.shape[1] == rel_time_ms_i.size, "Intan med vs time mismatch"
+            assert UA_med.shape[1]   == ua_rel_time_ms.size, "UA med vs time mismatch"
 
-            VMIN, VMAX = -500, 1000  # keep heatmap range if you like
+            VMIN_INTAN, VMAX_INTAN = -500, 1000  # keep heatmap range if you like
+            VMIN_UA, VMAX_UA = -250, 500  # keep heatmap range if you like
 
             # locate the Intan stim_stream.npz and detect stimulated channels
             bundles_root = OUT_BASE / "bundles" / "NPRW"
@@ -338,8 +339,9 @@ if __name__ == "__main__":
                     print(f"[warn] stim-site detection failed for {sess}: {e}")
         
             _stacked_heatmaps_two_t(
-                NPRW_avg, UA_avg, rel_time_ms_i, ua_rel_time_ms,
-                out_png, title_top, title_bot, cmap="jet", vmin=VMIN, vmax=VMAX,
+                NPRW_med, UA_med, rel_time_ms_i, ua_rel_time_ms,
+                out_png, title_top, title_bot, cmap="jet", vmin_intan=VMIN_INTAN, vmax_intan=VMAX_INTAN,
+                vmin_ua=VMIN_UA, vmax_ua=VMAX_UA,
                 probe=probe, probe_locs=locs, stim_idx=stim_idx,
                 probe_title="NPRW probe (stim sites highlighted)",
                 ua_ids_1based=ua_ids_1based,

@@ -520,12 +520,12 @@ def baseline_zero_each_trial(
     base = segments[:, :, mask].mean(axis=2, keepdims=True)  # (n_trials, n_ch, 1)
     return segments - base
 
-def average_across_trials(zeroed_segments: np.ndarray):
+def median_across_trials(zeroed_segments: np.ndarray):
     """
-    Average across trials per channel.
+    Find median across trials per channel.
     Input: (n_trials, n_ch, n_twin) -> returns (n_ch, n_twin)
     """
-    return zeroed_segments.mean(axis=0)
+    return np.median(zeroed_segments, axis=0)
 
 def plot_channel_heatmap(
     avg_change: np.ndarray,           # (n_ch, n_twin)
@@ -680,14 +680,14 @@ def run_one_Intan_FR_heatmap(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = npz_path.stem
-    avg_change = average_across_trials(zeroed)
+    med_change = median_across_trials(zeroed)
     n_trials = segments.shape[0]   # number of kept trials
 
     out_png = out_dir / f"{stem}__peri_stim_heatmap.png"
     probe, locs = build_probe_and_locs_from_geom(geom_path)
     
     plot_channel_heatmap(
-        avg_change, rel_time_ms, out_png,
+        med_change, rel_time_ms, out_png,
         n_trials=n_trials,
         vmin=-500, vmax=1000,
         intan_file=intan_file,
@@ -701,7 +701,7 @@ def run_one_Intan_FR_heatmap(
         out_npz = out_dir / f"{stem}__peri_stim_avg.npz"
         np.savez_compressed(
             out_npz,
-            avg_change=avg_change.astype(np.float32),
+            avg_change=med_change.astype(np.float32),
             rel_time_ms=rel_time_ms.astype(np.float32),
             meta=dict(
                 source_file=str(npz_path),
@@ -710,7 +710,7 @@ def run_one_Intan_FR_heatmap(
                 n_trials=int(segments.shape[0]),
             ),
         )
-        print(f"Saved averaged peri-stim data -> {out_npz}")
+        print(f"Saved median peri-stim data -> {out_npz}")
 
 def _extract_trial_windows_raw(rec, fs, stim_start_samples, ch, window_ms=(0.0, 250.0), n_show=4):
     w0_ms, w1_ms = float(window_ms[0]), float(window_ms[1])

@@ -307,7 +307,7 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
 
             if starts_ua.size:
                 ms_before = 5.0
-                tail_ms   = 5.0
+                tail_ms   = 20.0
                 dur_ms    = (ends_ua - starts_ua) * 1000.0 / fs_ua
                 ms_after  = float(dur_ms.max() + tail_ms)
 

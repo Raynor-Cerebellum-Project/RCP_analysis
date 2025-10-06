@@ -243,7 +243,7 @@ def main(limit_sessions: Optional[int] = None):
             if starts_samp.size:
                 dur_ms = (ends_samp - starts_samp) * 1000.0 / fs
                 tail_ms = 5.0
-                ms_before_each = 5.0
+                ms_before_each = 20.0
 
                 rec_artif_removed = si.preprocessing.remove_artifacts(
                     rec_ref,

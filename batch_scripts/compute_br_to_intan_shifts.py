@@ -140,7 +140,7 @@ def load_template(template_mat_path: Path) -> np.ndarray:
     from scipy.io import loadmat
     m = loadmat(str(template_mat_path))
     if "template" not in m:
-        raise KeyError("'template' not found in template.mat")
+        raise KeyError("'template' not found in br_intan_align_template.mat")
     return np.asarray(m["template"], float).squeeze()
 
 def find_locs_via_template(adc_lock: np.ndarray, template: np.ndarray, fs: float, peak=0.95) -> np.ndarray:
@@ -211,7 +211,7 @@ if __name__ == "__main__":
     # ---------- CONFIG ----------
     REPO_ROOT = Path(__file__).resolve().parents[1]
     PARAMS    = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-    TEMPLATE  = REPO_ROOT / "config" / "template.mat"
+    TEMPLATE  = REPO_ROOT / "config" / "br_intan_align_template.mat"
     OUT_BASE  = resolve_output_root(PARAMS)
     OUT_BASE.mkdir(parents=True, exist_ok=True)
 

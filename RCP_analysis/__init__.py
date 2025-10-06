@@ -59,7 +59,7 @@ from .python.plotting.plotting import (
     _load_cached_recording,
     extract_peristim_segments,
     baseline_zero_each_trial,
-    average_across_trials,
+    median_across_trials,
     plot_channel_heatmap,
     build_probe_and_locs_from_geom,
 )
@@ -108,7 +108,7 @@ __all__ = [
     "_load_cached_recording",
     "extract_peristim_segments",
     "baseline_zero_each_trial",
-    "average_across_trials",
+    "median_across_trials",
     "plot_channel_heatmap",
     "build_probe_and_locs_from_geom",
     
