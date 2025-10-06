@@ -29,24 +29,6 @@ class experimentParams:
         Threads to allocate per worker when parallelizing
     chunk : str
         Chunk duration string (e.g. "0.5s") for processing
-        
-    Plotting params:
-    win_pre_s : float
-        Window length before stimulation (seconds)
-    win_post_s : float
-        Window length after stimulation (seconds)
-    stim_bar_ms : float
-        Duration of stimulation for plotting Ex: 100ms
-    quicklook_rows : int
-        Rows in quicklook plotting grid - unused for now
-    quicklook_cols : int
-        Columns in quicklook plotting grid - unused for now
-    stride : int
-        Stride (samples or frames) for downsampling quicklook plots
-    default_stim_num : int
-        Default stimulation channel/number to use if unspecified
-    sessions : Dict[str, Dict[str, Any]]
-        Dictionary of per-session overrides or metadata
 
     Optional
     --------
@@ -66,14 +48,6 @@ class experimentParams:
     parallel_jobs: int
     threads_per_worker: int
     chunk: str
-    win_pre_s: float
-    win_post_s: float
-    stim_bar_ms: float
-    quicklook_rows: int
-    quicklook_cols: int
-    stride: int
-    default_stim_num: int
-    sessions: Dict[str, Dict[str, Any]]
     mapping_mat_rel: Optional[str] = None
     dig_line: Optional[str] = None
     stim_nums: Dict[str, int] = field(default_factory=dict)
@@ -122,14 +96,6 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
         parallel_jobs=int(cfg.get("parallel_jobs", 4)),
         threads_per_worker=int(cfg.get("threads_per_worker", 1)),
         chunk=str(cfg.get("chunk", "1s")),
-        win_pre_s=float(cfg["win_pre_s"]),
-        win_post_s=float(cfg["win_post_s"]),
-        stim_bar_ms=float(cfg["stim_bar_ms"]),
-        quicklook_rows=int(cfg["quicklook_rows"]),
-        quicklook_cols=int(cfg["quicklook_cols"]),
-        stride=int(cfg["stride"]),
-        default_stim_num=int(cfg["default_stim_num"]),
-        sessions=cfg.get("sessions", {}) or {},
         # optional
         mapping_mat_rel=cfg.get("mapping_mat_rel"),
         dig_line=cfg.get("dig_line") or None,

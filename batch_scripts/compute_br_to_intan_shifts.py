@@ -215,10 +215,10 @@ if __name__ == "__main__":
     OUT_BASE  = resolve_output_root(PARAMS)
     OUT_BASE.mkdir(parents=True, exist_ok=True)
 
-    BR_ROOT        = OUT_BASE.parent / "Blackrock"
+    METADATA_ROOT        = OUT_BASE.parent / "Blackrock"
+    METADATA_ROOT        = OUT_BASE.parent / "Metadata"
+    METADATA_ROOT.mkdir(parents=True, exist_ok=True)
     NPRW_BUNDLES   = OUT_BASE / "bundles" / "NPRW"
-    PLOTS_ROOT     = OUT_BASE / "figures" / "align_BR_to_Intan"
-    PLOTS_ROOT.mkdir(parents=True, exist_ok=True)
 
     # checkpoints (for discovering sessions)
     nprw_ckpt_root = OUT_BASE / "checkpoints" / "NPRW"
@@ -288,7 +288,7 @@ if __name__ == "__main__":
         dur_intan_sec = len(adc_triangle) / fs_intan
         dur_br_sec = float("nan")
 
-        br_ns5 = BR_ROOT / f"NRR_RW_001_{br_idx:03d}.ns5"
+        br_ns5 = METADATA_ROOT / f"NRR_RW_001_{br_idx:03d}.ns5"
         if br_ns5.exists() and _HAS_SI:
             try:
                 br_sync, fs_br = load_br_intan_sync_ns5(br_ns5, intan_sync_chan_id=134)
@@ -317,7 +317,7 @@ if __name__ == "__main__":
 
     # ---------- write alignment summary CSV ----------
     if summary_rows:
-        out_csv = PLOTS_ROOT / "br_to_intan_shifts.csv"
+        out_csv = METADATA_ROOT / "br_to_intan_shifts.csv"
         with out_csv.open("w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(summary_rows[0].keys()))
             w.writeheader()

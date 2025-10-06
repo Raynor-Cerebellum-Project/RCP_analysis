@@ -141,8 +141,9 @@ if __name__ == "__main__":
     aligned_ckpt   = OUT_BASE / "checkpoints" / "Aligned"
     aligned_ckpt.mkdir(parents=True, exist_ok=True)
 
-    PLOTS_ROOT     = OUT_BASE / "figures" / "align_BR_to_Intan"
-    shifts_csv     = PLOTS_ROOT / "br_to_intan_shifts.csv"
+    METADATA_ROOT        = OUT_BASE.parent / "Metadata"
+    METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+    shifts_csv     = METADATA_ROOT / "br_to_intan_shifts.csv"
     if not shifts_csv.exists():
         raise SystemExit(f"[error] shifts CSV not found: {shifts_csv}")
 

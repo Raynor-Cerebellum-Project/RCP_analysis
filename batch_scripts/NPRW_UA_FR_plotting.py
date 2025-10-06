@@ -8,9 +8,28 @@ from matplotlib.patches import Rectangle
 from matplotlib.gridspec import GridSpec
 from probeinterface.plotting import plot_probe
 from probeinterface import Probe
-matplotlib.use("Agg")
 import RCP_analysis as rcp
+matplotlib.use("Agg")
+matplotlib.rcParams['svg.fonttype'] = 'none'
 
+# ---------- CONFIG ----------
+WIN_MS            = (-800.0, 1200.0)
+BASELINE_FIRST_MS = 100.0
+MIN_TRIALS        = 1
+
+# ---- Resolving paths ----
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
+OUT_BASE  = rcp.resolve_output_root(PARAMS)
+OUT_BASE.mkdir(parents=True, exist_ok=True)
+
+ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
+FIG_ROOT     = OUT_BASE / "figures" / "peri_stim" / "Aligned"
+FIG_ROOT.mkdir(parents=True, exist_ok=True)
+
+XLS = rcp.ua_excel_path(REPO_ROOT, PARAMS.probes)
+UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS else None
+        
 def _ua_region_from_elec(e: int) -> int:
     if e <= 0:      return -1
     if e <= 64:     return 0  # SMA
@@ -96,7 +115,7 @@ def _add_ua_region_bar(
                 color="k", lw=1.2, clip_on=False)
 
 def _stacked_heatmaps_two_t(
-    intan_med, ua_med, t_intan, t_ua, out_png, title_top, title_bot,
+    intan_med, ua_med, t_intan, t_ua, out_svg, title_top, title_bot,
     cmap="jet", vmin_intan=None, vmax_intan=None, vmin_ua=None, vmax_ua=None,
     probe=None, probe_locs=None, stim_idx=None,
     probe_title="Probe (Intan)", probe_width_ratio=0.35, probe_marker_size=28,
@@ -218,8 +237,8 @@ def _stacked_heatmaps_two_t(
         ax_probe.set_xticks([]); ax_probe.set_yticks([])
 
     
-    out_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_png, dpi=160, bbox_inches="tight"); plt.close(fig)
+    out_svg.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_svg, dpi=300, bbox_inches="tight"); plt.close(fig)
 
 def _ua_title_from_meta(meta: dict) -> str:
     """
@@ -229,24 +248,7 @@ def _ua_title_from_meta(meta: dict) -> str:
         return f"Blackrock / UA: NRR_RW_001_{int(meta['br_idx']):03d}"
     return "Utah/BR"
 
-if __name__ == "__main__":
-    # ---------- CONFIG ----------
-    REPO_ROOT = Path(__file__).resolve().parents[1]
-    PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-    OUT_BASE  = rcp.resolve_output_root(PARAMS)
-
-    ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
-    FIG_ROOT     = OUT_BASE / "figures" / "peri_stim" / "Aligned"
-    FIG_ROOT.mkdir(parents=True, exist_ok=True)
-
-    # Peri-stim settings — identical to your NPRW run_one_Intan_FR_heatmap defaults
-    WIN_MS            = (-800.0, 1200.0)
-    BASELINE_FIRST_MS = 100.0
-    MIN_TRIALS        = 1
-
-    xls = rcp.ua_excel_path(REPO_ROOT, PARAMS.probes)
-    ua_map = rcp.load_UA_mapping_from_excel(xls) if xls else None
-
+def main():
     # Intan probe (optional, only used if you later want a probe panel like NPRW)
     try:
         GEOM_PATH = (
@@ -259,7 +261,6 @@ if __name__ == "__main__":
         probe, locs = rcp.build_probe_and_locs_from_geom(GEOM_PATH)
     except Exception:
         probe, locs = None, None
-
     files = sorted(ALIGNED_ROOT.glob("aligned__*.npz"))
     if not files:
         raise SystemExit(f"[error] No combined aligned NPZs found at {ALIGNED_ROOT}")
@@ -317,7 +318,7 @@ if __name__ == "__main__":
             UA_med = rcp.median_across_trials(UA_zeroed)
 
             # ---------- produce stacked heatmap figure ----------
-            out_png = FIG_ROOT / f"{sess}__Intan_vs_UA__peri_stim_heatmaps.png"
+            out_svg = FIG_ROOT / f"{sess}__Intan_vs_UA__peri_stim_heatmaps.svg"
             title_top = f"Median Δ in firing rate (baseline = first 100ms)\nNPRW/Intan: {sess} (n={NPRW_segments.shape[0]} trials)"
             title_bot = f"{_ua_title_from_meta(meta)} (n={UA_segments.shape[0]} trials)"
 
@@ -340,15 +341,18 @@ if __name__ == "__main__":
         
             _stacked_heatmaps_two_t(
                 NPRW_med, UA_med, rel_time_ms_i, ua_rel_time_ms,
-                out_png, title_top, title_bot, cmap="jet", vmin_intan=VMIN_INTAN, vmax_intan=VMAX_INTAN,
+                out_svg, title_top, title_bot, cmap="jet", vmin_intan=VMIN_INTAN, vmax_intan=VMAX_INTAN,
                 vmin_ua=VMIN_UA, vmax_ua=VMAX_UA,
                 probe=probe, probe_locs=locs, stim_idx=stim_idx,
                 probe_title="NPRW probe (stim sites highlighted)",
                 ua_ids_1based=ua_ids_1based,
                 ua_sort="region_then_elec",
             )
-            print(f"[PLOT] Plotted {sess} and saved at {out_png.parent}")
+            print(f"[PLOT] Plotted {sess} and saved at {out_svg.parent}")
             
         except Exception as e:
             print(f"[error] Failed on {file.name}: {e}")
             continue
+
+if __name__ == "__main__":
+    main()

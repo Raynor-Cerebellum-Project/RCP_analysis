@@ -5,25 +5,30 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import spikeinterface as si
-from RCP_analysis import load_experiment_params, resolve_output_root
+import RCP_analysis as rcp
 matplotlib.use("Agg")
+matplotlib.rcParams['svg.fonttype'] = 'none'
 
 # ---- CONFIG ----
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS    = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-OUT_BASE  = resolve_output_root(PARAMS)
-OUT_BASE.mkdir(parents=True, exist_ok=True)
+BR_IDX = 4  # choose which BR file you want
 
-ALIGNED_DIR       = OUT_BASE / "checkpoints/Aligned"
+# Optional alignment tweak
+ADJUST_SAMPLES = 3  # TODO: remove after triangle alignment
 
-PATH_UA_SI        = OUT_BASE / "checkpoints/UA/pp_global__NRR_RW_001_004__NS6"
-BR_IDX           = 4   # choose which BR file you want
-ADJUST_SAMPLES = 3 # TODO remove after triangle alignment
-
-OUT_DIR           = PATH_UA_SI / "debug_quads_aligned"
 WINDOW_MS = (100.0, 500.0) # (-100.0, 250.0) (100.0, 200.0) (160.0, 180.0)
 CHANNELS_TO_SHOW = list(range(96, 128))
 N_TRIALS_TO_SHOW = 4
+
+# ---- Resolving paths ----
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
+OUT_BASE  = rcp.resolve_output_root(PARAMS)
+OUT_BASE.mkdir(parents=True, exist_ok=True)
+
+ALIGNED_DIR = OUT_BASE / "checkpoints" / "Aligned"
+PATH_UA_SI = OUT_BASE / "checkpoints" / "UA" / f"pp_global__NRR_RW_001_{BR_IDX:03d}__NS6"
+OUT_DIR = OUT_BASE / "figures" / "debug_quads_aligned" / "UA" / f"BR_{BR_IDX:03d}"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---- Helpers ----
 def _find_aligned_file(aligned_dir: Path, br_idx: int) -> Path:
@@ -35,7 +40,7 @@ def _find_aligned_file(aligned_dir: Path, br_idx: int) -> Path:
         print(f"[warn] multiple matches found, using {cands[-1].name}")
     return cands[-1]
 
-def _safe_peaks(z):
+def _safe_peaks_UA(z):
     """
     Returns (peak_ch, peak_t_ms_aligned) where:
       - peak_ch: 1D int array (channel indices)
@@ -85,7 +90,6 @@ def _overlay_peaks(ax, t_ms, y, s0_ms, peak_ch, peak_t_ms, ch_pos, adjust_ms=0.0
     idx = np.clip(np.round((x - t_ms[0]) / dt).astype(int), 0, len(t_ms)-1)
     ax.scatter(x, y[idx], s=12, c="red", marker="x", alpha=0.9, zorder=3)
 
-
 def _valid_centers_ms(stim_ms_aligned: np.ndarray, fs_ua: float, rec_len_samples: int, win_ms) -> np.ndarray:
     """Keep only centers whose [w0, w1] window fits inside the UA recording."""
     if stim_ms_aligned is None or stim_ms_aligned.size == 0:
@@ -119,8 +123,6 @@ def _extract_trials(rec, ch_pos, centers_ms, win_ms, fs, n_show):
 
 # ---- Main ----
 def main():
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-
     # SpikeInterface recording (for raw traces)
     rec = si.load(str(PATH_UA_SI))
     fs_ua = float(rec.get_sampling_frequency())
@@ -184,7 +186,7 @@ def main():
     valid_centers = _valid_centers_ms(stim_ms_aligned_raw, fs_ua, rec_len, WINDOW_MS)
 
     # Peaks
-    peak_ch, peak_t_ms = _safe_peaks(z)
+    peak_ch, peak_t_ms = _safe_peaks_UA(z)
 
     # ---- Diagnostics ----
     print(f"[info] UA fs = {fs_ua:.2f} Hz, frames = {rec_len}, duration ≈ {ua_duration_ms/1000.0:.2f} s")
@@ -227,9 +229,9 @@ def main():
 
         axes[0].set_ylabel("µV"); axes[2].set_ylabel("µV")
         fig.suptitle(f"{PATH_UA_SI.name} • UA ch {ch} • {int(WINDOW_MS[0])}–{int(WINDOW_MS[1])} ms", y=0.98)
-        out_png = OUT_DIR / f"UA_ch{ch:03d}__quad.png"
-        fig.tight_layout(); fig.savefig(out_png, dpi=180, bbox_inches="tight"); plt.close(fig)
-        print(f"[saved] {out_png}")
+        out_svg = OUT_DIR / f"UA_ch{ch:03d}__quad.svg"
+        fig.tight_layout(); fig.savefig(out_svg, dpi=300, bbox_inches="tight"); plt.close(fig)
+        print(f"[saved] {out_svg}")
 
     print("[done] all quads saved →", OUT_DIR)
 

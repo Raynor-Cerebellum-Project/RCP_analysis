@@ -6,24 +6,30 @@ import re
 import matplotlib
 import matplotlib.pyplot as plt
 import spikeinterface as si
-from RCP_analysis import load_experiment_params, resolve_output_root
+import RCP_analysis as rcp
 matplotlib.use("Agg")
+matplotlib.rcParams['svg.fonttype'] = 'none'
 
 # ---- CONFIG ----
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS    = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-OUT_BASE  = resolve_output_root(PARAMS)
-OUT_BASE.mkdir(parents=True, exist_ok=True)
+INTAN_FOLDER = "pp_local_30_150__interp_NRR_RW001_250915_144530"
 
-ALIGNED_DIR       = OUT_BASE / "checkpoints/Aligned"
-PATH_NPRW_SI        = OUT_BASE / "checkpoints/NPRW/pp_local_30_150__interp_NRR_RW001_250915_144530"
+# Optional alignment tweak
+ADJUST_SAMPLES = 3  # TODO: remove after triangle alignment
 
-OUT_DIR           = PATH_NPRW_SI / "debug_quads_aligned"
 WINDOW_MS = (100.0, 200.0) # (-100.0, 250.0) (100.0, 200.0) (160.0, 180.0)
 CHANNELS_TO_SHOW = [1, 2, 3, 4, 5, 6, 7, 8]
 N_TRIALS_TO_SHOW = 4
-ADJUST_SAMPLES = 3 # TODO remove after triangle alignment
 
+# ---- Resolving paths ----
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
+OUT_BASE  = rcp.resolve_output_root(PARAMS)
+OUT_BASE.mkdir(parents=True, exist_ok=True)
+
+ALIGNED_DIR = OUT_BASE / "checkpoints" / "Aligned"
+PATH_NPRW_SI = OUT_BASE / "checkpoints" / "NPRW/" / INTAN_FOLDER
+OUT_DIR = OUT_BASE / "figures" / "debug_quads_aligned" / "NPRW" / INTAN_FOLDER
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 def _find_aligned_for_session(aligned_dir: Path, session_key: str) -> Path:
     """
@@ -126,7 +132,6 @@ def _overlay_peaks(ax, t_ms, y, s0_ms, peak_ch, peak_t_ms, ch_pos, adjust_ms=0.0
     idx = np.clip(np.round((x - t_ms[0]) / dt).astype(int), 0, len(t_ms)-1)
     ax.scatter(x, y[idx], s=12, c="red", marker="x", alpha=0.9, zorder=3)
 
-
 def _valid_centers_ms(stim_ms_aligned: np.ndarray, fs_intan: float, rec_len_samples: int, win_ms) -> np.ndarray:
     """Keep only centers whose [w0, w1] window fits inside the NPRW recording."""
     if stim_ms_aligned is None or stim_ms_aligned.size == 0:
@@ -160,8 +165,6 @@ def _extract_trials(rec, ch_pos, centers_ms, win_ms, fs, n_show):
 
 # ---- Main ----
 def main():
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-
     # SpikeInterface recording (for raw traces)
     rec = si.load(str(PATH_NPRW_SI))
     fs_intan = float(rec.get_sampling_frequency())
@@ -232,9 +235,9 @@ def main():
             ax.set_xlabel("Time (ms) rel. stim")
         axes[0].set_ylabel("µV"); axes[2].set_ylabel("µV")
         fig.suptitle(f"{PATH_NPRW_SI.name} • NPRW ch {ch} • {int(WINDOW_MS[0])}–{int(WINDOW_MS[1])} ms", y=0.98)
-        out_png = OUT_DIR / f"NPRW_ch{ch:03d}__quad.png"
-        fig.tight_layout(); fig.savefig(out_png, dpi=180, bbox_inches="tight"); plt.close(fig)
-        print(f"[saved] {out_png}")
+        out_svg = OUT_DIR / f"NPRW_ch{ch:03d}__quad.svg"
+        fig.tight_layout(); fig.savefig(out_svg, dpi=300, bbox_inches="tight"); plt.close(fig)
+        print(f"[saved] {out_svg}")
 
     print("[done] all quads saved →", OUT_DIR)
 
