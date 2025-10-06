@@ -10,15 +10,36 @@ from sklearn.decomposition import PCA
 # SpikeInterface
 import spikeinterface as si
 import spikeinterface.preprocessing as spre
+import RCP_analysis as rcp
 
-from RCP_analysis import (
-    load_experiment_params, resolve_data_root, resolve_output_root,
-    # BR/UA helpers
-    list_br_sessions, ua_excel_path, load_ns6_spikes,
-    load_UA_mapping_from_excel, apply_ua_mapping_properties,
-    build_blackrock_bundle, save_UA_bundle_npz, threshold_mua_rates,
-    load_stim_detection,
-)
+# ---------- CONFIG ----------
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PARAMS = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
+
+OUT_BASE = rcp.resolve_output_root(PARAMS)
+OUT_BASE.mkdir(parents=True, exist_ok=True)
+
+DATA_ROOT = rcp.resolve_data_root(PARAMS)
+SESSION_FOLDERS = rcp.list_br_sessions(DATA_ROOT, PARAMS.blackrock_rel)
+
+RATES = PARAMS.UA_rate_est or {}
+BIN_MS     = float(RATES.get("bin_ms", 1.0))
+SIGMA_MS   = float(RATES.get("sigma_ms", 50.0))
+THRESH     = float(RATES.get("detect_threshold", 4.5))
+PEAK_SIGN  = str(RATES.get("peak_sign", "neg"))
+    
+XLS = rcp.ua_excel_path(REPO_ROOT, PARAMS.probes)
+UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS else None
+if UA_MAP is None:
+    raise RuntimeError("UA mapping required for mapping on NS6.")
+
+BUNDLES_OUT = OUT_BASE / "bundles" / "UA"
+CKPT_OUT = OUT_BASE / "checkpoints" / "UA"
+NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
+CKPT_OUT.mkdir(parents=True, exist_ok=True)
+
+global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
+si.set_global_job_kwargs(**global_job_kwargs)
 
 def _session_from_rates_path(p: Path) -> str:
     # rates__NRR_RW001_250915_141052__bin1ms_sigma25ms.npz -> NRR_RW001_250915_141052
@@ -173,14 +194,6 @@ def _anchor_from_shifts_row(row: dict) -> tuple[int, float]:
         return int(round(anchor_ms * 1e-3 * fs_intan)), fs_intan
     return 0, fs_intan
 
-def _stim_npz_from_shifts_row(out_base: Path, row: dict) -> Path:
-    """
-    Build the path to the Intan stim detection NPZ from the shifts row.
-    """
-    intan_session = row["session"]  # Intan session name from compute_br_to_intan_shifts.py
-    bundles_root = out_base / "bundles" / "NPRW"
-    return bundles_root / f"{intan_session}_Intan_bundle" / "stim_stream.npz"
-
 def load_anchor_for_session(out_base: Path, session: str) -> tuple[int, float]:
     """
     Return (anchor_sample_intan, fs_intan) from figures/align_BR_to_Intan/br_to_intan_shifts.csv.
@@ -204,48 +217,21 @@ def load_anchor_for_session(out_base: Path, session: str) -> tuple[int, float]:
 
     return 0, 30000.0  # fallback if no row
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-
-OUT_BASE = resolve_output_root(PARAMS)
-OUT_BASE.mkdir(parents=True, exist_ok=True)
-
-global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
-si.set_global_job_kwargs(**global_job_kwargs)
-
 def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[int] = None):
-    data_root = resolve_data_root(PARAMS)
-    session_folders = list_br_sessions(data_root, PARAMS.blackrock_rel)
     if limit_sessions:
-        session_folders = session_folders[:limit_sessions]
-    print("Found session folders:", len(session_folders))
-
-    RATES = PARAMS.UA_rate_est or {}
-    BIN_MS     = float(RATES.get("bin_ms", 1.0))
-    SIGMA_MS   = float(RATES.get("sigma_ms", 50.0))
-    THRESH     = float(RATES.get("detect_threshold", 4.5))
-    PEAK_SIGN  = str(RATES.get("peak_sign", "neg"))
-        
-    xls = ua_excel_path(REPO_ROOT, PARAMS.probes)
-    ua_map = load_UA_mapping_from_excel(xls) if xls else None
-    if ua_map is None:
-        raise RuntimeError("UA mapping required for mapping on NS6.")
-
-    bundles_out = OUT_BASE / "bundles" / "UA"
-    checkpoint_out = OUT_BASE / "checkpoints" / "UA"
-    nprw_ckpt_root = OUT_BASE / "checkpoints" / "NPRW"
-    checkpoint_out.mkdir(parents=True, exist_ok=True)
+        SESSION_FOLDERS = SESSION_FOLDERS[:limit_sessions]
+    print("Found session folders:", len(SESSION_FOLDERS))
     saved_paths: list[Path] = []
 
     # --- per session: save non-spike bundle + preproc ns6
-    for k, sess in enumerate(session_folders):
+    for k, sess in enumerate(SESSION_FOLDERS):
         print(f"=== Session: {sess.name} ===")
     
-        bundle = build_blackrock_bundle(sess)
-        save_UA_bundle_npz(sess.name, bundle, bundles_out)
+        bundle = rcp.build_blackrock_bundle(sess)
+        rcp.save_UA_bundle_npz(sess.name, bundle, BUNDLES_OUT)
 
-        rec_ns6 = load_ns6_spikes(sess)
-        apply_ua_mapping_properties(rec_ns6, ua_map["mapped_nsp"])  # metadata only
+        rec_ns6 = rcp.load_ns6_spikes(sess)
+        rcp.apply_ua_mapping_properties(rec_ns6, UA_MAP["mapped_nsp"])  # metadata only
 
         rec_hp  = spre.highpass_filter(rec_ns6, freq_min=float(PARAMS.highpass_hz))
         rec_ref = spre.common_reference(rec_hp, reference="global", operator="median")
@@ -268,7 +254,7 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
             print(f"[WARN] Could not parse BR index from session folder '{sess.name}'. Skipping artifact removal.")
         else:
             # 1) find Intan session via metadata + NPRW rates
-            stim_npz_path = _stim_npz_for_br_idx(OUT_BASE, br_idx, nprw_ckpt_root)
+            stim_npz_path = _stim_npz_for_br_idx(OUT_BASE, br_idx, NPRW_CKPT_ROOT)
             # 2) and fetch the shift row for the same BR index
             shifts_row = _load_shift_row_by_br_idx(OUT_BASE, br_idx)
 
@@ -279,7 +265,7 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
                 intan_session = stim_npz_path.parent.name.replace("_Intan_bundle", "")
                 print(f"[map] BR {br_idx:03d} -> Intan session '{intan_session}'")
 
-                stim = load_stim_detection(stim_npz_path)
+                stim = rcp.load_stim_detection(stim_npz_path)
                 block_bounds = np.asarray(stim.get("block_bounds_samples", []), dtype=int)
 
         # default to cleaned=ref unless we actually remove
@@ -388,13 +374,13 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
 
         
         # save the cleaned preprocessed recording
-        out_geom = checkpoint_out / f"pp_global__{sess.name}__NS6"
+        out_geom = CKPT_OUT / f"pp_global__{sess.name}__NS6"
         out_geom.mkdir(parents=True, exist_ok=True)
         rec_artif_removed.save(folder=out_geom, overwrite=True)
         print(f"[{sess.name}] (ns6) saved preprocessed -> {out_geom}")
 
         # compute rates FROM THE CLEANED RECORDING
-        rate_hz, t_cat_ms, counts_cat, peaks, peaks_t_ms = threshold_mua_rates(
+        rate_hz, t_cat_ms, counts_cat, peaks, peaks_t_ms = rcp.threshold_mua_rates(
             rec_artif_removed,
             detect_threshold=THRESH,
             peak_sign=PEAK_SIGN,
@@ -414,7 +400,7 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
         # Transpose back to (n_components, n_bins) for consistency
         pcs_T = pcs.T.astype(np.float32)
         
-        out_npz = checkpoint_out / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
+        out_npz = CKPT_OUT / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
         
         # infer common field names across SI versions
         names = peaks.dtype.names

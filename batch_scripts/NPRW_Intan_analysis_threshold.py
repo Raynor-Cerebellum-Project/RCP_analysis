@@ -8,31 +8,7 @@ import numpy as np
 import spikeinterface as si
 from sklearn.decomposition import PCA
 
-from RCP_analysis import (
-    # Preproc
-    read_intan_recording,
-    local_cm_reference,
-    save_recording,
-    list_intan_sessions,
-    extract_and_save_other_streams_npz,
-    # Probes
-    load_stim_geometry,
-    get_chanmap_perm_from_geom,
-    make_identity_probe_from_geom,
-    reorder_recording_to_geometry,
-    # Stim
-    extract_and_save_stim_npz,
-    PCAArtifactParams,
-    threshold_mua_rates,
-    load_stim_detection,
-    # Config / params
-    load_experiment_params,
-    resolve_data_root,
-    resolve_output_root,
-    resolve_probe_geom_path,
-    resolve_intan_root,
-    plot_all_quads_for_session,
-)
+import RCP_analysis as rcp
 
 # Temporary plotting function
 def plot_selected_sessions(
@@ -49,15 +25,15 @@ def plot_selected_sessions(
     Also ensures a stim bundle exists (creates if missing).
     """
     # geometry / perm
-    geom = load_stim_geometry(GEOM_PATH)
-    perm = get_chanmap_perm_from_geom(geom)
+    geom = rcp.load_stim_geometry(GEOM_PATH)
+    perm = rcp.get_chanmap_perm_from_geom(geom)
 
     figs_dir = OUT_BASE / "figures" / "NPRW"
     figs_dir.mkdir(parents=True, exist_ok=True)
     bundles_root = OUT_BASE / "bundles" / "NPRW"
     bundles_root.mkdir(parents=True, exist_ok=True)
 
-    sess_folders = list_intan_sessions(INTAN_ROOT)
+    sess_folders = rcp.list_intan_sessions(INTAN_ROOT)
     if not sess_folders:
         print("No Intan sessions found.")
         return
@@ -79,7 +55,7 @@ def plot_selected_sessions(
         # ensure stim bundle exists
         stim_npz_path = bundles_root / f"{sess.name}_Intan_bundle" / "stim_stream.npz"
         if not stim_npz_path.exists():
-            stim_npz_path = extract_and_save_stim_npz(
+            stim_npz_path = rcp.extract_and_save_stim_npz(
                 sess_folder=sess,
                 out_root=bundles_root,
                 stim_stream_name=STIM_STREAM,
@@ -89,7 +65,7 @@ def plot_selected_sessions(
 
         # plot from artifact-corrected checkpoints
         try:
-            plot_all_quads_for_session(
+            rcp.plot_all_quads_for_session(
                 sess_folder=sess,
                 geom_path=GEOM_PATH,
                 neural_stream=INTAN_STREAM,
@@ -109,12 +85,12 @@ def plot_selected_sessions(
 # Config
 # ==============================
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-DATA_ROOT = resolve_data_root(PARAMS)
-OUT_BASE  = resolve_output_root(PARAMS)
+PARAMS = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
+DATA_ROOT = rcp.resolve_data_root(PARAMS)
+OUT_BASE  = rcp.resolve_output_root(PARAMS)
 OUT_BASE.mkdir(parents=True, exist_ok=True)
-INTAN_ROOT = resolve_intan_root(PARAMS)
-GEOM_PATH = resolve_probe_geom_path(PARAMS, REPO_ROOT)
+INTAN_ROOT = rcp.resolve_intan_root(PARAMS)
+GEOM_PATH = rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT)
 
 # === Intan stream name ===
 INTAN_STREAM = getattr(PARAMS, "neural_data_stream", "RHS2000 amplifier channel") # Neural data
@@ -128,7 +104,7 @@ outer = float(probe_cfg.get("local_radius_outer", 150.0))
 RADII: Tuple[float, float] = (inner, outer)
 
 # Artifact correction parameters
-params = PCAArtifactParams(
+params = rcp.PCAArtifactParams(
     # drift removal
     rolling_median_ms=15.0,
     gaussian_sigma_ms=5.0,
@@ -174,12 +150,12 @@ def main(limit_sessions: Optional[int] = None):
     # )
     
     # 1) Load geometry & mapping
-    geom = load_stim_geometry(GEOM_PATH)
-    perm = get_chanmap_perm_from_geom(geom)
-    probe = make_identity_probe_from_geom(geom, radius_um=5.0) # Radius is for visualization of the channel contacts
+    geom = rcp.load_stim_geometry(GEOM_PATH)
+    perm = rcp.get_chanmap_perm_from_geom(geom)
+    probe = rcp.make_identity_probe_from_geom(geom, radius_um=5.0) # Radius is for visualization of the channel contacts
 
     # 2) Find sessions & load each Intan folder
-    sess_folders = list_intan_sessions(INTAN_ROOT)
+    sess_folders = rcp.list_intan_sessions(INTAN_ROOT)
     if limit_sessions:
         sess_folders = sess_folders[:limit_sessions]
     print(f"Found Intan sessions: {len(sess_folders)}")
@@ -194,7 +170,7 @@ def main(limit_sessions: Optional[int] = None):
         bundles_root.mkdir(parents=True, exist_ok=True)
 
         # extract stim streams
-        extract_and_save_stim_npz(
+        rcp.extract_and_save_stim_npz(
             sess_folder=sess,
             out_root=bundles_root,
             stim_stream_name=STIM_STREAM,
@@ -202,7 +178,7 @@ def main(limit_sessions: Optional[int] = None):
         )
 
         # extract auxiliary streams (Sync channels etc.)
-        extract_and_save_other_streams_npz(
+        rcp.extract_and_save_other_streams_npz(
             sess_folder=sess,
             out_root=bundles_root,
             include_streams=("USB board ADC input channel",),
@@ -213,18 +189,18 @@ def main(limit_sessions: Optional[int] = None):
         stim_npz_path = bundles_root / f"{sess.name}_Intan_bundle" / "stim_stream.npz"
 
         # Load Intan neural stream
-        rec = read_intan_recording(sess, stream_name=INTAN_STREAM)
-        rec = reorder_recording_to_geometry(rec, perm)
+        rec = rcp.read_intan_recording(sess, stream_name=INTAN_STREAM)
+        rec = rcp.reorder_recording_to_geometry(rec, perm)
         rec = rec.set_probe(probe, in_place=False)
         
         # Local CMR
-        rec_ref = local_cm_reference(
+        rec_ref = rcp.local_cm_reference(
             rec,
             freq_min=float(PARAMS.highpass_hz),
             inner_outer_radius_um=RADII
         )
         # block_bounds_samples: shape (B, 2) in absolute samples
-        stim = load_stim_detection(stim_npz_path)
+        stim = rcp.load_stim_detection(stim_npz_path)
         block_bounds = np.asarray(stim.get("block_bounds_samples", []), dtype=int)
 
         rec_artif_removed = rec_ref  # fallback
@@ -264,13 +240,13 @@ def main(limit_sessions: Optional[int] = None):
         
         # Save preprocessed session (artifact-corrected + referenced)
         out_dir = checkpoint_out / f"pp_local_{int(RADII[0])}_{int(RADII[1])}__interp_{sess.name}"
-        save_recording(rec_artif_removed, out_dir)
+        rcp.save_recording(rec_artif_removed, out_dir)
         print(f"[{sess.name}] saved interpolated -> {out_dir}")
 
         del rec, rec_ref
         gc.collect()
         
-        rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms = threshold_mua_rates(
+        rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms = rcp.threshold_mua_rates(
             rec_artif_removed,
             detect_threshold=THRESH,
             peak_sign=PEAK_SIGN,
@@ -279,7 +255,7 @@ def main(limit_sessions: Optional[int] = None):
             n_jobs=PARAMS.parallel_jobs,
         )
         
-        plot_all_quads_for_session(
+        rcp.plot_all_quads_for_session(
             sess_folder=sess,
             geom_path=GEOM_PATH,
             neural_stream=INTAN_STREAM,
@@ -292,7 +268,7 @@ def main(limit_sessions: Optional[int] = None):
             template_samples_after=params.post_pad_samples,
             view_s=(0.95, 1.1)
         )
-        plot_all_quads_for_session(
+        rcp.plot_all_quads_for_session(
             sess_folder=sess,
             geom_path=GEOM_PATH,
             neural_stream=INTAN_STREAM,
@@ -305,7 +281,7 @@ def main(limit_sessions: Optional[int] = None):
             template_samples_after=params.post_pad_samples,
             view_s=(0.98, 1.05)
         )
-        plot_all_quads_for_session(
+        rcp.plot_all_quads_for_session(
             sess_folder=sess,
             geom_path=GEOM_PATH,
             neural_stream=INTAN_STREAM,

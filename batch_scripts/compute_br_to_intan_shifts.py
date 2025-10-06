@@ -5,19 +5,23 @@ import numpy as np
 import json, csv, re, io, codecs
 
 # ---- spikeinterface for BR .ns5 (to record fs_br & durations) ----
-try:
-    from spikeinterface.extractors import read_blackrock
-    _HAS_SI = True
-except Exception:
-    _HAS_SI = False
+from spikeinterface.extractors import read_blackrock
+import RCP_analysis as rcp
 
-# ---- your params helpers ----
-from RCP_analysis import load_experiment_params, resolve_output_root
+# ---------- CONFIG ----------
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
+TEMPLATE  = REPO_ROOT / "config" / "br_intan_align_template.mat"
+OUT_BASE  = rcp.resolve_output_root(PARAMS)
+OUT_BASE.mkdir(parents=True, exist_ok=True)
 
-# ===========================
-# Small utilities
-# ===========================
-
+METADATA_ROOT        = OUT_BASE.parent / "Blackrock"
+METADATA_ROOT        = OUT_BASE.parent / "Metadata"
+METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+NPRW_BUNDLES   = OUT_BASE / "bundles" / "NPRW"
+NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
+METADATA_CSV = OUT_BASE.parent / "Metadata" / "NRR_RW001_metadata.csv"
+    
 def _npz_meta_dict(arr):
     if arr is None:
         return {}
@@ -121,8 +125,6 @@ def load_intan_adc_2ch(npz_path: Path) -> tuple[np.ndarray, np.ndarray, float]:
 
 def load_br_intan_sync_ns5(ns5_path: Path, intan_sync_chan_id: int = 134) -> tuple[np.ndarray, float]:
     """Load BR intan_sync (e.g., ch134) from .ns5 via spikeinterface."""
-    if not _HAS_SI:
-        raise ImportError("spikeinterface is required to read .ns5 (pip install spikeinterface[full])")
     rec = read_blackrock(ns5_path, stream_id="5")  # nsx5
     fs = float(rec.get_sampling_frequency())
     ids = np.array(rec.get_channel_ids()).astype(str)
@@ -203,28 +205,7 @@ def build_session_index_map(intan_sessions: list[str]) -> tuple[dict[str,int], d
     return ({sess: i+1 for i, sess in enumerate(ordered)},
             {i+1: s for i, s in enumerate(ordered)})
 
-# ===========================
-# MAIN
-# ===========================
-
-if __name__ == "__main__":
-    # ---------- CONFIG ----------
-    REPO_ROOT = Path(__file__).resolve().parents[1]
-    PARAMS    = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-    TEMPLATE  = REPO_ROOT / "config" / "br_intan_align_template.mat"
-    OUT_BASE  = resolve_output_root(PARAMS)
-    OUT_BASE.mkdir(parents=True, exist_ok=True)
-
-    METADATA_ROOT        = OUT_BASE.parent / "Blackrock"
-    METADATA_ROOT        = OUT_BASE.parent / "Metadata"
-    METADATA_ROOT.mkdir(parents=True, exist_ok=True)
-    NPRW_BUNDLES   = OUT_BASE / "bundles" / "NPRW"
-
-    # checkpoints (for discovering sessions)
-    nprw_ckpt_root = OUT_BASE / "checkpoints" / "NPRW"
-
-    # Metadata CSV with Intan_File ↔ BR_File mapping
-    METADATA_CSV = OUT_BASE.parent / "Metadata" / "NRR_RW001_metadata.csv"
+def main():
     if not METADATA_CSV.exists():
         raise SystemExit(f"[error] mapping CSV not found: {METADATA_CSV}")
 
@@ -234,10 +215,10 @@ if __name__ == "__main__":
         body = stem[len("rates__"):]
         return body.split("__bin", 1)[0]
 
-    rate_files = sorted(nprw_ckpt_root.rglob("rates__*.npz"))
+    rate_files = sorted(NPRW_CKPT_ROOT.rglob("rates__*.npz"))
     sessions = sorted({ session_from_rates_path(p) for p in rate_files })
     if not sessions:
-        raise SystemExit(f"[error] No NPRW rate files under {nprw_ckpt_root}")
+        raise SystemExit(f"[error] No NPRW rate files under {NPRW_CKPT_ROOT}")
 
     sess_to_intan_idx, intan_idx_to_sess = build_session_index_map(sessions)
 
@@ -289,7 +270,7 @@ if __name__ == "__main__":
         dur_br_sec = float("nan")
 
         br_ns5 = METADATA_ROOT / f"NRR_RW_001_{br_idx:03d}.ns5"
-        if br_ns5.exists() and _HAS_SI:
+        if br_ns5.exists():
             try:
                 br_sync, fs_br = load_br_intan_sync_ns5(br_ns5, intan_sync_chan_id=134)
                 dur_br_sec = len(br_sync) / fs_br
@@ -325,3 +306,6 @@ if __name__ == "__main__":
         print(f"[done] wrote shifts → {out_csv}")
     else:
         print("[done] no rows to write (no anchors).")
+ 
+if __name__ == "__main__":
+    main()

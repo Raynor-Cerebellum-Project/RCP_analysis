@@ -4,6 +4,22 @@ import numpy as np
 import json, csv
 from RCP_analysis import load_experiment_params, resolve_output_root
 
+
+# ---------- CONFIG ----------
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PARAMS    = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
+OUT_BASE  = resolve_output_root(PARAMS)
+OUT_BASE.mkdir(parents=True, exist_ok=True)
+
+NPRW_BUNDLES   = OUT_BASE / "bundles" / "NPRW"
+NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
+UA_CKPT_ROOT   = OUT_BASE / "checkpoints" / "UA"
+ALIGNED_CKPT_ROOT   = OUT_BASE / "checkpoints" / "Aligned"
+ALIGNED_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
+
+METADATA_ROOT        = OUT_BASE.parent / "Metadata"
+METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+    
 # ===========================
 # Helpers
 # ===========================
@@ -124,25 +140,7 @@ def _overlap_and_resample_to_intan(i_rate, i_t, u_rate, u_t):
     stats = {"overlap_bins": int(common_t.size), "dt_i_ms": dt_i, "dt_u_ms": dt_u}
     return i_rate_trim, common_t, u_rate_on_common, stats
 
-# ===========================
-# MAIN
-# ===========================
-
-if __name__ == "__main__":
-    # ---------- CONFIG ----------
-    REPO_ROOT = Path(__file__).resolve().parents[1]
-    PARAMS    = load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-    OUT_BASE  = resolve_output_root(PARAMS)
-    OUT_BASE.mkdir(parents=True, exist_ok=True)
-
-    NPRW_BUNDLES   = OUT_BASE / "bundles" / "NPRW"
-    nprw_ckpt_root = OUT_BASE / "checkpoints" / "NPRW"
-    ua_ckpt_root   = OUT_BASE / "checkpoints" / "UA"
-    aligned_ckpt   = OUT_BASE / "checkpoints" / "Aligned"
-    aligned_ckpt.mkdir(parents=True, exist_ok=True)
-
-    METADATA_ROOT        = OUT_BASE.parent / "Metadata"
-    METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+def main():
     shifts_csv     = METADATA_ROOT / "br_to_intan_shifts.csv"
     if not shifts_csv.exists():
         raise SystemExit(f"[error] shifts CSV not found: {shifts_csv}")
@@ -164,11 +162,11 @@ if __name__ == "__main__":
             anchor_ms = float(row["anchor_ms"])
 
             # --------- Load rates npz for BOTH sides ----------
-            intan_rates_npz = find_intan_rates_for_session(nprw_ckpt_root, session)
+            intan_rates_npz = find_intan_rates_for_session(NPRW_CKPT_ROOT, session)
             if intan_rates_npz is None:
                 print(f"[warn] No Intan rates for session {session}")
                 continue
-            ua_rates_npz = find_ua_rates_by_index(ua_ckpt_root, br_idx)
+            ua_rates_npz = find_ua_rates_by_index(UA_CKPT_ROOT, br_idx)
             if ua_rates_npz is None:
                 print(f"[warn] No UA rates for BR_File {br_idx:03d}")
                 continue
@@ -263,7 +261,7 @@ if __name__ == "__main__":
                 dt_ms_target=float(stats["dt_i_ms"]),
             )
 
-            out_npz = aligned_ckpt / f"aligned__{session}__Intan_{intan_idx:03d}__BR_{br_idx:03d}.npz"
+            out_npz = ALIGNED_CKPT_ROOT / f"aligned__{session}__Intan_{intan_idx:03d}__BR_{br_idx:03d}.npz"
             np.savez_compressed(
                 out_npz,
                 
@@ -310,7 +308,9 @@ if __name__ == "__main__":
 
             print(f"[write] combined aligned → {out_npz}")
 
-
         except Exception as e:
             print(f"[error] Failed for session {row.get('session','?')}: {e}")
             continue
+
+if __name__ == "__main__":
+    main()
