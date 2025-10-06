@@ -53,20 +53,19 @@ from .python.functions.utils import (
     load_rate_npz,
     median_across_trials,
     extract_peristim_segments,
+    detect_stim_channels_from_npz,
+    build_probe_and_locs_from_geom,
 )
 
 # plotting
 from .python.plotting.plotting import (
-    plot_all_quads_for_session,
-    load_stim_ms_from_stimstream,
-    detect_stim_channels_from_npz,
+    # _find_interp_dir_for_session,
+    # _load_cached_recording,
+    # plot_all_quads_for_session,
+    
     run_one_Intan_FR_heatmap,
     plot_single_channel_trial_quad_raw,
-    _find_interp_dir_for_session,
-    _load_cached_recording,
-    baseline_zero_each_trial,
     plot_channel_heatmap,
-    build_probe_and_locs_from_geom,
 )
 
 
@@ -120,16 +119,14 @@ __all__ = [
     "load_rate_npz",
     "median_across_trials",
     "extract_peristim_segments",
+    "detect_stim_channels_from_npz",
+    "build_probe_and_locs_from_geom",
     
     # plotting
     "plot_all_quads_for_session",
-    "load_stim_ms_from_stimstream",
-    "detect_stim_channels_from_npz",
     "run_one_Intan_FR_heatmap",
     "plot_single_channel_trial_quad_raw",
     "_find_interp_dir_for_session",
     "_load_cached_recording",
-    "baseline_zero_each_trial",
     "plot_channel_heatmap",
-    "build_probe_and_locs_from_geom",
 ]
