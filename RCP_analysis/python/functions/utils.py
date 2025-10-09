@@ -133,9 +133,7 @@ def detect_stim_channels_from_npz(
     """
     Return GEOMETRY-ORDERED indices of stimulated channels by counting 0→nonzero
     rising edges over the full 'stim_traces' array stored in the NPZ.
-
-    Note: extract_and_save_stim_npz() sets meta['order'] to 'geometry' when
-    it can reorder using chanmap_perm, so indices should already be in geometry order.
+    NaN-safe: ignores channels with no finite data.
     """
     stim_npz_path = Path(stim_npz_path)
     if not stim_npz_path.exists():
@@ -145,25 +143,36 @@ def detect_stim_channels_from_npz(
         if "stim_traces" not in z:
             return np.array([], dtype=int)
 
-        X = z["stim_traces"]  # (n_channels, n_samples)
+        X = np.asarray(z["stim_traces"], dtype=float)  # (n_channels, n_samples)
         if X.ndim != 2 or X.shape[1] < 2:
             return np.array([], dtype=int)
 
-        # per-channel thresholds: midpoint between 5th & 95th percentiles
-        p5  = np.nanpercentile(X, 5, axis=1)
-        p95 = np.nanpercentile(X, 95, axis=1)
+        # keep only channels that have any finite data
+        row_has_data = np.isfinite(X).any(axis=1)
+        if not row_has_data.any():
+            return np.array([], dtype=int)
+
+        Xv = X[row_has_data]  # valid rows view
+
+        # robust per-row threshold: midpoint between 5th & 95th percentiles
+        with np.errstate(all="ignore", invalid="ignore"):
+            p5  = np.nanpercentile(Xv, 5,  axis=1)
+            p95 = np.nanpercentile(Xv, 95, axis=1)
         thr = 0.5 * (p5 + p95)
 
-        above = (X > (thr[:, None] + eps))
-        rising = above[:, 1:] & (~above[:, :-1])    # (ch, frames-1)
-        counts = rising.sum(axis=1)                 # per-channel counts
+        # rising-edge count above per-row threshold
+        above  = Xv > (thr[:, None] + eps)             # (ch_valid, T)
+        rising = above[:, 1:] & (~above[:, :-1])       # transitions
+        counts = rising.sum(axis=1)
 
-        active = np.where(counts >= int(min_edges))[0].astype(int)
+        active_valid = np.flatnonzero(counts >= int(min_edges))
 
-        # If meta says order=='geometry', active are geometry indices already.
-        # If order=='device' we don't have a perm in this NPZ; return as-is.
-        # (extract_and_save_stim_npz normally sets geometry when it can.)
-        return np.unique(active)
+        # map back to original channel indices
+        idx_map = np.flatnonzero(row_has_data)
+        active = idx_map[active_valid]
+
+        # geometry order is already respected if upstream wrote order='geometry'
+        return np.unique(active).astype(int)
  
 def build_probe_and_locs_from_geom(geom_path: Path, radius_um: float = 5.0):
     """Load your saved geometry -> ProbeInterface Probe + (n_ch,2) locs."""

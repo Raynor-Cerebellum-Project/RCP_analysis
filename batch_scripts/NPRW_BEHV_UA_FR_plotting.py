@@ -2,9 +2,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Tuple
 import numpy as np
+import math, pandas as pd
 import matplotlib
 import RCP_analysis as rcp
-import matplotlib.pyplot as plt
 matplotlib.use("Agg")
 matplotlib.rcParams['svg.fonttype'] = 'none'
 
@@ -24,6 +24,16 @@ FIG_ROOT.mkdir(parents=True, exist_ok=True)
 
 XLS = rcp.ua_excel_path(REPO_ROOT, PARAMS.probes)
 UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS else None
+
+METADATA_CSV  = (rcp.resolve_data_root(PARAMS) / PARAMS.metadata_rel).resolve(); METADATA_CSV.parent.mkdir(parents=True, exist_ok=True)
+
+PARAMS = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
+METADATA_CSV = (rcp.resolve_data_root(PARAMS) / PARAMS.metadata_rel).resolve()
+METADATA_CSV.parent.mkdir(parents=True, exist_ok=True)
+
+
+FOUR_COLS = ["Stim_Frequency_Hz", "Current_uA", "Depth_mm", "Stim_Duration_ms"]
+
 
 _KEYPOINTS_ORDER = ("wrist", "middle_finger_base", "middle_finger_tip")  # order you want
 def _as_list(x):
@@ -145,6 +155,36 @@ def _select_matrix(cam, cols):
                 M[:, k] = cam[:, j]
     return M, names
 
+def _fmt_num(x):
+    try:
+        xf = float(x)
+    except Exception:
+        return str(x)
+    if math.isnan(xf):
+        return "nan"
+    # drop trailing .0
+    return f"{xf:g}"
+
+def build_title_from_csv(csv_path: Path, *, sess: str | None = None, br_file: int | None = None) -> str:
+    df = pd.read_csv(csv_path)
+
+    # Narrow to a row (optional; remove this block if you always want the first row)
+    idx = pd.Series([True] * len(df))
+    if sess and "Session" in df.columns:
+        idx &= df["Session"].astype(str).str.contains(str(sess), regex=False)
+    if br_file is not None and "BR_File" in df.columns:
+        idx &= (pd.to_numeric(df["BR_File"], errors="coerce") == int(br_file))
+    if idx.sum() == 0:
+        idx = pd.Series([True] * len(df))
+    row = df.loc[idx].iloc[0]
+
+    # Read just the four columns and concatenate with units
+    vals = {k: row.get(k, None) for k in FOUR_COLS}
+    title = f"Condition: {_fmt_num(vals['Stim_Frequency_Hz'])} Hz, " \
+            f"{_fmt_num(vals['Current_uA'])} µA, " \
+            f"{_fmt_num(vals['Depth_mm'])} mm, " \
+            f"{_fmt_num(vals['Stim_Duration_ms'])} ms"
+    return title
 
 
 def main():
@@ -249,7 +289,7 @@ def main():
             UA_med = rcp.median_across_trials(UA_zeroed)
 
             # ---------- produce stacked heatmap figure ----------
-            out_svg = FIG_ROOT / f"{sess}__Intan_vs_UA__peri_stim_heatmaps.svg"
+            out_svg = FIG_ROOT / f"{sess}__Intan_vs_UA__peri_stim_heatmaps.png"
             title_top = f"Median Δ in firing rate (baseline = first 100ms)\nNPRW/Intan: {sess} (n={NPRW_segments.shape[0]} trials)"
             title_bot = f"{rcp.ua_title_from_meta(meta)} (n={UA_segments.shape[0]} trials)"
 
@@ -269,7 +309,11 @@ def main():
                     stim_locs = rcp.detect_stim_channels_from_npz(stim_npz, eps=1e-12, min_edges=1)
                 except Exception as e:
                     print(f"[warn] stim-site detection failed for {sess}: {e}")
-        
+
+            overall_title = build_title_from_csv(
+                METADATA_CSV, br_file=meta.get("br_idx")
+            )
+    
             rcp.stacked_heatmaps_plus_behv(
                 NPRW_med, UA_med, rel_time_ms_i, ua_rel_time_ms,
                 out_svg, title_top, title_bot, cmap="jet",
@@ -285,6 +329,7 @@ def main():
                 beh_cam1_lines=cam1_lines,       # (6, Twindow)
                 beh_labels=beh_labels,           # list of 6 strings
                 sess=sess,
+                overall_title=overall_title
             )
 
             print(f"[PLOT] Plotted {sess} and saved at {out_svg.parent}")
