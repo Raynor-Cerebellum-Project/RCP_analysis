@@ -1,6 +1,5 @@
 from __future__ import annotations
 from pathlib import Path
-import json
 import numpy as np
 import matplotlib
 import RCP_analysis as rcp
@@ -9,14 +8,13 @@ matplotlib.rcParams['svg.fonttype'] = 'none'
 
 # ---------- CONFIG ----------
 WIN_MS            = (-800.0, 1200.0)
-BASELINE_FIRST_MS = 100.0
+BASELINE_FIRST_MS = 200.0
 MIN_TRIALS        = 1
 
 # ---- Resolving paths ----
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-OUT_BASE  = rcp.resolve_output_root(PARAMS)
-OUT_BASE.mkdir(parents=True, exist_ok=True)
+OUT_BASE  = rcp.resolve_output_root(PARAMS); OUT_BASE.mkdir(parents=True, exist_ok=True)
 
 ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
 FIG_ROOT     = OUT_BASE / "figures" / "peri_stim" / "Aligned"
@@ -24,45 +22,6 @@ FIG_ROOT.mkdir(parents=True, exist_ok=True)
 
 XLS = rcp.ua_excel_path(REPO_ROOT, PARAMS.probes)
 UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS else None
-        
-def _load_combined_npz(p: Path):
-    d = np.load(p, allow_pickle=True)
-    # Intan
-    i_rate = d["intan_rate_hz"]
-    i_t    = d["intan_t_ms_aligned"] if "intan_t_ms_aligned" in d.files else d["intan_t_ms"]
-    # UA
-    u_rate = d["ua_rate_hz"]
-    u_t    = d["ua_t_ms_aligned"] if "ua_t_ms_aligned" in d.files else d["ua_t_ms"]
-    # stim (absolute Intan ms); we’ll align it below
-    stim_ms = d["stim_ms"] if "stim_ms" in d.files else np.array([], dtype=float)
-    # alignment meta (JSON)
-    meta = json.loads(d["align_meta"].item()) if "align_meta" in d.files else {}
-    return i_rate, i_t.astype(float), u_rate, u_t.astype(float), stim_ms.astype(float), meta
-
-def _aligned_stim_ms(stim_ms_abs: np.ndarray, meta: dict) -> np.ndarray:
-    """
-    Convert absolute Intan stim times (ms) into the aligned timebase used in the
-    combined file:
-      intan_t_ms_aligned = intan_t_ms - t0_intan_ms
-    where t0_intan_ms = anchor_sample * 1000 / fs_intan
-    """
-    if stim_ms_abs.size == 0:
-        return stim_ms_abs
-    if "anchor_ms" in meta:
-        return stim_ms_abs - float(meta["anchor_ms"])
-    # fallback if some files only had anchor_sample
-    if "anchor_sample" in meta:
-        fs_intan = float(meta.get("fs_intan", 30000.0))
-        return stim_ms_abs - (float(meta["anchor_sample"]) * 1000.0 / fs_intan)
-    return stim_ms_abs  # nothing to do
-
-def _ua_title_from_meta(meta: dict) -> str:
-    """
-    Build Utah array title from metadata.
-    """
-    if "br_idx" in meta and meta["br_idx"] is not None:
-        return f"Blackrock / UA: NRR_RW_001_{int(meta['br_idx']):03d}"
-    return "Utah/BR"
 
 def main():
     # Intan probe (optional, only used if you later want a probe panel like NPRW)
@@ -83,11 +42,9 @@ def main():
 
     for file in files:
         try:
-            NPRW_rate, NPRW_t, UA_rate, UA_t, stim_ms_abs, meta = _load_combined_npz(file)
+            NPRW_rate, NPRW_t, UA_rate, UA_t, stim_ms_abs, meta = rcp.load_combined_npz(file)
             # Try to get per-row UA electrode IDs (1..256), + NSP mapping (1..128/256)
             ua_ids_1based = None
-            ua_row_to_nsp = None
-            ua_region_names = None
 
             with np.load(file, allow_pickle=True) as z:
                 if "ua_row_to_elec" in z.files:
@@ -98,10 +55,6 @@ def main():
                         if key in z.files:
                             ua_ids_1based = np.asarray(z[key], dtype=int).ravel()
                             break
-                if "ua_row_to_nsp" in z.files:
-                    ua_row_to_nsp = np.asarray(z["ua_row_to_nsp"], dtype=int).ravel()
-                if "ua_region_names" in z.files:
-                    ua_region_names = np.asarray(z["ua_region_names"], dtype=object).ravel()
 
             # sanity: ensure length matches UA rows (plot uses row order)
             if ua_ids_1based is not None and ua_ids_1based.size != UA_rate.shape[0]:
@@ -111,7 +64,7 @@ def main():
             sess = meta.get("session", file.stem)
 
             # stim times aligned to Intan aligned timebase
-            stim_ms = _aligned_stim_ms(stim_ms_abs, meta)
+            stim_ms = rcp.aligned_stim_ms(stim_ms_abs, meta)
 
             # --- NPRW/Intan ---
             NPRW_segments, rel_time_ms_i = rcp.extract_peristim_segments(
@@ -136,7 +89,7 @@ def main():
             # ---------- produce stacked heatmap figure ----------
             out_svg = FIG_ROOT / f"{sess}__Intan_vs_UA__peri_stim_heatmaps.svg"
             title_top = f"Median Δ in firing rate (baseline = first 100ms)\nNPRW/Intan: {sess} (n={NPRW_segments.shape[0]} trials)"
-            title_bot = f"{_ua_title_from_meta(meta)} (n={UA_segments.shape[0]} trials)"
+            title_bot = f"{rcp.ua_title_from_meta(meta)} (n={UA_segments.shape[0]} trials)"
 
             # sanity checks
             assert NPRW_med.shape[1] == rel_time_ms_i.size, "Intan med vs time mismatch"
@@ -145,21 +98,21 @@ def main():
             VMIN_INTAN, VMAX_INTAN = -500, 1000  # keep heatmap range if you like
             VMIN_UA, VMAX_UA = -250, 500  # keep heatmap range if you like
 
-            # locate the Intan stim_stream.npz and detect stimulated channels
+            # locate the Intan stim_stream.npz and locate stimulated channels
             bundles_root = OUT_BASE / "bundles" / "NPRW"
             stim_npz = bundles_root / f"{sess}_Intan_bundle" / "stim_stream.npz"
-            stim_idx = None
+            stim_locs = None
             if stim_npz.exists():
                 try:
-                    stim_idx = rcp.detect_stim_channels_from_npz(stim_npz, eps=1e-12, min_edges=1)
+                    stim_locs = rcp.detect_stim_channels_from_npz(stim_npz, eps=1e-12, min_edges=1)
                 except Exception as e:
                     print(f"[warn] stim-site detection failed for {sess}: {e}")
         
-            stacked_heatmaps_two_t(
+            rcp.stacked_heatmaps_two_t(
                 NPRW_med, UA_med, rel_time_ms_i, ua_rel_time_ms,
                 out_svg, title_top, title_bot, cmap="jet", vmin_intan=VMIN_INTAN, vmax_intan=VMAX_INTAN,
                 vmin_ua=VMIN_UA, vmax_ua=VMAX_UA,
-                probe=probe, probe_locs=locs, stim_idx=stim_idx,
+                probe=probe, probe_locs=locs, stim_idx=stim_locs,
                 probe_title="NPRW probe (stim sites highlighted)",
                 ua_ids_1based=ua_ids_1based,
                 ua_sort="region_then_elec",

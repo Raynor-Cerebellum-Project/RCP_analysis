@@ -1,9 +1,8 @@
-# ---- paths ---- # CHANGE THESE PER SESSION
-data_root: "/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis"
-blackrock_rel: "Nike/NRR_RW001/Blackrock"
-intan_root_rel: "Nike/NRR_RW001/Intan"
-output_root: "Nike/NRR_RW001/results"
-geom_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
+paths:
+  data_root: "/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis"
+  location: "Nike/NRR_RW003"
+  session: "NRR_RW003"
+  geom_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
 
 # ---- preprocessing ----
 highpass_hz: 300.0
@@ -12,6 +11,8 @@ probes:
   UA:
     n_channels: 256
     mapping_mat_rel: "config/1106-22, 24, 42, 44 SN 11386-024040.xlsm"
+    camera_sync_ch: 134 # MAKE SURE THESE CHANNELS ARE CORRECT
+    triangle_sync_ch: 138 # MAKE SURE THESE CHANNELS ARE CORRECT
     # geom_mat_rel: ""   # (optional) if you want a specific .mat for UA
 
   NN_DBS:
@@ -25,6 +26,8 @@ probes:
     local_radius_inner: 30
     local_radius_outer: 150
     n_channels: 128
+    br_template_sync_ch: 0 # MAKE SURE THESE CHANNELS ARE CORRECT
+    triangle_sync_ch: 1 # MAKE SURE THESE CHANNELS ARE CORRECT
     mapping_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
     neural_data_stream: "RHS2000 amplifier channel"
     stim_data_stream: "Stim channel"

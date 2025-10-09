@@ -3,8 +3,7 @@ from pathlib import Path
 from typing import Optional
 import gc
 import numpy as np
-import io, codecs, re
-import csv
+import io, codecs, re, csv
 from sklearn.decomposition import PCA
 
 # SpikeInterface
@@ -14,12 +13,14 @@ import RCP_analysis as rcp
 
 # ---------- CONFIG ----------
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-
-OUT_BASE = rcp.resolve_output_root(PARAMS)
-OUT_BASE.mkdir(parents=True, exist_ok=True)
-
+PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
 DATA_ROOT = rcp.resolve_data_root(PARAMS)
+OUT_BASE  = rcp.resolve_output_root(PARAMS); OUT_BASE.mkdir(parents=True, exist_ok=True)
+METADATA_CSV = (DATA_ROOT / PARAMS.metadata_rel).resolve()
+if not METADATA_CSV.exists():
+    print(f"[WARN] metadata CSV not found at {METADATA_CSV} — BR↔Intan mapping may be skipped.")
+SHIFT_CSV = (DATA_ROOT / PARAMS.metadata_rel).resolve().parents[0] / "br_to_intan_shifts.csv"
+
 BR_SESSION_FOLDERS = rcp.list_br_sessions(DATA_ROOT, PARAMS.blackrock_rel)
 
 RATES = PARAMS.UA_rate_est or {}
@@ -32,6 +33,11 @@ XLS = rcp.ua_excel_path(REPO_ROOT, PARAMS.probes)
 UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS else None
 if UA_MAP is None:
     raise RuntimeError("UA mapping required for mapping on NS6.")
+
+# Sync channels
+PROBE_CFG = (PARAMS.probes or {}).get("UA", {})
+CAMERA_SYNC_CH = float(PROBE_CFG.get("camera_sync_ch", 134))
+TRIANGLE_SYNC_CH = float(PROBE_CFG.get("triangle_sync_ch", 138.0))
 
 BUNDLES_OUT = OUT_BASE / "bundles" / "UA"
 CKPT_OUT = OUT_BASE / "checkpoints" / "UA"
@@ -114,14 +120,13 @@ def _read_intan_to_br_map(csv_path: Path) -> dict[int, int]:
     return out
 
 def _resolve_intan_session_for_br_idx(
-    out_base: Path,
+    meta_csv: Path,
     br_idx: int,
     nprw_ckpt_root: Path
 ) -> Optional[str]:
     """
-    Use Metadata/NRR_RW001_metadata.csv and NPRW rates to map BR index -> Intan session name.
+    Use the provided metadata CSV and NPRW rates to map BR index -> Intan session name.
     """
-    meta_csv = out_base.parent / "Metadata" / "NRR_RW001_metadata.csv"
     if not meta_csv.exists():
         print(f"[WARN] mapping CSV not found: {meta_csv}")
         return None
@@ -131,24 +136,21 @@ def _resolve_intan_session_for_br_idx(
 
     # 2) invert to {BR_File -> Intan_File}
     br_to_intan = {b: i for i, b in intan_to_br.items()}
-
     if br_idx not in br_to_intan:
         print(f"[WARN] BR {br_idx:03d} not in mapping CSV.")
         return None
-
     intan_idx = br_to_intan[br_idx]
 
     # 3) Build {Intan_File index -> session string} from NPRW rates
     _, intan_idx_to_sess = _build_session_index_map(nprw_ckpt_root)
-
     sess = intan_idx_to_sess.get(intan_idx)
     if not sess:
         print(f"[WARN] Intan_File {intan_idx} not found among NPRW rates.")
         return None
     return sess
 
-def _stim_npz_for_br_idx(out_base: Path, br_idx: int, nprw_ckpt_root: Path) -> Optional[Path]:
-    sess = _resolve_intan_session_for_br_idx(out_base, br_idx, nprw_ckpt_root)
+def _stim_npz_for_br_idx(meta_csv: Path, out_base: Path, br_idx: int, nprw_ckpt_root: Path) -> Optional[Path]:
+    sess = _resolve_intan_session_for_br_idx(meta_csv, br_idx, nprw_ckpt_root)
     if not sess:
         return None
     bundles_root = out_base / "bundles" / "NPRW"
@@ -163,12 +165,12 @@ def _br_idx_from_name(name: str) -> Optional[int]:
     hits = re.findall(r'_(\d{3})(?=_)', name)
     return int(hits[-1]) if hits else None
 
-def _load_shift_row_by_br_idx(out_base: Path, br_idx: int) -> Optional[dict]:
+def _load_shift_row_by_br_idx(metadata_path: Path, br_idx: int) -> Optional[dict]:
     """
-    Read figures/align_BR_to_Intan/br_to_intan_shifts.csv and return the row for this br_idx.
+    Read br_to_intan_shifts.csv and return the row for this br_idx.
     Expected columns include: session (Intan), br_idx, anchor_ms, fs_intan, (optionally anchor_sample, etc.)
     """
-    shifts_csv = out_base / "figures" / "align_BR_to_Intan" / "br_to_intan_shifts.csv"
+    shifts_csv = metadata_path
     if not shifts_csv.exists():
         return None
     with shifts_csv.open("r", newline="") as f:
@@ -217,7 +219,7 @@ def load_anchor_for_session(out_base: Path, session: str) -> tuple[int, float]:
 
     return 0, 30000.0  # fallback if no row
 
-def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[int] = None):
+def main(limit_sessions: Optional[int] = None):
     br_session_folders = BR_SESSION_FOLDERS  # read the global into a local
     if limit_sessions is not None:           # allow 0 cleanly
         br_session_folders = br_session_folders[:limit_sessions]
@@ -225,10 +227,10 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
     print("Found session folders:", len(br_session_folders))
     saved_paths: list[Path] = []
 
-    for sess in br_session_folders:
+    for k, sess in enumerate(br_session_folders):
         print(f"=== Session: {sess.name} ===")
     
-        bundle = rcp.build_blackrock_bundle(sess)
+        bundle = rcp.build_blackrock_bundle(sess, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH)
         rcp.save_UA_bundle_npz(sess.name, bundle, BUNDLES_OUT)
 
         rec_ns6 = rcp.load_ns6_spikes(sess)
@@ -255,9 +257,9 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
             print(f"[WARN] Could not parse BR index from session folder '{sess.name}'. Skipping artifact removal.")
         else:
             # 1) find Intan session via metadata + NPRW rates
-            stim_npz_path = _stim_npz_for_br_idx(OUT_BASE, br_idx, NPRW_CKPT_ROOT)
+            stim_npz_path = _stim_npz_for_br_idx(METADATA_CSV, OUT_BASE, br_idx, NPRW_CKPT_ROOT)
             # 2) and fetch the shift row for the same BR index
-            shifts_row = _load_shift_row_by_br_idx(OUT_BASE, br_idx)
+            shifts_row = _load_shift_row_by_br_idx(SHIFT_CSV, br_idx)
 
             if not stim_npz_path or not stim_npz_path.exists():
                 print(f"[WARN] stim_stream.npz not found for BR {br_idx:03d} (looked at {stim_npz_path}).")
@@ -294,7 +296,7 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
 
             if starts_ua.size:
                 ms_before = 5.0
-                tail_ms   = 20.0
+                tail_ms   = 5.0
                 dur_ms    = (ends_ua - starts_ua) * 1000.0 / fs_ua
                 ms_after  = float(dur_ms.max() + tail_ms)
 
@@ -372,7 +374,6 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
                 ua_region_per_row = np.array([], dtype=np.int8)
 
             ua_region_names = np.array(["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"], dtype=object)
-
         
         # save the cleaned preprocessed recording
         out_geom = CKPT_OUT / f"pp_global__{sess.name}__NS6"
@@ -504,4 +505,4 @@ def main(use_br: bool = True, use_intan: bool = False, limit_sessions: Optional[
     # print(f"Phy export ready: {phy_folder}")
 
 if __name__ == "__main__":
-    main(use_intan=False, limit_sessions=None)
+    main(limit_sessions=None)

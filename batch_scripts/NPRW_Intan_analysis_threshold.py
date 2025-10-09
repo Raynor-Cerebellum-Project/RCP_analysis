@@ -64,32 +64,32 @@ def plot_selected_sessions(
             )
 
         # plot from artifact-corrected checkpoints
-        try:
-            rcp.plot_all_quads_for_session(
-                sess_folder=sess,
-                geom_path=GEOM_PATH,
-                neural_stream=INTAN_STREAM,
-                out_dir=figs_dir,
-                stim_npz_path=stim_npz_path,
-                pre_s=pre_s,
-                post_s=post_s,
-                preproc_root=preproc_root,
-                template_samples_before=template_samples_before,
-                template_samples_after=template_samples_after,
-            )
-        except Exception as e:
-            print(f"[WARN] plotting failed for {sess.name}: {e}")
-        print(f"[Plot] Plotted session #{i}: {sess.name}")
+        # try:
+        #     rcp.plot_all_quads_for_session(
+        #         sess_folder=sess,
+        #         geom_path=GEOM_PATH,
+        #         neural_stream=INTAN_STREAM,
+        #         out_dir=figs_dir,
+        #         stim_npz_path=stim_npz_path,
+        #         pre_s=pre_s,
+        #         post_s=post_s,
+        #         preproc_root=preproc_root,
+        #         template_samples_before=template_samples_before,
+        #         template_samples_after=template_samples_after,
+        #     )
+        # except Exception as e:
+        #     print(f"[WARN] plotting failed for {sess.name}: {e}")
+        # print(f"[Plot] Plotted session #{i}: {sess.name}")
 
 # ==============================
 # Config
 # ==============================
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
+PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
 DATA_ROOT = rcp.resolve_data_root(PARAMS)
-OUT_BASE  = rcp.resolve_output_root(PARAMS)
-OUT_BASE.mkdir(parents=True, exist_ok=True)
-INTAN_ROOT = rcp.resolve_intan_root(PARAMS)
+OUT_BASE  = rcp.resolve_output_root(PARAMS); OUT_BASE.mkdir(parents=True, exist_ok=True)
+INTAN_ROOT = rcp.resolve_intan_root(PARAMS); INTAN_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_CSV  = (DATA_ROOT / PARAMS.metadata_rel).resolve(); METADATA_CSV.parent.mkdir(parents=True, exist_ok=True)
 GEOM_PATH = rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT)
 
 # === Intan stream name ===
@@ -217,15 +217,16 @@ def main(limit_sessions: Optional[int] = None):
             ends_samp   = ends_samp[valid]
 
             if starts_samp.size:
-                dur_ms = (ends_samp - starts_samp) * 1000.0 / fs
-                tail_ms = 5.0
                 ms_before_each = 20.0
+                tail_ms = 20.0
+                dur_ms    = (ends_samp - starts_samp) * 1000.0 / fs
+                ms_after  = float(dur_ms.max() + tail_ms)
 
                 rec_artif_removed = si.preprocessing.remove_artifacts(
                     rec_ref,
                     list_triggers=[starts_samp.tolist()],
                     ms_before=ms_before_each,
-                    ms_after=float(dur_ms.max() + tail_ms),  # one size
+                    ms_after=ms_after,  # one size
                     mode="zeros",
                 )
             else:
@@ -255,45 +256,45 @@ def main(limit_sessions: Optional[int] = None):
             n_jobs=PARAMS.parallel_jobs,
         )
         
-        rcp.plot_all_quads_for_session(
-            sess_folder=sess,
-            geom_path=GEOM_PATH,
-            neural_stream=INTAN_STREAM,
-            out_dir=figs_dir_after,
-            peaks=peaks,
-            peak_t_s=peak_t_ms / 1000.0,
-            stim_npz_path=stim_npz_path,
-            preproc_root=preproc_root,
-            template_samples_before=params.pre_samples,
-            template_samples_after=params.post_pad_samples,
-            view_s=(0.95, 1.1)
-        )
-        rcp.plot_all_quads_for_session(
-            sess_folder=sess,
-            geom_path=GEOM_PATH,
-            neural_stream=INTAN_STREAM,
-            out_dir=figs_dir_after2,
-            peaks=peaks,
-            peak_t_s=peak_t_ms / 1000.0,
-            stim_npz_path=stim_npz_path,
-            preproc_root=preproc_root,
-            template_samples_before=params.pre_samples,
-            template_samples_after=params.post_pad_samples,
-            view_s=(0.98, 1.05)
-        )
-        rcp.plot_all_quads_for_session(
-            sess_folder=sess,
-            geom_path=GEOM_PATH,
-            neural_stream=INTAN_STREAM,
-            out_dir=figs_dir_after3,
-            peaks=peaks,
-            peak_t_s=peak_t_ms / 1000.0,
-            stim_npz_path=stim_npz_path,
-            preproc_root=preproc_root,
-            template_samples_before=params.pre_samples,
-            template_samples_after=params.post_pad_samples,
-            view_s=(1.05, 1.15)
-        )        
+        # rcp.plot_all_quads_for_session(
+        #     sess_folder=sess,
+        #     geom_path=GEOM_PATH,
+        #     neural_stream=INTAN_STREAM,
+        #     out_dir=figs_dir_after,
+        #     peaks=peaks,
+        #     peak_t_s=peak_t_ms / 1000.0,
+        #     stim_npz_path=stim_npz_path,
+        #     preproc_root=preproc_root,
+        #     template_samples_before=params.pre_samples,
+        #     template_samples_after=params.post_pad_samples,
+        #     view_s=(0.95, 1.1)
+        # )
+        # rcp.plot_all_quads_for_session(
+        #     sess_folder=sess,
+        #     geom_path=GEOM_PATH,
+        #     neural_stream=INTAN_STREAM,
+        #     out_dir=figs_dir_after2,
+        #     peaks=peaks,
+        #     peak_t_s=peak_t_ms / 1000.0,
+        #     stim_npz_path=stim_npz_path,
+        #     preproc_root=preproc_root,
+        #     template_samples_before=params.pre_samples,
+        #     template_samples_after=params.post_pad_samples,
+        #     view_s=(0.98, 1.05)
+        # )
+        # rcp.plot_all_quads_for_session(
+        #     sess_folder=sess,
+        #     geom_path=GEOM_PATH,
+        #     neural_stream=INTAN_STREAM,
+        #     out_dir=figs_dir_after3,
+        #     peaks=peaks,
+        #     peak_t_s=peak_t_ms / 1000.0,
+        #     stim_npz_path=stim_npz_path,
+        #     preproc_root=preproc_root,
+        #     template_samples_before=params.pre_samples,
+        #     template_samples_after=params.post_pad_samples,
+        #     view_s=(1.05, 1.15)
+        # )        
         
         # rate_hz is (n_channels, n_bins) → transpose to (n_bins, n_channels)
         X = rate_hz.T

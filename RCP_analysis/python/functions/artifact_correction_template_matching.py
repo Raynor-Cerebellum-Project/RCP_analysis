@@ -11,6 +11,8 @@ from multiprocessing import Pool
 import spikeinterface as si
 from spikeinterface.core import NumpyRecording
 
+import RCP_analysis as rcp
+
 # ----------------------------- Params -----------------------------------------
 @dataclass
 class PCAArtifactParams:
@@ -35,29 +37,6 @@ class PCAArtifactParams:
     interp_ramp: bool = True
     ramp_tail_ms: float = 1.0          # start ramp after artifact end + tail
     ramp_fraction: float = 1.0         # fraction of edge value to ramp to baseline
-
-# ------------------------- NPZ loader -----------------------------------------
-
-def load_stim_detection(npz_path: Path) -> Dict[str, np.ndarray]:
-    """
-    Required fields (your new format):
-      - active_channels     : (n_active,)
-      - trigger_pairs       : (n_pulses, 2) [start, end] in Intan index space
-      - block_bounds_samples    : (n_blocks, 2) boundaries in Intan index space
-      - pulse_sizes         : (n_pulses,)
-    """
-    with np.load(npz_path, allow_pickle=False) as z:
-        active_channels = z.get("active_channels", np.array([], dtype=np.int32)).astype(np.int32)
-        trigger_pairs = z["trigger_pairs"].astype(np.int64)
-        block_bounds_samples = z["block_bounds_samples"].astype(np.int64)
-        pulse_sizes = z["pulse_sizes"].astype(np.int32)
-
-    return dict(
-        active_channels=active_channels,
-        trigger_pairs=trigger_pairs,
-        block_bounds_samples=block_bounds_samples,
-        pulse_sizes=pulse_sizes,
-    )
 
 # ---------------------- Helpers: drift removal, snippets, PCA -----------------
 def _medfilt_col(args):
@@ -285,7 +264,7 @@ def remove_stim_pca_offline(
     clean = _global_drift_remove_pool(raw, fs, pca_params, n_jobs=8)
 
     # Load stim detection data
-    stim_data = load_stim_detection(stim_npz_path)
+    stim_data = rcp.load_stim_detection(stim_npz_path)
     trigger_pairs = stim_data["trigger_pairs"]        # (n_pulses, 2)
     block_bounds_samples  = stim_data["block_bounds_samples"] # (n_blocks, 2) in sample space
     # pulse_sizes  = stim_data["pulse_sizes"]         # not needed explicitly here

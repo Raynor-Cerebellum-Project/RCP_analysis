@@ -7,7 +7,7 @@ import pandas as pd
 import spikeinterface as si
 import spikeinterface.extractors as se
 from spikeinterface.sortingcomponents.peak_detection import detect_peaks
-from scipy.ndimage import gaussian_filter1d
+from scipy.signal import butter, filtfilt
 
 # ---------- BR utils ----------
 def list_br_sessions(data_root: Path, blackrock_rel: str) -> list[Path]:
@@ -57,13 +57,22 @@ def _load_nsx(sess: Path, ext: str):
     return se.read_blackrock(str(f), all_annotations=True)
 
 def load_ns6_spikes(sess: Path):
-    return _load_nsx(sess, "ns6")   # 30 kHz, 1..128
+    rec = _load_nsx(sess, "ns6")
+    ids = _ensure_int_ids(rec)
+    print(f"[NS6] {len(ids)} channels → {ids.tolist()}")
+    return rec
 
 def load_ns5_aux(sess: Path):
-    return _load_nsx(sess, "ns5")   # 30 kHz, 134 & 138
+    rec = _load_nsx(sess, "ns5")
+    ids = _ensure_int_ids(rec)
+    print(f"[NS5] {len(ids)} channels → {ids.tolist()}")
+    return rec
 
 def load_ns2_digi(sess: Path):
-    return _load_nsx(sess, "ns2")   # 1 kHz, 129..133,135..137,139..144
+    rec = _load_nsx(sess, "ns2")
+    ids = _ensure_int_ids(rec)
+    print(f"[NS2] {len(ids)} channels → {ids.tolist()}")
+    return rec
 
 # ---------- Mapping helpers ----------
 def _ensure_int_ids(rec) -> np.ndarray:
@@ -228,71 +237,85 @@ def apply_ua_mapping_properties(recording, mapped_nsp: np.ndarray):
     print(f"[MAP] stamped UA mapping on {mapped}/{n_ch} rows (no geometry).")
 
 # ---------- Bundles (NS5+NS2 only) ----------
-def build_blackrock_bundle(sess: Path) -> dict:
+def build_blackrock_bundle(sess: Path, camera_sync_ch, triangle_sync_ch) -> dict:
     """
-    Build a bundle of non-NS6 streams -- TODO: Load this in NWB format
-      - aux:  ns5 (intan_sync ch134,  camera_sync ch138)
-      - digi:  ns2 (channels 129..133,135..137,139..144)
-    Returns a dict of signals + sampling rates
+    Build a bundle:
+      - ns5: pull specific sync channels (Ex: 134=camera, 138=triangle) if present
+      - ns2: pull ALL channels present
     """
     bundle: Dict[str, Any] = {}
 
-    # ns5: intan_sync (134), camera_sync (138)
+    # ---------------- NS5 (syncs) ----------------
+    intan_sync = None
     camera_sync = None
-    intan_sync  = None
+    triangle_sync = None
     fs_ns5 = None
     try:
         rec_ns5 = load_ns5_aux(sess)
         fs_ns5 = float(rec_ns5.get_sampling_frequency())
-        cols, missing = pick_cols_by_ids(rec_ns5, [134, 138])
-        if missing:
-            print(f"[WARN] ns5 missing channels: {missing}")
-        if cols:
-            tr = rec_ns5.get_traces(0, 0, rec_ns5.get_num_frames(0)).astype(np.float32)
-            ids = _ensure_int_ids(rec_ns5)
-            for col in cols:
-                ch_id = int(ids[col])
-                if ch_id == 134:
-                    intan_sync = tr[:, col]
-                elif ch_id == 138:
-                    camera_sync = tr[:, col]
-    except FileNotFoundError:
-        print("[WARN] ns5 not found; aux syncs unavailable.")
-    bundle["aux"] = {"fs": fs_ns5, "camera_sync": camera_sync, "intan_sync": intan_sync}
 
-    # ns2: keep as ch129, ch130, ...
-    digi_ch = {"fs": None, "channels": {}}
+        # map channel id -> column index
+        ids_ns5 = _ensure_int_ids(rec_ns5)
+        id2col_ns5 = {int(ch): i for i, ch in enumerate(ids_ns5)}
+
+        wanted_sync = {camera_sync_ch: "camera_sync", triangle_sync_ch: "triangle_sync"}
+        present = [cid for cid in wanted_sync if cid in id2col_ns5]
+        if not present:
+            print("[WARN] ns5 present but camera_sync or triangle_sync not found.")
+
+        if present:
+            n_frames = int(rec_ns5.get_num_frames(0))
+            tr_ns5 = rec_ns5.get_traces(0, 0, end_frame=n_frames).astype(np.float32)
+            for cid in present:
+                col = id2col_ns5[cid]
+                if cid == camera_sync_ch:
+                    camera_sync = tr_ns5[:, col]
+                elif cid == triangle_sync_ch:
+                    triangle_sync = tr_ns5[:, col]
+    except FileNotFoundError:
+        print("[WARN] ns5 not found; syncs unavailable.")
+    bundle["aux"] = {
+        "fs": fs_ns5,
+        "intan_sync": intan_sync,
+        "camera_sync": camera_sync,
+        "triangle_sync": triangle_sync,
+    }
+
+    # ---------------- NS2 (all channels) ----------------
+    digi = {"fs": None, "channels": {}}
     try:
         rec_ns2 = load_ns2_digi(sess)
         fs_ns2 = float(rec_ns2.get_sampling_frequency())
-        digi_ch["fs"] = fs_ns2
-        wanted = [129,130,131,132,133,135,136,137,139,140,141,142,143,144]
-        cols, missing = pick_cols_by_ids(rec_ns2, wanted)
-        if missing:
-            print(f"[WARN] ns2 missing channels: {missing}")
-        if cols:
-            tr = rec_ns2.get_traces(0, 0, rec_ns2.get_num_frames(0)).astype(np.float32)
-            ids = _ensure_int_ids(rec_ns2)
-            for col in cols:
-                ch_id = int(ids[col])
-                digi_ch["channels"][f"ch{ch_id}"] = tr[:, col]
+        digi["fs"] = fs_ns2
+
+        ids_ns2 = _ensure_int_ids(rec_ns2)
+        n_frames = int(rec_ns2.get_num_frames(0))
+        tr_ns2 = rec_ns2.get_traces(0, 0, rec_ns2.get_num_frames(0)).astype(np.float32)
+
+        # add ALL columns present
+        for col, cid in enumerate(ids_ns2):
+            digi["channels"][f"ch{int(cid)}"] = tr_ns2[:, col]
     except FileNotFoundError:
         print("[WARN] ns2 not found; no digital channels.")
-    bundle["digi"] = digi_ch
+    bundle["digi"] = digi
 
     return bundle
 
 def save_UA_bundle_npz(sess_name: str, bundle: dict, out_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
+    aux = bundle.get("aux", {})
+    digi = bundle.get("digi", {})
+
     np.savez_compressed(
         out_dir / f"{sess_name}_UA_bundle.npz",
-        aux_fs=np.array(bundle["aux"]["fs"] if bundle["aux"]["fs"] is not None else np.nan, dtype=np.float64),
-        camera_sync=bundle["aux"]["camera_sync"] if bundle["aux"]["camera_sync"] is not None else np.array([]),
-        intan_sync=bundle["aux"]["intan_sync"] if bundle["aux"]["intan_sync"] is not None else np.array([]),
-        digi_fs=np.array(bundle["digi"]["fs"] if bundle["digi"]["fs"] is not None else np.nan, dtype=np.float64),
-        **{k: v for k, v in bundle["digi"]["channels"].items()},
+        aux_fs=np.array(aux.get("fs", np.nan), dtype=np.float64),
+        intan_sync=aux.get("intan_sync", np.array([])),
+        camera_sync=aux.get("camera_sync", np.array([])),
+        triangle_sync=aux.get("triangle_sync", np.array([])),
+        digi_fs=np.array(digi.get("fs", np.nan), dtype=np.float64),
+        **{k: v for k, v in digi.get("channels", {}).items()},
     )
-    print(f"[SAVED] {out_dir / f'{sess_name}_bundle.npz'}")
+    print(f"[SAVED] {out_dir / f'{sess_name}_UA_bundle.npz'}")
 
 ## This function used by Intan too
 def threshold_mua_rates(
@@ -389,16 +412,33 @@ def threshold_mua_rates(
 
     # 3) Gaussian smoothing → Hz
     fs_bins = 1000.0 / float(bin_ms)  # bins per second
-    if sigma_bins <= 0 or counts_cat.shape[1] < 2:
+    if counts_cat.shape[1] < 4:
         counts_smooth = counts_cat.astype(float, copy=False)
     else:
-        counts_smooth = gaussian_filter1d(
-            counts_cat.astype(float, copy=False),
-            sigma=sigma_bins,
-            axis=1,
-            mode="nearest",
-            truncate=4.0,
-        )
+        # Map Gaussian sigma to an approximate -3 dB cutoff:
+        # For a Gaussian, H(f) = exp(-(2π f σ)^2 / 2); |H| = 1/√2 at f_c = sqrt(ln 2) / (2π σ)
+        # Use sigma_ms to set a comparable Butterworth cutoff.
+        sigma_sec = max(1e-9, float(sigma_ms) / 1000.0)
+        fc_hz = (np.sqrt(np.log(2.0)) / (2.0 * np.pi * sigma_sec))  # ~0.132 / sigma_sec
+
+        # Normalize for butter() (0..1 where 1 = Nyquist)
+        nyq = 0.5 * fs_bins
+        wn = min(0.999, max(1e-6, fc_hz / nyq))
+
+        b, a = butter(N=4, Wn=wn, btype="low", analog=False)
+
+        # filtfilt default padlen = 3*(max(len(a), len(b)) - 1)
+        # If too short, reduce padlen safely.
+        T = counts_cat.shape[1]
+        default_padlen = 3 * (max(len(a), len(b)) - 1)
+        padlen = default_padlen if T > default_padlen else max(0, T - 1)
+
+        try:
+            counts_smooth = filtfilt(b, a, counts_cat.astype(float, copy=False),
+                                     axis=1, padlen=padlen)
+        except ValueError:
+            # If still too short/edgey, fall back to no filtering
+            counts_smooth = counts_cat.astype(float, copy=False)
 
     rate_hz = counts_smooth * fs_bins  # counts/bin → Hz
     return rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms

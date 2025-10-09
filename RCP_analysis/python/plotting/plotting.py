@@ -6,9 +6,11 @@ from matplotlib.patches import Rectangle
 
 from probeinterface.plotting import plot_probe
 from probeinterface import Probe
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
 # import helpers from sibling modules
-from ..functions.utils import load_rate_npz, median_across_trials, extract_peristim_segments, build_probe_and_locs_from_geom
+from ..functions.utils import load_rate_npz, median_across_trials, extract_peristim_segments, build_probe_and_locs_from_geom, baseline_zero_each_trial
+
 # ---- Plotting Intan only ----
 def _probe_from_locs(locs, radius_um: float = 5.0):
     """Create a ProbeInterface Probe from (n_ch, 2) contact positions."""
@@ -24,24 +26,6 @@ def _probe_from_locs(locs, radius_um: float = 5.0):
     except Exception:
         pass
     return pr
-
-def baseline_zero_each_trial(
-    segments: np.ndarray,
-    rel_time_ms: np.ndarray,
-    baseline_first_ms: float = 100.0,
-):
-    """
-    For each trial & channel, subtract the mean over the first `baseline_first_ms`
-    of the segment (i.e., from window start to start+baseline_first_ms).
-    segments: (n_trials, n_ch, n_twin)
-    """
-    # mask for first 100 ms of the segment window (e.g., [-800, -700))
-    t0 = rel_time_ms[0]
-    mask = (rel_time_ms >= t0) & (rel_time_ms < t0 + baseline_first_ms)
-    if mask.sum() < 1:
-        raise ValueError("Baseline window has 0 bins — check your timebase and dt.")
-    base = segments[:, :, mask].mean(axis=2, keepdims=True)  # (n_trials, n_ch, 1)
-    return segments - base
 
 def plot_channel_heatmap(
     avg_change: np.ndarray,           # (n_ch, n_twin)
@@ -522,6 +506,225 @@ def stacked_heatmaps_two_t(
     out_svg.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_svg, dpi=300, bbox_inches="tight"); plt.close(fig)
 
+def stacked_heatmaps_plus_behv(
+    intan_med: np.ndarray,              # (n_intan_ch, T_intan)
+    ua_med: np.ndarray,                 # (n_ua_rows, T_ua)
+    t_intan: np.ndarray,                # (T_intan,)
+    t_ua: np.ndarray,                   # (T_ua,)
+    out_svg: Path,
+    title_top: str,
+    title_bot: str,
+    *,
+    cmap: str = "jet",
+    vmin_intan: float | None = None,
+    vmax_intan: float | None = None,
+    vmin_ua: float | None = None,
+    vmax_ua: float | None = None,
+    probe=None,
+    probe_locs=None,
+    stim_idx=None,
+    probe_title: str = "Probe (Intan)",
+    probe_width_ratio: float = 0.35,
+    probe_marker_size: int = 28,
+    ua_ids_1based: np.ndarray | None = None,
+    ua_sort: str = "region_then_elec",  # "none" | "elec" | "region_then_elec"
+
+    # --- NEW behavior inputs ---
+    beh_rel_time: np.ndarray | None = None,   # (T_beh,)
+    beh_cam0_lines: np.ndarray | None = None, # (6, T_beh)
+    beh_cam1_lines: np.ndarray | None = None, # (6, T_beh)
+    beh_labels: list[str] | None = None,      # length 6
+    sess: str | None = None,
+):
+    """
+    4-row layout:
+      Row 1: Behavior camera 0 (six traces: wrist_x, wrist_y, middle_base_x, middle_base_y, middle_tip_x, middle_tip_y)
+      Row 2: Behavior camera 1 (same ordering)
+      Row 3: Intan heatmap
+      Row 4: UA   heatmap (+ region bar)
+
+    Right-side probe inset is included if `probe` or `probe_locs` are provided.
+    """
+    # ---- figure & gridspec (with optional probe column) ----
+    have_probe = (probe is not None) or (
+        probe_locs is not None and np.asarray(probe_locs).ndim == 2 and len(probe_locs) > 0
+    )
+    if have_probe:
+        fig = plt.figure(figsize=(14, 10), constrained_layout=True)
+        gs = gridspec.GridSpec(nrows=4, ncols=3, figure=fig,
+                               width_ratios=[1.0, 0.0001, probe_width_ratio])
+        ax_b0   = fig.add_subplot(gs[0, 0])
+        ax_b1   = fig.add_subplot(gs[1, 0], sharex=ax_b0)
+        ax_i    = fig.add_subplot(gs[2, 0], sharex=ax_b0)
+        ax_ua   = fig.add_subplot(gs[3, 0], sharex=ax_b0)
+        ax_probe = fig.add_subplot(gs[:, 2])
+    else:
+        fig = plt.figure(figsize=(14, 10), constrained_layout=True)
+        gs = gridspec.GridSpec(nrows=4, ncols=1, figure=fig)
+        ax_b0   = fig.add_subplot(gs[0, 0])
+        ax_b1   = fig.add_subplot(gs[1, 0])
+        ax_i    = fig.add_subplot(gs[2, 0])
+        ax_ua   = fig.add_subplot(gs[3, 0])
+        ax_probe = None
+
+    # ---------------- Behavior rows ----------------
+    if beh_rel_time is not None and beh_cam0_lines is not None and beh_cam1_lines is not None:
+        labs = beh_labels or ["wrist_x","wrist_y","middle_base_x","middle_base_y","middle_tip_x","middle_tip_y"]
+
+        # Row 1: cam0 (solid)
+        for k in range(min(6, beh_cam0_lines.shape[0])):
+            y = beh_cam0_lines[k]
+            if np.isfinite(y).any():
+                ax_b0.plot(beh_rel_time, y, lw=1.25, label=labs[k])
+        ax_b0.axvline(0.0, color="red", alpha=0.9, linewidth=1.2)
+        ax_b0.axvspan(0.0, 100.0, color="gray", alpha=0.2)
+        ax_b0.set_ylabel("Δ (z)")
+        ttl0 = f"Median kinematics (Cam-0){' — ' + sess if sess else ''}"
+        ax_b0.set_title(ttl0)
+        # keep legend compact
+        if beh_cam0_lines.shape[0] > 0:
+            leg0 = ax_b0.legend(
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),   # just outside the right edge of ax_b0
+                frameon=False,
+                fontsize=8,
+                ncols=1,
+                borderaxespad=0.0,
+                handlelength=2.0,
+            )
+            
+        # Row 2: cam1 (dashed)
+        for k in range(min(6, beh_cam1_lines.shape[0])):
+            y = beh_cam1_lines[k]
+            if np.isfinite(y).any():
+                ax_b1.plot(beh_rel_time, y, lw=1.25, ls="--", label=labs[k], alpha=0.95)
+        ax_b1.axvline(0.0, color="red", alpha=0.9, linewidth=1.2)
+        ax_b1.axvspan(0.0, 100.0, color="gray", alpha=0.2)
+        ax_b1.set_ylabel("Δ (z)")
+        ax_b1.set_title("Median kinematics (Cam-1)")
+
+        # Share x-range with neural panels if ranges match; otherwise just use beh range
+        ax_b1.set_xlim(float(beh_rel_time[0]), float(beh_rel_time[-1]))
+    else:
+        ax_b0.text(0.5, 0.5, "No behavior provided", ha="center", va="center", transform=ax_b0.transAxes)
+        ax_b1.text(0.5, 0.5, "No behavior provided", ha="center", va="center", transform=ax_b1.transAxes)
+
+    # ---------------- Intan heatmap ----------------
+    im0 = ax_i.imshow(
+        intan_med, aspect="auto", cmap=cmap, origin="lower",
+        extent=[t_intan[0], t_intan[-1], 0, intan_med.shape[0]],
+        vmin=vmin_intan, vmax=vmax_intan
+    )
+    # blank the NPRW artifact window: [-20, 120] ms
+    ax_i.axvspan(-20.0, 120.0, color="gray", alpha=1.0, zorder=10)
+    # stim timing line in red on top
+    ax_i.axvline(0.0, color="red", alpha=0.9, linewidth=1.2, zorder=11)
+
+    ax_i.set_ylabel("Intan ch")
+    ax_i.set_title(title_top)
+    # ---- Intan colorbar (locked to ax_i) ----
+    cax0 = inset_axes(
+        ax_i,
+        width="2.4%",      # bar thickness
+        height="80%",      # bar length
+        loc="center left",
+        bbox_to_anchor=(1.02, 0., 1, 1),   # just to the right of ax_i
+        bbox_transform=ax_i.transAxes,
+        borderpad=0.0,
+    )
+    c0 = fig.colorbar(im0, cax=cax0)
+    c0.set_label("Δ FR (Hz)")
+
+    # ---------------- UA heatmap (+ region bar) ----------------
+    ua_plot = ua_med
+    ids_plot = ua_ids_1based
+    if ua_ids_1based is not None and ua_sort != "none":
+        ids = np.asarray(ua_ids_1based, int)
+        valid = ids > 0
+        if ua_sort == "elec":
+            order_valid = np.argsort(ids[valid], kind="stable")
+        elif ua_sort == "region_then_elec":
+            regs = np.array([_ua_region_from_elec(int(e)) for e in ids], int)
+            order_valid = np.lexsort((ids[valid], regs[valid]))  # (region, elec)
+        else:
+            order_valid = np.arange(valid.sum())
+        order = np.r_[np.where(valid)[0][order_valid], np.where(~valid)[0]]
+        ua_plot = ua_med[order, :]
+        ids_plot = ids[order]
+
+    im1 = ax_ua.imshow(
+        ua_plot, aspect="auto", cmap=cmap, origin="lower",
+        extent=[t_ua[0], t_ua[-1], 0, ua_plot.shape[0]],
+        vmin=vmin_ua, vmax=vmax_ua
+    )
+    ax_ua.axvspan(-5.0, 105.0, color="gray", alpha=1.0, zorder=10)
+    ax_ua.axvline(0.0, color="red", alpha=0.9, linewidth=1.2, zorder=11)
+
+    ax_ua.set_xlabel("Time (ms) rel. stim")
+    ax_ua.set_ylabel("") # Remove numbers
+    ax_ua.set_yticks([]); ax_ua.tick_params(left=False, labelleft=False)
+    ax_ua.set_title(title_bot)
+
+    _add_ua_region_bar(ax_ua, ua_plot.shape[0], ua_chan_ids_1based=ids_plot)
+
+    # ---- UA colorbar (locked to ax_ua) ----
+    cax1 = inset_axes(
+        ax_ua,
+        width="2.4%",
+        height="80%",
+        loc="center left",
+        bbox_to_anchor=(1.02, 0., 1, 1),
+        bbox_transform=ax_ua.transAxes,
+        borderpad=0.0,
+    )
+    c1 = fig.colorbar(im1, cax=cax1)
+    c1.set_label("Δ FR (Hz) NOTE: SCALE")
+    
+    # ---------------- Probe inset (optional) ----------------
+    if have_probe:
+        if probe is None and Probe is not None:
+            pr = Probe(ndim=2)
+            pr.set_contacts(positions=np.asarray(probe_locs, float),
+                            shapes="circle", shape_params={"radius": 5.0})
+            try: pr.create_auto_shape()
+            except Exception: pass
+            probe = pr
+
+        if probe_locs is None:
+            try:
+                probe_locs = probe.contact_positions.astype(float)
+            except Exception:
+                probe_locs = None
+
+        n_contacts = (probe.get_contact_count()
+                      if probe is not None else (0 if probe_locs is None else probe_locs.shape[0]))
+        contacts_colors = ["none"] * n_contacts
+        if stim_idx is not None and np.size(stim_idx):
+            s = np.asarray(stim_idx, int)
+            s = s[(s >= 0) & (s < n_contacts)]
+            for i in s:
+                contacts_colors[i] = "tab:red"
+
+        if plot_probe is not None and probe is not None:
+            plot_probe(
+                probe, ax=ax_probe, with_contact_id=False,
+                contacts_colors=contacts_colors,
+                probe_shape_kwargs={"facecolor": "none", "edgecolor": "black", "linewidth": 0.6},
+                contacts_kargs={"edgecolor": "k", "linewidth": 0.3},
+            )
+        else:
+            if probe_locs is not None:
+                L = np.asarray(probe_locs)
+                ax_probe.scatter(L[:, 0], L[:, 1], s=probe_marker_size,
+                                 facecolors="none", edgecolors="k", linewidths=0.3)
+        ax_probe.set_title(probe_title, fontsize=10)
+        ax_probe.set_aspect("equal", adjustable="box")
+        ax_probe.set_xticks([]); ax_probe.set_yticks([])
+
+    out_svg.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_svg, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
 
 
 ## Plotting peak detection diagnoses -- deprecated?
@@ -698,7 +901,7 @@ def stacked_heatmaps_two_t(
 
 #     if stim_npz_path is not None:
 #         try:
-#             stim = load_stim_detection(stim_npz_path)
+#             stim = rcp.load_stim_detection(stim_npz_path)
 
 #             # triggers: take start column if present
 #             tp = np.asarray(stim.get("trigger_pairs", []))

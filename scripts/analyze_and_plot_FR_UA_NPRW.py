@@ -9,8 +9,8 @@ from pathlib import Path
 BATCH_SCRIPTS = [
     "NPRW_Intan_analysis_threshold.py",
     "compute_br_to_intan_shifts.py",
-    "make_aligned_npz_from_shifts.py",
     "UA_BR_analysis_threshold.py",
+    "make_aligned_npz_from_shifts.py",
     "NPRW_UA_FR_plotting.py",
 ]
 

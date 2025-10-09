@@ -8,47 +8,7 @@ import spikeinterface.extractors as se
 import spikeinterface.preprocessing as spre
 from probeinterface import Probe
 from dataclasses import dataclass
-
-# ---------- Intan utils ----------
-def list_intan_sessions(root: Path) -> list[Path]:
-    root = Path(root)
-    return sorted([p for p in root.iterdir() if p.is_dir()])
-
-def read_intan_recording(
-    folder: Path,
-    stream_name: str = "RHS2000 amplifier channel",
-) -> si.BaseRecording:
-    """
-    Read a single Intan session folder (RHS split files).
-    """
-    folder = Path(folder)
-    rec = se.read_split_intan_files(folder, mode="concatenate", stream_name=stream_name, use_names_as_ids=True)
-    # If UInt16, convert to signed int16 (common for Intan)
-    if rec.get_dtype().kind == "u":
-        rec = spre.unsigned_to_signed(rec)
-        rec = spre.astype(rec, dtype="int16")
-    return rec
-
-def load_stim_detection(npz_path: Path) -> Dict[str, np.ndarray]:
-    """
-    Required fields (your new format):
-      - active_channels     : (n_active,)
-      - trigger_pairs       : (n_pulses, 2) [start, end] in Intan index space
-      - block_bounds_samples: (n_blocks, 2) [start, end] in Intan index space
-      - pulse_sizes         : (n_pulses,)
-    """
-    with np.load(npz_path, allow_pickle=False) as z:
-        return dict(
-            active_channels=z["active_channels"].astype(np.int32),
-            trigger_pairs=z["trigger_pairs"].astype(np.int64),
-            block_bounds_samples=z["block_bounds_samples"].astype(np.int64),
-            pulse_sizes=z["pulse_sizes"].astype(np.int32),
-        )
-
-def save_recording(rec: si.BaseRecording, out_dir: Path) -> None:
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    rec.save(folder=out_dir, overwrite=True)
+import RCP_analysis as rcp
 
 # ----------------------
 # Geometry / mapping
@@ -295,7 +255,7 @@ def extract_and_save_stim_npz(
     bundle_dir = out_root / f"{sess_folder.name}_Intan_bundle"
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
-    rec = read_intan_recording(sess_folder, stream_name=stim_stream_name)
+    rec = rcp.read_intan_recording(sess_folder, stream_name=stim_stream_name)
     fs = float(rec.get_sampling_frequency())
 
     # reorder if needed
@@ -351,7 +311,7 @@ def extract_and_save_other_streams_npz(
         if stream_name in exclude_streams:
             continue
         try:
-            rec = read_intan_recording(sess_folder, stream_name=stream_name)
+            rec = rcp.read_intan_recording(sess_folder, stream_name=stream_name)
 
             # TODO Do we need to reorder the aux streams?
             if chanmap_perm is not None and rec.get_num_channels() == chanmap_perm.size:

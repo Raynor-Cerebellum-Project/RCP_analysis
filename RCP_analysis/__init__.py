@@ -7,7 +7,7 @@ from .python.functions.params_loading import (
     resolve_probe_geom_path,
     resolve_intan_root,
 )
-
+    
 # blackrock / UA
 from .python.functions.br_preproc import (
     list_br_sessions,
@@ -24,12 +24,9 @@ from .python.functions.br_preproc import (
 
 # intan
 from .python.functions.intan_preproc import (
-    read_intan_recording,
     load_stim_geometry,
     make_probe_from_geom,
     local_cm_reference,
-    save_recording,
-    list_intan_sessions,
     extract_and_save_stim_npz,
     extract_and_save_other_streams_npz,
     get_chanmap_perm_from_geom,
@@ -40,12 +37,11 @@ from .python.functions.intan_preproc import (
     extract_stim_triggers_and_blocks,
 )
 
-# artifact correction (PCA template subtraction) — keep the single source of truth for load_stim_detection here
+# artifact correction (PCA template subtraction)
 from .python.functions.artifact_correction_template_matching import (
     remove_stim_pca_offline,
     cleaned_numpy_to_recording,
     PCAArtifactParams,
-    load_stim_detection,
 )
 
 # utils
@@ -55,6 +51,20 @@ from .python.functions.utils import (
     extract_peristim_segments,
     detect_stim_channels_from_npz,
     build_probe_and_locs_from_geom,
+    baseline_zero_each_trial,
+    load_combined_npz, 
+    aligned_stim_ms, 
+    ua_title_from_meta,
+    load_intan_adc, 
+    load_br_intan_sync_ns5, 
+    read_intan_to_br_map, 
+    parse_intan_session_dtkey, 
+    build_session_index_map,
+    list_intan_sessions,
+    read_intan_recording, 
+    load_stim_detection, 
+    save_recording,
+    load_behavior_npz,
 )
 
 # plotting
@@ -62,10 +72,11 @@ from .python.plotting.plotting import (
     # _find_interp_dir_for_session,
     # _load_cached_recording,
     # plot_all_quads_for_session,
-    
     run_one_Intan_FR_heatmap,
     plot_single_channel_trial_quad_raw,
     plot_channel_heatmap,
+    stacked_heatmaps_two_t,
+    stacked_heatmaps_plus_behv,
 )
 
 
@@ -92,12 +103,9 @@ __all__ = [
     "threshold_mua_rates",
 
     # Intan
-    "read_intan_recording",
     "load_stim_geometry",
     "make_probe_from_geom",
     "local_cm_reference",
-    "save_recording",
-    "list_intan_sessions",
     "extract_and_save_stim_npz",
     "extract_and_save_other_streams_npz",
     "get_chanmap_perm_from_geom",
@@ -108,7 +116,6 @@ __all__ = [
     "PCAArtifactParams",
     "remove_stim_pca_offline",
     "cleaned_numpy_to_recording",
-    "load_stim_detection",
 
     # stim preprocessing
     "StimTriggerConfig",
@@ -121,12 +128,29 @@ __all__ = [
     "extract_peristim_segments",
     "detect_stim_channels_from_npz",
     "build_probe_and_locs_from_geom",
+    "baseline_zero_each_trial",
+    "load_combined_npz", 
+    "aligned_stim_ms", 
+    "ua_title_from_meta",
+    "load_intan_adc", 
+    "load_br_intan_sync_ns5", 
+    "read_intan_to_br_map", 
+    "parse_intan_session_dtkey", 
+    "build_session_index_map",
+    "list_intan_sessions",
+    "read_intan_recording", 
+    "load_stim_detection", 
+    "save_recording",
+    "load_behavior_npz",
     
     # plotting
-    "plot_all_quads_for_session",
+    # "_find_interp_dir_for_session",
+    # "_load_cached_recording",
+    # "plot_all_quads_for_session",
+    
+    "stacked_heatmaps_plus_behv",
     "run_one_Intan_FR_heatmap",
     "plot_single_channel_trial_quad_raw",
-    "_find_interp_dir_for_session",
-    "_load_cached_recording",
     "plot_channel_heatmap",
+    "stacked_heatmaps_two_t"
 ]

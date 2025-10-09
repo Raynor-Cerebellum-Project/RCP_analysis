@@ -2,7 +2,6 @@ from __future__ import annotations
 from pathlib import Path
 import numpy as np
 import json, csv, re
-import pandas as pd
 import RCP_analysis as rcp
 
 # ---------- CONFIG ----------
@@ -16,6 +15,8 @@ NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
 UA_CKPT_ROOT   = OUT_BASE / "checkpoints" / "UA"
 ALIGNED_CKPT_ROOT   = OUT_BASE / "checkpoints" / "Aligned"
 ALIGNED_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
+BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "behavior"
+BEHV_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
 
 METADATA_CSV  = (DATA_ROOT / PARAMS.metadata_rel).resolve(); METADATA_CSV.parent.mkdir(parents=True, exist_ok=True)
 METADATA_ROOT = METADATA_CSV.parent
@@ -139,6 +140,23 @@ def _overlap_and_resample_to_intan(i_rate, i_t, u_rate, u_t):
     stats = {"overlap_bins": int(common_t.size), "dt_i_ms": dt_i, "dt_u_ms": dt_u}
     return i_rate_trim, common_t, u_rate_on_common, stats
 
+
+
+# ---------- Behavior CSV helpers ----------
+# find “…_both_cams_aligned.csv” for a given BR index (e.g., 001)
+_BOTH_RE = re.compile(r"_(\d{3})_both_cams_aligned\.csv$", re.IGNORECASE)
+
+def _find_behavior_csv_for_br_idx(behv_root: Path, br_idx: int) -> Path | None:
+    hits = []
+    for p in behv_root.rglob("*_both_cams_aligned.csv"):
+        m = _BOTH_RE.search(p.name)
+        if m and int(m.group(1)) == int(br_idx):
+            hits.append(p)
+    if not hits:
+        return None
+    # pick newest by mtime
+    return max(hits, key=lambda x: x.stat().st_mtime)
+
 def main():
     shifts_csv     = METADATA_ROOT / "br_to_intan_shifts.csv"
     if not shifts_csv.exists():
@@ -239,6 +257,73 @@ def main():
 
             print(f"[resample] {session}: overlap bins={stats['overlap_bins']}, "
                   f"Intan dt≈{stats['dt_i_ms']:.3f} ms, UA dt≈{stats['dt_u_ms']:.3f} ms → UA→Intan grid")
+            
+            # ---- Behavior: find and load per-trial CSV (already in ns5 samples) ----
+            beh_ns5_sample = np.array([], dtype=np.int64)
+            beh_cam0 = np.zeros((0, 0), dtype=np.float32)
+            beh_cam1 = np.zeros((0, 0), dtype=np.float32)
+            beh_cam0_cols: list[str] = []
+            beh_cam1_cols: list[str] = []
+
+            beh_csv = _find_behavior_csv_for_br_idx(BEHV_CKPT_ROOT, br_idx)
+            
+            # --- defaults so saving never fails ---
+            fs_br = np.nan
+            beh_t_ms = np.array([], dtype=np.float64)
+            beh_common_idx = np.array([], dtype=np.int64)
+            beh_common_valid = np.array([], dtype=bool)
+            if beh_csv is not None:
+                try:
+                    (beh_ns5_sample,
+                    beh_cam0, beh_cam0_cols,
+                    beh_cam1, beh_cam1_cols) = rcp.load_behavior_npz(beh_csv)
+                    print(f"[behavior] attached from {beh_csv.name} (N={beh_ns5_sample.size})")
+                    # --- figure out fs_br (Blackrock sampling rate) ---
+                    fs_br = float(row.get("fs_br", "nan"))
+                    if not np.isfinite(fs_br):
+                        # fallback: try opening the BR file path that was written into the shifts CSV
+                        br_ns5_path = Path(row.get("br_ns5", ""))
+                        try:
+                            if br_ns5_path.exists():
+                                _, fs_br = rcp.load_br_intan_sync_ns5(br_ns5_path, intan_sync_chan_id=int(getattr(PARAMS, "camera_sync_ch", 134)))
+                        except Exception:
+                            pass
+
+                    # --- Convert behavior sample indices -> ms (same origin as UA) ---
+                    beh_t_ms = np.array([], dtype=np.float64)
+                    beh_common_idx = np.array([], dtype=np.int64)
+                    beh_common_valid = np.array([], dtype=bool)
+
+                    if beh_ns5_sample.size and np.isfinite(fs_br) and common_t.size:
+                        beh_t_ms = (beh_ns5_sample.astype(np.float64) * (1000.0 / float(fs_br)))
+
+                        # Map behavior times to common_t grid via nearest neighbor
+                        idx_right = np.searchsorted(common_t, beh_t_ms, side="left")
+                        idx_right = np.clip(idx_right, 0, common_t.size - 1)
+                        idx_left = np.maximum(idx_right - 1, 0)
+
+                        choose_left = np.abs(common_t[idx_left] - beh_t_ms) <= np.abs(common_t[idx_right] - beh_t_ms)
+                        beh_common_idx = np.where(choose_left, idx_left, idx_right).astype(np.int64)
+
+                        # Mark as valid if within 0.6 * target bin width
+                        tol_ms = 0.6 * float(stats.get("dt_i_ms", np.nan))
+                        if np.isfinite(tol_ms) and tol_ms > 0:
+                            beh_common_valid = (np.abs(common_t[beh_common_idx] - beh_t_ms) <= tol_ms)
+                        else:
+                            # fall back: accept everything
+                            beh_common_valid = np.ones_like(beh_common_idx, dtype=bool)
+
+                        # quick log
+                        in_range = beh_common_valid.sum()
+                        print(f"[behavior] map→common: {in_range}/{beh_t_ms.size} in tolerance (tol≈{tol_ms:.3f} ms)")
+                    else:
+                        if not np.isfinite(fs_br):
+                            print("[warn] fs_br unavailable; saving behavior as samples only (no time mapping).")
+
+                except Exception as e:
+                    print(f"[warn] could not load behavior for BR {br_idx:03d}: {e}")
+            else:
+                print(f"[warn] no behavior CSV found for BR {br_idx:03d} in {BEHV_CKPT_ROOT}")
 
             combined_meta = dict(
                 session=session,
@@ -247,17 +332,21 @@ def main():
                 intan_rates=str(intan_rates_npz),
                 ua_rates=str(ua_rates_npz),
                 fs_intan=float(fs_intan),
-
-                # Anchor info (from CSV)
                 anchor_ms=float(anchor_ms),
 
-                # Overlap/resample info
                 equal_time_grid=True,
                 resampled_to="intan",
                 orig_intan_bins=int(orig_i_len),
                 orig_ua_bins=int(orig_u_len),
                 trimmed_bins=int(common_t.size),
                 dt_ms_target=float(stats["dt_i_ms"]),
+
+                # behavior meta (safe even if none found)
+                behavior_csv=str(beh_csv) if 'beh_csv' in locals() and beh_csv is not None else None,
+                behavior_rows=int(beh_ns5_sample.size),
+                beh_fs_br=float(fs_br) if np.isfinite(fs_br) else None,
+                beh_align_tol_ms=(float(stats["dt_i_ms"]) * 0.6
+                                if "dt_i_ms" in stats and np.isfinite(stats["dt_i_ms"]) else None),
             )
 
             out_npz = ALIGNED_CKPT_ROOT / f"aligned__{session}__Intan_{intan_idx:03d}__BR_{br_idx:03d}.npz"
@@ -303,6 +392,16 @@ def main():
 
                 # Alignment meta (as JSON)
                 align_meta=json.dumps(combined_meta),
+                
+                # ---- Behavior (ns5 samples; no anchor shift applied) ----
+                beh_ns5_sample=beh_ns5_sample,
+                beh_cam0=beh_cam0,
+                beh_cam1=beh_cam1,
+                beh_cam0_cols=np.array(beh_cam0_cols, dtype=object),
+                beh_cam1_cols=np.array(beh_cam1_cols, dtype=object),
+                beh_t_ms=beh_t_ms,
+                beh_common_idx=beh_common_idx,
+                beh_common_valid=beh_common_valid,
             )
 
             print(f"[write] combined aligned → {out_npz}")
