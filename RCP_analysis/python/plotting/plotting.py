@@ -514,6 +514,7 @@ def stacked_heatmaps_plus_behv(
     t_intan: np.ndarray,                # (T_intan,)
     t_ua: np.ndarray,                   # (T_ua,)
     out_svg: Path,
+    title_kinematics: str,
     title_top: str,
     title_bot: str,
     *,
@@ -583,8 +584,7 @@ def stacked_heatmaps_plus_behv(
         ax_b0.axvline(0.0, color="red", alpha=0.9, linewidth=1.2)
         ax_b0.axvspan(0.0, 100.0, color="gray", alpha=0.2)
         ax_b0.set_ylabel("Δ (z)")
-        ttl0 = f"Median kinematics (Cam-0(right))"
-        ax_b0.set_title(ttl0)
+        ax_b0.set_title(title_kinematics)
         if beh_cam0_lines.shape[0] > 0:
             ax_b0.legend(
                 loc="center left", bbox_to_anchor=(1.02, 0.5),
@@ -599,7 +599,7 @@ def stacked_heatmaps_plus_behv(
         ax_b1.axvline(0.0, color="red", alpha=0.9, linewidth=1.2)
         ax_b1.axvspan(0.0, 100.0, color="gray", alpha=0.2)
         ax_b1.set_ylabel("Δ (z)")
-        ax_b1.set_title("Median kinematics (Cam-1(left))")
+        ax_b1.set_title("Median Kinematics Left Camera (Cam-1)")
         # Share x-range with neural panels if ranges match; otherwise just use beh range
         ax_b1.set_xlim(float(beh_rel_time[0]), float(beh_rel_time[-1]))
     else:
@@ -611,8 +611,8 @@ def stacked_heatmaps_plus_behv(
         extent=[t_intan[0], t_intan[-1], 0, intan_med.shape[0]],
         vmin=vmin_intan, vmax=vmax_intan
     )
-    ax_i.axvline(0.0, color="k", alpha=0.8, linewidth=1.2)
-    ax_i.axvspan(0.0, 100.0, color="gray", alpha=0.2)
+    ax_i.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2)
+    ax_i.axvspan(-20.0, 120.0, color="gray", alpha=1)
     ax_i.set_title(title_top); ax_i.set_ylabel("Intan ch")
     cb0 = fig.colorbar(im0, ax=ax_i, fraction=0.046, pad=0.02)
     cb0.set_label("Δ FR (Hz)")
@@ -638,8 +638,8 @@ def stacked_heatmaps_plus_behv(
         extent=[t_ua[0], t_ua[-1], 0, ua_plot.shape[0]],
         vmin=vmin_ua, vmax=vmax_ua
     )
-    ax_ua.axvline(0.0, color="k", alpha=0.8, linewidth=1.2)
-    ax_ua.axvspan(0.0, 100.0, color="gray", alpha=0.2)
+    ax_ua.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2)
+    ax_ua.axvspan(-5.0, 105.0, color="gray", alpha=1)
     ax_ua.set_title(title_bot)
     ax_ua.set_xlabel("Time (ms) rel. stim")
     ax_ua.set_ylabel(""); ax_ua.set_yticks([]); ax_ua.tick_params(left=False, labelleft=False)
@@ -697,7 +697,7 @@ def stacked_heatmaps_plus_behv(
         ax.set_xlim(xmin, xmax)
     # ---- overall title (optional) ----
     if overall_title:
-        fig.suptitle(overall_title, fontsize=13, fontweight="bold", y=1.903)=
+        fig.suptitle(overall_title, fontsize=13, fontweight="bold", y=1.03)
         
     out_svg.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_svg, dpi=300, bbox_inches="tight", pad_inches=0.25)

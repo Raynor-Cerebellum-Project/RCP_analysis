@@ -1,17 +1,21 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import numpy as np
-import math, pandas as pd
+import pandas as pd
 import matplotlib
 import RCP_analysis as rcp
 matplotlib.use("Agg")
 matplotlib.rcParams['svg.fonttype'] = 'none'
 
 # ---------- CONFIG ----------
-WIN_MS            = (-800.0, 1200.0)
-BASELINE_FIRST_MS = 200.0
+WIN_MS            = (-750.0, 750.0)
+BASELINE_FIRST_MS = 150.0
 MIN_TRIALS        = 1
+
+VMIN_INTAN, VMAX_INTAN = 0, 500  # keep heatmap range if you like
+VMIN_UA, VMAX_UA = 0, 200  # keep heatmap range if you like
+COLORMAP = "jet"
 
 # ---- Resolving paths ----
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +34,6 @@ METADATA_CSV  = (rcp.resolve_data_root(PARAMS) / PARAMS.metadata_rel).resolve();
 PARAMS = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
 METADATA_CSV = (rcp.resolve_data_root(PARAMS) / PARAMS.metadata_rel).resolve()
 METADATA_CSV.parent.mkdir(parents=True, exist_ok=True)
-
 
 FOUR_COLS = ["Stim_Frequency_Hz", "Current_uA", "Depth_mm", "Stim_Duration_ms"]
 
@@ -155,37 +158,69 @@ def _select_matrix(cam, cols):
                 M[:, k] = cam[:, j]
     return M, names
 
-def _fmt_num(x):
+def _fmt_num(x) -> str:
+    if pd.isna(x):
+        return "n/a"
     try:
-        xf = float(x)
+        v = float(x)
+        return f"{int(v)}" if v.is_integer() else f"{v:g}"
     except Exception:
-        return str(x)
-    if math.isnan(xf):
-        return "nan"
-    # drop trailing .0
-    return f"{xf:g}"
+        s = str(x).strip()
+        return s if s else "n/a"
 
-def build_title_from_csv(csv_path: Path, *, sess: str | None = None, br_file: int | None = None) -> str:
+def _parse_delay_ms(val) -> int:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return 0
+    s = str(val).strip()
+    if not s:
+        return 0
+    if s.casefold() == "random":
+        return 0
+    try:
+        return int(float(s))
+    except Exception:
+        return 0
+
+def build_title_from_csv(
+    csv_path: Path, *, sess: Optional[str] = None, br_file: Optional[int] = None
+) -> str:
     df = pd.read_csv(csv_path)
 
-    # Narrow to a row (optional; remove this block if you always want the first row)
-    idx = pd.Series([True] * len(df))
-    if sess and "Session" in df.columns:
-        idx &= df["Session"].astype(str).str.contains(str(sess), regex=False)
-    if br_file is not None and "BR_File" in df.columns:
-        idx &= (pd.to_numeric(df["BR_File"], errors="coerce") == int(br_file))
-    if idx.sum() == 0:
-        idx = pd.Series([True] * len(df))
-    row = df.loc[idx].iloc[0]
+    # Skip the first (attributes) row
+    df_data = df.iloc[1:].reset_index(drop=True)
+    if df_data.empty:
+        return "Condition: n/a, n/a Hz, n/a µA, n/a mm, n/a ms, Delay: 0 ms"
 
-    # Read just the four columns and concatenate with units
-    vals = {k: row.get(k, None) for k in FOUR_COLS}
-    title = f"Condition: {_fmt_num(vals['Stim_Frequency_Hz'])} Hz, " \
-            f"{_fmt_num(vals['Current_uA'])} µA, " \
-            f"{_fmt_num(vals['Depth_mm'])} mm, " \
-            f"{_fmt_num(vals['Stim_Duration_ms'])} ms"
-    return title
+    # Optional filters
+    idx = pd.Series(True, index=df_data.index)
+    if "UA_port" in df_data.columns:
+        idx &= (df_data["UA_port"].astype(str).str.upper().str.strip() == "A")
+    if "Movement_Trigger" in df_data.columns:
+        idx &= ~(df_data["Movement_Trigger"].astype(str).str.strip().str.casefold() == "velocity")
+    if sess and "Session" in df_data.columns:
+        idx &= df_data["Session"].astype(str).str.contains(str(sess), regex=False)
+    if br_file is not None and "BR_File" in df_data.columns:
+        idx &= (pd.to_numeric(df_data["BR_File"], errors="coerce") == int(br_file))
 
+    row = df_data.loc[idx].iloc[0] if idx.any() else df_data.iloc[0]
+
+    # Delay: hard-coded column; default 0 (including 'random')
+    delay_ms = _parse_delay_ms(row.get("Delay", None))
+
+    parts = []
+    if br_file is not None:
+        parts.append(f"Condition: {_fmt_num(br_file)}")
+    parts.extend([
+        f"Freq: {_fmt_num(row.get('Stim_Frequency_Hz'))} Hz",
+        f"Current: {_fmt_num(row.get('Current_uA'))} µA",
+        f"Depth: {_fmt_num(row.get('Depth_mm'))} mm",
+        f"Duration: {_fmt_num(row.get('Stim_Duration_ms'))} ms",
+        f"Delay: {delay_ms} ms",
+    ])
+    if "UA_port" in df_data.columns:
+        parts.append(f"UA Port: {_fmt_num(row.get('UA_port'))}")
+
+    return ", ".join(parts), int(row.get('Video_File'))
 
 def main():
     # Intan probe (optional, only used if you later want a probe panel like NPRW)
@@ -290,15 +325,13 @@ def main():
 
             # ---------- produce stacked heatmap figure ----------
             out_svg = FIG_ROOT / f"{sess}__Intan_vs_UA__peri_stim_heatmaps.png"
+            
             title_top = f"Median Δ in firing rate (baseline = first 100ms)\nNPRW/Intan: {sess} (n={NPRW_segments.shape[0]} trials)"
             title_bot = f"{rcp.ua_title_from_meta(meta)} (n={UA_segments.shape[0]} trials)"
 
             # sanity checks
             assert NPRW_med.shape[1] == rel_time_ms_i.size, "Intan med vs time mismatch"
             assert UA_med.shape[1]   == ua_rel_time_ms.size, "UA med vs time mismatch"
-
-            VMIN_INTAN, VMAX_INTAN = -500, 1000  # keep heatmap range if you like
-            VMIN_UA, VMAX_UA = -250, 500  # keep heatmap range if you like
 
             # locate the Intan stim_stream.npz and locate stimulated channels
             bundles_root = OUT_BASE / "bundles" / "NPRW"
@@ -310,13 +343,18 @@ def main():
                 except Exception as e:
                     print(f"[warn] stim-site detection failed for {sess}: {e}")
 
-            overall_title = build_title_from_csv(
+            overall_title, video_file = build_title_from_csv(
                 METADATA_CSV, br_file=meta.get("br_idx")
             )
     
+            title_kinematics = (
+                f"Median Kinematics Right Camera (Cam-0) "
+                f"Video: {video_file if video_file else 'n/a'}"
+            )
+            
             rcp.stacked_heatmaps_plus_behv(
                 NPRW_med, UA_med, rel_time_ms_i, ua_rel_time_ms,
-                out_svg, title_top, title_bot, cmap="jet",
+                out_svg, title_kinematics, title_top, title_bot, cmap=COLORMAP,
                 vmin_intan=VMIN_INTAN, vmax_intan=VMAX_INTAN,
                 vmin_ua=VMIN_UA, vmax_ua=VMAX_UA,
                 probe=probe, probe_locs=locs, stim_idx=stim_locs,
@@ -327,7 +365,7 @@ def main():
                 beh_rel_time=beh_rel_t,          # (Twindow,)
                 beh_cam0_lines=cam0_lines,       # (6, Twindow)
                 beh_cam1_lines=cam1_lines,       # (6, Twindow)
-                beh_labels=beh_labels,           # list of 6 strings
+                beh_labels=beh_labels,           # list of 6 stringns
                 sess=sess,
                 overall_title=overall_title
             )

@@ -290,6 +290,7 @@ def main():
                 g = int(loc)
                 locs_rows.append((b, g, g, 0))
                 locs_rows_dt.append(float('nan'))
+            break # TODO hacky fix
 
         # write per-block CSV (you reference locs_csv later)
         locs_csv = METADATA_ROOT / "template_locs" / f"intan_{intan_idx:03d}__template_locs.csv"

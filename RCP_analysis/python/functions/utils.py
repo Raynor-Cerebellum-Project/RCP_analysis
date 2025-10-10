@@ -291,10 +291,10 @@ def load_intan_adc(npz_path: Path) -> tuple[np.ndarray, np.ndarray, float]:
         for k in keys:
             a = z[k]
             if a.ndim == 2 and a.shape[1] >= 2:
-                ch0.append(a[:,0].astype(np.float64))
-                ch1.append(a[:,1].astype(np.float64))
+                ch0.append(a[:,0].astype(np.float32))
+                ch1.append(a[:,1].astype(np.float32))
             elif a.ndim == 1:
-                ch0.append(a.astype(np.float64))
+                ch0.append(a.astype(np.float32))
         if not ch0:
             raise RuntimeError("No usable chunk_* arrays in ADC NPZ")
         tri = np.concatenate(ch0)
@@ -315,7 +315,7 @@ def load_intan_adc(npz_path: Path) -> tuple[np.ndarray, np.ndarray, float]:
     chxT = _ensure_channels_first(np.asarray(A))
     if chxT.shape[0] < 2:
         chxT = np.vstack([chxT, np.zeros_like(chxT)])
-    return chxT[0].astype(np.float64), chxT[1].astype(np.float64), fs
+    return chxT[0].astype(np.float32), chxT[1].astype(np.float32), fs
 
 def load_br_intan_sync_ns5(ns5_path: Path, intan_sync_chan_id: int = 134) -> tuple[np.ndarray, float]:
     """Load BR intan_sync (e.g., ch134) from .ns5 via spikeinterface."""

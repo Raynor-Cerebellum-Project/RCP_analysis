@@ -308,11 +308,11 @@ def save_UA_bundle_npz(sess_name: str, bundle: dict, out_dir: Path):
 
     np.savez_compressed(
         out_dir / f"{sess_name}_UA_bundle.npz",
-        aux_fs=np.array(aux.get("fs", np.nan), dtype=np.float64),
+        aux_fs=np.array(aux.get("fs", np.nan), dtype=np.float32),
         intan_sync=aux.get("intan_sync", np.array([])),
         camera_sync=aux.get("camera_sync", np.array([])),
         triangle_sync=aux.get("triangle_sync", np.array([])),
-        digi_fs=np.array(digi.get("fs", np.nan), dtype=np.float64),
+        digi_fs=np.array(digi.get("fs", np.nan), dtype=np.float32),
         **{k: v for k, v in digi.get("channels", {}).items()},
     )
     print(f"[SAVED] {out_dir / f'{sess_name}_UA_bundle.npz'}")
@@ -376,7 +376,7 @@ def threshold_mua_rates(
         seg_idx = np.zeros(peaks.shape[0], dtype=np.int64)
 
     peak_samp_global = peaks[samp_field].astype(np.int64, copy=False) + seg_offsets_samp[seg_idx]
-    peak_t_ms = peak_samp_global.astype(np.float64) * (1000.0 / fs)
+    peak_t_ms = peak_samp_global.astype(np.float32) * (1000.0 / fs)
 
     # 2) Bin counts per segment
     counts_all, t_all = [], []
@@ -403,7 +403,7 @@ def threshold_mua_rates(
             np.add.at(counts, (ch_idx, bins), 1)
 
         counts_all.append(counts)
-        t_ms = (np.arange(seg_bins, dtype=np.float64) + 0.5 + bin_offset) * bin_ms
+        t_ms = (np.arange(seg_bins, dtype=np.float32) + 0.5 + bin_offset) * bin_ms
         t_all.append(t_ms)
         bin_offset += seg_bins
 

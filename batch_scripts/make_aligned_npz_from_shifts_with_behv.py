@@ -84,8 +84,8 @@ def _resample_rate_to_time(rate_hz: np.ndarray, t_src: np.ndarray, t_tgt: np.nda
     """
     n_ch = rate_hz.shape[0]
     out = np.empty((n_ch, t_tgt.size), dtype=np.float32)
-    # Use float64 in interp for numerical stability
-    r64 = rate_hz.astype(np.float64, copy=False)
+    # Use float32 in interp for numerical stability
+    r64 = rate_hz.astype(np.float32, copy=False)
     for ch in range(n_ch):
         out[ch] = np.interp(t_tgt, t_src, r64[ch])
     return out
@@ -212,17 +212,17 @@ def main():
             # Intan peaks → ms
             intan_peaks_t_ms_raw = None
             if intan_peaks_t_ms is not None:
-                intan_peaks_t_ms_raw = np.asarray(intan_peaks_t_ms, dtype=np.float64)
+                intan_peaks_t_ms_raw = np.asarray(intan_peaks_t_ms, dtype=np.float32)
             elif intan_peaks_t_sample is not None:
                 # prefer fs_intan from CSV/row; else from meta
                 _fs_i = fs_intan if np.isfinite(fs_intan) else _meta_fs(intan_meta)
                 if _fs_i and np.isfinite(_fs_i):
-                    intan_peaks_t_ms_raw = (np.asarray(intan_peaks_t_sample, dtype=np.float64) / float(_fs_i)) * 1000.0
+                    intan_peaks_t_ms_raw = (np.asarray(intan_peaks_t_sample, dtype=np.float32) / float(_fs_i)) * 1000.0
 
             # UA peaks → ms
             ua_peaks_t_ms_raw = None
             if ua_peaks_t_ms is not None:
-                ua_peaks_t_ms_raw = np.asarray(ua_peaks_t_ms, dtype=np.float64)
+                ua_peaks_t_ms_raw = np.asarray(ua_peaks_t_ms, dtype=np.float32)
             elif ua_peaks_t_sample is not None:
                 _fs_u = _meta_fs(ua_meta)
                 if not (_fs_u and np.isfinite(_fs_u)):
@@ -230,20 +230,20 @@ def main():
                     if ua_t_ms.size > 1:
                         _fs_u = 1000.0 / float(np.median(np.diff(ua_t_ms)))
                 if _fs_u and np.isfinite(_fs_u):
-                    ua_peaks_t_ms_raw = (np.asarray(ua_peaks_t_sample, dtype=np.float64) / float(_fs_u)) * 1000.0
+                    ua_peaks_t_ms_raw = (np.asarray(ua_peaks_t_sample, dtype=np.float32) / float(_fs_u)) * 1000.0
 
             # Aligned (Intan timebase is shifted by anchor_ms in your pipeline)
-            intan_peaks_t_ms_aligned = (intan_peaks_t_ms_raw - float(anchor_ms)) if intan_peaks_t_ms_raw is not None else np.array([], dtype=np.float64)
-            ua_peaks_t_ms_aligned    = ua_peaks_t_ms_raw if ua_peaks_t_ms_raw is not None else np.array([], dtype=np.float64)
+            intan_peaks_t_ms_aligned = (intan_peaks_t_ms_raw - float(anchor_ms)) if intan_peaks_t_ms_raw is not None else np.array([], dtype=np.float32)
+            ua_peaks_t_ms_aligned    = ua_peaks_t_ms_raw if ua_peaks_t_ms_raw is not None else np.array([], dtype=np.float32)
 
             # Keep original peak payloads too (or empty arrays for consistency)
             _intan_peaks          = intan_peaks if intan_peaks is not None else np.array([], dtype=np.float32)
-            _intan_peaks_t_ms     = intan_peaks_t_ms if intan_peaks_t_ms is not None else np.array([], dtype=np.float64)
-            _intan_peaks_t_sample = intan_peaks_t_sample if intan_peaks_t_sample is not None else np.array([], dtype=np.float64)
+            _intan_peaks_t_ms     = intan_peaks_t_ms if intan_peaks_t_ms is not None else np.array([], dtype=np.float32)
+            _intan_peaks_t_sample = intan_peaks_t_sample if intan_peaks_t_sample is not None else np.array([], dtype=np.float32)
 
             _ua_peaks             = ua_peaks if ua_peaks is not None else np.array([], dtype=np.float32)
-            _ua_peaks_t_ms        = ua_peaks_t_ms if ua_peaks_t_ms is not None else np.array([], dtype=np.float64)
-            _ua_peaks_t_sample    = ua_peaks_t_sample if ua_peaks_t_sample is not None else np.array([], dtype=np.float64)
+            _ua_peaks_t_ms        = ua_peaks_t_ms if ua_peaks_t_ms is not None else np.array([], dtype=np.float32)
+            _ua_peaks_t_sample    = ua_peaks_t_sample if ua_peaks_t_sample is not None else np.array([], dtype=np.float32)
 
             # ---- Overlap and resample UA onto Intan's aligned grid ----
             orig_i_len, orig_u_len = intan_t_ms_aligned.size, ua_t_ms_aligned.size
@@ -254,6 +254,73 @@ def main():
             if common_t.size == 0:
                 print(f"[warn] No overlapping time region after alignment for session {session}; skipping.")
                 continue
+
+
+            # ---------- PRINT RANGES: Intan & BR/UA (original vs trimmed overlap) ----------
+            def _fmt_ms(x):
+                try:
+                    return f"{float(x):.3f}"
+                except Exception:
+                    return "nan"
+
+            # Intan original range (aligned)
+            if intan_t_ms_aligned.size:
+                i_orig_start_idx = 0
+                i_orig_end_idx   = intan_t_ms_aligned.size - 1
+                i_orig_start_ms  = intan_t_ms_aligned[0]
+                i_orig_end_ms    = intan_t_ms_aligned[-1]
+            else:
+                i_orig_start_idx = i_orig_end_idx = -1
+                i_orig_start_ms = i_orig_end_ms = np.nan
+
+            # UA/BR original range (aligned; "BR" rates timebase)
+            if ua_t_ms_aligned.size:
+                u_orig_start_idx = 0
+                u_orig_end_idx   = ua_t_ms_aligned.size - 1
+                u_orig_start_ms  = ua_t_ms_aligned[0]
+                u_orig_end_ms    = ua_t_ms_aligned[-1]
+            else:
+                u_orig_start_idx = u_orig_end_idx = -1
+                u_orig_start_ms = u_orig_end_ms = np.nan
+
+            # Trimmed/overlap ranges (indices into the ORIGINAL arrays that span common_t)
+            # (We use searchsorted to locate the bounds that produced the overlap.)
+            if common_t.size:
+                i_trim_start_idx = int(np.searchsorted(intan_t_ms_aligned, common_t[0], side="left"))
+                i_trim_end_idx   = int(np.searchsorted(intan_t_ms_aligned, common_t[-1], side="right") - 1)
+                u_trim_start_idx = int(np.searchsorted(ua_t_ms_aligned,     common_t[0], side="left"))
+                u_trim_end_idx   = int(np.searchsorted(ua_t_ms_aligned,     common_t[-1], side="right") - 1)
+
+                i_trim_start_ms  = intan_t_ms_aligned[i_trim_start_idx] if 0 <= i_trim_start_idx < intan_t_ms_aligned.size else np.nan
+                i_trim_end_ms    = intan_t_ms_aligned[i_trim_end_idx]   if 0 <= i_trim_end_idx   < intan_t_ms_aligned.size else np.nan
+                u_trim_start_ms  = ua_t_ms_aligned[u_trim_start_idx]    if 0 <= u_trim_start_idx < ua_t_ms_aligned.size else np.nan
+                u_trim_end_ms    = ua_t_ms_aligned[u_trim_end_idx]      if 0 <= u_trim_end_idx   < ua_t_ms_aligned.size else np.nan
+            else:
+                i_trim_start_idx = i_trim_end_idx = u_trim_start_idx = u_trim_end_idx = -1
+                i_trim_start_ms = i_trim_end_ms = u_trim_start_ms = u_trim_end_ms = np.nan
+
+            print(
+                "[ranges] Intan original:   "
+                f"indices {i_orig_start_idx}→{i_orig_end_idx}  "
+                f"ms { _fmt_ms(i_orig_start_ms) }→{ _fmt_ms(i_orig_end_ms) }"
+            )
+            print(
+                "[ranges] Intan trimmed:    "
+                f"indices {i_trim_start_idx}→{i_trim_end_idx}  "
+                f"ms { _fmt_ms(i_trim_start_ms) }→{ _fmt_ms(i_trim_end_ms) }  "
+                f"(n_bins={common_t.size})"
+            )
+            print(
+                "[ranges] BR/UA original:   "
+                f"indices {u_orig_start_idx}→{u_orig_end_idx}  "
+                f"ms { _fmt_ms(u_orig_start_ms) }→{ _fmt_ms(u_orig_end_ms) }"
+            )
+            print(
+                "[ranges] BR/UA cropped:    "
+                f"indices {u_trim_start_idx}→{u_trim_end_idx}  "
+                f"ms { _fmt_ms(u_trim_start_ms) }→{ _fmt_ms(u_trim_end_ms) }"
+            )
+
 
             print(f"[resample] {session}: overlap bins={stats['overlap_bins']}, "
                   f"Intan dt≈{stats['dt_i_ms']:.3f} ms, UA dt≈{stats['dt_u_ms']:.3f} ms → UA→Intan grid")
@@ -269,7 +336,7 @@ def main():
             
             # --- defaults so saving never fails ---
             fs_br = np.nan
-            beh_t_ms = np.array([], dtype=np.float64)
+            beh_t_ms = np.array([], dtype=np.float32)
             beh_common_idx = np.array([], dtype=np.int64)
             beh_common_valid = np.array([], dtype=bool)
             if beh_csv is not None:
@@ -290,12 +357,12 @@ def main():
                             pass
 
                     # --- Convert behavior sample indices -> ms (same origin as UA) ---
-                    beh_t_ms = np.array([], dtype=np.float64)
+                    beh_t_ms = np.array([], dtype=np.float32)
                     beh_common_idx = np.array([], dtype=np.int64)
                     beh_common_valid = np.array([], dtype=bool)
 
                     if beh_ns5_sample.size and np.isfinite(fs_br) and common_t.size:
-                        beh_t_ms = (beh_ns5_sample.astype(np.float64) * (1000.0 / float(fs_br)))
+                        beh_t_ms = (beh_ns5_sample.astype(np.float32) * (1000.0 / float(fs_br)))
 
                         # Map behavior times to common_t grid via nearest neighbor
                         idx_right = np.searchsorted(common_t, beh_t_ms, side="left")
@@ -316,6 +383,51 @@ def main():
                         # quick log
                         in_range = beh_common_valid.sum()
                         print(f"[behavior] map→common: {in_range}/{beh_t_ms.size} in tolerance (tol≈{tol_ms:.3f} ms)")
+                        
+                        # ---------- PRINT RANGES: Behavior (video) ----------
+                        # Behavior "frames" here are the entries in beh_ns5_sample; we show sample & time ranges,
+                        # plus the mapped common_t index range among valid points.
+                        if beh_ns5_sample.size:
+                            b_orig_start_idx = 0
+                            b_orig_end_idx   = beh_ns5_sample.size - 1
+                            b_sample_min     = int(beh_ns5_sample.min())
+                            b_sample_max     = int(beh_ns5_sample.max())
+                            if np.isfinite(fs_br):
+                                b_ms_min = float(b_sample_min) * (1000.0 / float(fs_br))
+                                b_ms_max = float(b_sample_max) * (1000.0 / float(fs_br))
+                            else:
+                                b_ms_min = b_ms_max = np.nan
+
+                            print(
+                                "[ranges] Video/Behavior original: "
+                                f"indices {b_orig_start_idx}→{b_orig_end_idx}  "
+                                f"samples {b_sample_min}→{b_sample_max}  "
+                                f"ms { _fmt_ms(b_ms_min) }→{ _fmt_ms(b_ms_max) }"
+                            )
+
+                            if beh_common_idx.size:
+                                if beh_common_valid.size and beh_common_valid.any():
+                                    bc_valid = beh_common_idx[beh_common_valid]
+                                    bc_start = int(bc_valid.min())
+                                    bc_end   = int(bc_valid.max())
+                                    print(
+                                        "[ranges] Video mapped→common (valid only): "
+                                        f"common_t indices {bc_start}→{bc_end} "
+                                        f"(n_valid={beh_common_valid.sum()}/{beh_common_idx.size})"
+                                    )
+                                else:
+                                    bc_start = int(beh_common_idx.min())
+                                    bc_end   = int(beh_common_idx.max())
+                                    print(
+                                        "[ranges] Video mapped→common: "
+                                        f"common_t indices {bc_start}→{bc_end} "
+                                        f"(no validity mask or none valid)"
+                                    )
+                        else:
+                            print("[ranges] Video/Behavior: no frames found.")
+
+
+
                     else:
                         if not np.isfinite(fs_br):
                             print("[warn] fs_br unavailable; saving behavior as samples only (no time mapping).")
@@ -324,6 +436,8 @@ def main():
                     print(f"[warn] could not load behavior for BR {br_idx:03d}: {e}")
             else:
                 print(f"[warn] no behavior CSV found for BR {br_idx:03d} in {BEHV_CKPT_ROOT}")
+
+            # TODO: add print statement for windows
 
             combined_meta = dict(
                 session=session,
@@ -355,8 +469,8 @@ def main():
                 
                 # Intan (on common grid)
                 intan_rate_hz=i_rate_trim.astype(np.float32),
-                intan_t_ms=intan_t_ms.astype(np.float64),                 # original (pre-shift)
-                intan_t_ms_aligned=common_t.astype(np.float64),           # Intan-aligned/common grid
+                intan_t_ms=intan_t_ms.astype(np.float32),                 # original (pre-shift)
+                intan_t_ms_aligned=common_t.astype(np.float32),           # Intan-aligned/common grid
                 intan_meta=(intan_meta.item() if hasattr(intan_meta, "item") else intan_meta),
                 intan_pcs=intan_pcs if intan_pcs is not None else np.array([], dtype=np.float32),
                 intan_explained_var=intan_expl if intan_expl is not None else np.array([], dtype=np.float32),
@@ -365,12 +479,12 @@ def main():
                 intan_peaks=_intan_peaks,
                 intan_peaks_t_ms=_intan_peaks_t_ms,
                 intan_peaks_t_sample=_intan_peaks_t_sample,
-                intan_peaks_t_ms_aligned=intan_peaks_t_ms_aligned.astype(np.float64),
+                intan_peaks_t_ms_aligned=intan_peaks_t_ms_aligned.astype(np.float32),
 
                 # UA (resampled to common grid)
                 ua_rate_hz=u_rate_on_common.astype(np.float32),
-                ua_t_ms=ua_t_ms.astype(np.float64),                       # original
-                ua_t_ms_aligned=common_t.astype(np.float64),              # same common grid
+                ua_t_ms=ua_t_ms.astype(np.float32),                       # original
+                ua_t_ms_aligned=common_t.astype(np.float32),              # same common grid
                 ua_meta=(ua_meta.item() if hasattr(ua_meta, "item") else ua_meta),
                 ua_pcs=ua_pcs if ua_pcs is not None else np.array([], dtype=np.float32),
                 ua_explained_var=ua_expl if ua_expl is not None else np.array([], dtype=np.float32),
@@ -385,10 +499,10 @@ def main():
                 ua_peaks=_ua_peaks,
                 ua_peaks_t_ms=_ua_peaks_t_ms,
                 ua_peaks_t_sample=_ua_peaks_t_sample,
-                ua_peaks_t_ms_aligned=ua_peaks_t_ms_aligned.astype(np.float64),
+                ua_peaks_t_ms_aligned=ua_peaks_t_ms_aligned.astype(np.float32),
 
                 # Stim (absolute Intan ms; consumer should subtract anchor_ms as needed)
-                stim_ms=(stim_ms_abs.astype(np.float64) if stim_ms_abs is not None else np.array([], dtype=np.float64)),
+                stim_ms=(stim_ms_abs.astype(np.float32) if stim_ms_abs is not None else np.array([], dtype=np.float32)),
 
                 # Alignment meta (as JSON)
                 align_meta=json.dumps(combined_meta),
