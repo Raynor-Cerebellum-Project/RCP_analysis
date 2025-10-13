@@ -1,22 +1,20 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple, Iterable
 from pathlib import Path
 import yaml
+import re
 
 # ---------------- Params model ----------------
 @dataclass
 class experimentParams:
-    """
-    class for yaml data
-    """
     # ---- required / core ----
     data_root: str
-    # session-centric inputs (may come from paths.*)
-    location: Optional[str] = None  # e.g. "Nike/NRR_RW003_check"
-    session: Optional[str]  = None  # e.g. "NRR_RW003_check"
+    # session-centric inputs
+    location: Optional[str] = None
+    session: Optional[str]  = None
 
-    # derived or legacy (can be absent in YAML; we compute them)
+    # derived or legacy
     blackrock_rel: Optional[str] = None
     video_rel: Optional[str] = None
     intan_root_rel: Optional[str] = None
@@ -24,7 +22,7 @@ class experimentParams:
     output_root: Optional[str] = None
     geom_mat_rel: Optional[str] = None
 
-    # processing params (keep your defaults/back-compat)
+    # processing params
     highpass_hz: float = 300.0
     probes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     probe_arrays: Dict[str, Dict[str, Dict[str, Any]]] = field(default_factory=dict)
@@ -34,22 +32,22 @@ class experimentParams:
     mapping_mat_rel: Optional[str] = None
     dig_line: Optional[str] = None
     stim_nums: Dict[str, int] = field(default_factory=dict)
-
-    # thresholding config (as you had)
     intan_rate_est: Dict[str, Any] = field(default_factory=dict)
     UA_rate_est: Dict[str, Any] = field(default_factory=dict)
 
     # optional absolute
     intan_root: Optional[str] = None
 
-    # sessions (referenced by your helper functions)
+    # sessions
     sessions: Dict[str, Any] = field(default_factory=dict)
 
-# ---------------- Loader ----------------
+    # NEW: kinematics (normalized)
+    kinematics: Dict[str, Any] = field(default_factory=dict)
+
+
 def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams:
     cfg = yaml.safe_load(yaml_path.read_text()) or {}
 
-    # Expand {REPO_ROOT} placeholders
     def expand_placeholders(obj):
         if isinstance(obj, str):
             return obj.replace("{REPO_ROOT}", str(repo_root))
@@ -61,45 +59,61 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
 
     cfg = expand_placeholders(cfg)
 
-    # Prefer nested "paths" block; fall back to flat keys for back-compat
+    # -------- paths block (as you had) --------
     paths = cfg.get("paths", {})
     data_root = paths.get("data_root", cfg.get("data_root", str(repo_root / "data")))
     location  = paths.get("location",  cfg.get("location"))
     session   = paths.get("session",   cfg.get("session"))
     geom_mat_rel = paths.get("geom_mat_rel", cfg.get("geom_mat_rel"))
 
-    # Legacy explicit relatives (if present, they win)
     blackrock_rel   = cfg.get("blackrock_rel")
-    video_rel   = cfg.get("video_rel")
+    video_rel       = cfg.get("video_rel")
     intan_root_rel  = cfg.get("intan_root_rel")
     output_root     = cfg.get("output_root")
     metadata_rel    = cfg.get("metadata_rel")
 
-    # If not provided explicitly, derive from location/session
     if location:
-        # Derive defaults only if missing (so legacy keys still work)
-        blackrock_rel  = blackrock_rel  or str(Path(location) / "Blackrock")
-        video_rel  = video_rel  or str(Path(location) / "Video")
-        intan_root_rel = intan_root_rel or str(Path(location) / "Intan")
-        output_root    = output_root    or str(Path(location) / "results")
-        # Prefer {session}_metadata.csv if session available
+        blackrock_rel   = blackrock_rel   or str(Path(location) / "Blackrock")
+        video_rel       = video_rel       or str(Path(location) / "Video")
+        intan_root_rel  = intan_root_rel  or str(Path(location) / "Intan")
+        output_root     = output_root     or str(Path(location) / "results")
         default_meta = Path(location) / "Metadata" / (f"{session}_metadata.csv" if session else "metadata.csv")
         metadata_rel  = metadata_rel or str(default_meta)
+
+    # ---------- NEW: normalize kinematics.keypoints ----------
+    kin_cfg = cfg.get("kinematics", {}) or {}
+
+    def _as_str_tuple(v) -> Tuple[str, ...]:
+        # Accept list/tuple of strings
+        if isinstance(v, (list, tuple)):
+            return tuple(str(x) for x in v)
+        # Accept comma-separated string: "a, b, c"
+        if isinstance(v, str) and "," in v:
+            return tuple(s.strip(" '\"\t") for s in v.split(",") if s.strip())
+        # Accept accidental "(a, b, c)" or "('a','b','c')"—strip parens then split
+        if isinstance(v, str) and v.strip().startswith("(") and v.strip().endswith(")"):
+            inner = v.strip()[1:-1]
+            return tuple(s.strip(" '\"\t") for s in inner.split(",") if s.strip())
+        # Single token -> 1-tuple
+        if isinstance(v, str) and v.strip():
+            return (v.strip(),)
+        return tuple()
+
+    keypoints = _as_str_tuple(kin_cfg.get("keypoints", ()))
+    kin_out = dict(kin_cfg)  # keep any future fields
+    if keypoints:
+        kin_out["keypoints"] = keypoints
 
     p = experimentParams(
         data_root=str(data_root),
         location=location,
         session=session,
         geom_mat_rel=geom_mat_rel,
-
-        # derived / legacy
         blackrock_rel=blackrock_rel,
         video_rel=video_rel,
         intan_root_rel=intan_root_rel,
         metadata_rel=metadata_rel,
         output_root=output_root,
-
-        # processing / misc (keep your previous semantics)
         highpass_hz=float(cfg.get("highpass_hz", 300.0)),
         probes=cfg.get("probes", {}) or {},
         probe_arrays=cfg.get("probe_arrays", {}) or {},
@@ -113,8 +127,10 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
         UA_rate_est=cfg.get("UA_rate_est", {}) or {},
         intan_root=cfg.get("intan_root"),
         sessions=cfg.get("sessions", {}) or {},
+        kinematics=kin_out,
     )
     return p
+
 
 # ---------------- Resolvers (unchanged) ----------------
 def _resolve_path(base: Path, rel_or_abs: Optional[str]) -> Optional[Path]:

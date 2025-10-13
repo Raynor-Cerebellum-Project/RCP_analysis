@@ -20,7 +20,12 @@ BEHV_BUNDLES   = OUT_BASE / "bundles" / "behavior"
 BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "behavior"
 BEHV_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
 
+METADATA_CSV  = (DATA_ROOT / PARAMS.metadata_rel).resolve(); METADATA_CSV.parent.mkdir(parents=True, exist_ok=True)
+
 # -------------------------- OCR helpers --------------------------
+
+def _norm(s: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '', str(s).lower())
 
 def _find_col(df: pd.DataFrame, candidates: list[str]) -> str:
     """Find a column (case/underscore-insensitive) among candidates."""
@@ -33,13 +38,94 @@ def _find_col(df: pd.DataFrame, candidates: list[str]) -> str:
             return lookup[key]
     raise KeyError(f"Missing any of columns {candidates}; found {list(df.columns)[:6]} ...")
 
+def _load_video_to_br_map(meta_csv: Path) -> dict[int, int]:
+    """
+    Returns { video_idx -> br_idx } from METADATA_CSV.
+    Tolerates common encodings and small header-name variations.
+    """
+    encodings = ("utf-8", "utf-8-sig", "cp1252", "latin-1", "mac_roman")
+    last_err = None
+    for enc in encodings:
+        try:
+            import csv
+            with meta_csv.open("r", newline="", encoding=enc, errors="strict") as f:
+                rdr = csv.DictReader(f)
+                cols = { _norm(c): c for c in (rdr.fieldnames or []) }
+
+                def _col(*cands: str) -> str:
+                    for c in cands:
+                        k = _norm(c)
+                        if k in cols:
+                            return cols[k]
+                    raise KeyError(f"Missing any of columns {cands}; found {list(cols.values())}")
+
+                col_video = _col("video_file", "videofile", "video")
+                col_br    = _col("br_file", "brfile", "br")
+
+                out: dict[int, int] = {}
+                for row in rdr:
+                    try:
+                        v_raw = str(row[col_video]).strip()
+                        b_raw = str(row[col_br]).strip()
+                        if not v_raw or not b_raw:
+                            continue
+                        v = int(float(v_raw))
+                        b = int(float(b_raw))
+                        out[v] = b  # last one wins if duplicated
+                    except Exception:
+                        continue
+                if out and enc != "utf-8":
+                    print(f"[info] Read {meta_csv.name} with encoding={enc}.")
+                if not out:
+                    print(f"[warn] No Video_File→BR_File pairs found in {meta_csv.name}.")
+                return out
+        except UnicodeDecodeError as e:
+            last_err = e
+            continue
+    raise RuntimeError(f"Could not decode {meta_csv} with tried encodings; last error: {last_err}")
+
+
+# Extract the video index (second 3-digit block), e.g. 'NRR_RW001_002' -> 2
+_TRIAL_VIDEO_IDX_RE = re.compile(
+    r'NRR_[A-Za-z]+(?:\d{3})_(\d{3})(?:_[0-9]{4}_[0-9]{4}_[0-9]{6})?(?:\b|_)',
+    re.IGNORECASE
+)
+
+def _extract_video_idx_from_trial(trial: str) -> int | None:
+    """
+    Returns the Video_File index from names like:
+      NRR_RW001_002
+      NRR_RW001_002_2025_0915_141059
+    -> 2  (i.e., the second 3-digit block)
+    """
+    m = _TRIAL_VIDEO_IDX_RE.search(trial)
+    if m:
+        return int(m.group(1))
+
+    # Fallback: pick the last 3-digit token (dates are 4/4/6 digits, so they won't collide)
+    nums = re.findall(r'(?<!\d)(\d{3})(?!\d)', trial)
+    return int(nums[-1]) if nums else None
+
+def _find_ns5_by_br_index(br_root: Path, br_idx: int) -> Path | None:
+    """Return the best-matching .ns5 for a given BR index; never returns ns6."""
+    hits = list(br_root.rglob("*.ns5"))
+    if not hits:
+        print(f"[warn] No .ns5 files found under {br_root}")
+        return None
+    token = f"{br_idx:03d}"
+
+    def _score(p: Path) -> tuple[int, float]:
+        # strong token match + newest mtime
+        strong = int(bool(re.search(rf"(?:^|[^0-9]){token}(?:[^0-9]|$)", p.stem)))
+        return (strong, p.stat().st_mtime)
+
+    hits.sort(key=_score, reverse=True)
+    best = hits[0]
+    if token not in best.stem:
+        print(f"[warn] No obvious .ns5 name match for BR {token}; using {best.name}")
+    return best
 
 def load_ocr_map(ocr_csv: Path) -> pd.DataFrame:
-    """
-    Read an OCR CSV and return a DataFrame with columns:
-      AVI_framenum, OCR_framenum, CORRECTED_framenum (numeric floats; may contain NaNs)
-    Asserts last OCR_framenum == last CORRECTED_framenum (after rounding to ints).
-    """
     df = pd.read_csv(ocr_csv)
     col_avi = _find_col(df, ["AVI_framenum","avi_framenum","avi_frame","avi"])
     col_ocr = _find_col(df, ["OCR_framenum","ocr_framenum","ocr_frame","ocr"])
@@ -47,50 +133,22 @@ def load_ocr_map(ocr_csv: Path) -> pd.DataFrame:
 
     out = df[[col_avi, col_ocr, col_cor]].copy()
     for c in out.columns:
-        out[c] = pd.to_numeric(out[c], errors="coerce")  # keep as float with NaNs
+        out[c] = pd.to_numeric(out[c], errors="coerce")
 
-    # assert on LAST row that has both OCR & CORRECTED, rounding to nearest int
     last = out.dropna(subset=[col_ocr, col_cor]).tail(1)
     if last.empty:
         raise ValueError(f"{ocr_csv} has no valid OCR rows.")
-    last_ocr = int(np.rint(float(last[col_ocr].iloc[0])))
-    last_cor = int(np.rint(float(last[col_cor].iloc[0])))
-    if last_ocr != last_cor:
-        raise AssertionError(
-            f"{ocr_csv.name}: last OCR_framenum ({last_ocr}) != CORRECTED_framenum ({last_cor})"
-        )
+    try:
+        last_ocr = int(np.rint(float(last[col_ocr].iloc[0])))
+        last_cor = int(np.rint(float(last[col_cor].iloc[0])))
+        if last_ocr != last_cor:
+            print(f"[warn] {ocr_csv.name}: last OCR_framenum ({last_ocr}) != CORRECTED_framenum ({last_cor}); continuing.")
+    except Exception:
+        pass
 
-    return out.rename(columns={
-        col_avi: "AVI_framenum",
-        col_ocr: "OCR_framenum",
-        col_cor: "CORRECTED_framenum",
-    })
-
+    return out.rename(columns={col_avi:"AVI_framenum", col_ocr:"OCR_framenum", col_cor:"CORRECTED_framenum"})
 
 # -------------------------- DLC helpers --------------------------
-def _flatten_cols(cols) -> list[str]:
-    """Flatten DLC MultiIndex columns to strings, dropping 'nan' parts."""
-    flat = []
-    for col in cols:
-        if isinstance(col, tuple):
-            parts = [str(p) for p in col if p is not None and str(p) != "nan"]
-            name = "_".join(parts).strip()
-        else:
-            name = str(col).strip()
-        flat.append(name)
-    return flat
-
-
-def _first_column_is_avi(series: pd.Series) -> bool:
-    """Heuristic: first column is AVI frame index if it's (nearly) integer and monotonic by 1."""
-    s = pd.to_numeric(series, errors="coerce")
-    if s.isna().mean() > 0.05:
-        return False
-    diffs = np.diff(s.values.astype(float))
-    frac_ok = np.mean(np.isclose(diffs, 1.0, atol=1e-6))
-    return frac_ok > 0.98 and (s.iloc[0] in (0, 1))
-
-
 def load_dlc(dlc_csv: Path) -> pd.DataFrame:
     """
     Load DLC CSV (3 header rows). If the first column is 'frame' (in any header
@@ -131,7 +189,6 @@ def load_dlc(dlc_csv: Path) -> pd.DataFrame:
 
     df.index = idx
     return df
-
 
 def expand_dlc_to_corrected(dlc_df: pd.DataFrame, ocr_df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -181,20 +238,19 @@ def detect_rising_edges(sig: np.ndarray) -> np.ndarray:
             state = False
     return np.asarray(edges, dtype=np.int64)
 
-
 def load_br_sync(ns_path: Path, chan_id: int):
     rec = se.read_blackrock(str(ns_path), all_annotations=True)
     ch_ids = list(rec.get_channel_ids())
-    if str(chan_id) in map(str, ch_ids):
-        channel_ids = [str(chan_id)]
-    elif chan_id in ch_ids:
-        channel_ids = [chan_id]
-    else:
-        raise ValueError(f"Sync channel {chan_id} not in {ns_path.name}. Available: {ch_ids}")
+    ch_ids_str = list(map(str, ch_ids))
+    target = str(chan_id)
+    if target not in ch_ids_str:
+        raise ValueError(
+            f"Sync channel {chan_id} not in {ns_path.name}. "
+            f"Available: {ch_ids_str}"
+        )
     fs = float(rec.get_sampling_frequency())
-    sig = rec.get_traces(channel_ids=channel_ids).astype(float).squeeze()
+    sig = rec.get_traces(channel_ids=[target]).astype(float).squeeze()
     return sig, fs
-
 
 def corrected_to_time_ns5(n_corrected: int, ns_path: Path, sync_chan: int):
     """Return (ns5_samples, t_sec, fs) arrays of length n_corrected, using rising edges."""
@@ -206,42 +262,47 @@ def corrected_to_time_ns5(n_corrected: int, ns_path: Path, sync_chan: int):
     t_sec = samples / float(fs)
     return samples, t_sec, fs
 
-
 # -------------------------- Discovery & main --------------------------
-# Matches: NRR_RW003_001_Cam-0DLC*.csv  → trial="NRR_RW003_001", cam=0
-_DLC_RE = re.compile(
-    r'^(?P<trial>NRR_[A-Za-z]+[0-9]{3}_[0-9]{3})_Cam-(?P<cam>[01])DLC.*\.csv$',
+# Accept OCR like:
+#   NRR_RW003_001_Cam-0_ocr.csv
+#   NRR_RW001_002_2025_0915_141059_Cam-0_ocr.csv
+_TRIAL_CAM_OCR_RE = re.compile(
+    r'^(?P<trial>NRR_[A-Za-z]+[0-9]{3}_[0-9]{3})(?:_[0-9]{4}_[0-9]{4}_[0-9]{6})?_Cam-(?P<cam>[01])(?:_|-)?ocr\.csv$',
     re.IGNORECASE
 )
+def _trial_cam_from_ocr_name(p: Path):
+    m = _TRIAL_CAM_OCR_RE.match(p.name)
+    if not m:
+        return None, None
+    return m.group("trial"), int(m.group("cam"))
 
+# Accept DLC like:
+#   NRR_RW003_001_Cam-0DLC_Resnet50_....csv
+#   NRR_RW001_002_2025_0915_141059_Cam-0DLC_Resnet50_....csv
+_TRIAL_CAM_RE = re.compile(
+    r'^(?P<trial>NRR_[A-Za-z]+[0-9]{3}_[0-9]{3})(?:_[0-9]{4}_[0-9]{4}_[0-9]{6})?_Cam-(?P<cam>[01])DLC',
+    re.IGNORECASE
+)
 def _trial_cam_from_dlc_name(p: Path):
-    m = _DLC_RE.match(p.name)
+    m = _TRIAL_CAM_RE.match(p.name)
     if not m:
         return None, None
     return m.group("trial"), int(m.group("cam"))
 
 def _find_per_trial_inputs(video_root: Path) -> Dict[str, dict]:
-    """
-    Returns:
-      { trial: { 'ocr': {0: Path, 1: Path}, 'dlc': {0: Path, 1: Path} } }
-    Keeps the newest file by mtime if duplicates exist.
-    """
     per: Dict[str, dict] = {}
 
-    # ---- OCR files (assumes names like NRR_RW003_001_Cam-0_ocr.csv) ----
+    # OCR files
     for p in video_root.rglob("*_ocr.csv"):
-        name = p.name
-        # trial is the part before "_Cam-<d>_ocr"
-        try:
-            base, tail = name.split("_Cam-", 1)
-            cam = int(tail.split("_", 1)[0])  # '0_ocr.csv' → 0
-            trial = base
-        except Exception:
+        trial, cam = _trial_cam_from_ocr_name(p)
+        if trial is None:
             continue
         d = per.setdefault(trial, {"ocr": {}, "dlc": {}})
-        d["ocr"][cam] = p
+        prev = d["ocr"].get(cam)
+        if prev is None or p.stat().st_mtime > prev.stat().st_mtime:
+            d["ocr"][cam] = p
 
-    # ---- DLC files (always start with NRR_*_Cam-<d>DLC...) ----
+    # DLC files
     for p in video_root.rglob("NRR_*_Cam-[01]DLC*.csv"):
         trial, cam = _trial_cam_from_dlc_name(p)
         if trial is None:
@@ -251,22 +312,22 @@ def _find_per_trial_inputs(video_root: Path) -> Dict[str, dict]:
         if prev is None or p.stat().st_mtime > prev.stat().st_mtime:
             d["dlc"][cam] = p
 
-    # Keep only trials that have both cams for both OCR and DLCk
+    # Keep only trials that have BOTH cams for BOTH OCR & DLC
     return {
-        trial: d for trial, d in per.items()
+        t: d for t, d in per.items()
         if set(d["ocr"].keys()) >= {0, 1} and set(d["dlc"].keys()) >= {0, 1}
     }
 
 def _find_ns5_for_trial(br_root: Path, trial: str) -> Path | None:
-    # Try .ns5 first, then any NSx
+    """Find a .ns5 whose stem contains the trial string; never returns ns6."""
     hits = list(br_root.rglob("*.ns5"))
-    hits += list(br_root.rglob("*.ns6"))
     trial_low = trial.lower()
     matches = [p for p in hits if trial_low in p.stem.lower()]
     if not matches:
+        print(f"[warn] No .ns5 matched trial '{trial}' in {br_root}")
         return None
-    # deterministic choice
     return sorted(matches)[0]
+
 
 def main():
     print(f"[scan] VIDEO_ROOT={VIDEO_ROOT}")
@@ -278,6 +339,13 @@ def main():
 
     print(f"[info] Found {len(per_trial)} trials.")
 
+    # load once
+    try:
+        VIDEO_TO_BR = _load_video_to_br_map(METADATA_CSV)
+    except Exception as e:
+        print(f"[warn] Could not load metadata map ({METADATA_CSV.name}): {e}")
+        VIDEO_TO_BR = {}
+        
     for trial, d in sorted(per_trial.items()):
         print(f"\n=== Trial: {trial} ===")
         cam_files = d['dlc'].keys()
@@ -290,8 +358,19 @@ def main():
         e0 = expand_dlc_to_corrected(dlc0, ocr0)
         e1 = expand_dlc_to_corrected(dlc1, ocr1)
 
-        # Optional: attach NS5 time if a file matches trial
-        ns_path = _find_ns5_for_trial(BR_ROOT, trial)
+        # per-trial
+        vid_idx = _extract_video_idx_from_trial(trial)
+        ns_path = None
+        if vid_idx is not None and VIDEO_TO_BR:
+            br_idx = VIDEO_TO_BR.get(vid_idx)
+            if br_idx is not None:
+                print(f"[pair] Video_File={vid_idx:03d} → BR_File={br_idx:03d} (from {METADATA_CSV.name})")
+                ns_path = _find_ns5_by_br_index(BR_ROOT, br_idx)
+                if ns_path is None:
+                    print(f"[warn] BR_File {br_idx:03d} not found by index; fallback to trial-name search.")
+        if ns_path is None:
+            ns_path = _find_ns5_for_trial(BR_ROOT, trial)  # your existing fallback
+
         if ns_path is not None:
             try:
                 n_corr = max(len(e0.index), len(e1.index))

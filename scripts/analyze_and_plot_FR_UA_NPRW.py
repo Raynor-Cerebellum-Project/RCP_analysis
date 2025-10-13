@@ -7,7 +7,7 @@ from pathlib import Path
 
 # List of scripts you want to run
 BATCH_SCRIPTS = [
-    "align_dlc_one_cam_to_br.py"
+    # "align_dlc_one_cam_to_br.py",
     "NPRW_Intan_analysis_threshold.py",
     "compute_br_to_intan_shifts.py",
     "UA_BR_analysis_threshold.py",

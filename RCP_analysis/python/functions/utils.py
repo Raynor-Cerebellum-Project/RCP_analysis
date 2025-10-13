@@ -1,11 +1,11 @@
 from pathlib import Path
-import numpy as np
-import pandas as pd
+import pandas as pd, numpy as np
 import json, csv, re, io, codecs
 import spikeinterface as si
 import spikeinterface.extractors as se
 import spikeinterface.preprocessing as spre
 from typing import Dict
+
 from spikeinterface.extractors import read_blackrock
 from ..functions.intan_preproc import load_stim_geometry, make_identity_probe_from_geom
 
@@ -96,7 +96,7 @@ def extract_peristim_segments(
     # Relative timebase for a *perfectly* aligned segment (used only for plotting/logic)
     # We will slice on t_ms for each trial, so segment lengths are equal if t_ms is uniform.
     # Assume uniform binning for rates:
-    dt = float(np.median(np.diff(t_ms)))  # ms per bin
+    dt = float(np.nanmedian(np.diff(t_ms)))  # ms per bin
     n_twin = int(round(seg_len_ms / dt))
     rel_time_ms = np.arange(n_twin) * dt + win_ms[0]
 
@@ -107,6 +107,8 @@ def extract_peristim_segments(
         end_ms   = s + win_ms[1]
         if start_ms < t_min or end_ms > t_max:
             continue  # skip partial windows
+        
+        ## Stim alignment is wrong?
 
         # slice indices on t_ms
         i0 = int(np.searchsorted(t_ms, start_ms, side="left"))
@@ -184,15 +186,15 @@ def build_probe_and_locs_from_geom(geom_path: Path, radius_um: float = 5.0):
 def baseline_zero_each_trial(
     segments: np.ndarray,
     rel_time_ms: np.ndarray,
-    baseline_first_ms: float = 200.0,
+    normalize_first_ms: float = 200.0,
 ):
     """
-    For each trial & channel, subtract the mean over the first `baseline_first_ms`
-    of the segment (i.e., from window start to start+baseline_first_ms).
+    For each trial & channel, subtract the mean over the first `normalize_first_ms`
+    of the segment (i.e., from window start to start+normalize_first_ms).
     segments: (n_trials, n_ch, n_twin)
     """
     t0 = rel_time_ms[0]
-    mask = (rel_time_ms >= t0) & (rel_time_ms < t0 + baseline_first_ms)
+    mask = (rel_time_ms >= t0) & (rel_time_ms < t0 + normalize_first_ms)
     if mask.sum() < 1:
         raise ValueError("Baseline window has 0 bins — check your timebase and dt.")
     base = segments[:, :, mask].mean(axis=2, keepdims=True)  # (n_trials, n_ch, 1)
@@ -267,7 +269,7 @@ def _pick_fs_hz(meta, z):
             except Exception: pass
     if z is not None and "t" in z.files:
         t = np.asarray(z["t"], dtype=float)
-        dt = np.median(np.diff(t))
+        dt = np.nanmedian(np.diff(t))
         if dt > 0:
             return 1.0/dt
     return None
@@ -332,50 +334,138 @@ def load_br_intan_sync_ns5(ns5_path: Path, intan_sync_chan_id: int = 134) -> tup
 # Behavior CSV helpers
 # ===========================
 
-def _flatten_cols_mi(cols) -> list[str]:
-    out = []
-    for c in cols:
-        if isinstance(c, tuple):
-            parts = [str(x) for x in c if str(x) not in ("nan", "")]
-            out.append("_".join(parts))
-        else:
-            out.append(str(c))
-    return out
+_CAM_IN_NAME_RE = re.compile(r"Cam[-_]?([01])", re.IGNORECASE)
 
-def load_behavior_npz(csv_path: Path):
+def _is_ns5_col(name: str) -> bool:
+    # accept 'ns5_sample', 'ns5sample', and variants like 'ns5_sample_15'
+    return re.fullmatch(r"(?:ns5[_ ]?sample)(?:_\d+)?", str(name).strip().lower()) is not None
+
+def _flatten_cols_mi(mi: pd.MultiIndex) -> list[str]:
     """
-    Reads the 'both_cams_aligned.csv' produced earlier and returns:
+    Flatten possibly-messy MultiIndex columns:
+    - Drop 'nan' / 'Unnamed.*' levels
+    - Join remaining parts with '_'
+    - Normalize any ns5-sample-like column to 'ns5_sample'
+    """
+    flat = []
+    for tup in mi.values:
+        parts = [str(x) for x in tup if str(x).lower() not in ("nan", "none") and not str(x).startswith("Unnamed")]
+        if not parts:
+            parts = [""]
+        name = "_".join(p.strip() for p in parts if p.strip())
+        # Normalize ns5 column variants (e.g., "ns5_sample_15" -> "ns5_sample")
+        if _is_ns5_col(name):
+            name = "ns5_sample"
+        flat.append(name)
+    return flat
+
+def _read_behavior_csv_robust(csv_path: Path, num_cam: int) -> tuple[pd.DataFrame, str]:
+    """
+    If num_cam > 1, read as a 2-level header (for both-cam CSVs).
+    Else read as a single header (for single-cam CSVs).
+    Always normalize any ns5* columns to 'ns5_sample'.
+    """
+    if num_cam not in (1, 2):
+        raise ValueError("num_cam must be 1 or 2")
+
+    if num_cam > 1:
+        # Two-camera/both-cams format
+        df = pd.read_csv(csv_path, header=[0, 1], index_col=0)
+        df.columns = _flatten_cols_mi(df.columns)  # uses your helper to clean MI and ns5 variants
+    else:
+        # Single-camera format
+        df = pd.read_csv(csv_path, header=0, index_col=0)
+        # normalize column names to strings then collapse ns5 variants
+        cols = []
+        for c in df.columns:
+            name = str(c)
+            if _is_ns5_col(name):  # e.g., 'ns5_sample_15' => 'ns5_sample'
+                name = "ns5_sample"
+            cols.append(name)
+        df.columns = cols
+
+    # Ensure we have a usable ns5 column and standardize its name
+    ns5_col = next((c for c in ("ns5_sample", "cam0_ns5_sample", "cam1_ns5_sample") if c in df.columns), None)
+    if ns5_col is None:
+        # fallback: accept any column matching the pattern
+        for c in df.columns:
+            if _is_ns5_col(c):
+                ns5_col = c
+                break
+    if ns5_col is None:
+        raise ValueError(f"{csv_path.name} missing ns5_sample column")
+
+    if ns5_col != "ns5_sample":
+        df = df.rename(columns={ns5_col: "ns5_sample"})
+        ns5_col = "ns5_sample"
+
+    return df, ns5_col
+
+def load_behavior_npz(csv_path: Path, num_cam: int):
+    """
+    Reads aligned behavior CSV and returns:
       ns5_sample: (N,) int64
-      cam0:       (N, D0) float32, cam0 column names list[str]
-      cam1:       (N, D1) float32, cam1 column names list[str]
-    No anchor shift is applied (already in ns5 samples).
-    """
-    # It was written with MultiIndex columns; read robustly
-    df = pd.read_csv(csv_path, header=[0, 1], index_col=0)
-    df.columns = _flatten_cols_mi(df.columns)
+      cam0: (N, D0) float32, cam0_cols: list[str]
+      cam1: (N, D1) float32, cam1_cols: list[str]
 
-    # Prefer shared ns5_sample; else fall back to per-cam if present
-    ns5_col = None
-    for cand in ("ns5_sample", "cam0_ns5_sample", "cam1_ns5_sample"):
-        if cand in df.columns:
-            ns5_col = cand
-            break
+    num_cam: 1 or 2. Function is tolerant to files that only include one cam even when num_cam=2.
+    """
+    if num_cam not in (1, 2):
+        raise ValueError("num_cam must be 1 or 2")
+
+    df, ns5_col = _read_behavior_csv_robust(csv_path, num_cam)
+
+    # Final ns5 normalization (guards against odd headers)
+    if ns5_col is None:
+        ns5_col = next((c for c in ("ns5_sample", "cam0_ns5_sample", "cam1_ns5_sample") if c in df.columns), None)
     if ns5_col is None:
         raise ValueError(f"{csv_path.name} missing ns5_sample column")
 
     ns5_sample = pd.to_numeric(df[ns5_col], errors="coerce").to_numpy()
     ns5_sample = np.rint(ns5_sample).astype(np.int64)
 
-    # Collect cam0 / cam1 feature columns (exclude any *_ns5_sample)
-    cam0_cols = [c for c in df.columns if c.startswith("cam0_") and c != "cam0_ns5_sample"]
-    cam1_cols = [c for c in df.columns if c.startswith("cam1_") and c != "cam1_ns5_sample"]
+    # If columns are already prefixed, use them directly.
+    has_cam0_pref = any(c.startswith("cam0_") for c in df.columns)
+    has_cam1_pref = any(c.startswith("cam1_") for c in df.columns)
 
+    if has_cam0_pref or has_cam1_pref:
+        cam0_cols = [c for c in df.columns if c.startswith("cam0_") and c != "cam0_ns5_sample"]
+        cam1_cols = [c for c in df.columns if c.startswith("cam1_") and c != "cam1_ns5_sample"]
+
+        cam0 = df[cam0_cols].to_numpy(dtype=np.float32) if cam0_cols else np.zeros((len(df), 0), np.float32)
+        cam1 = df[cam1_cols].to_numpy(dtype=np.float32) if cam1_cols else np.zeros((len(df), 0), np.float32)
+
+        if num_cam == 1 and cam0.shape[1] and cam1.shape[1]:
+            print(f"[warn] {csv_path.name} contains cam0_ and cam1_ columns but num_cam=1; returning both.")
+        return ns5_sample, cam0, cam0_cols, cam1, cam1_cols
+
+    # Otherwise, assume single-cam style: everything except the ns5 col are this cam’s features.
+    feat_cols = [c for c in df.columns if c != ns5_col]
+
+    if num_cam == 2:
+        # Try to infer cam from filename; if absent, assume cam0.
+        m = _CAM_IN_NAME_RE.search(csv_path.name)
+        inferred_cam = int(m.group(1)) if m else 0
+
+        if inferred_cam == 0:
+            cam0_cols = feat_cols
+            cam1_cols = []
+            cam0 = df[cam0_cols].to_numpy(dtype=np.float32) if cam0_cols else np.zeros((len(df), 0), np.float32)
+            cam1 = np.zeros((len(df), 0), np.float32)
+        else:
+            cam0_cols = []
+            cam1_cols = feat_cols
+            cam0 = np.zeros((len(df), 0), np.float32)
+            cam1 = df[cam1_cols].to_numpy(dtype=np.float32) if cam1_cols else np.zeros((len(df), 0), np.float32)
+
+        return ns5_sample, cam0, cam0_cols, cam1, cam1_cols
+
+    # num_cam == 1
+    cam0_cols = feat_cols
+    cam1_cols = []
     cam0 = df[cam0_cols].to_numpy(dtype=np.float32) if cam0_cols else np.zeros((len(df), 0), np.float32)
-    cam1 = df[cam1_cols].to_numpy(dtype=np.float32) if cam1_cols else np.zeros((len(df), 0), np.float32)
-
+    cam1 = np.zeros((len(df), 0), np.float32)
     return ns5_sample, cam0, cam0_cols, cam1, cam1_cols
-
-
 
 # ===========================
 # CSV mapping helpers

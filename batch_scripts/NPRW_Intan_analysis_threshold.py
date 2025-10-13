@@ -16,7 +16,6 @@ def plot_selected_sessions(
     pre_s: float = 0.30,
     post_s: float = 0.30,
     chunk_s: float = 60.0,
-    preproc_root: Path = Path("/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis/Nike/NRR_RW001/results/checkpoints"),
     template_samples_before: float | None = None,
     template_samples_after: float | None = None,
 ):

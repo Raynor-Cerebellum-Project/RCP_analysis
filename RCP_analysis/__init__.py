@@ -77,6 +77,7 @@ from .python.plotting.plotting import (
     plot_channel_heatmap,
     stacked_heatmaps_two_t,
     stacked_heatmaps_plus_behv,
+    add_ua_region_bar,
 )
 
 
@@ -153,4 +154,5 @@ __all__ = [
     "plot_single_channel_trial_quad_raw",
     "plot_channel_heatmap",
     "stacked_heatmaps_two_t"
+    "add_ua_region_bar",
 ]

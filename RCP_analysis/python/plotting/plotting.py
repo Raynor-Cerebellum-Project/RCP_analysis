@@ -3,11 +3,53 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 from matplotlib.patches import Rectangle
-
+    
 from probeinterface.plotting import plot_probe
 from probeinterface import Probe
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
+def _prepare_cam(lines: np.ndarray | None,
+                 rel_t: np.ndarray | None,
+                 *,
+                 min_trace_coverage: float = 0.05  # ≥5% finite samples in time
+                 ) -> tuple[np.ndarray | None, bool]:
+    """
+    Returns (clean_lines, has_data).
+    - Accepts (D,T) or (T,D); transposes if needed.
+    - Drops traces that are all-NaN or have < min_trace_coverage finite values.
+    - Ensures time dimension == rel_t.size.
+    """
+    if rel_t is None or lines is None:
+        return None, False
+
+    L = np.asarray(lines)
+    if L.size == 0:
+        return None, False
+
+    # Ensure 2D
+    if L.ndim == 1:
+        # interpret as a single trace over time
+        if rel_t is not None and L.size == rel_t.size:
+            L = L[None, :]  # -> (1, T)
+        else:
+            return None, False
+
+    # Coerce orientation so that axis-1 is time
+    T = rel_t.size
+    if L.shape[1] != T and L.shape[0] == T:
+        L = L.T  # assume transposed input
+    elif L.shape[1] != T:
+        # neither axis matches time; can't plot
+        return None, False
+
+    # Drop traces with too few finite samples
+    finite_frac = np.isfinite(L).mean(axis=1)
+    keep = finite_frac >= float(min_trace_coverage)
+    if not np.any(keep):
+        return None, False
+    L = L[keep, :]
+
+    return L, True
 
 # import helpers from sibling modules
 from ..functions.utils import load_rate_npz, median_across_trials, extract_peristim_segments, build_probe_and_locs_from_geom, baseline_zero_each_trial
@@ -139,7 +181,7 @@ def run_one_Intan_FR_heatmap(
     npz_path: Path,
     out_dir: Path,
     win_ms=(-800.0, 1200.0),
-    baseline_first_ms=100.0,
+    normalize_first_ms=100.0,
     min_trials=1,
     save_npz=True,
     stim_ms: np.ndarray | None = None,
@@ -157,7 +199,7 @@ def run_one_Intan_FR_heatmap(
     )
 
     zeroed = baseline_zero_each_trial(
-        segments=segments, rel_time_ms=rel_time_ms, baseline_first_ms=baseline_first_ms
+        segments=segments, rel_time_ms=rel_time_ms, normalize_first_ms=normalize_first_ms
     )
     
     # -------- NEW: multi-channel, windowed trial debug --------
@@ -207,7 +249,7 @@ def run_one_Intan_FR_heatmap(
             meta=dict(
                 source_file=str(npz_path),
                 win_ms=win_ms,
-                baseline_first_ms=baseline_first_ms,
+                normalize_first_ms=normalize_first_ms,
                 n_trials=int(segments.shape[0]),
             ),
         )
@@ -327,15 +369,7 @@ def plot_single_channel_trial_quad_raw(
     fig.savefig(out_png, dpi=180, bbox_inches="tight")
     plt.close(fig)
 
-# ---- Plotting FR for both ----
-def _ua_region_from_elec(e: int) -> int:
-    if e <= 0:      return -1
-    if e <= 64:     return 0  # SMA
-    if e <= 128:    return 1  # Dorsal premotor
-    if e <= 192:    return 2  # M1 inferior
-    return 3                  # M1 superior
-
-def _add_ua_region_bar(
+def add_ua_region_bar(
     ax,
     n_rows: int,
     ua_chan_ids_1based: np.ndarray | None = None,  # length == n_rows; values in 1..256
@@ -380,6 +414,14 @@ def _add_ua_region_bar(
     for y in np.cumsum(splits)[:-1]:
         ax.plot([x, x - 0.012], [y, y], transform=ax.transAxes,
                 color="k", lw=1.2, clip_on=False)
+
+# ---- Plotting FR for both ----
+def _ua_region_from_elec(e: int) -> int:
+    if e <= 0:      return -1
+    if e <= 64:     return 0  # SMA
+    if e <= 128:    return 1  # Dorsal premotor
+    if e <= 192:    return 2  # M1 inferior
+    return 3                  # M1 superior
 
 def stacked_heatmaps_two_t(
     intan_med, ua_med, t_intan, t_ua, out_svg, title_top, title_bot,
@@ -448,7 +490,7 @@ def stacked_heatmaps_two_t(
     ax_bot.tick_params(left=False, labelleft=False)
 
     # Contiguous region bar; if ua_ids_1based is None it will fall back to equal quarters
-    _add_ua_region_bar(ax_bot, ua_plot.shape[0], ua_chan_ids_1based=ids_plot)
+    add_ua_region_bar(ax_bot, ua_plot.shape[0], ua_chan_ids_1based=ids_plot)
 
     fig.colorbar(im1, ax=ax_bot).set_label("Δ FR (Hz) NOTE: SCALE")
     # ----- Probe inset: outline all contacts, fill ONLY stim sites -----
@@ -507,7 +549,6 @@ def stacked_heatmaps_two_t(
     out_svg.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_svg, dpi=300, bbox_inches="tight"); plt.close(fig)
 
-
 def stacked_heatmaps_plus_behv(
     intan_med: np.ndarray,              # (n_intan_ch, T_intan)
     ua_med: np.ndarray,                 # (n_ua_rows, T_ua)
@@ -531,81 +572,101 @@ def stacked_heatmaps_plus_behv(
     probe_marker_size: int = 28,
     ua_ids_1based: np.ndarray | None = None,
     ua_sort: str = "region_then_elec",  # "none" | "elec" | "region_then_elec"
-    # --- NEW behavior inputs ---
+    # --- behavior (each optional) ---
     beh_rel_time: np.ndarray | None = None,   # (T_beh,)
-    beh_cam0_lines: np.ndarray | None = None, # (6, T_beh)
-    beh_cam1_lines: np.ndarray | None = None, # (6, T_beh)
+    beh_cam0_lines: np.ndarray | None = None, # (6, T_beh) or empty
+    beh_cam1_lines: np.ndarray | None = None, # (6, T_beh) or empty
     beh_labels: list[str] | None = None,      # length 6
     sess: str | None = None,
     overall_title: str | None = None,
+    title_cam1: str | None = None,
 ):
     """
-    4-row layout:
-      Row 1: Behavior camera 0 (six traces: wrist_x, wrist_y, middle_base_x, middle_base_y, middle_tip_x, middle_tip_y)
-      Row 2: Behavior camera 1 (same ordering)
-      Row 3: Intan heatmap
-      Row 4: UA   heatmap (+ region bar)
+    Dynamic layout:
+      - 2 cams available: 4 rows = [cam0, cam1, Intan, UA]
+      - 1 cam available:  3 rows = [that cam, Intan, UA]
+      - 0 cams:           2 rows = [Intan, UA]
     Right-side probe inset is included if `probe` or `probe_locs` are provided.
     """
-    # ---- figure & gridspec (with optional probe + dedicated colorbar column) ----
+
+    # Sanitize camera blocks first
+    beh_cam0_lines, have_cam0 = _prepare_cam(beh_cam0_lines, beh_rel_time, min_trace_coverage=0.05)
+    beh_cam1_lines, have_cam1 = _prepare_cam(beh_cam1_lines, beh_rel_time, min_trace_coverage=0.05)
+
+    n_beh_rows = int(have_cam0) + int(have_cam1)
+    # ---- figure & gridspec (with optional probe column) ----
     have_probe = (probe is not None) or (
-    probe_locs is not None and np.asarray(probe_locs).ndim == 2 and len(probe_locs) > 0
-)
+        probe_locs is not None and np.asarray(probe_locs).ndim == 2 and len(probe_locs) > 0
+    )
+
+    # rows = n_beh_rows + 2 (Intan + UA)
+    nrows = n_beh_rows + 2
+    if nrows == 4:
+        height_ratios = [1, 1, 1, 1]
+    elif nrows == 3:
+        height_ratios = [1, 1, 1]
+    else:  # 2
+        height_ratios = [1, 1]
+
     if have_probe:
-        fig = plt.figure(figsize=(14, 10), layout='constrained')
+        fig = plt.figure(figsize=(14, 8 + 2*n_beh_rows), layout='constrained')
         gs = gridspec.GridSpec(
-            nrows=4, ncols=3, figure=fig,
+            nrows=nrows, ncols=3, figure=fig,
             width_ratios=[1.0, 0.02, probe_width_ratio],
-            height_ratios=[1, 1, 1, 1]
+            height_ratios=height_ratios
         )
-        ax_b0 = fig.add_subplot(gs[0, 0])
-        ax_b1 = fig.add_subplot(gs[1, 0], sharex=ax_b0)
-        ax_i  = fig.add_subplot(gs[2, 0], sharex=ax_b0)
-        ax_ua = fig.add_subplot(gs[3, 0], sharex=ax_b0)
+        _main_col = (slice(None), 0)
         ax_probe = fig.add_subplot(gs[:, 2])
     else:
-        fig = plt.figure(figsize=(14, 10), constrained_layout=True)
-        gs = gridspec.GridSpec(nrows=4, ncols=1, figure=fig, height_ratios=[1, 1, 1, 1])
-        ax_b0 = fig.add_subplot(gs[0, 0])
-        ax_b1 = fig.add_subplot(gs[1, 0], sharex=ax_b0)
-        ax_i  = fig.add_subplot(gs[2, 0], sharex=ax_b0)
-        ax_ua = fig.add_subplot(gs[3, 0], sharex=ax_b0)
+        fig = plt.figure(figsize=(14, 8 + 2*n_beh_rows), constrained_layout=True)
+        gs = gridspec.GridSpec(nrows=nrows, ncols=1, figure=fig, height_ratios=height_ratios)
+        _main_col = (slice(None), 0)
         ax_probe = None
-    # tighter columns, a bit of row breathing room
-    # fig.subplots_adjust(wspace=0.08, hspace=0.45)
-    # ---------------- Behavior rows ----------------
-    if beh_rel_time is not None and beh_cam0_lines is not None and beh_cam1_lines is not None:
-        labs = beh_labels or ["wrist_x","wrist_y","middle_base_x","middle_base_y","middle_tip_x","middle_tip_y"]
-        # Row 1: cam0 (solid)
-        for k in range(min(6, beh_cam0_lines.shape[0])):
-            y = beh_cam0_lines[k]
-            if np.isfinite(y).any():
-                ax_b0.plot(beh_rel_time, y, lw=1.25, label=labs[k])
-        ax_b0.axvline(0.0, color="red", alpha=0.9, linewidth=1.2)
-        ax_b0.axvspan(0.0, 100.0, color="gray", alpha=0.2)
-        ax_b0.set_ylabel("Δ (z)")
-        ax_b0.set_title(title_kinematics)
-        if beh_cam0_lines.shape[0] > 0:
-            ax_b0.legend(
-                loc="center left", bbox_to_anchor=(1.02, 0.5),
-                frameon=False, fontsize=8, ncols=1, borderaxespad=0.0
-            )
-            
-        # Row 2: cam1 (dashed)
-        for k in range(min(6, beh_cam1_lines.shape[0])):
-            y = beh_cam1_lines[k]
-            if np.isfinite(y).any():
-                ax_b1.plot(beh_rel_time, y, lw=1.25, ls="--", label=labs[k], alpha=0.95)
-        ax_b1.axvline(0.0, color="red", alpha=0.9, linewidth=1.2)
-        ax_b1.axvspan(0.0, 100.0, color="gray", alpha=0.2)
-        ax_b1.set_ylabel("Δ (z)")
-        ax_b1.set_title("Median Kinematics Left Camera (Cam-1)")
-        # Share x-range with neural panels if ranges match; otherwise just use beh range
-        ax_b1.set_xlim(float(beh_rel_time[0]), float(beh_rel_time[-1]))
+
+    # Allocate axes in order
+    axes_beh = []
+    next_row = 0
+    if have_cam0:
+        ax_b0 = fig.add_subplot(gs[next_row, 0])
+        axes_beh.append(("cam0", ax_b0))
+        next_row += 1
     else:
-        ax_b0.text(0.5, 0.5, "No behavior provided", ha="center", va="center", transform=ax_b0.transAxes)
-        ax_b1.text(0.5, 0.5, "No behavior provided", ha="center", va="center", transform=ax_b1.transAxes)
-    # ----- Intan heatmap -----
+        ax_b0 = None
+
+    if have_cam1:
+        ax_b1 = fig.add_subplot(gs[next_row, 0])
+        axes_beh.append(("cam1", ax_b1))
+        next_row += 1
+    else:
+        ax_b1 = None
+
+    ax_i  = fig.add_subplot(gs[next_row, 0]); next_row += 1
+    ax_ua = fig.add_subplot(gs[next_row, 0])
+
+    # ---------------- Behavior rows ----------------
+    labs = beh_labels or []  # can be any length (0, 2, 6, 8, ...)
+
+    def _plot_cam(ax, rel_t, lines, title, linestyle="-"):
+        D = lines.shape[0]  # number of traces
+        for k in range(D):
+            y = lines[k]
+            if np.isfinite(y).any():
+                label = labs[k] if k < len(labs) else f"feat_{k+1}"
+                ax.plot(rel_t, y, lw=1.25, ls=linestyle, label=label, alpha=0.95)
+        ax.axvline(0.0, linewidth=1.2)
+        ax.axvspan(0.0, 100.0, alpha=0.2)
+        ax.set_ylabel("Δ (z)")
+        ax.set_title(title)
+        if D > 0:
+            ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5),
+                    frameon=False, fontsize=8, ncols=1, borderaxespad=0.0)
+
+    if have_cam0:
+        _plot_cam(ax_b0, beh_rel_time, beh_cam0_lines, title_kinematics)
+    if have_cam1:
+        _plot_cam(ax_b1, beh_rel_time, beh_cam1_lines, title_cam1 or "Median Kinematics (Cam-1)")
+
+    # ---------------- Intan heatmap ----------------
     im0 = ax_i.imshow(
         intan_med, aspect="auto", cmap=cmap, origin="lower",
         extent=[t_intan[0], t_intan[-1], 0, intan_med.shape[0]],
@@ -616,7 +677,8 @@ def stacked_heatmaps_plus_behv(
     ax_i.set_title(title_top); ax_i.set_ylabel("Intan ch")
     cb0 = fig.colorbar(im0, ax=ax_i, fraction=0.046, pad=0.02)
     cb0.set_label("Δ FR (Hz)")
-    # ---------------- UA heatmap (+ region bar, box 4) ----------------
+
+    # ---------------- UA heatmap (+ optional reordering) ----------------
     ua_plot = ua_med
     ids_plot = ua_ids_1based
     if ua_ids_1based is not None and ua_sort != "none":
@@ -632,7 +694,7 @@ def stacked_heatmaps_plus_behv(
         order = np.r_[np.where(valid)[0][order_valid], np.where(~valid)[0]]
         ua_plot = ua_med[order, :]
         ids_plot = ids[order]
-    # ----- UA heatmap -----
+
     im1 = ax_ua.imshow(
         ua_plot, aspect="auto", cmap=cmap, origin="lower",
         extent=[t_ua[0], t_ua[-1], 0, ua_plot.shape[0]],
@@ -644,37 +706,46 @@ def stacked_heatmaps_plus_behv(
     ax_ua.set_xlabel("Time (ms) rel. stim")
     ax_ua.set_ylabel(""); ax_ua.set_yticks([]); ax_ua.tick_params(left=False, labelleft=False)
 
-    # Region bar — keep only this one
-    _add_ua_region_bar(ax_ua, ua_plot.shape[0], ua_chan_ids_1based=ids_plot)
+    add_ua_region_bar(ax_ua, ua_plot.shape[0], ua_chan_ids_1based=ids_plot)
 
     cb1 = fig.colorbar(im1, ax=ax_ua, fraction=0.046, pad=0.02)
     cb1.set_label("Δ FR (Hz) NOTE SCALE")
-    
+
     # ---------------- Probe inset (optional) ----------------
     if have_probe:
-        if probe is None and Probe is not None:
-            pr = Probe(ndim=2)
-            pr.set_contacts(positions=np.asarray(probe_locs, float),
-                            shapes="circle", shape_params={"radius": 5.0})
-            try: pr.create_auto_shape()
-            except Exception: pass
-            probe = pr
-        if probe_locs is None:
+        try:
+            if probe is None and Probe is not None:
+                pr = Probe(ndim=2)
+                pr.set_contacts(positions=np.asarray(probe_locs, float),
+                                shapes="circle", shape_params={"radius": 5.0})
+                try:
+                    pr.create_auto_shape()
+                except Exception:
+                    pass
+                probe_local = pr
+            else:
+                probe_local = probe
+        except Exception:
+            probe_local = None
+
+        if probe_locs is None and probe_local is not None:
             try:
-                probe_locs = probe.contact_positions.astype(float)
+                probe_locs = probe_local.contact_positions.astype(float)
             except Exception:
                 probe_locs = None
-        n_contacts = (probe.get_contact_count()
-                      if probe is not None else (0 if probe_locs is None else probe_locs.shape[0]))
+
+        n_contacts = (probe_local.get_contact_count()
+                      if probe_local is not None else (0 if probe_locs is None else probe_locs.shape[0]))
         contacts_colors = ["none"] * n_contacts
         if stim_idx is not None and np.size(stim_idx):
             s = np.asarray(stim_idx, int)
             s = s[(s >= 0) & (s < n_contacts)]
             for i in s:
                 contacts_colors[i] = "tab:red"
-        if plot_probe is not None and probe is not None:
+
+        if (probe_local is not None) and (plot_probe is not None):
             plot_probe(
-                probe, ax=ax_probe, with_contact_id=False,
+                probe_local, ax=ax_probe, with_contact_id=False,
                 contacts_colors=contacts_colors,
                 probe_shape_kwargs={"facecolor": "none", "edgecolor": "black", "linewidth": 0.6},
                 contacts_kargs={"edgecolor": "k", "linewidth": 0.3},
@@ -687,374 +758,26 @@ def stacked_heatmaps_plus_behv(
         ax_probe.set_title(probe_title, fontsize=10)
         ax_probe.set_aspect("equal", adjustable="box")
         ax_probe.set_xticks([]); ax_probe.set_yticks([])
-    # ---- sync x-lims (your code) ----
-    ranges = [(t_intan[0], t_intan[-1]), (t_ua[0], t_ua[-1])]
-    if beh_rel_time is not None:
-        ranges.append((beh_rel_time[0], beh_rel_time[-1]))
-    xmin = float(min(lo for lo, _ in ranges))
-    xmax = float(max(hi for _, hi in ranges))
-    for ax in (ax_b0, ax_b1, ax_i, ax_ua):
+
+    # ---------------- Sync x-lims across available axes ----------------
+    x_ranges = [(t_intan[0], t_intan[-1]), (t_ua[0], t_ua[-1])]
+    if have_cam0:
+        x_ranges.append((beh_rel_time[0], beh_rel_time[-1]))
+    if have_cam1:
+        x_ranges.append((beh_rel_time[0], beh_rel_time[-1]))
+
+    xmin = float(min(lo for lo, _ in x_ranges))
+    xmax = float(max(hi for _, hi in x_ranges))
+
+    for ax in [ax for ax in (ax_b0, ax_b1, ax_i, ax_ua) if ax is not None]:
         ax.set_xlim(xmin, xmax)
-    # ---- overall title (optional) ----
+
+    # ---------------- Overall title ----------------
     if overall_title:
-        fig.suptitle(overall_title, fontsize=13, fontweight="bold", y=1.03)
-        
+        fig.suptitle(overall_title, fontsize=13, fontweight="bold", y=1.02)
+
     out_svg.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_svg, dpi=300, bbox_inches="tight", pad_inches=0.25)
     plt.close(fig)
 
 
-
-
-## Plotting peak detection diagnoses -- deprecated?
-# # ---- plotting helpers ----
-# def _first_stim_time_from_npz(stim_npz: Path) -> float | None:
-#     """
-#     Return first stim time (s) using 'trigger_pairs' and 'meta' in the NPZ.
-#     If no triggers are present, returns None.
-#     """
-#     stim_npz = Path(stim_npz)
-#     if not stim_npz.exists():
-#         return None
-
-#     with np.load(stim_npz, allow_pickle=False) as z:
-#         # fs from meta
-#         fs_hz = 1.0
-#         if "meta" in z:
-#             try:
-#                 meta_raw = z["meta"].item()
-#                 meta = json.loads(meta_raw) if isinstance(meta_raw, (str, bytes)) else dict(meta_raw)
-#                 fs_hz = float(meta.get("fs_hz", 1.0))
-#             except Exception:
-#                 pass
-
-#         # first trigger start sample
-#         if "trigger_pairs" in z and z["trigger_pairs"].size:
-#             tp = z["trigger_pairs"]
-#             first_start = int(tp[0, 0])
-#             return first_start / fs_hz
-
-#     return None
-
-# def _find_interp_dir_for_session(preproc_root: Path, sess_name: str) -> Path | None:
-#     """
-#     Find the artifact-corrected checkpoint directory like:
-#       pp_local_<rmin>_<rmax>__interp_<sess_name>
-#     Returns the newest match if multiple exist.
-#     """
-#     root = Path(preproc_root) / "NPRW"
-#     if not root.exists():
-#         return None
-#     pat = re.compile(rf"^pp_.*__interp_{re.escape(sess_name)}$")
-#     cands = [p for p in root.iterdir() if p.is_dir() and pat.match(p.name)]
-#     if not cands:
-#         return None
-#     # pick the most recent
-#     cands.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-#     return cands[0]
-
-# def _load_cached_recording(ac_dir: Path):
-#     """Robust loader for SI cache folders."""
-#     ac_dir = Path(ac_dir)
-#     # Try the folder directly (SI >= 0.97 usually works)
-#     try:
-#         return si.load(ac_dir)
-#     except Exception:
-#         pass
-
-#     # Fallback to explicit si_folder.json (older saves)
-#     j = ac_dir / "si_folder.json"
-#     if j.exists():
-#         return si.load_extractor(j)
-
-#     # Nothing worked
-#     raise FileNotFoundError(f"Could not load SpikeInterface recording from {ac_dir} "
-#                             f"(no si_folder.json found and si.load() failed).")
-
-# def _pick_window_frames(fs, n_total, t0, pre_s, post_s, view_s=None):
-#     if view_s is not None:
-#         v0, v1 = float(view_s[0]), float(view_s[1])
-#         if v1 < v0:
-#             v0, v1 = v1, v0  # swap
-#         start = max(0, int(round((t0 + v0) * fs)))
-#         end   = min(n_total, int(round((t0 + v1) * fs)))
-#     else:
-#         start = max(0, int(round((t0 - pre_s) * fs)))
-#         end   = min(n_total, int(round((t0 + post_s) * fs)))
-#     if end <= start:
-#         end = min(n_total, start + int(round(0.3 * fs)))  # 300 ms fallback
-#     return start, end
-
-# def plot_all_quads_for_session(
-#     sess_folder: Path,
-#     geom_path: Path,
-#     neural_stream: str,
-#     out_dir: Path,
-#     peaks: np.ndarray | None = None,
-#     peak_t_s: np.ndarray | None = None,
-#     stim_npz_path: Path | None = None,
-#     pre_s: float = 0.3,
-#     post_s: float = 0.3,
-#     probe_ratio: float = 0.1,
-#     preproc_root: Path = Path("/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis/Nike/NRR_RW001/results/checkpoints"),
-#     show_pca_windows: bool = True,
-#     show_blocks: bool = True,
-#     template_samples_before: float | None = None,
-#     template_samples_after: float | None = None,
-#     view_s: tuple[float, float] | None = None,
-#     padding: float = 15.0,
-# ):
-#     out_dir.mkdir(parents=True, exist_ok=True)
-
-#     # 1) load AC checkpoint
-#     ac_dir = _find_interp_dir_for_session(preproc_root, sess_folder.name)
-#     if ac_dir is None:
-#         raise FileNotFoundError(
-#             f"No artifact-corrected checkpoint found for session '{sess_folder.name}' "
-#             f"in {preproc_root/'NPRW'} (looked for 'pp_*__interp_{sess_folder.name}')"
-#         )
-#     rec = _load_cached_recording(ac_dir)
-
-#     # 2) ensure probe present / geometry order
-#     try:
-#         probe = rec.get_probe()
-#     except Exception:
-#         probe = None
-#     if probe is None:
-#         geom = load_stim_geometry(geom_path)
-#         probe = make_identity_probe_from_geom(geom, radius_um=5.0)
-#         rec = rec.set_probe(probe, in_place=False)
-
-#     fs = float(rec.get_sampling_frequency())
-#     try:
-#         n_total = rec.get_num_frames()
-#     except TypeError:
-#         n_total = rec.get_num_frames(0) if hasattr(rec, "get_num_frames") else rec.get_num_samples()
-
-#     locs = rec.get_channel_locations()
-#     chan_ids = [str(x) for x in rec.get_channel_ids()]
-
-#     # 3) pick window around first stim
-#     t0 = None
-#     if stim_npz_path is not None:
-#         try:
-#             t0 = _first_stim_time_from_npz(stim_npz_path)  # keep None if no triggers
-#         except Exception:
-#             print(f"[WARN] could not read stim_npz at {stim_npz_path}; centering at t=0")
-#             t0 = None
-
-#     if t0 is None:
-#         print("[WARN] no stim found; centering at t=0 and ignoring view_s")
-#         t0 = 0.0
-#         has_stim = False
-#     else:
-#         has_stim = True
-
-#     start, end = _pick_window_frames(fs, n_total, t0, pre_s, post_s, view_s=(view_s if has_stim else None))
-#     Xwin = rec.get_traces(start_frame=start, end_frame=end, return_in_uV=True)
-#     t = (np.arange(Xwin.shape[0], dtype=float) + start) / fs - t0  # axis still relative to stim
-    
-#     zero_in_view = (t[0] <= 0.0 <= t[-1])
-    
-#     # Convert absolute peak times to "seconds rel. first stim"
-#     if peak_t_s is not None:
-#         peak_t_rel = peak_t_s - float(t0)   # shape (n_peaks,)
-#     else:
-#         peak_t_rel = None
-
-#     # Convenience: grab channel indices from peaks if provided
-#     if peaks is not None and 'channel_index' in peaks.dtype.names:
-#         peak_ch = peaks['channel_index'].astype(int, copy=False)
-#     else:
-#         peak_ch = None
-#     # --- compute a global y-axis range across all channels ---
-#     meds = np.median(Xwin, axis=0)
-#     mads = np.median(np.abs(Xwin - meds), axis=0) + 1e-9
-#     ymins = meds - 4 * mads
-#     ymaxs = meds + 4 * mads
-#     global_ylim = (float(ymins.min()), float(ymaxs.max()))
-
-#     # --- Load triggers/blocks + build visible trigger times
-#     trig_t = np.array([], dtype=float)
-#     block_edges_t = None
-
-#     if stim_npz_path is not None:
-#         try:
-#             stim = rcp.load_stim_detection(stim_npz_path)
-
-#             # triggers: take start column if present
-#             tp = np.asarray(stim.get("trigger_pairs", []))
-#             if tp.ndim == 2 and tp.shape[1] == 2 and tp.size:
-#                 trigs_start = tp[:, 0].astype(np.int64)
-#                 trig_t = trigs_start.astype(float) / fs - t0
-#             else:
-#                 trig_t = np.array([], dtype=float)
-
-#             # blocks: use (B,2) sample-space directly
-#             bb = np.asarray(stim.get("block_bounds_samples", []))
-#             if bb.ndim == 2 and bb.shape[1] == 2 and bb.size:
-#                 starts_s = bb[:, 0].astype(np.int64) / fs - t0  # seconds
-#                 ends_s   = bb[:, 1].astype(np.int64) / fs - t0
-#                 # flatten to edges [start1, end1, start2, end2, ...] and sort
-#                 block_edges_t = np.sort(np.concatenate([starts_s, ends_s]))
-#             else:
-#                 block_edges_t = None
-
-#         except Exception as e:
-#             print(f"[WARN] could not load trig/block info: {e}")
-#             trig_t = np.array([], dtype=float)
-#             block_edges_t = None
-
-#     # Template window (ms) – prefer explicit args, else fall back to global params if present
-#     if template_samples_before is None or template_samples_after is None:
-#         tb, ta = 15, 15   # samples (fallback)
-#     else:
-#         tb, ta = int(template_samples_before), int(template_samples_after)
-
-#     tb_s, ta_s = tb / fs, ta / fs   # samples -> seconds
-
-#     if trig_t.size:
-#         vis = (trig_t >= t[0] - tb_s) & (trig_t <= t[-1] + ta_s)
-#         trig_t_vis = trig_t[vis]
-#     else:
-#         trig_t_vis = np.array([], dtype=float)
-
-#     # --- Stim-channel highlighting (optional)
-#     stim_idx = np.array([], dtype=int)
-#     if stim_npz_path is not None:
-#         try:
-#             # removed max_seconds kwarg; keep eps/min_edges
-#             stim_idx = detect_stim_channels_from_npz(
-#                 stim_npz_path, eps=1e-12, min_edges=1
-#             )
-#         except Exception as e:
-#             print(f"[WARN] stim site detection failed: {e}")
-
-#     # 5) group channels by geometry order and plot
-#     order = np.lexsort((locs[:, 0], locs[:, 1]))  # ascending y, then x
-#     nrows, ncols = 4, 4
-#     group = nrows * ncols
-#     groups = [order[i:i + group] for i in range(0, order.size, group)]
-
-#     for gi, sel in enumerate(groups):
-#         fig = plt.figure(figsize=(20, 10), constrained_layout=True)
-#         gs_main = gridspec.GridSpec(1, 2, figure=fig, width_ratios=[5, probe_ratio], wspace=0.05)
-#         gs_grid = gridspec.GridSpecFromSubplotSpec(nrows, ncols, subplot_spec=gs_main[0, 0],
-#                                                    wspace=0.05, hspace=0.15)
-#         axes = np.array([[plt.subplot(gs_grid[r, c]) for c in range(ncols)] for r in range(nrows)])
-#         ax_probe = plt.subplot(gs_main[0, 1])
-
-#         for k_idx in range(group):
-#             r0, c0 = divmod(k_idx, ncols)
-#             r = nrows - 1 - r0  # flip vertically
-#             ax = axes[r, c0]
-#             if k_idx >= sel.size:
-#                 ax.axis("off"); continue
-#             ch = int(sel[k_idx])
-#             y = Xwin[:, ch]
-#             med = np.median(y)
-#             mad = np.median(np.abs(y - med)) + 1e-9
-
-#             # --- Block shading (behind trace)
-#             if block_edges_t is not None and block_edges_t.size >= 2:
-#                 x0, x1 = float(t[0]), float(t[-1])
-#                 edges = np.concatenate([[x0], block_edges_t, [x1]])
-#                 for si_ in range(0, len(edges) - 1):
-#                     a, b = edges[si_], edges[si_ + 1]
-#                     if b <= x0 or a >= x1:
-#                         continue
-#                     a = max(a, x0); b = min(b, x1)
-#                     if si_ % 2 == 1:
-#                         ax.axvspan(a, b, color="0.92", alpha=0.6, zorder=0)
-
-#             # --- Trace + reference lines
-#             ax.plot(t, y, lw=0.8, zorder=1)
-#             ax.axhline(med, lw=0.3, alpha=0.3, zorder=1)
-#             if zero_in_view:
-#                 ax.axvline(0.0, linestyle="--", linewidth=0.8, zorder=2)
-
-#             if (peak_t_rel is not None) and (peak_ch is not None):
-#                 in_ch = (peak_ch == ch)
-#                 if np.any(in_ch):
-#                     # restrict to the current time window shown
-#                     in_win = (peak_t_rel >= t[0]) & (peak_t_rel <= t[-1])
-#                     sel_peaks = np.where(in_ch & in_win)[0]
-#                     if sel_peaks.size:
-#                         # draw small markers at the trace; using nearest sample for y-position
-#                         # (fast + visually informative)
-#                         # Map each peak time to nearest index in current window:
-#                         idx = np.clip(np.searchsorted(t, peak_t_rel[sel_peaks]) - 1, 0, t.size - 1)
-#                         ax.scatter(
-#                             peak_t_rel[sel_peaks], y[idx],
-#                             s=8, zorder=3, alpha=0.75, marker='o',
-#                             color='red'
-#                         )
-#             # --- PCA template windows
-#             if show_pca_windows and trig_t_vis.size:
-#                 for tt in trig_t_vis:
-#                     a = tt - tb_s
-#                     b = tt + ta_s
-#                     if b < t[0] or a > t[-1]:
-#                         continue
-#                     ax.axvspan(max(a, t[0]), min(b, t[-1]),
-#                                color="tab:green", alpha=0.15, lw=0, zorder=0.5)
-#                     ax.axvline(tt, color="tab:green", lw=0.6, alpha=0.6, zorder=2)
-
-#             ax.set_title(chan_ids[ch], fontsize=9)
-#             ax.set_ylim(*global_ylim)
-#             if r != nrows - 1:
-#                 ax.tick_params(labelbottom=False)
-#             if c0 != 0:
-#                 ax.tick_params(labelleft=False)
-
-#         # bottom-left axis label
-#         if has_stim:
-#             axes[-1, 0].set_xlabel("Time (s) rel. first stim")
-#         else:
-#             axes[-1, 0].set_xlabel("Time (s)")
-
-#         axes[-1, 0].set_ylabel("µV")
-
-#                 # --- probe coloring for stim sites (unchanged) ---
-#         n_contacts = probe.get_contact_count()
-#         contacts_colors = np.array(["none"] * n_contacts, dtype=object)
-#         if stim_idx.size:
-#             stim_idx_clipped = stim_idx[(stim_idx >= 0) & (stim_idx < n_contacts)]
-#             contacts_colors[stim_idx_clipped] = "tab:red"
-#         plot_probe(probe, ax=ax_probe, with_contact_id=False, contacts_colors=contacts_colors)
-
-#         # blue box around the 16 channels shown (unchanged)
-#         xs, ys = locs[sel, 0], locs[sel, 1]
-#         pad = max(6.0, 0.03 * float(max(xs.max() - xs.min(), ys.max() - ys.min())))
-#         rect = Rectangle(
-#             (xs.min() - pad, ys.min() - pad),
-#             (xs.max() - xs.min()) + 2 * pad,
-#             (ys.max() - ys.min()) + 2 * pad,
-#             linewidth=2.0, edgecolor="tab:blue", facecolor="none", zorder=4
-#         )
-#         ax_probe.add_patch(rect)
-
-#         # --- widen the probe view with fixed padding ---
-#         ax_probe.set_aspect("equal", adjustable="box")
-#         x_min = float(locs[:, 0].min()) - padding
-#         x_max = float(locs[:, 0].max()) + padding
-#         y_min = float(locs[:, 1].min())
-#         y_max = float(locs[:, 1].max())
-#         mx = 0.06 * (x_max - x_min + 1e-6)
-#         my = 0.06 * (y_max - y_min + 1e-6)
-#         ax_probe.set_xlim(x_min - mx, x_max + mx)
-#         ax_probe.set_ylim(y_min - my, y_max + my)
-#         ax_probe.set_xticks([]); ax_probe.set_yticks([])
-
-#         n_stim = int(stim_idx.size)
-#         if hasattr(fig, "set_constrained_layout_pads"):
-#             fig.set_constrained_layout_pads(w_pad=0.06, h_pad=0.06, wspace=0.20, hspace=0.30)
-
-#         st = fig.suptitle(
-#             f"{sess_folder.name} — AC ({neural_stream}) (panel {gi:02d}) • stim sites: {n_stim}",
-#             y=1.02, fontsize=12
-#         )
-
-#         out_png = out_dir / f"{sess_folder.name}_interp_probe+4x4_panel{gi:02d}.png"
-#         fig.savefig(out_png, dpi=180, bbox_inches="tight", bbox_extra_artists=[st])
-#         plt.close(fig)
