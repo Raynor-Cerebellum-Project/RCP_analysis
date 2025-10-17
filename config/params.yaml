@@ -6,6 +6,7 @@ paths:
 
 kinematics:
   keypoints: [wrist, middle_finger_base, middle_finger_tip]
+  num_camera: 2
   # Example alt:
   # keypoints = ("shoulder", "elbow", "wrist", "finger")
 

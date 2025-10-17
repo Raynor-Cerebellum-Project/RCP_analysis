@@ -52,7 +52,7 @@ def _prepare_cam(lines: np.ndarray | None,
     return L, True
 
 # import helpers from sibling modules
-from ..functions.utils import load_rate_npz, median_across_trials, extract_peristim_segments, build_probe_and_locs_from_geom, baseline_zero_each_trial
+import RCP_analysis as rcp
 
 # ---- Plotting Intan only ----
 def _probe_from_locs(locs, radius_um: float = 5.0):
@@ -191,7 +191,7 @@ def run_one_Intan_FR_heatmap(
     debug_chans: list[int] | None = None,                 # e.g. [0..15]
     debug_window_ms: tuple[float, float] | None = None,   # e.g. (0, 250)
 ):
-    rate_hz, t_ms, _ = load_rate_npz(npz_path)
+    rate_hz, t_ms, _ = rcp.load_rate_npz(npz_path)
     stim_ms = np.asarray(stim_ms, dtype=float).ravel()
 
     segments, rel_time_ms = extract_peristim_segments(
@@ -416,13 +416,6 @@ def add_ua_region_bar(
                 color="k", lw=1.2, clip_on=False)
 
 # ---- Plotting FR for both ----
-def _ua_region_from_elec(e: int) -> int:
-    if e <= 0:      return -1
-    if e <= 64:     return 0  # SMA
-    if e <= 128:    return 1  # Dorsal premotor
-    if e <= 192:    return 2  # M1 inferior
-    return 3                  # M1 superior
-
 def stacked_heatmaps_two_t(
     intan_med, ua_med, t_intan, t_ua, out_svg, title_top, title_bot,
     cmap="jet", vmin_intan=None, vmax_intan=None, vmin_ua=None, vmax_ua=None,
@@ -468,7 +461,7 @@ def stacked_heatmaps_two_t(
         if ua_sort == "elec":
             order_valid = np.argsort(ids[valid], kind="stable")
         elif ua_sort == "region_then_elec":
-            regs = np.array([_ua_region_from_elec(int(e)) for e in ids], int)
+            regs = np.array([rcp.ua_region_from_elec(int(e)) for e in ids], int)
             order_valid = np.lexsort((ids[valid], regs[valid]))  # by (region, electrode)
         order = np.r_[np.where(valid)[0][order_valid], np.where(~valid)[0]]
         ua_plot = ua_med[order, :]
@@ -687,7 +680,7 @@ def stacked_heatmaps_plus_behv(
         if ua_sort == "elec":
             order_valid = np.argsort(ids[valid], kind="stable")
         elif ua_sort == "region_then_elec":
-            regs = np.array([_ua_region_from_elec(int(e)) for e in ids], int)
+            regs = np.array([rcp.ua_region_from_elec(int(e)) for e in ids], int)
             order_valid = np.lexsort((ids[valid], regs[valid]))  # (region, elec)
         else:
             order_valid = np.arange(valid.sum())

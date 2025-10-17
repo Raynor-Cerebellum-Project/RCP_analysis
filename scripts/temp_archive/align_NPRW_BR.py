@@ -265,15 +265,6 @@ def best_shift_corr_z(a: np.ndarray, b: np.ndarray, intan_BR_diff: int,
 # Rates helpers (for combined NPZ)
 # ===========================
 
-def load_rate_npz(npz_path: Path):
-    d = np.load(npz_path, allow_pickle=True)
-    rate_hz = d["rate_hz"]           # (n_ch, n_bins)
-    t_ms    = d["t_ms"]              # (n_bins,)
-    meta    = d.get("meta", None)
-    pcs     = d.get("pcs", None)
-    explained_var = d.get("explained_var", None)
-    return rate_hz, t_ms, meta, pcs, explained_var
-
 def find_intan_rates_for_session(nprw_ckpt_root: Path, session: str) -> Path | None:
     cands = sorted(nprw_ckpt_root.glob(f"rates__{session}__*.npz"))
     return cands[0] if cands else None
@@ -421,8 +412,8 @@ if __name__ == "__main__":
             print(f"[warn] No UA rates for BR_File {br_idx:03d}")
             continue
 
-        intan_rate_hz, intan_t_ms, intan_meta, intan_pcs, intan_expl = load_rate_npz(intan_rates_npz)
-        ua_rate_hz, ua_t_ms, ua_meta, ua_pcs, ua_expl = load_rate_npz(ua_rates_npz)
+        intan_rate_hz, intan_t_ms, intan_meta, intan_pcs, intan_expl = rcp.load_rate_npz(intan_rates_npz)
+        ua_rate_hz, ua_t_ms, ua_meta, ua_pcs, ua_expl = rcp.load_rate_npz(ua_rates_npz)
 
         # Optional stim times from Intan bundle (block starts)
         stim_ms = try_load_stim_ms_from_intan_bundle(NPRW_BUNDLES, session)

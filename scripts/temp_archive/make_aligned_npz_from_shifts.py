@@ -38,18 +38,6 @@ def _meta_fs(meta):
         return float(meta.get("fs_hz", meta.get("fs", np.nan)))
     return None
 
-def load_rate_npz(npz_path: Path):
-    d = np.load(npz_path, allow_pickle=True)
-    rate_hz = d["rate_hz"]           # (n_ch, n_bins)
-    t_ms    = d["t_ms"]              # (n_bins,)
-    meta    = d.get("meta", None)
-    pcs     = d.get("pcs", None)
-    peaks     = d.get("peaks", None)
-    peaks_t_ms     = d.get("peak_t_ms", None)
-    peaks_t_sample     = d.get("peak_sample", None)
-    explained_var = d.get("explained_var", None)
-    return rate_hz, t_ms, meta, pcs, peaks, peaks_t_ms, peaks_t_sample, explained_var
-
 def find_intan_rates_for_session(nprw_ckpt_root: Path, session: str) -> Path | None:
     cands = sorted(nprw_ckpt_root.glob(f"rates__{session}__*.npz"))
     return cands[0] if cands else None
@@ -181,8 +169,8 @@ def main():
                     if "ua_row_index_from_electrode" in z else np.array([], dtype=np.int16)
                 )
 
-            intan_rate_hz, intan_t_ms, intan_meta, intan_pcs, intan_peaks, intan_peaks_t_ms, intan_peaks_t_sample, intan_expl = load_rate_npz(intan_rates_npz)
-            ua_rate_hz, ua_t_ms, ua_meta, ua_pcs, ua_peaks, ua_peaks_t_ms, ua_peaks_t_sample, ua_expl = load_rate_npz(ua_rates_npz)
+            intan_rate_hz, intan_t_ms, intan_meta, intan_pcs, intan_peaks, intan_peaks_t_ms, intan_peaks_t_sample, intan_expl = rcp.load_rate_npz(intan_rates_npz)
+            ua_rate_hz, ua_t_ms, ua_meta, ua_pcs, ua_peaks, ua_peaks_t_ms, ua_peaks_t_sample, ua_expl = rcp.load_rate_npz(ua_rates_npz)
 
             # Optional stim times (absolute Intan ms)
             stim_ms_abs = try_load_stim_ms_from_intan_bundle(NPRW_BUNDLES, session)

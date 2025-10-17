@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
-import re
+import re, csv
 import numpy as np
 import pandas as pd
 import spikeinterface as si
@@ -59,7 +59,7 @@ def _load_nsx(sess: Path, ext: str):
 def load_ns6_spikes(sess: Path):
     rec = _load_nsx(sess, "ns6")
     ids = _ensure_int_ids(rec)
-    print(f"[NS6] {len(ids)} channels → {ids.tolist()}")
+    print(f"[NS6] {len(ids)}")
     return rec
 
 def load_ns5_aux(sess: Path):
@@ -87,7 +87,9 @@ def _ensure_int_ids(rec) -> np.ndarray:
             out.append(int(cid))
         except Exception:
             m = re.search(r"(\d+)", str(cid))
-            out.append(int(m.group(1)) if m else None)
+            if not m:
+                raise ValueError(f"Unparsable channel id: {cid!r}")
+            out.append(int(m.group(1)))
     return np.array(out, dtype=int)
 
 def pick_cols_by_ids(rec, wanted_ids) -> Tuple[list[int], list[int]]:
@@ -161,59 +163,116 @@ def load_UA_mapping_from_excel(xls_path: Path, sheet: str | int = 0, n_elec: int
     mapped_nsp[elec - 1] = nsp
     return {"mapped_nsp": mapped_nsp, "n_channels": int(max_elec)}
 
-def align_mapping_index_to_recording(recording, mapped_nsp: np.ndarray) -> np.ndarray:
+def _lookup_ua_port(meta_csv: Path, br_idx: int) -> Optional[str]:
     """
-    Align an array of NSP channel numbers (mapped_nsp) to the row
-    indices of a SpikeInterface Recording.
-
-    Returns an array of length len(mapped_nsp):
-      - valid row index if that NSP channel is present in recording
-      - -1 if not present
+    Return UA_port for a given BR index from the metadata CSV.
+    Accepts column variants: UA_port / UA Port / port / uaport, and BR / BR_File / br_file.
     """
-    ch_ids = np.array(recording.get_channel_ids())
-    id_to_row = {}
+    if not meta_csv.exists():
+        print(f"[WARN] metadata CSV not found at {meta_csv}")
+        return None
 
-    # try direct numeric match
+    def norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+    with meta_csv.open("r", newline="") as f:
+        rdr = csv.DictReader(f)
+        if not rdr.fieldnames:
+            print(f"[WARN] {meta_csv.name} has no header")
+            return None
+        fmap = {norm(k): k for k in rdr.fieldnames if k}
+
+        # pick header names robustly
+        def pick(*names):
+            for n in names:
+                if n in fmap:
+                    return fmap[n]
+            return None
+
+        col_br = pick("br","brfile","br_file","brindex","br_fileindex")
+        col_port = pick("uaport","ua_port","ua port","port")
+
+        if col_br is None or col_port is None:
+            print(f"[WARN] metadata missing BR and/or UA_port columns (have: {rdr.fieldnames})")
+            return None
+
+        for row in rdr:
+            try:
+                if int(str(row[col_br]).strip()) == int(br_idx):
+                    val = str(row[col_port]).strip()
+                    return val.upper() if val else None
+            except Exception:
+                continue
+
+    return None
+
+def align_mapping_index_to_recording(recording, mapped_nsp: np.ndarray, br_idx, meta_csv) -> np.ndarray:
+    """
+    Build an electrode->row index map, using NSP channel ids from `mapped_nsp`.
+    For UA Port A, channel IDs are 1..128.
+    For UA Port B, channel IDs are 129..256 (i.e., local 1..128 + 128).
+    We *offset the recording channel IDs* when port == 'B' so lookups happen in 129..256.
+    """
+    ua_port = _lookup_ua_port(meta_csv, br_idx)
+    ch_ids_raw = np.array(recording.get_channel_ids())
+
+    # Primary path: numeric channel_ids from the Recording
     try:
-        id_to_row = {int(cid): i for i, cid in enumerate(ch_ids.astype(int))}
+        ch_ids_num = ch_ids_raw.astype(int)
+        if ua_port and ua_port.upper() == 'B':
+            # make the keys 129..256 so they match mapped_nsp for Port B
+            keys = ch_ids_num + 128
+        else:
+            keys = ch_ids_num
+        id_to_row = {int(k): i for i, k in enumerate(keys)}
     except Exception:
-        pass
+        id_to_row = {}
 
-    # fallback: check common property keys
+    # Fallback: derive numeric ids from properties (often already NSP ids)
     if not id_to_row:
-        for key in ("electrode_id", "nsx_chan_id", "nsp_channel", "channel_name"):
+        for key in ("nsp_channel", "electrode_id", "nsx_chan_id", "channel_name"):
             if key in recording.get_property_keys():
                 vals = recording.get_property(key)
                 def v2i(v):
-                    if isinstance(v, (int, np.integer)):
-                        return int(v)
-                    m = re.search(r'(\d+)', str(v))
-                    return int(m.group(1)) if m else None
-                ints = [v2i(v) for v in vals]
-                id_to_row = {iv: i for i, iv in enumerate(ints) if iv is not None}
+                    if isinstance(v, (int, np.integer)): return int(v)
+                    m = re.search(r'(\d+)', str(v)); return int(m.group(1)) if m else None
+                ints = np.array([v2i(v) for v in vals], dtype=object)
+                # If these are local 1..128 and we're on Port B, offset them.
+                ints_num = np.array([int(x) for x in ints if x is not None], dtype=int)
+                # Heuristic: if max <= 128 and port B, add 128
+                if ua_port and ua_port.upper() == 'B' and ints_num.size and ints_num.max() <= 128:
+                    ints_adj = [int(x)+128 if x is not None else None for x in ints]
+                else:
+                    ints_adj = ints
+                id_to_row = {int(iv): i for i, iv in enumerate(ints_adj) if iv is not None}
                 break
 
-    # build output: -1 for missing
+    # Map each electrode's NSP id -> recording row, -1 if missing
     idx_rows = np.full(mapped_nsp.shape, -1, dtype=int)
-    for i, nsp in enumerate(mapped_nsp):
-        if nsp in id_to_row:
-            idx_rows[i] = id_to_row[nsp]
+    for elec_idx0, nsp_id in enumerate(mapped_nsp):
+        try:
+            nsp_id = int(nsp_id)
+        except Exception:
+            continue
+        row = id_to_row.get(nsp_id, -1)
+        idx_rows[elec_idx0] = row
 
     return idx_rows
 
-def apply_ua_mapping_properties(recording, mapped_nsp: np.ndarray):
+def apply_ua_mapping_properties(recording, mapped_nsp: np.ndarray, br_idx, meta_csv):
     """
     Stamp UA mapping info onto the Recording without geometry.
 
     Per-channel properties (length == n_channels):
       - 'ua_electrode'   : Electrode number (1..N) for that recording row, or -1
       - 'ua_nsp_channel' : NSP channel id mapped to that row, or -1
+      - 'br_idx' : index of br file, used for identifying UA_port
 
     Per-recording annotation (any length):
       - 'ua_row_index_from_electrode' : np.ndarray len == len(mapped_nsp),
         where entry i is the recording row index for electrode (i+1), or -1 if absent.
     """
-    idx_rows = align_mapping_index_to_recording(recording, mapped_nsp)  # shape = (N_elec,)
+    idx_rows = align_mapping_index_to_recording(recording, mapped_nsp, br_idx, meta_csv)  # shape = (N_elec,)
     n_ch = recording.get_num_channels()
 
     # Per-channel arrays
@@ -225,6 +284,8 @@ def apply_ua_mapping_properties(recording, mapped_nsp: np.ndarray):
         if 0 <= row < n_ch:
             ua_elec_per_row[row] = elec_idx0 + 1            # 1-based electrode number
             ua_nsp_per_row[row]  = int(mapped_nsp[elec_idx0])
+
+    # TODO rename_channels????
 
     # Set per-channel properties (must be length n_ch)
     recording.set_property("ua_electrode", ua_elec_per_row)
@@ -316,6 +377,13 @@ def save_UA_bundle_npz(sess_name: str, bundle: dict, out_dir: Path):
         **{k: v for k, v in digi.get("channels", {}).items()},
     )
     print(f"[SAVED] {out_dir / f'{sess_name}_UA_bundle.npz'}")
+
+def ua_region_from_elec(e: int) -> int:
+    if e <= 0:      return -1
+    if e <= 64:     return 0  # SMA
+    if e <= 128:    return 1  # Dorsal premotor
+    if e <= 192:    return 2  # M1 inferior
+    return 3                  # M1 superior
 
 ## This function used by Intan too
 def threshold_mua_rates(
@@ -448,5 +516,5 @@ __all__ = [
     "load_ns6_spikes", "load_ns5_aux", "load_ns2_digi",
     "load_UA_mapping_from_excel", "apply_ua_mapping_properties",
     "build_blackrock_bundle", "save_UA_bundle_npz",
-    "threshold_mua_rates",
+    "threshold_mua_rates", "ua_region_from_elec"
 ]

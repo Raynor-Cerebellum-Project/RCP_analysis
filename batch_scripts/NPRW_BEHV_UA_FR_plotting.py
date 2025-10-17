@@ -19,10 +19,10 @@ WIN_MS            = (-600.0, 600.0)
 NORMALIZE_FIRST_MS = 150.0
 MIN_TRIALS        = 1
 
-VMIN_INTAN_BASELINE, VMAX_INTAN_BASELINE = -50, 200  # keep heatmap range if you like
+VMIN_INTAN_BASELINE, VMAX_INTAN_BASELINE = -50, 100  # keep heatmap range if you like
 VMIN_UA_BASELINE, VMAX_UA_BASELINE = -50, 150  # keep heatmap range if you like
 
-VMIN_INTAN, VMAX_INTAN = -100, 300  # keep heatmap range if you like
+VMIN_INTAN, VMAX_INTAN = -50, 300  # keep heatmap range if you like
 VMIN_UA, VMAX_UA = -50, 150  # keep heatmap range if you like
 COLORMAP = "jet"
 
@@ -33,6 +33,7 @@ VEL_MAX_GAP = 5           # interpolate NaN runs up to this many samples
 # --- Visualization settings ---
 GAUSS_SMOOTH_MS = 0   # 0 → disable smoothing
 
+BOX_ASPECT = 0.312
 
 # ---------- helpers ----------
 def _ensure_dir(p: Path) -> Path:
@@ -87,6 +88,12 @@ UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS and Path(XLS).exists() else 
 # Tuple order for keypoints (robust to missing config)
 KEYPOINTS_ORDER = tuple((PARAMS.kinematics or {}).get("keypoints", ()))
 
+def _match_probe_aspect(ax, n_rows: int, t0: float, t1: float):
+    """Make the axes box aspect (height/width) match the stim/probe plots."""
+    width = float(t1 - t0)
+    if width <= 0 or n_rows <= 0:
+        return
+    ax.set_box_aspect(n_rows / width)   # height/width
 
 def _apply_relative_offsets_by_ref(
     lines: Optional[np.ndarray],
@@ -510,8 +517,8 @@ def main_baselines():
             return
 
         height_ratios = []
-        if have_beh0: height_ratios.append(1.1)
-        if have_beh1: height_ratios.append(1.1)
+        if have_beh0: height_ratios.append(1.0)
+        if have_beh1: height_ratios.append(1.0)
         if intan_med is not None: height_ratios.append(1.0)
         if ua_plot  is not None:  height_ratios.append(1.0)
 
@@ -537,6 +544,8 @@ def main_baselines():
             if K0:
                 ax_b0.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False, fontsize=9, ncols=1, borderaxespad=0.0)
             ax_b0.grid(alpha=0.15, linestyle=":")
+            if BOX_ASPECT is not None:
+                ax_b0.set_box_aspect(BOX_ASPECT)   # <<< add this
             row += 1
 
         # Cam-1
@@ -551,18 +560,24 @@ def main_baselines():
             ax_b1.set_title(title_beh1 or "Median Kinematics (Cam-1)")
             if K1:
                 ax_b1.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False, fontsize=9, ncols=1, borderaxespad=0.0)
-            ax_b1.grid(alpha=0.15, linestyle=":" )
+            ax_b1.grid(alpha=0.15, linestyle=":")
+            if BOX_ASPECT is not None:
+                ax_b1.set_box_aspect(BOX_ASPECT)   # <<< add this
             row += 1
 
         # Intan
         if intan_med is not None:
             ax_i     = fig.add_subplot(gs[row, 0])
             ax_i_cax = fig.add_subplot(gs[row, 1])
+            # Intan
             im0 = ax_i.imshow(
                 intan_med, aspect="auto", cmap=COLORMAP, origin="lower",
                 extent=[rel_t[0], rel_t[-1], 0, intan_med.shape[0]],
                 vmin=VMIN_INTAN_BASELINE, vmax=VMAX_INTAN_BASELINE
             )
+            if BOX_ASPECT is not None:
+                ax_i.set_box_aspect(BOX_ASPECT)
+                
             ax_i.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
             ax_i.set_title(
                 f"Intan (median Δ across {n_ev_i} curated events) • Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
@@ -576,11 +591,15 @@ def main_baselines():
         if ua_plot is not None:
             ax_u     = fig.add_subplot(gs[row, 0])
             ax_u_cax = fig.add_subplot(gs[row, 1])
+            # UA
             im1 = ax_u.imshow(
                 ua_plot, aspect="auto", cmap=COLORMAP, origin="lower",
                 extent=[rel_t[0], rel_t[-1], 0, ua_plot.shape[0]],
                 vmin=VMIN_UA_BASELINE, vmax=VMAX_UA_BASELINE
             )
+            if BOX_ASPECT is not None:
+                ax_u.set_box_aspect(BOX_ASPECT)
+
             ax_u.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
             ax_u.set_title(
                 f"Utah Array (median Δ across {n_ev_u} curated events) • Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
@@ -593,15 +612,11 @@ def main_baselines():
             cb1.set_label("Δ FR (Hz) NOTE SCALE")
 
         # Sync x-lims
-        xranges = [(rel_t[0], rel_t[-1])]
-        if have_beh0: xranges.append((beh_time0[0], beh_time0[-1]))
-        if have_beh1: xranges.append((beh_time1[0], beh_time1[-1]))
-        xmin = float(min(a for a, _ in xranges)); xmax = float(max(b for _, b in xranges))
         for ax in (ax for ax in (ax_b0, ax_b1, ax_i, ax_u) if ax is not None):
-            ax.set_xlim(xmin, xmax)
+            ax.set_xlim(*WIN_MS)
 
         # save (unchanged aside from filename)
-        out_path = out_dir / f"UA_{port_lbl}__Depth{depth_lbl}__ALL_baseline_{fname_prefix}.png"
+        out_path = out_dir / f"UA_{port_lbl}__Depth{depth_lbl}__ALL_baseline_{fname_prefix}.svg"
         fig.savefig(out_path, dpi=300, bbox_inches="tight", pad_inches=0.25)
         plt.close(fig)
         print(f"[baseline] Wrote {out_path}")
@@ -1229,7 +1244,7 @@ def main():
                     print(f"[warn] stim-site detection failed for {sess}: {e}")
                     
             # ---------------- POSITION plot ----------------
-            out_svg_pos = FIG.peri_pos / f"{sess}__Intan_vs_UA__peri_stim_heatmaps__position.svg"
+            out_svg_pos = FIG.peri_pos / f"{sess}__Intan_vs_UA__peri_stim_heatmaps__position.png"
 
             title_top_pos = (
                 f"Median Δ in firing rate (Referenced to first {int(NORMALIZE_FIRST_MS)} ms)\n"
@@ -1280,7 +1295,7 @@ def main():
                 title_kinematics_v = title_kinematics  # fallback
                 title_cam1_v = title_cam1
 
-            out_svg_vel = FIG.peri_vel / f"{sess}__Intan_vs_UA__peri_stim_heatmaps__velocity.svg"
+            out_svg_vel = FIG.peri_vel / f"{sess}__Intan_vs_UA__peri_stim_heatmaps__velocity.png"
 
             title_top_vel = title_top_pos  # same neural titles
             title_bot_vel = title_bot_pos
@@ -1311,7 +1326,7 @@ def main():
 
 if __name__ == "__main__":
     # plot the aligned baseline traces
-    # main_baselines()
+    main_baselines()
     
     # plot stim trials
     main()

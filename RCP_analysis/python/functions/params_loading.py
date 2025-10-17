@@ -41,7 +41,7 @@ class experimentParams:
     # sessions
     sessions: Dict[str, Any] = field(default_factory=dict)
 
-    # NEW: kinematics (normalized)
+    # kinematics (normalized)
     kinematics: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -80,29 +80,38 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
         default_meta = Path(location) / "Metadata" / (f"{session}_metadata.csv" if session else "metadata.csv")
         metadata_rel  = metadata_rel or str(default_meta)
 
-    # ---------- NEW: normalize kinematics.keypoints ----------
+    # ---------- kinematics normalization ----------
     kin_cfg = cfg.get("kinematics", {}) or {}
+    kin_out = dict(kin_cfg)  # preserve other fields
 
+    # num_camera: int >= 1 (if present)
+    num_camera = kin_cfg.get("num_camera")
+    try:
+        num_camera = int(num_camera) if num_camera is not None else None
+    except (TypeError, ValueError):
+        num_camera = None
+    if num_camera is not None and num_camera < 1:
+        num_camera = 1
+    if num_camera is not None:
+        kin_out["num_camera"] = num_camera
+
+    # keypoints: normalize to tuple of strings
     def _as_str_tuple(v) -> Tuple[str, ...]:
-        # Accept list/tuple of strings
         if isinstance(v, (list, tuple)):
             return tuple(str(x) for x in v)
-        # Accept comma-separated string: "a, b, c"
         if isinstance(v, str) and "," in v:
             return tuple(s.strip(" '\"\t") for s in v.split(",") if s.strip())
-        # Accept accidental "(a, b, c)" or "('a','b','c')"—strip parens then split
         if isinstance(v, str) and v.strip().startswith("(") and v.strip().endswith(")"):
             inner = v.strip()[1:-1]
             return tuple(s.strip(" '\"\t") for s in inner.split(",") if s.strip())
-        # Single token -> 1-tuple
         if isinstance(v, str) and v.strip():
             return (v.strip(),)
         return tuple()
 
     keypoints = _as_str_tuple(kin_cfg.get("keypoints", ()))
-    kin_out = dict(kin_cfg)  # keep any future fields
     if keypoints:
         kin_out["keypoints"] = keypoints
+
 
     p = experimentParams(
         data_root=str(data_root),

@@ -20,6 +20,7 @@ from .python.functions.br_preproc import (
     build_blackrock_bundle,
     save_UA_bundle_npz,
     threshold_mua_rates,
+    ua_region_from_elec,
 )
 
 # intan
@@ -56,7 +57,6 @@ from .python.functions.utils import (
     aligned_stim_ms, 
     ua_title_from_meta,
     load_intan_adc, 
-    load_br_intan_sync_ns5, 
     read_intan_to_br_map, 
     parse_intan_session_dtkey, 
     build_session_index_map,
@@ -65,6 +65,12 @@ from .python.functions.utils import (
     load_stim_detection, 
     save_recording,
     load_behavior_npz,
+    load_video_to_br_map,
+    load_ocr_map,
+    corrected_to_time_ns5,
+    load_dlc, 
+    expand_dlc_to_corrected,
+    extract_video_idx_from_trial, parse_trial_cam_kind, find_per_trial_inputs, load_video_to_br_map, find_nsx_by_br_index, find_nsx_for_trial, find_ns5_by_br_index, find_ns5_for_trial
 )
 
 # plotting
@@ -102,6 +108,7 @@ __all__ = [
     "build_blackrock_bundle",
     "save_UA_bundle_npz",
     "threshold_mua_rates",
+    "ua_region_from_elec",
 
     # Intan
     "load_stim_geometry",
@@ -143,6 +150,19 @@ __all__ = [
     "load_stim_detection", 
     "save_recording",
     "load_behavior_npz",
+    "load_video_to_br_map",
+    "load_ocr_map",
+    "corrected_to_time_ns5",
+    "load_dlc", 
+    "expand_dlc_to_corrected",
+    "extract_video_idx_from_trial", 
+    "parse_trial_cam_kind", 
+    "find_per_trial_inputs", 
+    "load_video_to_br_map", 
+    "find_nsx_by_br_index", 
+    "find_nsx_for_trial", 
+    "find_ns5_by_br_index", 
+    "find_ns5_for_trial",
     
     # plotting
     # "_find_interp_dir_for_session",
@@ -155,4 +175,5 @@ __all__ = [
     "plot_channel_heatmap",
     "stacked_heatmaps_two_t"
     "add_ua_region_bar",
+    
 ]

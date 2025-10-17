@@ -10,24 +10,36 @@ matplotlib.use("Agg")
 matplotlib.rcParams['svg.fonttype'] = 'none'
 
 # ---- CONFIG ----
-BR_IDX = 4  # choose which BR file you want
+BR_IDX = 2  # choose which BR file you want
+TRIAL_INDEX = 0  # which valid trial index to show per channel
 
 # Optional alignment tweak
 ADJUST_SAMPLES = 3  # TODO: remove after triangle alignment
 
-WINDOW_MS = (100.0, 500.0) # (-100.0, 250.0) (100.0, 200.0) (160.0, 180.0)
-CHANNELS_TO_SHOW = list(range(96, 128))
-N_TRIALS_TO_SHOW = 4
+# Fixed window request
+WINDOW_MS = (0.0, 500.0)
+
+# Channels to render (row indices, unless UA_CHANNEL_MODE="elec")
+CHANNELS_TO_SHOW = list(range(96, 128))  # 32 channels -> 4 figures
 
 # ---- Resolving paths ----
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-OUT_BASE  = rcp.resolve_output_root(PARAMS)
-OUT_BASE.mkdir(parents=True, exist_ok=True)
+OUT_BASE  = rcp.resolve_output_root(PARAMS); OUT_BASE.mkdir(parents=True, exist_ok=True)
+
+# Pull session name from params (fallback to NRR_RW_001)
+SESSION = getattr(PARAMS, "session", None)
+if SESSION is None:
+    # Try dict-style if PARAMS isn't a SimpleNamespace
+    try:
+        SESSION = PARAMS.get("session", "NRR_RW_001")
+    except Exception:
+        SESSION = "NRR_RW_001"
 
 ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
-PATH_UA_SI = OUT_BASE / "checkpoints" / "UA" / f"pp_global__NRR_RW_001_{BR_IDX:03d}__NS6"
-OUT_DIR = OUT_BASE / "figures" / "debug_quads_aligned" / "UA" / f"BR_{BR_IDX:03d}"
+PATH_UA_SI = OUT_BASE / "checkpoints" / "UA" / f"pp_global__{SESSION}_{BR_IDX:03d}__NS6"
+
+OUT_DIR = OUT_BASE / "figures" / "debug_8ch_aligned" / "UA" / f"{SESSION}__BR_{BR_IDX:03d}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---- Helpers ----
@@ -50,24 +62,19 @@ def _safe_peaks_UA(z):
     peak_ch = None
     t_ms = None
 
-    # Prefer explicitly aligned ms if present 
     if "ua_peaks_t_ms_aligned" in z and z["ua_peaks_t_ms_aligned"].size:
         t_ms = z["ua_peaks_t_ms_aligned"].astype(float)
 
-    # Try to locate channel indices
     if "ua_peaks" in z and z["ua_peaks"].size:
         P = z["ua_peaks"]
-        # If structured
         if getattr(P, "dtype", None) is not None and P.dtype.names:
             if "channel_index" in P.dtype.names:
                 peak_ch = P["channel_index"].astype(int)
             elif "ch" in P.dtype.names:
                 peak_ch = P["ch"].astype(int)
         else:
-            # assume it's already the channel indices
             peak_ch = np.asarray(P).astype(int)
 
-    # Fallbacks:
     if peak_ch is None and "peak_ch" in z:
         peak_ch = z["peak_ch"].astype(int)
     if t_ms is None and "ua_peaks_t_ms" in z and z["ua_peaks_t_ms"].size:
@@ -102,11 +109,11 @@ def _valid_centers_ms(stim_ms_aligned: np.ndarray, fs_ua: float, rec_len_samples
     ok = (i0 >= 0) & (i1 <= rec_len_samples) & (i1 > i0)
     return stim_ms_aligned[ok]
 
-def _extract_trials(rec, ch_pos, centers_ms, win_ms, fs, n_show):
+def _extract_trials(rec, ch_pos, centers_ms, win_ms, fs):
+    """Return lists of (t,y) for ALL valid trials for a given channel."""
     w0, w1 = win_ms
     t_list, y_list = [], []
     ch_id = rec.get_channel_ids()[ch_pos]
-    kept = 0
     for s0_ms in centers_ms:
         s0 = int(round((s0_ms / 1000.0) * fs))
         i0 = int(s0 + round((w0/1000.0)*fs))
@@ -116,10 +123,11 @@ def _extract_trials(rec, ch_pos, centers_ms, win_ms, fs, n_show):
         y = rec.get_traces(start_frame=i0, end_frame=i1, channel_ids=[ch_id], return_in_uV=True).squeeze()
         t = (np.arange(i0, i1) - s0) / fs * 1000.0
         t_list.append(t); y_list.append(y)
-        kept += 1
-        if kept >= n_show:
-            break
-    return t_list, y_list, kept
+    return t_list, y_list
+
+def _chunks(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i+n]
 
 # ---- Main ----
 def main():
@@ -134,25 +142,20 @@ def main():
     PATH_ALIGNED_NPZ = _find_aligned_file(ALIGNED_ROOT, BR_IDX)
     z = np.load(PATH_ALIGNED_NPZ, allow_pickle=True)
 
-
-    # --- pick whether CHANNELS_TO_SHOW are 'row' indices or 'elec' IDs (1-based) ---
+    # --- channel indexing mode ---
     UA_CHANNEL_MODE = "row"  # change to "elec" if CHANNELS_TO_SHOW are electrode IDs
-
-    # Try to load UA row-index mapping from the aligned file (or fall back to identity)
     ua_row_index_from_electrode = None
     if "ua_row_index_from_electrode" in z.files:
-        ua_row_index_from_electrode = z["ua_row_index_from_electrode"].astype(int)  # shape (max_elec,) 1-based→row
+        ua_row_index_from_electrode = z["ua_row_index_from_electrode"].astype(int)
     elif "ua_row_to_elec" in z.files:
-        # invert ua_row_to_elec (1-based elec id per row) -> build row index from electrode
         ua_row_to_elec = z["ua_row_to_elec"].astype(int).ravel()
         max_e = int(ua_row_to_elec.max()) if ua_row_to_elec.size else 0
-        inv = -np.ones(max(256, max_e)+1, dtype=int)  # 1..256
+        inv = -np.ones(max(256, max_e)+1, dtype=int)
         for r, e in enumerate(ua_row_to_elec):
-            if e > 0 and e < inv.size:
+            if 0 < e < inv.size:
                 inv[e] = r
-        ua_row_index_from_electrode = inv  # 1-based elec -> row index (or -1 if missing)
+        ua_row_index_from_electrode = inv
 
-    # Translate CHANNELS_TO_SHOW -> positional rows for SpikeInterface
     if UA_CHANNEL_MODE == "elec":
         if ua_row_index_from_electrode is None:
             raise RuntimeError("Need UA electrode→row mapping (ua_row_index_from_electrode or ua_row_to_elec).")
@@ -163,33 +166,27 @@ def main():
                 print(f"[warn] electrode {e} has no mapped row; skipping.")
             else:
                 CHANNEL_ROWS.append(r)
-        CHANNEL_ROWS = list(dict.fromkeys(CHANNEL_ROWS))  # dedupe, keep order
+        CHANNEL_ROWS = list(dict.fromkeys(CHANNEL_ROWS))
     else:
-        CHANNEL_ROWS = CHANNELS_TO_SHOW  # already positional row indices
+        CHANNEL_ROWS = CHANNELS_TO_SHOW
 
-    print(f"[info] plotting UA rows: {CHANNEL_ROWS}")
+    print(f"[info] plotting UA rows (total {len(CHANNEL_ROWS)}): {CHANNEL_ROWS}")
 
     # Stim & anchor
-    stim_ms_abs = z.get("stim_ms", np.array([], dtype=float))
-    if stim_ms_abs is None:
-        stim_ms_abs = np.array([], dtype=float)
+    stim_ms_abs = z.get("stim_ms", np.array([], dtype=float)) or np.array([], dtype=float)
     try:
         align_meta = json.loads(z["align_meta"].item()) if hasattr(z["align_meta"], "item") else json.loads(z["align_meta"])
     except Exception:
         align_meta = {}
     anchor_ms = float(align_meta.get("anchor_ms", 0.0))
 
-    # Stim centers aligned to UA time base (your convention)
     stim_ms_aligned_raw = stim_ms_abs.astype(float) - anchor_ms
-
-    # Filter to centers whose window fits entirely inside UA
     valid_centers = _valid_centers_ms(stim_ms_aligned_raw, fs_ua, rec_len, WINDOW_MS)
 
-    # Peaks
     peak_ch, peak_t_ms = _safe_peaks_UA(z)
 
     # ---- Diagnostics ----
-    print(f"[info] UA fs = {fs_ua:.2f} Hz, frames = {rec_len}, duration ≈ {ua_duration_ms/1000.0:.2f} s")
+    print(f"[info] {SESSION} BR {BR_IDX:03d} | UA fs = {fs_ua:.2f} Hz, frames = {rec_len}, duration ≈ {ua_duration_ms/1000.0:.2f} s")
     print(f"[info] stim centers (raw-aligned) count = {stim_ms_aligned_raw.size}")
     if stim_ms_aligned_raw.size:
         print(f"       stim_ms_aligned range: {stim_ms_aligned_raw.min():.1f} .. {stim_ms_aligned_raw.max():.1f} ms")
@@ -199,41 +196,46 @@ def main():
         print("[warn] No valid trials after window check. Nothing to plot.")
         return
 
-    # Plot
-    for ch in CHANNELS_TO_SHOW:
-        t_list, y_list, kept = _extract_trials(rec, ch, valid_centers, WINDOW_MS, fs_ua, N_TRIALS_TO_SHOW)
-        if kept == 0:
-            print(f"[warn] ch {ch}: 0 trials fit window (after filtering). Skipping plot.")
-            continue
-
-        fig, axes = plt.subplots(2, 2, figsize=(10,6), sharex=True, sharey=True)
+    # ---- Iterate over channels in chunks of 8 (4 rows x 2 cols) ----
+    fig_idx = 0
+    for ch_group in _chunks(CHANNEL_ROWS, 8):
+        fig_idx += 1
+        fig, axes = plt.subplots(4, 2, figsize=(10, 10), sharex=True, sharey=True)
         axes = axes.ravel()
-        for k, ax in enumerate(axes):
-            if k < len(t_list):
-                t, y = t_list[k], y_list[k]
-                ax.plot(t, y, lw=0.9)
-                ax.axvline(0.0, ls="--", lw=0.8)
-                s0_ms = valid_centers[k] if k < valid_centers.size else valid_centers[-1]
-                _overlay_peaks(ax, t, y, s0_ms, peak_ch, peak_t_ms, ch_pos=ch, adjust_ms=adjust_ms)
-                ax.set_title(f"Trial {k+1}", fontsize=9)
-                
-                # --- enforce xlim if requested ---
-                if WINDOW_MS[0] > 0:
-                    ax.set_xlim(WINDOW_MS[0], WINDOW_MS[1])
-            else:
+
+        for ax, ch in zip(axes, ch_group):
+            # collect all trials and choose TRIAL_INDEX
+            t_list, y_list = _extract_trials(rec, ch, valid_centers, WINDOW_MS, fs_ua)
+            if len(t_list) == 0:
                 ax.axis("off")
-        for ax in axes[-2:]:
-            ax.set_xlabel("Time (ms) rel. stim")
-        for ax in axes:
+                continue
+
+            idx = TRIAL_INDEX if TRIAL_INDEX < len(t_list) else 0
+            t, y = t_list[idx], y_list[idx]
+            ax.plot(t, y, lw=0.9)
+            ax.axvline(0.0, ls="--", lw=0.8)
+            s0_ms = valid_centers[idx] if idx < valid_centers.size else valid_centers[-1]
+            _overlay_peaks(ax, t, y, s0_ms, peak_ch, peak_t_ms, ch_pos=ch, adjust_ms=(ADJUST_SAMPLES/fs_ua)*1000.0)
+            ax.set_title(f"UA ch {ch}", fontsize=9)
+            ax.set_xlim(WINDOW_MS[0], WINDOW_MS[1])
             ax.set_ylim(-100, 100)
 
-        axes[0].set_ylabel("µV"); axes[2].set_ylabel("µV")
-        fig.suptitle(f"{PATH_UA_SI.name} • UA ch {ch} • {int(WINDOW_MS[0])}–{int(WINDOW_MS[1])} ms", y=0.98)
-        out_svg = OUT_DIR / f"UA_ch{ch:03d}__quad.svg"
-        fig.tight_layout(); fig.savefig(out_svg, dpi=300, bbox_inches="tight"); plt.close(fig)
+        # turn off any leftover axes if channels < 8
+        for k in range(len(ch_group), 8):
+            axes[k].axis("off")
+
+        axes[-2].set_xlabel("Time (ms) rel. stim")
+        axes[-1].set_xlabel("Time (ms) rel. stim")
+        axes[0].set_ylabel("µV"); axes[2].set_ylabel("µV"); axes[4].set_ylabel("µV"); axes[6].set_ylabel("µV")
+
+        fig.suptitle(f"{SESSION} • BR {BR_IDX:03d} • {PATH_UA_SI.name} • {int(WINDOW_MS[0])}–{int(WINDOW_MS[1])} ms • group {fig_idx}", y=0.98)
+        out_svg = OUT_DIR / f"{SESSION}__BR_{BR_IDX:03d}__UA_rows_{ch_group[0]:03d}-{ch_group[-1]:03d}__win_{int(WINDOW_MS[0])}-{int(WINDOW_MS[1])}ms.svg"
+        fig.tight_layout()
+        fig.savefig(out_svg, dpi=300, bbox_inches="tight")
+        plt.close(fig)
         print(f"[saved] {out_svg}")
 
-    print("[done] all quads saved →", OUT_DIR)
+    print("[done] all 8-channel figures saved →", OUT_DIR)
 
 if __name__ == "__main__":
     main()

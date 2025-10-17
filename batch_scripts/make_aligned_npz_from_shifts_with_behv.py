@@ -13,12 +13,10 @@ OUT_BASE  = rcp.resolve_output_root(PARAMS); OUT_BASE.mkdir(parents=True, exist_
 NPRW_BUNDLES   = OUT_BASE / "bundles" / "NPRW"
 NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
 UA_CKPT_ROOT   = OUT_BASE / "checkpoints" / "UA"
-ALIGNED_CKPT_ROOT   = OUT_BASE / "checkpoints" / "Aligned"
-ALIGNED_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
-BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "behavior"
-BEHV_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
+ALIGNED_CKPT_ROOT   = OUT_BASE / "checkpoints" / "Aligned"; ALIGNED_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
+BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "behavior"; BEHV_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
 
-NUM_CAM = 2
+NUM_CAM = PARAMS.kinematics.get("num_camera", 1)
 
 METADATA_CSV  = (DATA_ROOT / PARAMS.metadata_rel).resolve(); METADATA_CSV.parent.mkdir(parents=True, exist_ok=True)
 METADATA_ROOT = METADATA_CSV.parent
@@ -41,18 +39,6 @@ def _meta_fs(meta):
     if isinstance(meta, dict):
         return float(meta.get("fs_hz", meta.get("fs", np.nan)))
     return None
-
-def load_rate_npz(npz_path: Path):
-    d = np.load(npz_path, allow_pickle=True)
-    rate_hz = d["rate_hz"]           # (n_ch, n_bins)
-    t_ms    = d["t_ms"]              # (n_bins,)
-    meta    = d.get("meta", None)
-    pcs     = d.get("pcs", None)
-    peaks     = d.get("peaks", None)
-    peaks_t_ms     = d.get("peak_t_ms", None)
-    peaks_t_sample     = d.get("peak_sample", None)
-    explained_var = d.get("explained_var", None)
-    return rate_hz, t_ms, meta, pcs, peaks, peaks_t_ms, peaks_t_sample, explained_var
 
 def find_intan_rates_for_session(nprw_ckpt_root: Path, session: str) -> Path | None:
     cands = sorted(nprw_ckpt_root.glob(f"rates__{session}__*.npz"))
@@ -198,7 +184,6 @@ def _load_br_to_video_map(meta_csv: Path) -> dict[int, int]:
         f"Could not decode {meta_csv} with tried encodings {encodings}. Last error: {last_err}"
     )
 
-
 # ---------- Behavior CSV helpers ----------
 # Matches:
 #   ..._<BRIDX>_both_cams_aligned.csv
@@ -291,7 +276,6 @@ def _behavior_times_ms_from_sources(
     # nothing usable
     return np.array([], dtype=np.float32)
 
-
 def _log_frame_jitter(beh_ns5_sample: np.ndarray, fs_br: float, label: str = "behavior"):
     """Optional: log per-frame interval stats from BR samples → ms (shows FPS jitter)."""
     if beh_ns5_sample.size > 2 and np.isfinite(fs_br) and fs_br > 0:
@@ -301,8 +285,6 @@ def _log_frame_jitter(beh_ns5_sample: np.ndarray, fs_br: float, label: str = "be
         sd  = float(np.std(d_ms));    mn  = float(np.min(d_ms)); mx = float(np.max(d_ms))
         print(f"[{label}] dt_ms: median={med:.3f}, mean={avg:.3f}, std={sd:.3f}, "
               f"min={mn:.3f}, max={mx:.3f}, n={d_ms.size}")
-
-
 
 def main():
     if not SHIFTS_CSV.exists():
@@ -355,8 +337,8 @@ def main():
                     if "ua_row_index_from_electrode" in z else np.array([], dtype=np.int16)
                 )
 
-            intan_rate_hz, intan_t_ms, intan_meta, intan_pcs, intan_peaks, intan_peaks_t_ms, intan_peaks_t_sample, intan_expl = load_rate_npz(intan_rates_npz)
-            ua_rate_hz, ua_t_ms, ua_meta, ua_pcs, ua_peaks, ua_peaks_t_ms, ua_peaks_t_sample, ua_expl = load_rate_npz(ua_rates_npz)
+            intan_rate_hz, intan_t_ms, intan_meta, intan_pcs, intan_peaks, intan_peaks_t_ms, intan_peaks_t_sample, intan_expl = rcp.load_rate_npz(intan_rates_npz)
+            ua_rate_hz, ua_t_ms, ua_meta, ua_pcs, ua_peaks, ua_peaks_t_ms, ua_peaks_t_sample, ua_expl = rcp.load_rate_npz(ua_rates_npz)
 
             # Optional stim times (absolute Intan ms)
             stim_ms_abs = try_load_stim_ms_from_intan_bundle(NPRW_BUNDLES, session)
@@ -511,10 +493,7 @@ def main():
                         br_ns5_path = Path(row.get("br_ns5", ""))
                         try:
                             if br_ns5_path.exists():
-                                _, fs_br = rcp.load_br_intan_sync_ns5(
-                                    br_ns5_path,
-                                    intan_sync_chan_id=int(getattr(PARAMS, "camera_sync_ch", 134))
-                                )
+                                _, fs_br = rcp.load_br_sync(br_ns5_path, 134, stream_id=5)
                         except Exception:
                             pass
 

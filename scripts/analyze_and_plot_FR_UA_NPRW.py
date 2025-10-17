@@ -12,6 +12,7 @@ BATCH_SCRIPTS = [
     "compute_br_to_intan_shifts.py",
     "UA_BR_analysis_threshold.py",
     "make_aligned_npz_from_shifts_with_behv.py",
+    "create_aligned_combined_baseline.py",
     "NPRW_BEHV_UA_FR_plotting.py",
 ]
 

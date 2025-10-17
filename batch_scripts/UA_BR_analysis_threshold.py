@@ -44,6 +44,9 @@ CKPT_OUT = OUT_BASE / "checkpoints" / "UA"
 NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
 CKPT_OUT.mkdir(parents=True, exist_ok=True)
 
+METADATA_CSV  = (DATA_ROOT / PARAMS.metadata_rel).resolve(); METADATA_CSV.parent.mkdir(parents=True, exist_ok=True)
+METADATA_ROOT = METADATA_CSV.parent
+
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
 
@@ -227,17 +230,59 @@ def main(limit_sessions: Optional[int] = None):
     print("Found session folders:", len(br_session_folders))
     saved_paths: list[Path] = []
 
-    for k, sess in enumerate(br_session_folders):
+    for sess in br_session_folders:
         print(f"=== Session: {sess.name} ===")
     
         bundle = rcp.build_blackrock_bundle(sess, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH)
         rcp.save_UA_bundle_npz(sess.name, bundle, BUNDLES_OUT)
 
         rec_ns6 = rcp.load_ns6_spikes(sess)
-        rcp.apply_ua_mapping_properties(rec_ns6, UA_MAP["mapped_nsp"])  # metadata only
+        
+        # --- Resolve br_idx for this UA folder from its name ---
+        br_idx = _br_idx_from_name(sess.name)
+        rcp.apply_ua_mapping_properties(rec_ns6, UA_MAP["mapped_nsp"], br_idx, METADATA_CSV)  # metadata only
 
         rec_hp  = spre.highpass_filter(rec_ns6, freq_min=float(PARAMS.highpass_hz))
-        rec_ref = spre.common_reference(rec_hp, reference="global", operator="median")
+
+        # --- get per-channel electrode ids ---
+        try:
+            ua_elec = np.asarray(rec_hp.get_property("ua_electrode"), dtype=int)
+        except Exception:
+            ua_elec = None
+
+        if ua_elec is None or ua_elec.size != rec_hp.get_num_channels():
+            raise RuntimeError("ua_electrode property missing or wrong length. "
+                            "Make sure rcp.apply_ua_mapping_properties(...) ran successfully.")
+
+        # --- map electrode -> region labels with your helper ---
+        UA_probe = np.array([rcp.ua_region_from_elec(int(e)) for e in ua_elec], dtype=int)
+
+        # Optional: give each unknown (-1) its own label so it won’t mix with others
+        if np.any(UA_probe < 0):
+            start_gid = (UA_probe[UA_probe >= 0].max() + 1) if np.any(UA_probe >= 0) else 0
+            gid = start_gid
+            for i, r in enumerate(UA_probe):
+                if r < 0:
+                    UA_probe[i] = gid
+                    gid += 1
+
+        # --- convert labels -> list of channel-ID lists (what SI expects) ---
+        ch_ids = np.asarray(rec_hp.get_channel_ids())
+        groups = []
+        for g in np.unique(UA_probe):
+            idx = np.where(UA_probe == g)[0]
+            if idx.size >= 2:                       # skip singletons to avoid self-referencing to ~0
+                groups.append(ch_ids[idx].tolist())
+            else:
+                print(f"[debug] region {g}: singleton -> left unreferenced")
+
+        print("[debug] group sizes:", [len(g) for g in groups])
+        
+        # can use detect_and_remove_bad_channels to remove high impedance channels
+        
+        rec_ref = spre.common_reference(
+            rec_hp, reference="global", operator="median", groups=groups
+        )
 
         try:
             _ = rec_ref.get_channel_locations()
@@ -246,9 +291,6 @@ def main(limit_sessions: Optional[int] = None):
             locs = np.column_stack([np.arange(n_ch, dtype=float), np.zeros(n_ch, dtype=float)])
             rec_ref.set_channel_locations(locs)
         
-        # --- Resolve br_idx for this UA folder from its name ---
-        br_idx = _br_idx_from_name(sess.name)
-
         # Default: no artifact windows
         block_bounds = np.empty((0, 2), dtype=int)
         shifts_row = None
@@ -309,7 +351,6 @@ def main(limit_sessions: Optional[int] = None):
                 )
             else:
                 print("[WARN] all artifact intervals invalid after shift; skipping artifact removal.")
-                # after apply_ua_mapping_properties(...) and before np.savez_compressed(...)
             ua_elec_per_row = None
             ua_nsp_per_row  = None
             row_from_elec   = None
@@ -434,7 +475,7 @@ def main(limit_sessions: Optional[int] = None):
                 peak_sign=PEAK_SIGN,
                 bin_ms=BIN_MS,
                 sigma_ms=SIGMA_MS,
-                fs=float(rec_artif_removed.get_sampling_frequency()),
+                fs=fs_ua,
                 n_channels=int(rec_artif_removed.get_num_channels()),
                 session=str(sess.name),
             ),

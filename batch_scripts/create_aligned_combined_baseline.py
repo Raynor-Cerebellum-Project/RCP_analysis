@@ -4,19 +4,15 @@ from pathlib import Path
 import re, sys, csv
 import numpy as np
 import pandas as pd
-import json
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from types import SimpleNamespace
 from scipy.signal import filtfilt
 from scipy.signal.windows import gaussian as _scipy_gaussian
 
 import RCP_analysis as rcp
 
-from __future__ import annotations
-from types import SimpleNamespace
-from pathlib import Path
-import RCP_analysis as rcp
 
 # ---------- small helpers ----------
 def _ensure_dir(p: Path) -> Path:
@@ -73,15 +69,6 @@ _TRIAL_VIDEO_IDX_RE = re.compile(
 )
 
 # ===== NPRW/UA helpers (minimal) =====
-def load_rate_npz(npz_path: Path):
-    z = np.load(npz_path, allow_pickle=True)
-    rate_hz = z["rate_hz"]           # (n_ch, n_bins)
-    t_ms    = z["t_ms"]              # (n_bins,)
-    meta    = z.get("meta", None)
-    pcs     = z.get("pcs", None)
-    expl    = z.get("explained_var", None)
-    return rate_hz, t_ms, meta, pcs, expl
-
 def find_intan_rates_for_session(nprw_ckpt_root: Path, session: str) -> Path | None:
     cands = sorted(nprw_ckpt_root.glob(f"rates__{session}__*.npz"))
     return cands[0] if cands else None
@@ -897,8 +884,8 @@ def main():
                           f"(Intan={bool(intan_rates_npz)}, UA={bool(ua_rates_npz)})")
                     continue
 
-                i_rate, i_t_ms, *_ = load_rate_npz(intan_rates_npz)
-                u_rate, u_t_ms, *_ = load_rate_npz(ua_rates_npz)
+                i_rate, i_t_ms, *_ = rcp.load_rate_npz(intan_rates_npz)
+                u_rate, u_t_ms, *_ = rcp.load_rate_npz(ua_rates_npz)
 
                 i_t_ms_al = i_t_ms - float(blk["anchor_ms"])
                 u_t_ms_al = u_t_ms
