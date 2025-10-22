@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # FlirSync_EasyOCR_folder.py
 # Reads one video or a folder of videos and writes per-video CSVs that include:
 # AVI_framenum, OCR_framenum, CORRECTED_framenum, delta_t, n_missing,
@@ -119,5 +118,4 @@ def main():
         sys.exit(1)
 
 if __name__ == '__main__':
-    import sys
     main()

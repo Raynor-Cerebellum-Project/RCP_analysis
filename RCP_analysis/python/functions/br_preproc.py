@@ -259,43 +259,46 @@ def align_mapping_index_to_recording(recording, mapped_nsp: np.ndarray, br_idx, 
 
     return idx_rows
 
-def apply_ua_mapping_properties(recording, mapped_nsp: np.ndarray, br_idx, meta_csv):
+def apply_ua_mapping_by_renaming(recording, mapped_nsp: np.ndarray, br_idx, meta_csv):
     """
-    Stamp UA mapping info onto the Recording without geometry.
+    Rename channel IDs to include UA electrode + NSP channel mapping.
 
-    Per-channel properties (length == n_channels):
-      - 'ua_electrode'   : Electrode number (1..N) for that recording row, or -1
-      - 'ua_nsp_channel' : NSP channel id mapped to that row, or -1
-      - 'br_idx' : index of br file, used for identifying UA_port
+    Example new ID format for mapped rows:
+        'UAe003_NSP017'   # electrode 3, NSP channel 17 (after port normalization)
 
-    Per-recording annotation (any length):
-      - 'ua_row_index_from_electrode' : np.ndarray len == len(mapped_nsp),
-        where entry i is the recording row index for electrode (i+1), or -1 if absent.
+    Unmapped rows retain their original channel_id.
+
+    Returns
+    -------
+    renamed : BaseRecording
+        New recording with renamed channel_ids.
+    idx_rows : np.ndarray[int]
+        For each electrode (1..len(mapped_nsp)), the recording row index or -1 if absent.
     """
-    idx_rows = align_mapping_index_to_recording(recording, mapped_nsp, br_idx, meta_csv)  # shape = (N_elec,)
+    # Map each electrode -> row index on this recording (handles Port B → 1..128 normalization)
+    idx_rows = align_mapping_index_to_recording(recording, mapped_nsp, br_idx, meta_csv)  # shape (N_elec,)
+
+    # Build the positional list of new channel IDs
+    ch_ids = list(recording.get_channel_ids())
+    new_ids = [str(ch) for ch in ch_ids]  # default: keep original for unmapped rows
+
     n_ch = recording.get_num_channels()
-
-    # Per-channel arrays
-    ua_elec_per_row = -np.ones(n_ch, dtype=int)
-    ua_nsp_per_row  = -np.ones(n_ch, dtype=int)
-
-    # Fill only rows that exist in the recording
-    for elec_idx0, row in enumerate(idx_rows):
+    for elec0, row in enumerate(idx_rows):
         if 0 <= row < n_ch:
-            ua_elec_per_row[row] = elec_idx0 + 1            # 1-based electrode number
-            ua_nsp_per_row[row]  = int(mapped_nsp[elec_idx0])
+            elec = elec0 + 1
+            nsp = int(mapped_nsp[elec0])
+            new_ids[row] = f"UAe{elec:03d}_NSP{nsp:03d}"
 
-    # TODO rename_channels????
+    # IMPORTANT: rename_channels returns a *new* recording
+    renamed = recording.rename_channels(new_ids)
 
-    # Set per-channel properties (must be length n_ch)
-    recording.set_property("ua_electrode", ua_elec_per_row)
-    recording.set_property("ua_nsp_channel", ua_nsp_per_row)
+    mapped = sum(1 for r in idx_rows if 0 <= r < n_ch)
+    print(f"[MAP] renamed {mapped}/{n_ch} rows with UA mapping ('UAe###_NSP###').")
 
-    # Store the per-electrode -> row-index map as an annotation (any shape allowed)
-    recording.set_annotation("ua_row_index_from_electrode", idx_rows.astype(int))
+    # If you still want the fast reverse lookup later, you can stash it as an annotation:
+    renamed.set_annotation("ua_row_index_from_electrode", idx_rows.astype(int))
 
-    mapped = int((ua_elec_per_row > 0).sum())
-    print(f"[MAP] stamped UA mapping on {mapped}/{n_ch} rows (no geometry).")
+    return renamed, idx_rows
 
 # ---------- Bundles (NS5+NS2 only) ----------
 def build_blackrock_bundle(sess: Path, camera_sync_ch, triangle_sync_ch) -> dict:
@@ -514,7 +517,7 @@ def threshold_mua_rates(
 __all__ = [
     "list_br_sessions", "ua_excel_path",
     "load_ns6_spikes", "load_ns5_aux", "load_ns2_digi",
-    "load_UA_mapping_from_excel", "apply_ua_mapping_properties",
+    "load_UA_mapping_from_excel", "apply_ua_mapping_by_renaming",
     "build_blackrock_bundle", "save_UA_bundle_npz",
     "threshold_mua_rates", "ua_region_from_elec"
 ]

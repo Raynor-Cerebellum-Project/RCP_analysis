@@ -6,8 +6,6 @@ import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from types import SimpleNamespace
 from scipy.signal import filtfilt
 from scipy.signal.windows import gaussian as _scipy_gaussian
 
@@ -59,6 +57,7 @@ BASELINE_FIRST_MS = 150.0
 KEYPOINTS_ORDER = tuple((PARAMS.kinematics or {}).get("keypoints", ())
                         or ("wrist", "middle_finger_base", "middle_finger_tip"))
 
+CURATED_EVENTS_A = []
 CURATED_EVENTS_B = []
 # CURATED_EVENTS_B = [0, 3, 4, 7, 8, 11, 13, *range(15, 20), 23, 24, 30, 33, 37, 44, 53, 55]
 
@@ -134,7 +133,6 @@ def _window_rate_around_events(rate: np.ndarray, t_vec_ms: np.ndarray,
     return out, rel_t
 
 # --- helpers for combined ("both_cams") or per-cam CSVs ---
-
 def _flatten_cols(cols) -> list[str]:
     out = []
     for c in cols:
@@ -186,99 +184,131 @@ def _build_videoidx_to_trial_map(cam:int=0) -> dict[int,str]:
 
     return {k: v[0] for k, v in picked.items()}
 
-def _columns_for_keypoints(df_cols, cam_prefix: str = ""):
+# --- robust name normalization ---
+def _norm_name(s: str) -> str:
+    s = str(s).lower()
+    s = re.sub(r'[^a-z0-9]+', '_', s)
+    return re.sub(r'_+', '_', s).strip('_')
+
+def _discover_cam_groups(df_cols, cam:int):
     """
-    Return ordered [kp1_x,kp1_y,kp2_x,kp2_y,...] for the requested camera.
-
-    Columns look like:
-      cam0_wrist_x, cam0.wrist_y, cam1 middle_finger_tip_x, ...
-    We match: ^cam[01][_. ]  ...  <keypoint>_<axis>$
-
-    If both cam0 and cam1 columns exist, we DO NOT fall back to unscoped names.
+    Return dict base -> {'x': col, 'y': col, 'lik': col or None} for the camera.
+    Matches ANY 'cam{cam}_<...>_{x|y|likelihood}' columns (normalized),
+    no assumptions about the <...> tokens.
     """
-    cols    = [str(c) for c in df_cols]
-    cols_lc = [c.lower() for c in cols]
+    cam_tag = f"cam{cam}_"
+    groups = {}
+    # keep both normalized -> original mapping so df[...] still works
+    orig = [str(c) for c in df_cols]
+    norm = [_norm_name(c) for c in orig]
 
-    cam_base = str(cam_prefix).lower().strip().rstrip("_. ")  # "cam0" or "cam1"
+    for n, o in zip(norm, orig):
+        if not n.startswith(cam_tag):
+            continue
+        if n.endswith('_likelihood'):
+            base = n[len(cam_tag):-len('_likelihood')]
+            g = groups.setdefault(base, {'x': None, 'y': None, 'lik': None})
+            g['lik'] = o
+        elif n.endswith('_x'):
+            base = n[len(cam_tag):-len('_x')]
+            g = groups.setdefault(base, {'x': None, 'y': None, 'lik': None})
+            g['x'] = o
+        elif n.endswith('_y'):
+            base = n[len(cam_tag):-len('_y')]
+            g = groups.setdefault(base, {'x': None, 'y': None, 'lik': None})
+            g['y'] = o
 
-    def _has_cam(prefix: str) -> bool:
-        p = prefix.lower()
-        return any(c.startswith(p + "_") or c.startswith(p + ".") or c.startswith(p + " ")
-                   for c in cols_lc)
+    # keep only groups that have both x & y
+    groups = {k: v for k, v in groups.items() if v['x'] is not None and v['y'] is not None}
+    return groups
 
-    has_cam0 = _has_cam("cam0")
-    has_cam1 = _has_cam("cam1")
-    both_cams_present = has_cam0 and has_cam1
+def _order_groups_for_output(groups: dict, keypoints_order: tuple[str, ...]):
+    """
+    Try to map discovered bases to the requested order (fuzzy).
+    If no clear match, fall back to a sensible default order.
+    Returns a list of (base, cols_dict).
+    """
+    bases = list(groups.keys())
 
-    def _is_cam_col(name_lc: str, suffix: str) -> bool:
-        # must start with requested cam + allowed separator and end with the suffix
-        return (
-            (name_lc.startswith(cam_base + "_") or
-             name_lc.startswith(cam_base + ".") or
-             name_lc.startswith(cam_base + " "))
-            and name_lc.endswith(suffix)
-        )
+    # quick fuzzy scorer: count overlapping tokens
+    def score(base, kp):
+        btok = set(_norm_name(base).split('_'))
+        ktok = set(_norm_name(kp).split('_'))
+        # small helpers to catch common variants
+        if 'fingertip' in btok: ktok.add('tip')
+        if 'tip' in btok: ktok.add('fingertip')
+        return len(btok & ktok)
 
-    out = []
-    for kp in KEYPOINTS_ORDER:
-        for axis in ("x", "y"):
-            suffix = f"{kp}_{axis}"  # e.g., "wrist_x"
-            hit_idx = next((i for i, c in enumerate(cols_lc) if _is_cam_col(c, suffix)), None)
+    picked = []
+    used = set()
+    for kp in keypoints_order:
+        best = None
+        best_s = 0
+        for b in bases:
+            if b in used: continue
+            s = score(b, kp)
+            if s > best_s:
+                best_s, best = s, b
+        if best is not None and best_s > 0:
+            picked.append((best, groups[best])); used.add(best)
 
-            # Only if not ambiguous (i.e., NOT both cameras present) or no cam_base given:
-            if hit_idx is None and (not both_cams_present or not cam_base):
-                hit_idx = next((i for i, c in enumerate(cols_lc) if c.endswith(suffix)), None)
-
-            out.append(cols[hit_idx] if hit_idx is not None else None)
-
-    return out
+    # add any leftovers in a deterministic way (prefer wrist/mcp/fingertip/target/start if present)
+    prefer = ('wrist','mcp','fingertip','target','start')
+    leftovers = [b for b in bases if b not in used]
+    leftovers.sort(key=lambda b: (0 if any(p in b for p in prefer) else 1, b))
+    picked.extend((b, groups[b]) for b in leftovers)
+    return picked
 
 def _extract_xy_matrix(aligned_csv: Path, cam: int = 0) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    """
-    Handles combined MultiIndex headers (cam0/cam1) or flat. Uses cam-scoped ns5_sample if present.
-    """
-    # try reading potential MultiIndex first
+    # read with MultiIndex tolerance, then normalize columns
     try:
         df = pd.read_csv(aligned_csv, header=[0, 1])
-        # if not actually multiindex, pandas still gives 2-level with many 'Unnamed'
         flat = _flatten_cols(df.columns)
-        # heuristic: if many columns look like 'Unnamed', re-read as flat
-        if sum(c.lower().startswith("unnamed") for c in flat) > len(flat) // 2:
+        if sum(c.startswith('unnamed') for c in flat) > len(flat) // 2:
             df = pd.read_csv(aligned_csv)
+            df.columns = _flatten_cols(df.columns)
         else:
             df.columns = flat
     except Exception:
         df = pd.read_csv(aligned_csv)
+        df.columns = _flatten_cols(df.columns)
 
-    cols = [str(c) for c in df.columns]
-    cols_lc = [c.lower() for c in cols]
+    cols = list(df.columns)  # normalized
 
-    # time column candidates
     cam_prefix = f"cam{cam}"
-    time_cands = [
-        "ns5_sample",
-        f"{cam_prefix}_ns5_sample",
-        f"{cam_prefix}.ns5_sample",
-        f"{cam_prefix} ns5_sample",
-    ]
-    time_col = next((cols[i] for i, c in enumerate(cols_lc) if c in time_cands), None)
+    time_cands = ["ns5_sample", f"{cam_prefix}_ns5_sample"]
+    time_col = next((c for c in cols if c in time_cands), None)
     if time_col is None:
         raise RuntimeError(f"{aligned_csv.name} has no ns5_sample column (tried {time_cands}).")
 
     t_cam_sec = pd.to_numeric(df[time_col], errors="coerce").to_numpy(dtype=float) / DEFAULT_BR_FS
 
-    # pick XY columns (scoped to requested cam when available)
-    wanted = _columns_for_keypoints(df.columns, cam_prefix=f"cam{cam}")
+    # discover groups for this camera
+    groups = _discover_cam_groups(df.columns, cam=cam)
+    if not groups:
+        # keep behavior as before: return all-NaN if nothing found
+        K = len(KEYPOINTS_ORDER) * 2
+        XY = np.full((len(df), K), np.nan, float)
+        names = [f"{kp}_{ax}(MISSING)" for kp in KEYPOINTS_ORDER for ax in ('x','y')]
+        return t_cam_sec, XY, names
 
-    XY = np.empty((len(df), len(wanted)), float)
+    # choose an output order (try to align to KEYPOINTS_ORDER, then leftovers)
+    ordered = _order_groups_for_output(groups, KEYPOINTS_ORDER)
+
+    # build XY (T x 2*len(ordered)) with names
+    XY_cols = []
     names = []
-    for j, col in enumerate(wanted):
-        if col is None or col not in df.columns:
-            XY[:, j] = np.nan
-            names.append(f"{KEYPOINTS_ORDER[j//2]}_{'xy'[j%2]}(MISSING)")
-        else:
-            XY[:, j] = pd.to_numeric(df[col], errors="coerce").to_numpy()
-            names.append(str(col))
+    for base, d in ordered:
+        xvals = pd.to_numeric(df[d['x']], errors="coerce").to_numpy()
+        yvals = pd.to_numeric(df[d['y']], errors="coerce").to_numpy()
+        XY_cols.extend([xvals, yvals])
+        names.extend([d['x'], d['y']])   # original (normalized) column strings
+
+    XY = np.vstack(XY_cols).T  # shape (T, 2*K)
+
+    # debug visibility
+    finite_pct = float(np.isfinite(XY).mean()) if XY.size else 1.0
+    print(f"[kin] {aligned_csv.name} cam={cam} T={XY.shape[0]} K={XY.shape[1]//2} finite%={finite_pct:.3f}")
 
     return t_cam_sec, XY, names
 
@@ -629,13 +659,25 @@ def _falling_edges_from_analog(x: np.ndarray, fs: float | None, refractory_sec: 
     return np.asarray(keep, dtype=np.int64)
 
 def _resolve_curated_indices_for_port(port: str, total_n: int):
-    """Return np.array of curated indices for this port, or None if not specified."""
-    if str(port).upper() != "B":
+    """
+    Return np.array of curated indices for this port, or None if not specified.
+    Curation is optional; empty lists disable curation.
+    """
+    p = str(port).upper().strip()
+    if p == "A":
+        src = CURATED_EVENTS_A
+    elif p == "B":
+        src = CURATED_EVENTS_B
+    else:
         return None
-    keep = np.array(list(CURATED_EVENTS_B), dtype=int)
+
+    keep = np.array(list(src), dtype=int)
+    if keep.size == 0:
+        return None
     # de-dup, sort, and clip to valid range
     keep = np.unique(keep[(keep >= 0) & (keep < int(total_n))])
     return keep if keep.size else None
+
 
 # ---------- main ----------
 def main():
@@ -858,41 +900,63 @@ def main():
         out_cam0 = _save_cam_npz("_cam0", cam0_cat, rel_t_ms_cam0, labels_cam0)
         out_cam1 = _save_cam_npz("_cam1", cam1_cat, rel_t_ms_cam1, labels_cam1)
 
-        # ===== curated NPRW/UA rate windows (Port B only), AFTER we know 'keep' =====
-        if keep is not None and str(port).upper() == "B" and keep.size:
-            print(f"[rates] UA={port}: extracting NPRW/UA rate windows for curated events...")
-            rate_i_chunks: list[np.ndarray] = []
-            rate_u_chunks: list[np.ndarray] = []
-            evt_ms_all:    list[np.ndarray] = []
-            prov_sess:     list[np.ndarray] = []
-            prov_br:       list[np.ndarray] = []
-            prov_gidx:     list[np.ndarray] = []
-            prov_lidx:     list[np.ndarray] = []
-            rel_t_ref:     np.ndarray | None = None
+        # ===== NPRW/UA rate windows (always produce ALL; add CURATED if keep exists) =====
+        print(f"[rates] UA={port}: extracting NPRW/UA rate windows (ALL"
+            f"{' + CURATED' if (keep is not None and keep.size) else ''})...")
 
-            for blk in session_blocks:
-                g0, g1 = int(blk["concat_start"]), int(blk["concat_end"])
+        # Accumulators per selection label
+        acc = {
+            "ALL": {
+                "i_chunks": [], "u_chunks": [], "evt_ms": [],
+                "sess": [], "br": [], "gidx": [], "lidx": [],
+                "rel_t_ref": None
+            }
+        }
+        if keep is not None and keep.size:
+            acc["CURATED"] = {
+                "i_chunks": [], "u_chunks": [], "evt_ms": [],
+                "sess": [], "br": [], "gidx": [], "lidx": [],
+                "rel_t_ref": None
+            }
+
+        for blk in session_blocks:
+            g0, g1 = int(blk["concat_start"]), int(blk["concat_end"])
+            n_this = g1 - g0
+            if n_this <= 0:
+                continue
+
+            # Build selection sets for this block
+            sel = {"ALL": np.arange(n_this, dtype=int)}
+            if "CURATED" in acc:
                 sel_global = keep[(keep >= g0) & (keep < g1)]
-                if sel_global.size == 0:
-                    continue
-                sel_local = (sel_global - g0).astype(int)
+                if sel_global.size:
+                    sel["CURATED"] = (sel_global - g0).astype(int)
 
-                intan_rates_npz = find_intan_rates_for_session(NPRW_CKPT_ROOT, blk["intan_session"])
-                ua_rates_npz    = find_ua_rates_by_index(UA_CKPT_ROOT, int(blk["br_idx"]) if blk["br_idx"] is not None else -1)
-                if intan_rates_npz is None or ua_rates_npz is None:
-                    print(f"[rates] skip session={blk['intan_session']}: missing rates "
-                          f"(Intan={bool(intan_rates_npz)}, UA={bool(ua_rates_npz)})")
-                    continue
+            # If nothing to keep for this block (e.g., curated empty), still do ALL
+            if not sel:
+                sel = {"ALL": np.arange(n_this, dtype=int)}
 
-                i_rate, i_t_ms, *_ = rcp.load_rate_npz(intan_rates_npz)
-                u_rate, u_t_ms, *_ = rcp.load_rate_npz(ua_rates_npz)
+            intan_rates_npz = find_intan_rates_for_session(NPRW_CKPT_ROOT, blk["intan_session"])
+            ua_rates_npz    = find_ua_rates_by_index(UA_CKPT_ROOT, int(blk["br_idx"]) if blk["br_idx"] is not None else -1)
+            if intan_rates_npz is None or ua_rates_npz is None:
+                print(f"[rates] skip session={blk['intan_session']}: missing rates "
+                    f"(Intan={bool(intan_rates_npz)}, UA={bool(ua_rates_npz)})")
+                continue
 
-                i_t_ms_al = i_t_ms - float(blk["anchor_ms"])
-                u_t_ms_al = u_t_ms
+            i_rate, i_t_ms, *_ = rcp.load_rate_npz(intan_rates_npz)
+            u_rate, u_t_ms, *_ = rcp.load_rate_npz(ua_rates_npz)
 
-                i_trim, common_t, u_on_common, st = _overlap_and_resample_to_intan(i_rate, i_t_ms_al, u_rate, u_t_ms_al)
-                if common_t.size == 0:
-                    print(f"[rates] session={blk['intan_session']}: no overlap after alignment.")
+            i_t_ms_al = i_t_ms - float(blk["anchor_ms"])
+            u_t_ms_al = u_t_ms
+
+            i_trim, common_t, u_on_common, st = _overlap_and_resample_to_intan(i_rate, i_t_ms_al, u_rate, u_t_ms_al)
+            if common_t.size == 0:
+                print(f"[rates] session={blk['intan_session']}: no overlap after alignment.")
+                continue
+
+            # Build per-selection windows and persist per-session files
+            for tag, sel_local in sel.items():
+                if sel_local.size == 0:
                     continue
 
                 evt_ms_al = (blk["evt_sec"][sel_local].astype(float) * 1000.0) - float(blk["anchor_ms"])
@@ -900,9 +964,10 @@ def main():
                 i_win, rel_t_rate = _window_rate_around_events(i_trim, common_t, evt_ms_al, -WIN_MS[0], WIN_MS[1])
                 u_win, _          = _window_rate_around_events(u_on_common, common_t, evt_ms_al, -WIN_MS[0], WIN_MS[1])
 
-                if rel_t_ref is None:
-                    rel_t_ref = rel_t_rate.copy()
-                elif not np.allclose(rel_t_rate, rel_t_ref, atol=1e-6):
+                # Ensure a common rel_t across sessions within each selection tag
+                if acc[tag]["rel_t_ref"] is None:
+                    acc[tag]["rel_t_ref"] = rel_t_rate.copy()
+                elif not np.allclose(rel_t_rate, acc[tag]["rel_t_ref"], atol=1e-6):
                     def _resample_win(win: np.ndarray, t_src: np.ndarray, t_tgt: np.ndarray) -> np.ndarray:
                         n_ev, n_ch, _T = win.shape
                         out = np.empty((n_ev, n_ch, t_tgt.size), dtype=np.float32)
@@ -910,27 +975,38 @@ def main():
                             for ch in range(n_ch):
                                 out[e, ch] = np.interp(t_tgt, t_src, win[e, ch].astype(np.float32, copy=False))
                         return out
-                    i_win = _resample_win(i_win, rel_t_rate, rel_t_ref)
-                    u_win = _resample_win(u_win, rel_t_rate, rel_t_ref)
+                    i_win = _resample_win(i_win, rel_t_rate, acc[tag]["rel_t_ref"])
+                    u_win = _resample_win(u_win, rel_t_rate, acc[tag]["rel_t_ref"])
 
-                rate_i_chunks.append(i_win.astype(np.float32, copy=False))
-                rate_u_chunks.append(u_win.astype(np.float32, copy=False))
-                evt_ms_all.append(evt_ms_al.astype(np.float32, copy=False))
-                prov_sess.append(np.array([blk["intan_session"]]*i_win.shape[0], dtype=object))
-                prov_br.append(np.array([int(blk["br_idx"]) if blk["br_idx"] is not None else -1]*i_win.shape[0], dtype=np.int32))
-                prov_gidx.append(sel_global.astype(np.int32, copy=False))
-                prov_lidx.append(sel_local.astype(np.int32, copy=False))
+                # Accumulate
+                acc[tag]["i_chunks"].append(i_win.astype(np.float32, copy=False))
+                acc[tag]["u_chunks"].append(u_win.astype(np.float32, copy=False))
+                acc[tag]["evt_ms"].append(evt_ms_al.astype(np.float32, copy=False))
+                acc[tag]["sess"].append(np.array([blk["intan_session"]]*i_win.shape[0], dtype=object))
+                acc[tag]["br"].append(np.array([int(blk["br_idx"]) if blk["br_idx"] is not None else -1]*i_win.shape[0], dtype=np.int32))
 
+                # For indices, store global and local (relative to concat)
+                if tag == "ALL":
+                    sel_global_for_tag = np.arange(g0, g1, dtype=int)
+                else:
+                    # CURATED
+                    sel_global_for_tag = (sel_local + g0).astype(int)
+
+                acc[tag]["gidx"].append(sel_global_for_tag.astype(np.int32, copy=False))
+                acc[tag]["lidx"].append(sel_local.astype(np.int32, copy=False))
+
+                # Per-session save
                 out_rates = ALIGNED_OUT / (
                     f"rates_from_curated__UA_{_sanitize(str(port))}"
                     f"__Depth{_sanitize(str(depth_label))}"
-                    f"__{blk['intan_session']}__BR_{int(blk['br_idx']) if blk['br_idx'] is not None else -1:03d}.npz"
+                    f"__{blk['intan_session']}__BR_{int(blk['br_idx']) if blk['br_idx'] is not None else -1:03d}"
+                    f"__{tag}.npz"
                 )
                 np.savez_compressed(
                     out_rates,
                     intan_rate_win=i_win.astype(np.float32),
                     ua_rate_win=u_win.astype(np.float32),
-                    rate_t_rel_ms=rel_t_ref.astype(np.float32),
+                    rate_t_rel_ms=acc[tag]["rel_t_ref"].astype(np.float32),
                     event_center_ms=evt_ms_al.astype(np.float32),
                     port=str(port),
                     depth_mm=str(depth_label),
@@ -938,7 +1014,7 @@ def main():
                     br_idx=int(blk["br_idx"]) if blk["br_idx"] is not None else -1,
                     dt_ms_target=float(st.get("dt_i_ms", np.nan)),
                     n_events_kept=int(sel_local.size),
-                    curated_global_indices=sel_global.astype(int),
+                    curated_global_indices=sel_global_for_tag.astype(int),
                     curated_local_indices=sel_local.astype(int),
                     intan_rates=str(intan_rates_npz),
                     ua_rates=str(ua_rates_npz),
@@ -946,37 +1022,40 @@ def main():
                 )
                 print(f"[rates] wrote {out_rates}")
 
-            if rate_i_chunks:
-                i_all = np.concatenate(rate_i_chunks, axis=0)
-                u_all = np.concatenate(rate_u_chunks, axis=0)
-                evt_all = np.concatenate(evt_ms_all, axis=0)
-                sess_all = np.concatenate(prov_sess, axis=0)
-                br_all   = np.concatenate(prov_br,   axis=0)
-                gidx_all = np.concatenate(prov_gidx, axis=0)
-                lidx_all = np.concatenate(prov_lidx, axis=0)
+        # Concatenate across sessions and save per selection
+        for tag, A in acc.items():
+            if not A["i_chunks"]:
+                continue
+            i_all = np.concatenate(A["i_chunks"], axis=0)
+            u_all = np.concatenate(A["u_chunks"], axis=0)
+            evt_all = np.concatenate(A["evt_ms"], axis=0)
+            sess_all = np.concatenate(A["sess"], axis=0)
+            br_all   = np.concatenate(A["br"],   axis=0)
+            gidx_all = np.concatenate(A["gidx"], axis=0)
+            lidx_all = np.concatenate(A["lidx"], axis=0)
 
-                out_cat = ALIGNED_OUT / (
-                    f"rates_from_curated__UA_{_sanitize(str(port))}"
-                    f"__Depth{_sanitize(str(depth_label))}__ALL.npz"
-                )
-                np.savez_compressed(
-                    out_cat,
-                    intan_rate_win=i_all.astype(np.float32),
-                    ua_rate_win=u_all.astype(np.float32),
-                    rate_t_rel_ms=rel_t_ref.astype(np.float32),
-                    event_center_ms=evt_all.astype(np.float32),
-                    event_session=sess_all,
-                    event_br_idx=br_all.astype(np.int32),
-                    curated_global_idx=gidx_all.astype(np.int32),
-                    curated_local_idx=lidx_all.astype(np.int32),
-                    port=str(port),
-                    depth_mm=str(depth_label),
-                    n_events_total=int(i_all.shape[0]),
-                    align_note=("All sessions resampled to a common relative timebase (first session's rate_t_rel_ms). "
-                                "Intan ms aligned by subtracting anchor_ms; UA left on BR ms; UA resampled to Intan grid.")
-                )
-                print(f"[rates][ALL] wrote {out_cat}  "
-                      f"(N={i_all.shape[0]}, Intan_ch={i_all.shape[1]}, UA_ch={u_all.shape[1]}, T={i_all.shape[2]})")
+            out_cat = ALIGNED_OUT / (
+                f"rates_from_curated__UA_{_sanitize(str(port))}"
+                f"__Depth{_sanitize(str(depth_label))}__{tag}.npz"
+            )
+            np.savez_compressed(
+                out_cat,
+                intan_rate_win=i_all.astype(np.float32),
+                ua_rate_win=u_all.astype(np.float32),
+                rate_t_rel_ms=A["rel_t_ref"].astype(np.float32),
+                event_center_ms=evt_all.astype(np.float32),
+                event_session=sess_all,
+                event_br_idx=br_all.astype(np.int32),
+                curated_global_idx=gidx_all.astype(np.int32),
+                curated_local_idx=lidx_all.astype(np.int32),
+                port=str(port),
+                depth_mm=str(depth_label),
+                n_events_total=int(i_all.shape[0]),
+                align_note=("All sessions resampled to a common relative timebase (first seen for this selection). "
+                            "Intan ms aligned by subtracting anchor_ms; UA left on BR ms; UA resampled to Intan grid.")
+            )
+            print(f"[rates][{tag}] wrote {out_cat}  "
+                f"(N={i_all.shape[0]}, Intan_ch={i_all.shape[1]}, UA_ch={u_all.shape[1]}, T={i_all.shape[2]})")
 
 if __name__ == "__main__":
     main()

@@ -756,7 +756,7 @@ def find_per_trial_inputs(
     require_both_cams_and_kinds: bool = False,
 ) -> Dict[str, dict]:
     """
-    Scan VIDEO_ROOT for OCR/DLC files and keep newest by mtime.
+    Scan VIDEO_ROOT (and VIDEO_ROOT/DLC if present) for OCR/DLC files and keep newest by mtime.
 
     Returns:
       {
@@ -765,24 +765,34 @@ def find_per_trial_inputs(
           'dlc': { 0: Path, 1: Path, ... },
         }
       }
-
-    Args:
-      require_both_cams_and_kinds: If True, keep only trials that have BOTH cams (0 & 1)
-        for BOTH OCR and DLC. If False, keep any trials with at least one cam per kind.
     """
     per: Dict[str, dict] = {}
-    for p in _rglob_many(video_root, ("NRR_*_Cam-[01]*.csv",)):
-        trial, cam, kind = parse_trial_cam_kind(p)
-        if trial is None:
+    patterns = ("NRR_*_Cam-[01]*.csv",)
+
+    # Collect candidate files from both the root and DLC subdir (if present).
+    search_roots = [video_root]
+    dlc_dir = video_root / "DLC"
+    if dlc_dir.exists():
+        search_roots.append(dlc_dir)
+
+    for root in search_roots:
+        try:
+            for p in _rglob_many(root, patterns):
+                trial, cam, kind = parse_trial_cam_kind(p)
+                if trial is None:
+                    continue
+                d = per.setdefault(trial, {"ocr": {}, "dlc": {}})
+                prev = d[kind].get(cam)
+                if prev is None or p.stat().st_mtime > prev.stat().st_mtime:
+                    d[kind][cam] = p
+        except FileNotFoundError:
+            # If a search root doesn't exist, just skip it.
             continue
-        d = per.setdefault(trial, {"ocr": {}, "dlc": {}})
-        prev = d[kind].get(cam)
-        if prev is None or p.stat().st_mtime > prev.stat().st_mtime:
-            d[kind][cam] = p
 
     if not require_both_cams_and_kinds:
         return per
 
+    # Keep only trials that have BOTH cams (0 & 1) for BOTH OCR and DLC.
     return {
         t: d for t, d in per.items()
         if set(d["ocr"].keys()) >= {0, 1} and set(d["dlc"].keys()) >= {0, 1}

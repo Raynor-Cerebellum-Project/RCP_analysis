@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
-import json, csv, re
+import csv, re
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
@@ -10,10 +10,11 @@ matplotlib.use("Agg")
 matplotlib.rcParams['svg.fonttype'] = 'none'
 
 # ---- CONFIG ----
-BR_IDX = 1
-TRIAL_INDICES = [0, 3, 4, 7, 8, 11, 13, 15, 16]  # one folder per trial
+BR_IDX = 2
+# TRIAL_INDICES = [0, 3, 4, 7, 8, 11, 13, 15, 16]  # one folder per trial
+TRIAL_INDICES = [0, 1, 2, 3, 4, 5, 6]  # one folder per trial
 ADJUST_SAMPLES = 3
-WINDOW_MS = (0.0, 100.0)
+WINDOW_MS = (3.0, 6.0)
 CHANNELS_TO_SHOW = list(range(0, 128))           # will be chunked into groups of 6
 IR_STREAM = "USB board digital input channel"
 YLIM_UV = (-50, 50)                               # tighten or set to None for autoscale
@@ -33,7 +34,12 @@ SHIFTS_CSV   = METADATA_CSV.parent / "br_to_intan_shifts.csv"
 
 ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
 PATH_UA_SI   = OUT_BASE / "checkpoints" / "UA" / f"pp_global__{SESSION}_{BR_IDX:03d}__NS6"
-OUT_DIR_BASE = OUT_BASE / "figures" / "debug_8ch_aligned_ir_baseline" / "UA" / f"{SESSION}__BR_{BR_IDX:03d}" / f"pm_{YLIM_UV[1]}mv_{WINDOW_MS[0]}to{WINDOW_MS[1]}"
+# Build short tags
+amp_tag = ("auto" if YLIM_UV is None else (f"pm_{abs(YLIM_UV[1]):g}uV" if YLIM_UV[0] == -YLIM_UV[1] else f"{YLIM_UV[0]:g}to{YLIM_UV[1]:g}uV"))
+win_tag = f"{WINDOW_MS[0]:g}to{WINDOW_MS[1]:g}ms"
+
+# Path with adaptive tag
+OUT_DIR_BASE = (OUT_BASE / "figures" / "debug_8ch_aligned_ir_baseline_hpf" / "UA" / f"{SESSION}__BR_{BR_IDX:03d}" / f"{amp_tag}_{win_tag}")
 OUT_DIR_BASE.mkdir(parents=True, exist_ok=True)
 
 # ---- Helpers ----

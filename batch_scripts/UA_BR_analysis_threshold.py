@@ -44,9 +44,6 @@ CKPT_OUT = OUT_BASE / "checkpoints" / "UA"
 NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
 CKPT_OUT.mkdir(parents=True, exist_ok=True)
 
-METADATA_CSV  = (DATA_ROOT / PARAMS.metadata_rel).resolve(); METADATA_CSV.parent.mkdir(parents=True, exist_ok=True)
-METADATA_ROOT = METADATA_CSV.parent
-
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
 
@@ -222,6 +219,15 @@ def load_anchor_for_session(out_base: Path, session: str) -> tuple[int, float]:
 
     return 0, 30000.0  # fallback if no row
 
+def _ua_arrays_from_idx_rows(n_ch: int, mapped_nsp: np.ndarray, idx_rows: np.ndarray):
+    ua_elec_per_row = -np.ones(n_ch, dtype=int)
+    ua_nsp_per_row  = -np.ones(n_ch, dtype=int)
+    for elec0, row in enumerate(idx_rows):
+        if 0 <= row < n_ch:
+            ua_elec_per_row[row] = elec0 + 1
+            ua_nsp_per_row[row]  = int(mapped_nsp[elec0])
+    return ua_elec_per_row, ua_nsp_per_row
+
 def main(limit_sessions: Optional[int] = None):
     br_session_folders = BR_SESSION_FOLDERS  # read the global into a local
     if limit_sessions is not None:           # allow 0 cleanly
@@ -232,32 +238,33 @@ def main(limit_sessions: Optional[int] = None):
 
     for sess in br_session_folders:
         print(f"=== Session: {sess.name} ===")
-    
-        bundle = rcp.build_blackrock_bundle(sess, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH)
+        bundle = rcp.build_blackrock_bundle(sess, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH) # sync pulses and stuff
         rcp.save_UA_bundle_npz(sess.name, bundle, BUNDLES_OUT)
-
-        rec_ns6 = rcp.load_ns6_spikes(sess)
         
-        # --- Resolve br_idx for this UA folder from its name ---
-        br_idx = _br_idx_from_name(sess.name)
-        rcp.apply_ua_mapping_properties(rec_ns6, UA_MAP["mapped_nsp"], br_idx, METADATA_CSV)  # metadata only
+        rec_ns6 = rcp.load_ns6_spikes(sess)
+        br_idx = _br_idx_from_name(sess.name) # resolve br index
+        rec_ns6, idx_rows = rcp.apply_ua_mapping_by_renaming(rec_ns6, UA_MAP["mapped_nsp"], br_idx, METADATA_CSV)
 
         rec_hp  = spre.highpass_filter(rec_ns6, freq_min=float(PARAMS.highpass_hz))
+        # --- build UA arrays from idx_rows (no SI properties) ---
+        n_ch = rec_hp.get_num_channels()
+        ua_elec_per_row, ua_nsp_per_row = _ua_arrays_from_idx_rows(
+            n_ch, UA_MAP["mapped_nsp"], idx_rows
+        )
+        row_from_elec = idx_rows.astype(int, copy=False)
 
-        # --- get per-channel electrode ids ---
-        try:
-            ua_elec = np.asarray(rec_hp.get_property("ua_electrode"), dtype=int)
-        except Exception:
-            ua_elec = None
+        def _region_from_elec(e: int) -> int:
+            if e <= 0:      return -1   # missing / unmapped
+            if e <= 64:     return 0    # SMA
+            if e <= 128:    return 1    # Dorsal premotor
+            if e <= 192:    return 2    # M1 inferior
+            return 3                    # M1 superior
 
-        if ua_elec is None or ua_elec.size != rec_hp.get_num_channels():
-            raise RuntimeError("ua_electrode property missing or wrong length. "
-                            "Make sure rcp.apply_ua_mapping_properties(...) ran successfully.")
+        ua_region_per_row = np.array([_region_from_elec(int(e)) for e in ua_elec_per_row], dtype=np.int8)
+        ua_region_names   = np.array(["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"], dtype=object)
 
-        # --- map electrode -> region labels with your helper ---
-        UA_probe = np.array([rcp.ua_region_from_elec(int(e)) for e in ua_elec], dtype=int)
-
-        # Optional: give each unknown (-1) its own label so it won’t mix with others
+        # Optionally split unknowns (-1) into unique groups so they don't median-reference each other
+        UA_probe = ua_region_per_row.copy()
         if np.any(UA_probe < 0):
             start_gid = (UA_probe[UA_probe >= 0].max() + 1) if np.any(UA_probe >= 0) else 0
             gid = start_gid
@@ -267,33 +274,32 @@ def main(limit_sessions: Optional[int] = None):
                     gid += 1
 
         # --- convert labels -> list of channel-ID lists (what SI expects) ---
+        # IMPORTANT: use rec_hp (exists now) — rec_ref is not created yet.
         ch_ids = np.asarray(rec_hp.get_channel_ids())
         groups = []
         for g in np.unique(UA_probe):
             idx = np.where(UA_probe == g)[0]
-            if idx.size >= 2:                       # skip singletons to avoid self-referencing to ~0
+            if idx.size >= 2:
                 groups.append(ch_ids[idx].tolist())
             else:
                 print(f"[debug] region {g}: singleton -> left unreferenced")
-
         print("[debug] group sizes:", [len(g) for g in groups])
-        
-        # can use detect_and_remove_bad_channels to remove high impedance channels
-        
-        rec_ref = spre.common_reference(
-            rec_hp, reference="global", operator="median", groups=groups
-        )
 
-        try:
-            _ = rec_ref.get_channel_locations()
-        except Exception:
-            n_ch = rec_ref.get_num_channels()
-            locs = np.column_stack([np.arange(n_ch, dtype=float), np.zeros(n_ch, dtype=float)])
-            rec_ref.set_channel_locations(locs)
-        
+        rec_ref = rec_hp # temporarily bypass referencing
+        # --- now we can reference using those groups ---
+        # rec_ref = spre.common_reference(
+        #     rec_hp, reference="global", operator="median", groups=groups
+        # )
+
+        # TODO can use detect_and_remove_bad_channels to remove high impedance channels
+
         # Default: no artifact windows
         block_bounds = np.empty((0, 2), dtype=int)
         shifts_row = None
+        
+        # default to cleaned=ref unless we actually remove
+        rec_artif_removed = rec_ref
+        fs_ua = float(rec_ref.get_sampling_frequency())
 
         if br_idx is None:
             print(f"[WARN] Could not parse BR index from session folder '{sess.name}'. Skipping artifact removal.")
@@ -312,10 +318,6 @@ def main(limit_sessions: Optional[int] = None):
 
                 stim = rcp.load_stim_detection(stim_npz_path)
                 block_bounds = np.asarray(stim.get("block_bounds_samples", []), dtype=int)
-
-        # default to cleaned=ref unless we actually remove
-        rec_artif_removed = rec_ref
-        fs_ua = float(rec_ref.get_sampling_frequency())
 
         if block_bounds.size and shifts_row is not None:
             # Anchor from the SAME shifts row (important!)
@@ -351,71 +353,12 @@ def main(limit_sessions: Optional[int] = None):
                 )
             else:
                 print("[WARN] all artifact intervals invalid after shift; skipping artifact removal.")
-            ua_elec_per_row = None
-            ua_nsp_per_row  = None
-            row_from_elec   = None
-
-            try:
-                ua_elec_per_row = rec_artif_removed.get_property("ua_electrode")
-            except Exception:
-                pass
-            try:
-                ua_nsp_per_row = rec_artif_removed.get_property("ua_nsp_channel")
-            except Exception:
-                pass
-            try:
-                row_from_elec = rec_artif_removed.get_annotation("ua_row_index_from_electrode")
-            except Exception:
-                pass
-
-            def _region_from_elec(e: int) -> int:
-                if e <= 0:      return -1   # missing
-                if e <= 64:     return 0    # SMA
-                if e <= 128:    return 1    # Dorsal premotor
-                if e <= 192:    return 2    # M1 inferior
-                return 3                    # M1 superior
-
-            ua_region_per_row = (
-                np.array([_region_from_elec(int(e)) for e in ua_elec_per_row], dtype=np.int8)
-                if ua_elec_per_row is not None else np.array([], dtype=np.int8)
-            )
-            ua_region_names = np.array(["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"], dtype=object)
-
         else:
             if not block_bounds.size:
                 print("[WARN] no block spans found; skipping artifact removal.")
             elif shifts_row is None:
                 print("[WARN] no shift row found for this BR index; skipping artifact removal.")
-
-            # --- ALWAYS extract UA mapping arrays (independent of artifact windows) ---
-            ua_elec_per_row = None
-            ua_nsp_per_row  = None
-            row_from_elec   = None
-
-            for src in (rec_artif_removed, rec_ref):
-                if ua_elec_per_row is None:
-                    try: ua_elec_per_row = np.asarray(src.get_property("ua_electrode"), dtype=int)
-                    except Exception: pass
-                if ua_nsp_per_row is None:
-                    try: ua_nsp_per_row = np.asarray(src.get_property("ua_nsp_channel"), dtype=int)
-                    except Exception: pass
-                if row_from_elec is None:
-                    try: row_from_elec = np.asarray(src.get_annotation("ua_row_index_from_electrode"), dtype=int)
-                    except Exception: pass
-
-            # Regions from electrode ID (1..256)
-            if ua_elec_per_row is not None:
-                e = ua_elec_per_row.astype(int)
-                ua_region_per_row = np.full(e.shape[0], -1, dtype=np.int8)
-                ua_region_per_row[(e >= 1)   & (e <= 64 )] = 0  # SMA
-                ua_region_per_row[(e >= 65)  & (e <= 128)] = 1  # Dorsal premotor
-                ua_region_per_row[(e >= 129) & (e <= 192)] = 2  # M1 inferior
-                ua_region_per_row[(e >= 193) & (e <= 256)] = 3  # M1 superior
-            else:
-                ua_region_per_row = np.array([], dtype=np.int8)
-
-            ua_region_names = np.array(["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"], dtype=object)
-        
+            
         # save the cleaned preprocessed recording
         out_geom = CKPT_OUT / f"pp_global__{sess.name}__NS6"
         out_geom.mkdir(parents=True, exist_ok=True)
@@ -462,21 +405,23 @@ def main(limit_sessions: Optional[int] = None):
             counts=counts_cat.astype(np.uint16),
             peaks=peaks,
             peak_t_ms=peaks_t_ms.astype(np.float32),
-            
             pcs=pcs_T,
             explained_var=explained_var.astype(np.float32),
-            ua_row_to_elec = (ua_elec_per_row.astype(np.int16) if ua_elec_per_row is not None else np.array([], dtype=np.int16)),
-            ua_row_to_nsp  = (ua_nsp_per_row.astype(np.int16)  if ua_nsp_per_row  is not None else np.array([], dtype=np.int16)),
-            ua_row_to_region = ua_region_per_row,   # 0..3 or -1
-            ua_region_names  = ua_region_names,     # ["SMA","Dorsal premotor","M1 inferior","M1 superior"]
-            ua_row_index_from_electrode = (row_from_elec.astype(np.int16) if row_from_elec is not None else np.array([], dtype=np.int16)),
+
+            # keep these if you still want mapping in the file, even though no SI properties:
+            ua_row_to_elec  = ua_elec_per_row.astype(np.int16),
+            ua_row_to_nsp   = ua_nsp_per_row.astype(np.int16),
+            ua_row_to_region = ua_region_per_row,
+            ua_region_names  = ua_region_names,
+            ua_row_index_from_electrode = row_from_elec.astype(np.int16),
+
             meta=dict(
                 detect_threshold=THRESH,
                 peak_sign=PEAK_SIGN,
                 bin_ms=BIN_MS,
                 sigma_ms=SIGMA_MS,
                 fs=fs_ua,
-                n_channels=int(rec_artif_removed.get_num_channels()),
+                n_channels=int(n_ch),
                 session=str(sess.name),
             ),
         )

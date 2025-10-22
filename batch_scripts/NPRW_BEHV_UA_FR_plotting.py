@@ -23,7 +23,7 @@ VMIN_INTAN_BASELINE, VMAX_INTAN_BASELINE = -50, 100  # keep heatmap range if you
 VMIN_UA_BASELINE, VMAX_UA_BASELINE = -50, 150  # keep heatmap range if you like
 
 VMIN_INTAN, VMAX_INTAN = -50, 300  # keep heatmap range if you like
-VMIN_UA, VMAX_UA = -50, 150  # keep heatmap range if you like
+VMIN_UA, VMAX_UA = -50, 200  # keep heatmap range if you like
 COLORMAP = "jet"
 
 # --- Kinematics preprocessing ---
@@ -67,14 +67,6 @@ CKPT_ROOT    = _subdir(OUT_BASE, "checkpoints")
 ALIGNED_ROOT = _subdir(CKPT_ROOT, "Aligned")
 BEHAV_ROOT   = _subdir(CKPT_ROOT, "behavior", "baseline_concat")
 
-# Curated kinematics windows (same group/port/depth)
-KIN_BASE_PATH       = BEHAV_ROOT / "baseline_UA_B_Depth43.npz"
-KIN_BASE_PATH_CAM0  = KIN_BASE_PATH.with_name(KIN_BASE_PATH.stem + "_cam0_curated.npz")
-KIN_BASE_PATH_CAM1  = KIN_BASE_PATH.with_name(KIN_BASE_PATH.stem + "_cam1_curated.npz")
-
-# Concatenated curated rates for the "baseline" plot
-RATES_ALL_PATH = BEHAV_ROOT / "rates_from_curated" / "rates_from_curated__UA_B__Depth43__ALL.npz"
-
 # ---------- metadata / mapping ----------
 # Metadata CSV (derive, create parent if missing)
 METADATA_CSV = (DATA_ROOT / (PARAMS.metadata_rel or "")).resolve()
@@ -87,13 +79,19 @@ UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS and Path(XLS).exists() else 
 # ---------- kinematics ----------
 # Tuple order for keypoints (robust to missing config)
 KEYPOINTS_ORDER = tuple((PARAMS.kinematics or {}).get("keypoints", ()))
+RATES_DIR = BEHAV_ROOT / "rates_from_curated"
 
-def _match_probe_aspect(ax, n_rows: int, t0: float, t1: float):
-    """Make the axes box aspect (height/width) match the stim/probe plots."""
-    width = float(t1 - t0)
-    if width <= 0 or n_rows <= 0:
-        return
-    ax.set_box_aspect(n_rows / width)   # height/width
+def _pick_rates_all_path(rates_dir: Path) -> tuple[Path, str]:
+    cur = sorted(rates_dir.glob("rates_from_curated__UA_*__Depth*__CURATED.npz"))
+    al  = sorted(rates_dir.glob("rates_from_curated__UA_*__Depth*__ALL.npz"))
+    if cur:
+        return cur[-1], "CURATED"
+    if al:
+        return al[-1], "ALL"
+    # dummy placeholder; caller will print a friendly error
+    return rates_dir / "rates_from_curated__UA_X__DepthY__ALL.npz", "ALL"
+
+RATES_ALL_PATH, _rates_selection_tag = _pick_rates_all_path(RATES_DIR)
 
 def _apply_relative_offsets_by_ref(
     lines: Optional[np.ndarray],
@@ -323,21 +321,6 @@ def _ua_region_code_from_elec(e: int) -> int:
     elif 193<= e <= 256:  return 3  # M1 superior
     return 1_000_000
 
-def _baseline_zero_rate_windows(win: np.ndarray, rel_t_ms: np.ndarray, normalize_first_ms: float) -> np.ndarray:
-    """
-    win: (N_events, n_ch, T); subtract per-event, per-channel median over baseline
-         [rel_t_ms[0], normalize_first_ms].
-    """
-    if win.size == 0:
-        return win
-    bl_mask = (rel_t_ms >= rel_t_ms[0]) & (rel_t_ms <= float(normalize_first_ms))
-    if not np.any(bl_mask):
-        cut = max(1, int(round(0.1 * rel_t_ms.size)))  # fallback: first 10% of window
-        bl_mask = np.zeros_like(rel_t_ms, dtype=bool); bl_mask[:cut] = True
-    win = win.astype(float, copy=True)
-    bl = np.nanmedian(win[:, :, bl_mask], axis=2, keepdims=True)  # (N, n_ch, 1)
-    return win - bl
-
 def _simple_beh_labels(names: list[str],
                        keypoints: Tuple[str, ...] = KEYPOINTS_ORDER) -> list[str]:
     """
@@ -373,8 +356,27 @@ def _baseline_zero_trials(wins: np.ndarray, rel_t_ms: np.ndarray, normalize_firs
     bl = np.nanmedian(wins[:, :, bl_mask], axis=2, keepdims=True)  # (N,K,1)
     return wins - bl
 
+def _find_baseline_cam_npz(root: Path, port: str, depth: str, cam: int) -> Path | None:
+    """
+    Prefer curated → non-curated. Accept legacy naming without _camX as last fallback.
+    """
+    port = str(port).upper().strip()
+    depth = str(depth).strip()
+    # most specific first
+    cands = [
+        root / f"baseline_UA_{port}_Depth{depth}_cam{cam}_curated.npz",
+        root / f"baseline_UA_{port}_Depth{depth}_cam{cam}.npz",
+        root / f"baseline_UA_{port}_Depth{depth}.npz",  # legacy single-cam
+    ]
+    for p in cands:
+        if p.exists():
+            return p
+    # last resort: newest file for that port/depth & cam
+    globs = list(root.glob(f"baseline_UA_{port}_Depth{depth}*cam{cam}*.npz"))
+    return max(globs, key=lambda p: p.stat().st_mtime) if globs else None
+
 def _load_baseline_cam(npz_path):
-    if not npz_path.exists():
+    if not npz_path or not Path(npz_path).exists():
         return None
     with np.load(npz_path, allow_pickle=True) as z:
         wins = z["windows"].astype(float) if "windows" in z.files else np.zeros((0,0,0), float)
@@ -407,7 +409,19 @@ def main_baselines():
         all_dir   = RATES_ALL_PATH.parent
         port_lbl  = str(z.get("port", "B"))
         depth_lbl = str(z.get("depth_mm", "43"))
+    KIN0 = _find_baseline_cam_npz(BEHAV_ROOT, port_lbl, depth_lbl, cam=0)
+    KIN1 = _find_baseline_cam_npz(BEHAV_ROOT, port_lbl, depth_lbl, cam=1)
 
+    cam0 = _load_baseline_cam(KIN0) if KIN0 else None
+    cam1 = _load_baseline_cam(KIN1) if KIN1 else None
+
+    # legacy single-file fallback if neither cam file exists
+    if not cam0 and not cam1:
+        legacy = _find_baseline_cam_npz(BEHAV_ROOT, port_lbl, depth_lbl, cam=0)  # will also return legacy path
+        if legacy and legacy.name.endswith(".npz") and "_cam" not in legacy.stem:
+            solo = _load_baseline_cam(legacy)
+            cam0 = solo
+        
     n_ev_i = intan_win.shape[0] if intan_win.ndim == 3 else 0
     n_ev_u = ua_win.shape[0]    if ua_win.ndim    == 3 else 0
     if n_ev_i == 0 and n_ev_u == 0:
@@ -416,45 +430,16 @@ def main_baselines():
 
     # ---- baseline-zero per event/channel; then median across events → (n_ch, T) ----
     intan_med = None; ua_med = None
+    # ---- baseline-zero per event/channel; then median across events ----
     if n_ev_i:
-        i_zero = _baseline_zero_rate_windows(intan_win, rel_t, NORMALIZE_FIRST_MS)
-        intan_med = np.nanmedian(i_zero, axis=0)  # (n_intan_ch, T)
+        i_zero = rcp.baseline_zero_each_trial(intan_win, rel_t, normalize_first_ms=NORMALIZE_FIRST_MS)
+        intan_med = np.nanmedian(i_zero, axis=0)
     if n_ev_u:
-        u_zero = _baseline_zero_rate_windows(ua_win, rel_t, NORMALIZE_FIRST_MS)
-        ua_med = np.nanmedian(u_zero, axis=0)     # (n_ua_ch, T)
+        u_zero = rcp.baseline_zero_each_trial(ua_win,    rel_t, normalize_first_ms=NORMALIZE_FIRST_MS)
+        ua_med = np.nanmedian(u_zero, axis=0)
 
     # ---- load curated kinematics windows (median lines) ----
-    have_beh = False
-    beh_med = None
     beh_labels: list[str] = []
-    beh_t = None
-    wins0 = None
-    beh_vel_med = None
-    beh_t_v = None
-    if KIN_BASE_PATH.exists():
-        try:
-            with np.load(KIN_BASE_PATH, allow_pickle=True) as z:
-                wins = z["windows"].astype(float) if "windows" in z.files else np.zeros((0,0,0), float)
-                beh_t = z["t_ms"].astype(float)   if "t_ms"   in z.files else np.arange(0.0)
-                raw_labels = [str(x) for x in (z["labels"].tolist() if "labels" in z.files else [f"trace_{i}" for i in range(wins.shape[1])])]
-            if wins.size and beh_t.size:
-                wins0 = _baseline_zero_trials(wins, beh_t, NORMALIZE_FIRST_MS)  # (N, K, T)
-                # Low-pass the baseline-zeroed position per trial/dim, then derive velocity
-                wins0_filt, v_wins, _ = butter_lowpass_pos_and_vel_3d(
-                    wins0, beh_t, cutoff_hz=10.0, order=3
-                )
-                # Now take the medians across trials from the filtered positions/velocities
-                beh_med = np.nanmedian(wins0_filt, axis=0)     # (K, T)
-                beh_vel_med = np.nanmedian(v_wins, axis=0)     # (K, T)
-                beh_t_v = beh_t    
-                beh_labels = _simple_beh_labels(raw_labels, KEYPOINTS_ORDER)
-                have_beh = True
-            else:
-                print(f"[baseline] {KIN_BASE_PATH.name}: empty windows or t_ms.")
-        except Exception as e:
-            print(f"[baseline][warn] could not load kinematics NPZ: {e}")
-    else:
-        print(f"[baseline] kinematics file not found: {KIN_BASE_PATH}")
 
     # ---- UA region sorting (optional) ----
     ua_plot = ua_med
@@ -506,8 +491,8 @@ def main_baselines():
         import matplotlib.gridspec as gridspec
         beh_labels = beh_labels or []
 
-        have_beh0 = (beh_lines0 is not None)
-        have_beh1 = (beh_lines1 is not None)
+        have_beh0 = isinstance(beh_lines0, np.ndarray) and beh_lines0.size > 0
+        have_beh1 = isinstance(beh_lines1, np.ndarray) and beh_lines1.size > 0
 
         nrows = (1 if have_beh0 else 0) + (1 if have_beh1 else 0) \
                 + (1 if intan_med is not None else 0) \
@@ -530,6 +515,8 @@ def main_baselines():
 
         row = 0
         ax_b0 = ax_b1 = ax_i = ax_u = None
+
+        events_label = f"{_rates_selection_tag.lower()} events"  # "curated events" or "all events"
 
         # Cam-0
         if have_beh0:
@@ -580,7 +567,7 @@ def main_baselines():
                 
             ax_i.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
             ax_i.set_title(
-                f"Intan (median Δ across {n_ev_i} curated events) • Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
+                f"Intan (median Δ across {n_ev_i} {events_label}) • Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
             )
             ax_i.set_ylabel("Intan ch")
             cb0 = fig.colorbar(im0, cax=ax_i_cax)
@@ -602,7 +589,7 @@ def main_baselines():
 
             ax_u.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
             ax_u.set_title(
-                f"Utah Array (median Δ across {n_ev_u} curated events) • Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
+                f"Utah Array (median Δ across {n_ev_u} {events_label}) • Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
             )
             ax_u.set_xlabel("Time (ms) rel. stim")
             ax_u.set_ylabel(""); ax_u.set_yticks([]); ax_u.tick_params(left=False, labelleft=False)
@@ -616,18 +603,10 @@ def main_baselines():
             ax.set_xlim(*WIN_MS)
 
         # save (unchanged aside from filename)
-        out_path = out_dir / f"UA_{port_lbl}__Depth{depth_lbl}__ALL_baseline_{fname_prefix}.svg"
+        out_path = out_dir / f"UA_{port_lbl}__Depth{depth_lbl}__{_rates_selection_tag}_baseline_{fname_prefix}.png"
         fig.savefig(out_path, dpi=300, bbox_inches="tight", pad_inches=0.25)
         plt.close(fig)
         print(f"[baseline] Wrote {out_path}")
-
-    cam0 = _load_baseline_cam(KIN_BASE_PATH_CAM0)
-    cam1 = _load_baseline_cam(KIN_BASE_PATH_CAM1)
-
-    # Fallback: if neither exists, optionally try the single KIN_BASE_PATH
-    if not cam0 and not cam1 and KIN_BASE_PATH.exists():
-        solo = _load_baseline_cam(KIN_BASE_PATH)
-        cam0 = solo  # treat as Cam-0 for plotting
 
     # Shared labels (for legends)
     if cam0 and cam0["labels"]:
@@ -1329,4 +1308,4 @@ if __name__ == "__main__":
     main_baselines()
     
     # plot stim trials
-    main()
+    # main()
