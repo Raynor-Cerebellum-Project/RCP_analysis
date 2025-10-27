@@ -11,11 +11,10 @@ matplotlib.rcParams['svg.fonttype'] = 'none'
 
 # ---- CONFIG ----
 BR_IDX = 2
-# TRIAL_INDICES = [0, 3, 4, 7, 8, 11, 13, 15, 16]  # one folder per trial
 TRIAL_INDICES = [0, 1, 2, 3, 4, 5, 6]  # one folder per trial
 ADJUST_SAMPLES = 3
-WINDOW_MS = (3.0, 6.0)
-CHANNELS_TO_SHOW = list(range(0, 128))           # will be chunked into groups of 6
+WINDOW_MS = (0.0, 100.0)
+CHANNELS_TO_SHOW = list(range(0, 128))           # will be replaced by Elec#-sorted order
 IR_STREAM = "USB board digital input channel"
 YLIM_UV = (-50, 50)                               # tighten or set to None for autoscale
 
@@ -27,18 +26,30 @@ DATA_ROOT = rcp.resolve_data_root(PARAMS)
 INTAN_ROOT = rcp.resolve_intan_root(PARAMS)
 
 SESSION = getattr(PARAMS, "session", None)
-# --- metadata + shifts CSV (for Intan session & anchor_ms) ---
 metadata_rel = getattr(PARAMS, "metadata_rel", None) or ""
 METADATA_CSV = (DATA_ROOT / metadata_rel).resolve()
 SHIFTS_CSV   = METADATA_CSV.parent / "br_to_intan_shifts.csv"
 
 ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
 PATH_UA_SI   = OUT_BASE / "checkpoints" / "UA" / f"pp_global__{SESSION}_{BR_IDX:03d}__NS6"
-# Build short tags
+
+# --- UA mapping (needed to infer UA port) ---
+XLS = rcp.ua_excel_path(REPO_ROOT, getattr(PARAMS, "probes", {}))
+UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS and Path(XLS).exists() else None
+if UA_MAP is None:
+    raise SystemExit("[error] UA mapping required to identify UA port and Elec#/NSP correspondence.")
+
+# ---- Impedance file(s) ----
+# If you want to point to absolute files instead, change IMP_BASE to that folder.
+IMP_BASE = OUT_BASE.parents[0]
+IMP_FILES = {
+    "A": IMP_BASE / "Imp_Utah_Port_A",
+    "B": IMP_BASE / "Imp_Utah_Port_B",
+}
+
+# ---- Filenames ----
 amp_tag = ("auto" if YLIM_UV is None else (f"pm_{abs(YLIM_UV[1]):g}uV" if YLIM_UV[0] == -YLIM_UV[1] else f"{YLIM_UV[0]:g}to{YLIM_UV[1]:g}uV"))
 win_tag = f"{WINDOW_MS[0]:g}to{WINDOW_MS[1]:g}ms"
-
-# Path with adaptive tag
 OUT_DIR_BASE = (OUT_BASE / "figures" / "debug_8ch_aligned_ir_baseline_hpf" / "UA" / f"{SESSION}__BR_{BR_IDX:03d}" / f"{amp_tag}_{win_tag}")
 OUT_DIR_BASE.mkdir(parents=True, exist_ok=True)
 
@@ -175,6 +186,63 @@ def _load_br_to_intan_map_full(shifts_csv: Path) -> dict[int, dict]:
             out[br] = {"session": sess, "anchor_ms": anchor_ms}
     return out
 
+# --- Channel ID parsing (UAe###_NSP###) ---
+_id_pat = re.compile(r"UAe(\d{1,3})_NSP(\d{3})", re.IGNORECASE)
+def parse_elec_nsp_from_id(x) -> tuple[int|None, int|None]:
+    s = str(x)
+    m = _id_pat.fullmatch(s)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m2 = re.search(r"UAe(\d{1,3})", s, re.IGNORECASE)
+    if m2:
+        return int(m2.group(1)), None
+    m3 = re.search(r"\d{1,3}$", s)
+    return (int(m3.group(0)), None) if m3 else (None, None)
+
+# --- Impedance parsing ---
+_imp_pat_elecnum = re.compile(r"\belec\s*\d+\s*-\s*(\d{1,3})\s+([0-9]+(?:\.[0-9]+)?)\s*(k?ohms?|kΩ|ohms?|Ω)\b", re.IGNORECASE)
+def _unit_to_kohm(val: float, unit: str) -> float:
+    u = (unit or "").lower()
+    if "k" in u: return float(val)
+    return float(val) / 1000.0  # Ω → kΩ
+
+def _read_text_loose(p: Path) -> str:
+    if not p.exists(): raise FileNotFoundError(str(p))
+    b = p.read_bytes()
+    for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1", "mac_roman"):
+        try: return b.decode(enc)
+        except Exception: pass
+    filtered = bytes(ch for ch in b if 9 <= ch <= 126 or ch in (10, 13))
+    return filtered.decode("latin-1", errors="ignore")
+
+def load_impedances_from_textedit_dump(path_like: str | Path) -> dict[int, float]:
+    txt = _read_text_loose(Path(path_like))
+    out: dict[int, float] = {}
+    for m in _imp_pat_elecnum.finditer(txt):
+        elec_str, val_str, unit = m.groups()
+        try:
+            elec = int(elec_str); val = float(val_str)
+        except Exception:
+            continue
+        out[elec] = _unit_to_kohm(val, unit)
+    return out
+
+def _fmt_impedance_kohm(z: float | None) -> str:
+    if z is None or not np.isfinite(z): return "—"
+    if z >= 3000: return f"{z:.0f} kΩ (open?)"
+    return f"{z:.0f} kΩ" if z >= 100 else f"{z:.1f} kΩ"
+
+def _group_tag_from_elecs(rec, ch_group):
+    elecs = []
+    for ch in ch_group:
+        cid = rec.get_channel_ids()[ch]
+        e, _ = parse_elec_nsp_from_id(cid)
+        if e is not None:
+            elecs.append(e)
+    if elecs:
+        return f"UAelec_{min(elecs):03d}-{max(elecs):03d}"
+    return f"UAidx_{ch_group[0]:03d}-{ch_group[-1]:03d}"
+
 # ---- Main ----
 def main():
     # UA recording (for raw traces)
@@ -182,6 +250,32 @@ def main():
     fs_ua = float(rec.get_sampling_frequency())
     rec_len = rec.get_num_frames()
     adjust_ms = (ADJUST_SAMPLES / fs_ua) * 1000.0
+
+    # Determine UA port for this BR block (A/B) via mapping
+    ua_port = None
+    for k in ("br_to_port", "br_port", "br2port", "port_by_br"):
+        if UA_MAP and k in UA_MAP and isinstance(UA_MAP[k], dict):
+            ua_port = UA_MAP[k].get(int(BR_IDX)) or UA_MAP[k].get(str(BR_IDX))
+            if ua_port:
+                ua_port = str(ua_port).strip().upper()
+                break
+    if not ua_port:
+        ua_port = "A"
+
+    # Load impedances (port-specific; also try the other port to be safe)
+    imp_by_elec: dict[int, float] = {}
+    def _try_load_imp(p: Path, tag: str):
+        if not p or not p.exists():
+            print(f"[warn] Impedance file not found for port {tag}: {p}"); return
+        try:
+            d = load_impedances_from_textedit_dump(p)
+            imp_by_elec.update(d)
+            print(f"[info] Parsed {len(d)} impedances from {p.name} (port {tag}).")
+        except Exception as e:
+            print(f"[warn] could not parse impedances from {p} (port {tag}): {e}")
+    _try_load_imp(IMP_FILES.get(ua_port), ua_port)
+    other_port = "B" if ua_port == "A" else "A"
+    _try_load_imp(IMP_FILES.get(other_port), other_port)
 
     # IR events from Intan (align by IR onset)
     shifts_full = _load_br_to_intan_map_full(SHIFTS_CSV)
@@ -216,7 +310,15 @@ def main():
         z = np.load(aligned_npz, allow_pickle=True)
         peak_ch, peak_t_ms = _safe_peaks_UA(z)
 
-    CHANNEL_ROWS = CHANNELS_TO_SHOW
+    # ---- REORDER by actual Elec# (not NSP order) ----
+    cids = list(rec.get_channel_ids())                      # e.g. ['UAe005_NSP001', ...]
+    pairs = []
+    tail  = []
+    for i, cid in enumerate(cids):
+        e, _ = parse_elec_nsp_from_id(cid)
+        (pairs if e is not None else tail).append((i, e))
+    pairs.sort(key=lambda t: t[1])                          # sort by Elec#
+    CHANNELS_TO_SHOW = [i for i, _ in pairs] + [i for i, _ in tail]
 
     print(f"[info] {SESSION} / BR {BR_IDX:03d} / Intan session={intan_session} / anchor_ms={anchor_ms:g}")
     print(f"[info] UA fs={fs_ua:.2f} Hz, frames={rec_len}")
@@ -235,12 +337,10 @@ def main():
             print(f"[skip] trial index {trial_idx} out of range (N={centers_ms_all.size}).")
             continue
 
-        # Stacked view: 6 channels per figure (6 rows x 1 column)
         fig_idx = 0
-        for ch_group in _chunks(CHANNEL_ROWS, 6):
+        for ch_group in _chunks(CHANNELS_TO_SHOW, 6):
             fig_idx += 1
-            fig, axes = plt.subplots(6, 1, figsize=(12, 14), sharex=True)  # taller for detail
-            # If only one axis returned (in case len(ch_group)<2), wrap in list
+            fig, axes = plt.subplots(6, 1, figsize=(12, 14), sharex=True)
             if not isinstance(axes, (list, np.ndarray)):
                 axes = [axes]
             axes = np.asarray(axes).ravel()
@@ -248,8 +348,7 @@ def main():
             for ax, ch in zip(axes, ch_group):
                 t_list, y_list = _extract_trials(rec, ch, centers_ms_all, WINDOW_MS, fs_ua)
                 if len(t_list) == 0 or trial_idx >= len(t_list):
-                    ax.axis("off")
-                    continue
+                    ax.axis("off"); continue
 
                 t, y = t_list[trial_idx], y_list[trial_idx]
                 ax.plot(t, y, lw=1.1)
@@ -257,26 +356,39 @@ def main():
                 ax.grid(True, alpha=0.3, linestyle=":")
                 s0_ms = centers_ms_all[trial_idx]
                 _overlay_peaks(ax, t, y, s0_ms, peak_ch, peak_t_ms, ch_pos=ch, adjust_ms=adjust_ms)
-                ax.set_ylabel(f"ch {ch}\nµV", rotation=0, labelpad=25, va="center")
+
+                # Fancy y-label: Elec#, (optional NSP#), and impedance
+                cid = rec.get_channel_ids()[ch]
+                elec_id, nsp_ch = parse_elec_nsp_from_id(cid)
+                if elec_id is not None:
+                    imp = imp_by_elec.get(elec_id)
+                    nsp_txt = f" · NSP {nsp_ch:03d}" if nsp_ch is not None else ""
+                    ax.set_ylabel(f"elec {elec_id}{nsp_txt}\n({_fmt_impedance_kohm(imp)})",
+                                  rotation=0, labelpad=25, va="center")
+                    ax.yaxis.set_label_coords(-0.10, 0.5)
+                else:
+                    ax.set_ylabel("elec ?\n(—)", rotation=0, labelpad=25, va="center")
+
                 ax.set_xlim(WINDOW_MS[0], WINDOW_MS[1])
                 if YLIM_UV is not None:
                     ax.set_ylim(*YLIM_UV)
 
-            # turn off any leftover axes if channels < multiple of 6
             for k in range(len(ch_group), len(axes)):
                 axes[k].axis("off")
 
             axes[-1].set_xlabel("Time (ms) rel. IR onset")
 
             fig.suptitle(
-                f"{SESSION} / BR {BR_IDX:03d} / {PATH_UA_SI.name} / IR-aligned {int(WINDOW_MS[0])}–{int(WINDOW_MS[1])} ms / trial {trial_idx} / group {fig_idx}",
+                f"{SESSION} / BR {BR_IDX:03d} / {PATH_UA_SI.name} / IR-aligned "
+                f"{int(WINDOW_MS[0])}–{int(WINDOW_MS[1])} ms / trial {trial_idx} / group {fig_idx}",
                 y=0.995
             )
 
             fig.tight_layout(rect=[0, 0.02, 1, 0.97])
+            group_tag = _group_tag_from_elecs(rec, ch_group)
             out_png = out_dir / (
                 f"{SESSION}__BR_{BR_IDX:03d}__trial_{trial_idx:03d}"
-                f"__UA_rows_{ch_group[0]:03d}-{ch_group[-1]:03d}__IR__win_{int(WINDOW_MS[0])}-{int(WINDOW_MS[1])}ms.png"
+                f"__{group_tag}__IR__win_{int(WINDOW_MS[0])}-{int(WINDOW_MS[1])}ms.png"
             )
             fig.savefig(out_png, dpi=300, bbox_inches="tight")
             plt.close(fig)

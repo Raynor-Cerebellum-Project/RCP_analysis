@@ -9,11 +9,11 @@ matplotlib.use("Agg")
 matplotlib.rcParams['svg.fonttype'] = 'none'
 
 # ---- CONFIG ----
-BR_IDX = 2
+BR_IDX = 3
 # TRIAL_INDICES = [0, 3, 4, 7, 8, 11, 13, 15, 16]  # one folder per trial
 TRIAL_INDICES = [0, 1, 2, 3, 4, 5, 6]
 ADJUST_SAMPLES = 3
-WINDOW_MS = (150.0, 250.0)
+WINDOW_MS = (0.0, 100.0)
 CHANNELS_TO_SHOW = list(range(0, 128))           # will be chunked into groups of 6
 IR_STREAM = "USB board digital input channel"
 YLIM_UV = None                               # tighten or set to None for autoscale
@@ -42,10 +42,50 @@ OUT_DIR_BASE = (OUT_BASE / "figures" / "debug_8ch_aligned_ir_baseline_raw" / "UA
 OUT_DIR_BASE.mkdir(parents=True, exist_ok=True)
 
 # --- add near other imports/config ---
-XLS = rcp.ua_excel_path(REPO_ROOT, PARAMS.probes)
-UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS else None
+XLS = rcp.ua_excel_path(REPO_ROOT, getattr(PARAMS, "probes", {}))
+UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS and Path(XLS).exists() else None
 if UA_MAP is None:
     raise SystemExit("[error] UA mapping required to align raw NS6 channel order.")
+
+# ---- Impedance file(s) ----
+IMP_BASE = OUT_BASE.parents[0]
+IMP_FILES = {
+    "A": IMP_BASE / "Imp_Utah_Port_A",
+    "B": IMP_BASE / "Imp_Utah_Port_B",
+}
+
+def _group_tag_from_elecs(rec, ch_group):
+    elecs = []
+    for ch in ch_group:
+        cid = rec.get_channel_ids()[ch]   # e.g. 'UAe005_NSP001'
+        e, _ = parse_elec_nsp_from_id(cid)
+        if e is not None:
+            elecs.append(e)
+    if elecs:
+        return f"UAelec_{min(elecs):03d}-{max(elecs):03d}"
+    # fallback if nothing parsed
+    return f"UAidx_{ch_group[0]:03d}-{ch_group[-1]:03d}"
+
+
+_id_pat = re.compile(r"UAe(\d{1,3})_NSP(\d{3})", re.IGNORECASE)
+
+def parse_elec_nsp_from_id(x) -> tuple[int|None, int|None]:
+    """
+    Accepts things like 'UAe005_NSP001' and returns (elec=5, nsp=1).
+    Returns (None, None) if not parseable.
+    """
+    s = str(x)
+    m = _id_pat.fullmatch(s)
+    if m:
+        elec = int(m.group(1))
+        nsp  = int(m.group(2))
+        return elec, nsp
+    # fallbacks: 'UAe005', '005', etc.
+    m2 = re.search(r"UAe(\d{1,3})", s, re.IGNORECASE)
+    if m2:
+        return int(m2.group(1)), None
+    m3 = re.search(r"\d{1,3}$", s)
+    return (int(m3.group(0)), None) if m3 else (None, None)
 
 # find the BR session folder under the Blackrock tree
 def _find_br_session_dir(data_root: Path, blackrock_rel: str | None, session: str | None, br_idx: int) -> Path:
@@ -63,6 +103,72 @@ def _find_br_session_dir(data_root: Path, blackrock_rel: str | None, session: st
     return sorted(cands)[-1]
 
 # ---- Helpers ----
+# Impedance parsing
+_imp_pat_elecnum = re.compile(
+    r"\belec\s*\d+\s*-\s*(\d{1,3})\s+([0-9]+(?:\.[0-9]+)?)\s*(k?ohms?|kΩ|ohms?|Ω)\b",
+    flags=re.IGNORECASE,
+)
+
+def _unit_to_kohm(val: float, unit: str) -> float:
+    u = (unit or "").lower()
+    if "k" in u:
+        return float(val)
+    return float(val) / 1000.0  # Ω → kΩ
+
+def _read_text_loose(p: Path) -> str:
+    if not p.exists():
+        raise FileNotFoundError(str(p))
+    b = p.read_bytes()
+    for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1", "mac_roman"):
+        try:
+            return b.decode(enc)
+        except Exception:
+            pass
+    # keep printable bytes
+    filtered = bytes(ch for ch in b if 9 <= ch <= 126 or ch in (10, 13))
+    return filtered.decode("latin-1", errors="ignore")
+
+def load_impedances_from_textedit_dump(path_like: str | Path) -> dict[int, float]:
+    """
+    Parse the 'AutoImpedance' dump you pasted (lines like 'elec1-5   201 kOhm').
+    Returns { Elec#: impedance_kΩ }.
+    """
+    txt = _read_text_loose(Path(path_like))
+    out: dict[int, float] = {}
+    for m in _imp_pat_elecnum.finditer(txt):
+        elec_str, val_str, unit = m.groups()
+        try:
+            elec = int(elec_str)
+            val = float(val_str)
+        except Exception:
+            continue
+        out[elec] = _unit_to_kohm(val, unit)
+    return out
+
+def _fmt_impedance_kohm(z: float | None) -> str:
+    if z is None or not np.isfinite(z):
+        return "—"
+    # Flag very large (likely open) impedances clearly
+    if z >= 1000:
+        return f"{z:.0f} kΩ (large)"
+    return f"{z:.0f} kΩ" if z >= 100 else f"{z:.1f} kΩ"
+
+def _imp_color(z: float | None) -> str:
+    """
+    Three colors:
+      - >= 1000 kΩ   → black
+      - 500–<1000 kΩ → tab:orange
+      - < 500 kΩ     → tab:blue
+      - unknown/NaN  → gray
+    """
+    if z is None or not np.isfinite(z):
+        return "gray"
+    if z >= 1000:
+        return "black"
+    if z >= 500:
+        return "tab:orange"
+    return "tab:blue"
+
 def _find_aligned_file(aligned_dir: Path, br_idx: int) -> Path | None:
     pat = f"*__BR_{br_idx:03d}.npz"
     cands = sorted(aligned_dir.glob(pat))
@@ -204,6 +310,64 @@ def main():
     # Keep channel indexing consistent with UA mapping (no properties, just IDs/ordering)
     # Returns (recording_with_renamed_ids, idx_rows) → we only need the recording here
     rec, _ = rcp.apply_ua_mapping_by_renaming(rec_raw, UA_MAP["mapped_nsp"], BR_IDX, METADATA_CSV)
+    # Reorder to true Elec# order (UAe###), not NSP order
+    cids = list(rec.get_channel_ids())  # e.g., 'UAe005_NSP001'
+    elec_sorted_idx = []
+    unparsed_idx = []
+
+    for i, cid in enumerate(cids):
+        elec_id, _ = parse_elec_nsp_from_id(cid)
+        if elec_id is not None:
+            elec_sorted_idx.append((i, elec_id))
+        else:
+            unparsed_idx.append(i)
+
+    # sort by Elec# ascending; append any unparsed at the end to avoid dropping channels
+    elec_sorted_idx.sort(key=lambda t: t[1])
+    CHANNELS_TO_SHOW = [i for i, _ in elec_sorted_idx] + unparsed_idx
+
+    # Determine UA port for this BR block (A/B) if available in the UA mapping/meta
+    ua_port = None
+    for k in ("br_to_port", "br_port", "br2port", "port_by_br"):
+        if UA_MAP and k in UA_MAP and isinstance(UA_MAP[k], dict):
+            ua_port = UA_MAP[k].get(int(BR_IDX)) or UA_MAP[k].get(str(BR_IDX))
+            if ua_port:
+                ua_port = str(ua_port).strip().upper()
+                break
+
+    # Fallback: if not present, try meta on the aligned NPZ later (optional), else default to 'A'
+    if not ua_port:
+        ua_port = "A"
+
+    # --- Load impedances for the detected port (or both, if desired) ---
+    imp_by_elec = {}
+
+    def _try_load_imp(p: Path, tag: str):
+        if not p:
+            return
+        if not p.exists():
+            print(f"[warn] Impedance file not found for port {tag}: {p}")
+            return
+        try:
+            d = load_impedances_from_textedit_dump(p)
+            imp_by_elec.update(d)  # merge
+            print(f"[info] Parsed {len(d)} impedances from {p.name} (port {tag}).")
+        except Exception as e:
+            print(f"[warn] could not parse impedances from {p} (port {tag}): {e}")
+
+    # Prefer the port actually used in this BR block
+    _imp_path = IMP_FILES.get(ua_port)
+    if _imp_path is not None:
+        _try_load_imp(_imp_path, ua_port)
+    else:
+        print(f"[warn] No impedance path configured for ua_port={ua_port!r}.")
+
+    # Optional: also load the *other* port if you want everything available.
+    # Comment these two lines out if you strictly want one port.
+    other_port = "B" if ua_port == "A" else "A"
+    if IMP_FILES.get(other_port):
+        _try_load_imp(IMP_FILES[other_port], other_port)
+
 
     fs_ua = float(rec.get_sampling_frequency())
     rec_len = rec.get_num_frames()
@@ -278,12 +442,31 @@ def main():
                     continue
 
                 t, y = t_list[trial_idx], y_list[trial_idx]
-                ax.plot(t, y, lw=1.1)
-                ax.axvline(0.0, ls="--", lw=0.9)
+                cid = rec.get_channel_ids()[ch]        # e.g., 'UAe005_NSP001'
+                elec_id, nsp_ch = parse_elec_nsp_from_id(cid)
+                imp = imp_by_elec.get(elec_id) if elec_id is not None else None
+                col = _imp_color(imp)
+
+                # plot trace with impedance-based color
+                ax.plot(t, y, lw=1.1, color=col)
+                ax.axvline(0.0, ls="--", lw=0.9, color="k")
                 ax.grid(True, alpha=0.3, linestyle=":")
+
+                # overlay peaks (keep default red)
                 s0_ms = centers_ms_all[trial_idx]
                 _overlay_peaks(ax, t, y, s0_ms, peak_ch, peak_t_ms, ch_pos=ch, adjust_ms=adjust_ms)
-                ax.set_ylabel(f"ch {ch}\nµV", rotation=0, labelpad=25, va="center")
+
+                # label with impedance, colored to match trace
+                if elec_id is not None:
+                    nsp_txt = f" · NSP {nsp_ch:03d}" if nsp_ch is not None else ""
+                    ax.set_ylabel(
+                        f"elec {elec_id}{nsp_txt}\n({_fmt_impedance_kohm(imp)})",
+                        rotation=0, labelpad=25, va="center", color=col
+                    )
+                    ax.yaxis.set_label_coords(-0.10, 0.5)
+                else:
+                    ax.set_ylabel("elec ?\n(—)", rotation=0, labelpad=25, va="center", color="gray")
+
                 ax.set_xlim(WINDOW_MS[0], WINDOW_MS[1])
                 if YLIM_UV is not None:
                     ax.set_ylim(*YLIM_UV)
@@ -297,14 +480,18 @@ def main():
             # in the figure title:
             fig.suptitle(
                 f"{SESSION} / BR {BR_IDX:03d} / RAW NS6 / IR-aligned {int(WINDOW_MS[0])}–{int(WINDOW_MS[1])} ms / "
-                f"trial {trial_idx} / group {fig_idx}",
+                f"trial {trial_idx} / group {fig_idx}\n"
+                "imp: ≥1000 kΩ = black • 500–<1000 kΩ = orange • <500 kΩ = blue",
                 y=0.995
             )
 
             fig.tight_layout(rect=[0, 0.02, 1, 0.97])
+            fig.subplots_adjust(left=0.20)  # extra left margin so y-labels aren't clipped
+
+            group_tag = _group_tag_from_elecs(rec, ch_group)
             out_png = out_dir / (
                 f"{SESSION}__BR_{BR_IDX:03d}__trial_{trial_idx:03d}"
-                f"__UA_rows_{ch_group[0]:03d}-{ch_group[-1]:03d}__IR__win_{int(WINDOW_MS[0])}-{int(WINDOW_MS[1])}ms.png"
+                f"__{group_tag}__IR__win_{int(WINDOW_MS[0])}-{int(WINDOW_MS[1])}ms.png"
             )
             fig.savefig(out_png, dpi=300, bbox_inches="tight")
             plt.close(fig)
