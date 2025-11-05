@@ -5,7 +5,7 @@ paths:
   geom_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
 
 kinematics:
-  keypoints: [Wrist, fingertip, MCP]
+  keypoints: [Wrist, fingertip, MCP, start, target]
   num_camera: 2
   # Example alt:
   # keypoints = ("shoulder", "elbow", "wrist", "finger")

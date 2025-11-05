@@ -10,10 +10,10 @@ matplotlib.use("Agg")
 matplotlib.rcParams['svg.fonttype'] = 'none'
 
 # ---- CONFIG ----
-BR_IDX = 2
-TRIAL_INDICES = [0, 1, 2, 3, 4, 5, 6]  # one folder per trial
+BR_IDX = 3
+TRIAL_INDICES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]  # one folder per trial
 ADJUST_SAMPLES = 3
-WINDOW_MS = (0.0, 100.0)
+WINDOW_MS = (125.0, 325.0)
 CHANNELS_TO_SHOW = list(range(0, 128))           # will be replaced by Elec#-sorted order
 IR_STREAM = "USB board digital input channel"
 YLIM_UV = (-50, 50)                               # tighten or set to None for autoscale
@@ -43,8 +43,8 @@ if UA_MAP is None:
 # If you want to point to absolute files instead, change IMP_BASE to that folder.
 IMP_BASE = OUT_BASE.parents[0]
 IMP_FILES = {
-    "A": IMP_BASE / "Imp_Utah_Port_A",
-    "B": IMP_BASE / "Imp_Utah_Port_B",
+    "A": IMP_BASE / "Utah_imp_Bank_A_start",
+    "B": IMP_BASE / "Utah_imp_Bank_B_start",
 }
 
 # ---- Filenames ----
@@ -228,9 +228,27 @@ def load_impedances_from_textedit_dump(path_like: str | Path) -> dict[int, float
     return out
 
 def _fmt_impedance_kohm(z: float | None) -> str:
-    if z is None or not np.isfinite(z): return "—"
-    if z >= 3000: return f"{z:.0f} kΩ (open?)"
+    if z is None or not np.isfinite(z):
+        return "—"
+    if z >= 1000:
+        return f"{z:.0f} kΩ (open)"
     return f"{z:.0f} kΩ" if z >= 100 else f"{z:.1f} kΩ"
+
+def _imp_color(z: float | None) -> str:
+    """
+    Colors to match quick-view:
+      - >= 1000 kΩ   → red
+      - 500–<1000 kΩ → tab:orange
+      - < 500 kΩ     → tab:blue
+      - unknown/NaN  → gray
+    """
+    if z is None or not np.isfinite(z):
+        return "gray"
+    if z >= 1000:
+        return "red"
+    if z >= 500:
+        return "tab:orange"
+    return "tab:blue"
 
 def _group_tag_from_elecs(rec, ch_group):
     elecs = []
@@ -351,23 +369,33 @@ def main():
                     ax.axis("off"); continue
 
                 t, y = t_list[trial_idx], y_list[trial_idx]
-                ax.plot(t, y, lw=1.1)
-                ax.axvline(0.0, ls="--", lw=0.9)
+
+                # Lookup impedance → choose color
+                cid = rec.get_channel_ids()[ch]               # e.g., 'UAe005_NSP001'
+                elec_id, nsp_ch = parse_elec_nsp_from_id(cid)
+                imp = imp_by_elec.get(elec_id) if elec_id is not None else None
+                col = _imp_color(imp)
+
+                # Plot trace + guides
+                ax.plot(t, y, lw=1.1, color=col)
+                ax.axvline(0.0, ls="--", lw=0.9, color="k")
                 ax.grid(True, alpha=0.3, linestyle=":")
+                ax.spines[['right', 'top']].set_visible(False)
+
+                # Overlay peaks (keep default red)
                 s0_ms = centers_ms_all[trial_idx]
                 _overlay_peaks(ax, t, y, s0_ms, peak_ch, peak_t_ms, ch_pos=ch, adjust_ms=adjust_ms)
 
-                # Fancy y-label: Elec#, (optional NSP#), and impedance
-                cid = rec.get_channel_ids()[ch]
-                elec_id, nsp_ch = parse_elec_nsp_from_id(cid)
+                # Fancy y-label (tinted to match the trace color)
                 if elec_id is not None:
-                    imp = imp_by_elec.get(elec_id)
                     nsp_txt = f" · NSP {nsp_ch:03d}" if nsp_ch is not None else ""
-                    ax.set_ylabel(f"elec {elec_id}{nsp_txt}\n({_fmt_impedance_kohm(imp)})",
-                                  rotation=0, labelpad=25, va="center")
+                    ax.set_ylabel(
+                        f"elec {elec_id}{nsp_txt}\n({_fmt_impedance_kohm(imp)})",
+                        rotation=0, labelpad=25, va="center", color=col
+                    )
                     ax.yaxis.set_label_coords(-0.10, 0.5)
                 else:
-                    ax.set_ylabel("elec ?\n(—)", rotation=0, labelpad=25, va="center")
+                    ax.set_ylabel("elec ?\n(—)", rotation=0, labelpad=25, va="center", color="gray")
 
                 ax.set_xlim(WINDOW_MS[0], WINDOW_MS[1])
                 if YLIM_UV is not None:
@@ -380,7 +408,8 @@ def main():
 
             fig.suptitle(
                 f"{SESSION} / BR {BR_IDX:03d} / {PATH_UA_SI.name} / IR-aligned "
-                f"{int(WINDOW_MS[0])}–{int(WINDOW_MS[1])} ms / trial {trial_idx} / group {fig_idx}",
+                f"{int(WINDOW_MS[0])}–{int(WINDOW_MS[1])} ms / trial {trial_idx} / group {fig_idx}\n"
+                "imp: ≥1000 kΩ = red • 500–<1000 kΩ = orange • <500 kΩ = blue",
                 y=0.995
             )
 

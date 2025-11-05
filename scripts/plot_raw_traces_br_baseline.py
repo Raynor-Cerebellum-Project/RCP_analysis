@@ -11,9 +11,9 @@ matplotlib.rcParams['svg.fonttype'] = 'none'
 # ---- CONFIG ----
 BR_IDX = 3
 # TRIAL_INDICES = [0, 3, 4, 7, 8, 11, 13, 15, 16]  # one folder per trial
-TRIAL_INDICES = [0, 1, 2, 3, 4, 5, 6]
+TRIAL_INDICES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]  # one folder per trial
 ADJUST_SAMPLES = 3
-WINDOW_MS = (0.0, 100.0)
+WINDOW_MS = (125.0, 325.0)
 CHANNELS_TO_SHOW = list(range(0, 128))           # will be chunked into groups of 6
 IR_STREAM = "USB board digital input channel"
 YLIM_UV = None                               # tighten or set to None for autoscale
@@ -50,8 +50,8 @@ if UA_MAP is None:
 # ---- Impedance file(s) ----
 IMP_BASE = OUT_BASE.parents[0]
 IMP_FILES = {
-    "A": IMP_BASE / "Imp_Utah_Port_A",
-    "B": IMP_BASE / "Imp_Utah_Port_B",
+    "A": IMP_BASE / "Utah_imp_Bank_A_start",
+    "B": IMP_BASE / "Utah_imp_Bank_B_start",
 }
 
 def _group_tag_from_elecs(rec, ch_group):
@@ -148,15 +148,14 @@ def load_impedances_from_textedit_dump(path_like: str | Path) -> dict[int, float
 def _fmt_impedance_kohm(z: float | None) -> str:
     if z is None or not np.isfinite(z):
         return "—"
-    # Flag very large (likely open) impedances clearly
     if z >= 1000:
-        return f"{z:.0f} kΩ (large)"
+        return f"{z:.0f} kΩ (open)"
     return f"{z:.0f} kΩ" if z >= 100 else f"{z:.1f} kΩ"
 
 def _imp_color(z: float | None) -> str:
     """
-    Three colors:
-      - >= 1000 kΩ   → black
+    Colors to match quick-view:
+      - >= 1000 kΩ   → red
       - 500–<1000 kΩ → tab:orange
       - < 500 kΩ     → tab:blue
       - unknown/NaN  → gray
@@ -164,7 +163,7 @@ def _imp_color(z: float | None) -> str:
     if z is None or not np.isfinite(z):
         return "gray"
     if z >= 1000:
-        return "black"
+        return "red"
     if z >= 500:
         return "tab:orange"
     return "tab:blue"
@@ -451,6 +450,7 @@ def main():
                 ax.plot(t, y, lw=1.1, color=col)
                 ax.axvline(0.0, ls="--", lw=0.9, color="k")
                 ax.grid(True, alpha=0.3, linestyle=":")
+                ax.spines[['right', 'top']].set_visible(False)
 
                 # overlay peaks (keep default red)
                 s0_ms = centers_ms_all[trial_idx]
@@ -481,7 +481,7 @@ def main():
             fig.suptitle(
                 f"{SESSION} / BR {BR_IDX:03d} / RAW NS6 / IR-aligned {int(WINDOW_MS[0])}–{int(WINDOW_MS[1])} ms / "
                 f"trial {trial_idx} / group {fig_idx}\n"
-                "imp: ≥1000 kΩ = black • 500–<1000 kΩ = orange • <500 kΩ = blue",
+                "imp: ≥1000 kΩ = red • 500–<1000 kΩ = orange • <500 kΩ = blue",
                 y=0.995
             )
 

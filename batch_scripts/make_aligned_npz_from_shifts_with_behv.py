@@ -641,7 +641,7 @@ def main():
                 ua_peaks_t_sample=_ua_peaks_t_sample,
                 ua_peaks_t_ms_aligned=ua_peaks_t_ms_aligned.astype(np.float32),
 
-                # Stim (absolute Intan ms; consumer should subtract anchor_ms as needed)
+                # Stim (absolute Intan ms; need to subtract anchor_ms as needed)
                 stim_ms=(stim_ms_abs.astype(np.float32) if stim_ms_abs is not None else np.array([], dtype=np.float32)),
 
                 # Alignment meta (as JSON)

@@ -141,13 +141,7 @@ si.set_global_job_kwargs(**global_job_kwargs)
 # ==============================
 def main(limit_sessions: Optional[int] = None):
     # set limit_session to run only a few conditions
-    # 
-    
-    # plot_selected_sessions(indices=(2), pre_s=0.1, post_s=0.2, 
-    #         template_samples_before = params.pre_samples,
-    #         template_samples_after = params.post_pad_samples
-    # )
-    
+    #limit_sessions = [14, 15, 16, 17]
     # 1) Load geometry & mapping
     geom = rcp.load_stim_geometry(GEOM_PATH)
     perm = rcp.get_chanmap_perm_from_geom(geom)
@@ -155,8 +149,20 @@ def main(limit_sessions: Optional[int] = None):
 
     # 2) Find sessions & load each Intan folder
     sess_folders = rcp.list_intan_sessions(INTAN_ROOT)
+    # --- limit_sessions logic (1-based selection or name) ---
     if limit_sessions:
-        sess_folders = sess_folders[:limit_sessions]
+        if isinstance(limit_sessions, int):
+            # 1-based: 11 -> the 11th folder
+            idx = limit_sessions - 1 if limit_sessions > 0 else limit_sessions
+            sess_folders = [sess_folders[idx]]
+        elif isinstance(limit_sessions, (list, tuple)):
+            # 1-based indices: e.g., (2, 5, 11)
+            idxs = [(i - 1 if i > 0 else i) for i in limit_sessions]
+            sess_folders = [sess_folders[i] for i in idxs]
+        else:
+            pass
+    # --- end limit_sessions logic ---
+
     print(f"Found Intan sessions: {len(sess_folders)}")
 
     checkpoint_out = OUT_BASE / "checkpoints" / "NPRW" # Save location for checkpoints
@@ -254,46 +260,6 @@ def main(limit_sessions: Optional[int] = None):
             sigma_ms=SIGMA_MS,
             n_jobs=PARAMS.parallel_jobs,
         )
-        
-        # rcp.plot_all_quads_for_session(
-        #     sess_folder=sess,
-        #     geom_path=GEOM_PATH,
-        #     neural_stream=INTAN_STREAM,
-        #     out_dir=figs_dir_after,
-        #     peaks=peaks,
-        #     peak_t_s=peak_t_ms / 1000.0,
-        #     stim_npz_path=stim_npz_path,
-        #     preproc_root=preproc_root,
-        #     template_samples_before=params.pre_samples,
-        #     template_samples_after=params.post_pad_samples,
-        #     view_s=(0.95, 1.1)
-        # )
-        # rcp.plot_all_quads_for_session(
-        #     sess_folder=sess,
-        #     geom_path=GEOM_PATH,
-        #     neural_stream=INTAN_STREAM,
-        #     out_dir=figs_dir_after2,
-        #     peaks=peaks,
-        #     peak_t_s=peak_t_ms / 1000.0,
-        #     stim_npz_path=stim_npz_path,
-        #     preproc_root=preproc_root,
-        #     template_samples_before=params.pre_samples,
-        #     template_samples_after=params.post_pad_samples,
-        #     view_s=(0.98, 1.05)
-        # )
-        # rcp.plot_all_quads_for_session(
-        #     sess_folder=sess,
-        #     geom_path=GEOM_PATH,
-        #     neural_stream=INTAN_STREAM,
-        #     out_dir=figs_dir_after3,
-        #     peaks=peaks,
-        #     peak_t_s=peak_t_ms / 1000.0,
-        #     stim_npz_path=stim_npz_path,
-        #     preproc_root=preproc_root,
-        #     template_samples_before=params.pre_samples,
-        #     template_samples_after=params.post_pad_samples,
-        #     view_s=(1.05, 1.15)
-        # )        
         
         # rate_hz is (n_channels, n_bins) → transpose to (n_bins, n_channels)
         X = rate_hz.T

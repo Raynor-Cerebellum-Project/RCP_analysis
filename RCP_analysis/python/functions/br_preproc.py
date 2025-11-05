@@ -420,6 +420,7 @@ def threshold_mua_rates(
     # 1) Detect peaks
     noise_levels = si.get_noise_levels(recording, method="mad", return_in_uV=False) # They didn't write return_in_uV in their documentation
     
+    # 1) Detect peaks
     peaks = detect_peaks(
         recording,
         method="by_channel_torch",
@@ -429,10 +430,60 @@ def threshold_mua_rates(
         n_jobs=n_jobs,
     )
 
-    # Hard-coded fields (OK if your SI version uses these names)
-    ch_field   = "channel_index"
-    samp_field = "sample_index"
-    seg_field  = "segment_index"
+    # --- Deduplicate near-coincident peaks per (segment, channel): cluster + keep strongest ---
+    ch_field, samp_field, seg_field, amp_field = (
+        "channel_index", "sample_index", "segment_index", "amplitude"
+    )
+
+    dedup_ms = 0.5
+    dedup_samp = max(1, int(round(dedup_ms * 1e-3 * fs)))
+
+    # Build keys
+    seg_key = (peaks[seg_field] if seg_field in peaks.dtype.names
+            else np.zeros(peaks.shape[0], dtype=np.int64))
+    ch_key  = peaks[ch_field].astype(np.int64, copy=False)
+    t_key   = peaks[samp_field].astype(np.int64, copy=False)
+    amp_val = np.abs(peaks[amp_field]) if amp_field in peaks.dtype.names else np.ones(len(peaks))
+
+    # Sort by (segment, channel, time)
+    order = np.lexsort((t_key, ch_key, seg_key))
+    peaks = peaks[order]
+    seg_key, ch_key, t_key, amp_val = seg_key[order], ch_key[order], t_key[order], amp_val[order]
+
+    keep = np.zeros(len(peaks), dtype=bool)
+
+    # Iterate per segment–channel group
+    for seg in np.unique(seg_key):
+        for ch in np.unique(ch_key[seg_key == seg]):
+            mask = (seg_key == seg) & (ch_key == ch)
+            idxs = np.where(mask)[0]
+            if idxs.size == 0:
+                continue
+
+            # Walk through sorted times → cluster overlapping spikes
+            t_local = t_key[idxs]
+            a_local = amp_val[idxs]
+
+            max_cluster_ms = 1.0     # maximum total cluster length in ms
+            max_cluster_samp = int(round(max_cluster_ms * 1e-3 * fs))
+
+            cluster_start = 0
+            for i in range(1, len(idxs)):
+                # gap between consecutive spikes
+                gap = t_local[i] - t_local[i - 1]
+                # check both: gap too large OR cluster too long overall
+                if gap > dedup_samp or (t_local[i] - t_local[cluster_start]) > max_cluster_samp:
+                    # finalize current cluster
+                    cluster_slice = slice(cluster_start, i)
+                    best = idxs[cluster_slice.start + np.argmax(a_local[cluster_slice])]
+                    keep[best] = True
+                    cluster_start = i
+
+            # finalize last cluster
+            cluster_slice = slice(cluster_start, len(idxs))
+            best = idxs[cluster_slice.start + np.argmax(a_local[cluster_slice])]
+            keep[best] = True
+    peaks = peaks[keep]
 
     # 1b) Build global peak time array in ms
     # Compute cumulative sample offsets per segment: [0, n0, n0+n1, ...]

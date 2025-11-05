@@ -19,21 +19,30 @@ WIN_MS            = (-600.0, 600.0)
 NORMALIZE_FIRST_MS = 150.0
 MIN_TRIALS        = 1
 
-VMIN_INTAN_BASELINE, VMAX_INTAN_BASELINE = -50, 100  # keep heatmap range if you like
-VMIN_UA_BASELINE, VMAX_UA_BASELINE = -50, 150  # keep heatmap range if you like
+
+VMIN_INTAN_BASELINE, VMAX_INTAN_BASELINE = -25, 100  # keep heatmap range if you like
+VMIN_UA_BASELINE, VMAX_UA_BASELINE = -25, 100  # keep heatmap range if you like
+VMIN_SMA_BASELINE, VMAX_SMA_BASELINE = -10, 35  # keep heatmap range if you like
 
 VMIN_INTAN, VMAX_INTAN = -50, 300  # keep heatmap range if you like
-VMIN_UA, VMAX_UA = -50, 200  # keep heatmap range if you like
+VMIN_UA, VMAX_UA = -50, 150  # keep heatmap range if you like
 COLORMAP = "jet"
 
-# --- Kinematics preprocessing ---
 # --- Velocity setting ---
 VEL_THRESH = 5.0          # absolute velocity threshold (a.u./ms) for despiking
 VEL_MAX_GAP = 5           # interpolate NaN runs up to this many samples
 # --- Visualization settings ---
 GAUSS_SMOOTH_MS = 0   # 0 → disable smoothing
 
-BOX_ASPECT = 0.312
+# ---- FIGURE LAYOUT KNOBS ----
+BEH_RATIO = 0.6               # height ratio for behavior rows (position/velocity); adjust as needed
+CH_RATIO_PER_ROW = 0.015      # height ratio per neural channel row (heatmaps)
+MIN_HEATMAP_RATIO = 0.6       # minimum ratio so tiny arrays don't vanish
+UA_COMPACT_FACTOR = 0.95   # < 1.0 shrinks UA panel heights
+INTAN_SCALE      = 0.6   # < 1.0 shrinks Intan height (e.g., 0.6 = 60% of previous)
+GAP_BEH_INTAN    = 0.25  # height "ratio" for a spacer row between behavior and Intan
+FIG_WIDTH_IN         = 16.0        # ← overall width (inches)
+HEIGHT_PER_RATIO_IN  = 4.0         # ← height per unit of `ratios` sum
 
 # ---------- helpers ----------
 def _ensure_dir(p: Path) -> Path:
@@ -50,6 +59,17 @@ PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", rep
 DATA_ROOT = rcp.resolve_data_root(PARAMS)
 OUT_BASE  = _ensure_dir(rcp.resolve_output_root(PARAMS))
 
+# ---------- Impedance loading ----------
+UA_IMP_MAX_KOHM = 1000.0        # threshold for excluding UA rows; adjust as needed
+EXCLUDE_UA_HIGH_Z = True       # set False to disable masking quickly
+
+# Where the files live; mirror the other script:
+IMP_BASE = OUT_BASE.parents[0]  # same as your script (one level above OUT_BASE)
+IMP_FILES = {
+    "A": IMP_BASE / "Utah_imp_Bank_A_start",
+    "B": IMP_BASE / "Utah_imp_Bank_B_start",
+}
+
 # ---------- figures ----------
 FIG_ROOT   = _subdir(OUT_BASE, "figures")
 PERI_FIG   = _subdir(FIG_ROOT, "peri_stim")
@@ -58,8 +78,10 @@ BASE_FIG   = _subdir(FIG_ROOT, "baseline_traces")
 FIG = SimpleNamespace(
     peri_pos=_subdir(PERI_FIG, "position_traces"),
     peri_vel=_subdir(PERI_FIG, "velocity_traces"),
+    peri_posvel=_subdir(PERI_FIG, "posvel_traces"),
     base_pos=_subdir(BASE_FIG, "position_traces"),
     base_vel=_subdir(BASE_FIG, "velocity_traces"),
+    base_posvel = _subdir(BASE_FIG, "posvel_traces"),
 )
 
 # ---------- checkpoints / inputs ----------
@@ -92,6 +114,188 @@ def _pick_rates_all_path(rates_dir: Path) -> tuple[Path, str]:
     return rates_dir / "rates_from_curated__UA_X__DepthY__ALL.npz", "ALL"
 
 RATES_ALL_PATH, _rates_selection_tag = _pick_rates_all_path(RATES_DIR)
+
+_imp_pat_elecnum = re.compile(
+    r"\belec\s*\d+\s*-\s*(\d{1,3})\s+([0-9]+(?:\.[0-9]+)?)\s*(k?ohms?|kΩ|ohms?|Ω)\b",
+    flags=re.IGNORECASE,
+)
+
+def _filter_stims_for_stream(stim_ms: np.ndarray, t_ms: np.ndarray,
+                             win_ms: tuple[float, float]) -> np.ndarray:
+    """Keep only stims whose [stim+win0, stim+win1] lies fully within t_ms range."""
+    if stim_ms is None or t_ms is None or np.size(stim_ms) == 0 or np.size(t_ms) < 2:
+        return np.array([], dtype=float)
+    t0, t1 = float(t_ms[0]), float(t_ms[-1])
+    w0, w1 = float(win_ms[0]), float(win_ms[1])
+    mask = (stim_ms + w0 >= t0) & (stim_ms + w1 <= t1)
+    return np.asarray(stim_ms, float)[mask]
+
+def _safe_extract_segments(rate_hz, t_ms, stim_ms_in, win_ms, min_trials, normalize_first_ms):
+    """Filter to in-range stims, then extract without crashing if 0-kept."""
+    st = _filter_stims_for_stream(stim_ms_in, t_ms, win_ms)
+    if st.size == 0:
+        dt = float(np.nanmedian(np.diff(t_ms))) if np.size(t_ms) > 1 else 1.0
+        rel_t = np.arange(win_ms[0], win_ms[1] + 1e-9, dt, dtype=float)
+        return None, rel_t, 0
+    try:
+        segs, rel_t = rcp.extract_peristim_segments(
+            rate_hz=rate_hz, t_ms=t_ms, stim_ms=st, win_ms=win_ms, min_trials=min_trials
+        )
+    except RuntimeError as e:
+        if "Only 0 peri-stim segments" in str(e):
+            dt = float(np.nanmedian(np.diff(t_ms))) if np.size(t_ms) > 1 else 1.0
+            rel_t = np.arange(win_ms[0], win_ms[1] + 1e-9, dt, dtype=float)
+            return None, rel_t
+        raise
+    zeroed = rcp.baseline_zero_each_trial(segs, rel_t, normalize_first_ms=normalize_first_ms)
+    med = rcp.median_across_trials(zeroed)
+    return med, rel_t, int(segs.shape[0])  # or st.size
+
+def _order_rows_by_region_then_peak(
+    ua_mat: np.ndarray,
+    t_vec: np.ndarray,
+    ids_1based: Optional[np.ndarray],
+    *,
+    region_order=(0, 1, 2, 3),   # SMA, DPM, M1 inf, M1 sup
+    pre_only: bool = True,       # search t<0 (or <=0 if include_zero=True)
+    include_zero: bool = True,
+    peak_mode: str = "max",      # "max" | "min" | "abs"
+    earliest_at_top: bool = True # <<< NEW: place earliest rows visually at top
+) -> tuple[np.ndarray, Optional[np.ndarray]]:
+    """
+    Sort rows within each region by earliest *time* of peak in the selected window.
+    Tie-breaker: larger peak magnitude (by peak_mode).
+    Rows with no finite values go to the bottom of their region.
+    Unknown-region rows go after known regions, sorted the same way.
+
+    If earliest_at_top=True, each region's block is reversed so that with
+    imshow(origin="lower") the earliest peaks appear at the top.
+    """
+    if ua_mat is None or ua_mat.size == 0 or ids_1based is None:
+        return ua_mat, ids_1based
+
+    ua  = np.asarray(ua_mat, float)
+    ids = np.asarray(ids_1based).astype(float)  # may contain NaN
+    t   = np.asarray(t_vec, float)
+    n_rows = ua.shape[0]
+
+    # time mask
+    if pre_only:
+        mask_t = (t <= 0.0) if include_zero else (t < 0.0)
+    else:
+        mask_t = np.isfinite(t)
+    if not np.any(mask_t):
+        mask_t = np.isfinite(t)
+
+    time_ix = np.where(mask_t)[0]
+
+    # region codes
+    regs = np.full(n_rows, 1_000_000, int)
+    for r in range(n_rows):
+        eid = ids[r]
+        if np.isfinite(eid):
+            regs[r] = _ua_region_code_from_elec(int(eid))
+
+    # choose peak fn
+    if peak_mode == "min":
+        val_fn = np.nanmin
+        arg_fn = np.nanargmin
+        mag_fn = lambda x: -x  # more negative = “larger magnitude” for tie-break
+    elif peak_mode == "abs":
+        val_fn = lambda x: np.nanmax(np.abs(x))
+        def arg_fn(x):
+            ax = np.abs(x)
+            return int(np.nanargmax(ax))
+        mag_fn = lambda x: np.abs(x)
+    else:  # "max"
+        val_fn = np.nanmax
+        arg_fn = np.nanargmax
+        mag_fn = lambda x: x
+
+    # features per row (global time for stability)
+    peak_time = np.full(n_rows, np.inf, float)   # earlier is better
+    peak_mag  = np.full(n_rows, -np.inf, float)  # larger is better (per mode)
+
+    for r in range(n_rows):
+        sub = ua[r, :][mask_t]
+        if np.isfinite(sub).any():
+            try:
+                pv = val_fn(sub)
+                peak_mag[r] = float(pv) if np.isfinite(pv) else -np.inf
+                local_ix = arg_fn(sub)
+                global_ix = time_ix[int(local_ix)]
+                peak_time[r] = float(t[global_ix])
+            except Exception:
+                pass  # leave defaults
+
+    def sort_block(ix: np.ndarray) -> np.ndarray:
+        if ix.size == 0:
+            return ix
+        # primary: earlier time (ascending); secondary: larger magnitude (descending)
+        ordered = ix[np.lexsort((-peak_mag[ix], peak_time[ix]))]
+        # Put earliest at *top* when drawn with origin="lower"
+        return ordered[::-1] if earliest_at_top else ordered
+
+    order_chunks = []
+    seen = np.zeros(n_rows, bool)
+
+    # known regions in requested order
+    for reg in region_order:
+        idxs = np.where(regs == reg)[0]
+        if idxs.size:
+            ii = sort_block(idxs)
+            order_chunks.append(ii)
+            seen[ii] = True
+
+    # unknown regions last (apply same top/bottom rule)
+    rest = np.where(~seen)[0]
+    if rest.size:
+        order_chunks.append(sort_block(rest))
+
+    order = np.concatenate(order_chunks) if order_chunks else np.arange(n_rows)
+    return ua[order, :], (ids[order] if ids_1based is not None else ids_1based)
+
+def _unit_to_kohm(val: float, unit: str) -> float:
+    u = (unit or "").lower()
+    if "k" in u:
+        return float(val)
+    return float(val) / 1000.0  # Ω → kΩ
+
+def _read_text_loose(p: Path) -> str:
+    if not p.exists():
+        raise FileNotFoundError(str(p))
+    b = p.read_bytes()
+    for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1", "mac_roman"):
+        try:
+            return b.decode(enc)
+        except Exception:
+            pass
+    filtered = bytes(ch for ch in b if 9 <= ch <= 126 or ch in (10, 13))
+    return filtered.decode("latin-1", errors="ignore")
+
+def _ylabel_horizontal(ax, text: str, pad: float = 8.0):
+    # Horizontal y-label on the left; right-aligned to sit close to the axis.
+    t = ax.set_ylabel(text, rotation=0, labelpad=pad)
+    t.set_horizontalalignment("right")
+    t.set_verticalalignment("center")
+    return t
+
+def load_impedances_from_textedit_dump(path_like: str | Path) -> dict[int, float]:
+    """
+    Parse lines like 'elec1-5   201 kOhm' from a loose text dump.
+    Returns { Elec#: impedance_kΩ }.
+    """
+    txt = _read_text_loose(Path(path_like))
+    out: dict[int, float] = {}
+    for m in _imp_pat_elecnum.finditer(txt):
+        elec_str, val_str, unit = m.groups()
+        try:
+            elec = int(elec_str)
+            val = float(val_str)
+        except Exception:
+            continue
+        out[elec] = _unit_to_kohm(val, unit)
+    return out
 
 def _apply_relative_offsets_by_ref(
     lines: Optional[np.ndarray],
@@ -334,7 +538,8 @@ def _simple_beh_labels(names: list[str],
     for n in names:
         s = str(n).lower()
         kp = next((kp for kp in kps_lc if kp in s), None)
-        axis = "x" if ("_x" in s or s.endswith("x")) else ("y" if ("_y" in s or s.endswith("y")) else None)
+        axis = "x" if ("_x" in s or s.endswith("x")) else (
+                "y" if ("_y" in s or s.endswith("y")) else None)
         if kp and axis:
             out.append(f"{kp}_{axis}")
         else:
@@ -444,31 +649,52 @@ def main_baselines():
     # ---- UA region sorting (optional) ----
     ua_plot = ua_med
     ids_plot = None
+    ua_groups_baseline = []
+    
     if ua_med is not None:
-        # try to discover UA row→electrode IDs from any per-session curated NPZ (for region mapping/sorting)
+        # --- UA row→electrode IDs (simple: newest __ALL.npz for this port/depth) ---
         ua_ids_1based = None
         try:
-            cand = sorted([p for p in all_dir.glob(f"rates_from_curated__UA_{port_lbl}__Depth{depth_lbl}__*.npz")
-                           if not p.name.endswith("__ALL.npz")])[0]
-            with np.load(cand, allow_pickle=True) as zc:
-                ua_rates_path = Path(str(zc["ua_rates"])) if "ua_rates" in zc.files else None
-            if ua_rates_path and ua_rates_path.exists():
-                with np.load(ua_rates_path, allow_pickle=True) as zr:
-                    if "meta" in zr.files:
-                        meta = zr["meta"].item()
-                        for key in ("row_to_elec", "ua_row_to_elec", "ua_ids_1based", "ua_electrodes"):
-                            if key in meta:
-                                ua_ids_1based = np.asarray(meta[key], dtype=int).ravel()
-                                break
-                    if ua_ids_1based is None:
-                        for key in ("ua_row_to_elec", "ua_ids_1based", "row_to_elec", "ua_electrodes"):
-                            if key in zr.files:
-                                ua_ids_1based = np.asarray(zr[key], dtype=int).ravel()
-                                break
+            pat_base = f"rates_from_curated__UA_{port_lbl}__Depth{depth_lbl}__*__ALL.npz"
+            cands = sorted(all_dir.glob(pat_base))
+            if cands:
+                chosen = cands[-1]  # newest
+                with np.load(chosen, allow_pickle=True) as zc:
+                    # try direct arrays first
+                    for k in ("ua_row_to_elec", "ua_ids_1based", "row_to_elec", "ua_electrodes"):
+                        if k in zc.files:
+                            ua_ids_1based = np.asarray(zc[k], dtype=int).ravel()
+                            break
+                    # fall back: follow pointer to per-session UA file (if present)
+                    if ua_ids_1based is None and "ua_rates" in zc.files:
+                        ua_rates_path = Path(str(zc["ua_rates"]))
+                        if ua_rates_path.exists():
+                            with np.load(ua_rates_path, allow_pickle=True) as zr:
+                                if "meta" in zr.files:
+                                    meta_u = zr["meta"].item()
+                                    for k in ("row_to_elec", "ua_row_to_elec", "ua_ids_1based", "ua_electrodes"):
+                                        if k in meta_u:
+                                            ua_ids_1based = np.asarray(meta_u[k], dtype=int).ravel()
+                                            break
+                                if ua_ids_1based is None:
+                                    for k in ("ua_row_to_elec", "ua_ids_1based", "row_to_elec", "ua_electrodes"):
+                                        if k in zr.files:
+                                            ua_ids_1based = np.asarray(zr[k], dtype=int).ravel()
+                                            break
+            else:
+                print(f"[baseline][warn] No UA curated ALL files found for port={port_lbl}, depth={depth_lbl}")
         except Exception as e:
             print(f"[baseline][warn] UA mapping discovery failed: {e}")
 
-        if ua_ids_1based is not None and ua_ids_1based.size == ua_med.shape[0]:
+        # sanity check to avoid misalignment
+        if ua_ids_1based is not None and ua_ids_1based.size != ua_med.shape[0]:
+            print(f"[baseline][warn] ua_ids_1based len={ua_ids_1based.size} != UA rows={ua_med.shape[0]} — ignoring")
+            ua_ids_1based = None
+
+        # prepare for plotting/sorting
+        ua_plot = ua_med
+        ids_plot = ua_ids_1based
+        if ua_ids_1based is not None:
             ids = np.asarray(ua_ids_1based, int)
             valid = ids > 0
             regs = np.array([_ua_region_code_from_elec(int(e)) for e in ids], int)
@@ -476,134 +702,302 @@ def main_baselines():
             order = np.r_[np.where(valid)[0][order_valid], np.where(~valid)[0]]
             ua_plot = ua_med[order, :]
             ids_plot = ids[order]
-        else:
-            ua_plot = ua_med
-            ids_plot = ua_ids_1based  # may be None
+            
+    # ---- Impedance-based exclusion for BASELINE UA panel ----
+    if EXCLUDE_UA_HIGH_Z and ua_plot is not None and ids_plot is not None:
+        # load impedances the same way as your IR-aligned script
+        def _try_load_imp(p: Path, tag: str):
+            if not p:
+                return
+            if not p.exists():
+                print(f"[warn] UA impedance file not found for port {tag}: {p}")
+                return
+            try:
+                d = load_impedances_from_textedit_dump(p)
+                imp_by_elec.update(d)
+                print(f"[info] Parsed {len(d)} UA impedances from {p.name} (port {tag}).")
+            except Exception as e:
+                print(f"[warn] could not parse UA impedances from {p} (port {tag}): {e}")
+
+        imp_by_elec: dict[int, float] = {}
+        # Use the port from the rates file label; also try the other side
+        _port = (port_lbl or "A").strip().upper()
+        _try_load_imp(IMP_FILES.get(_port), _port)
+        _other = "B" if _port == "A" else "A"
+        _try_load_imp(IMP_FILES.get(_other), _other)
+
+        # build keep mask: drop only rows whose impedance is known AND > threshold
+        try:
+            ids_arr = np.asarray(ids_plot)
+            keep = np.ones(ua_plot.shape[0], dtype=bool)
+            any_imp = False
+            for r, eid in enumerate(ids_arr):
+                if eid is None or not np.isfinite(eid):
+                    continue
+                z = imp_by_elec.get(int(eid))
+                if z is not None and np.isfinite(z):
+                    any_imp = True
+                    if z > UA_IMP_MAX_KOHM:
+                        keep[r] = False
+            if any_imp:
+                if keep.any():
+                    ua_plot = ua_plot[keep, :]
+                    ids_plot = ids_arr[keep]
+                    print(f"[info] Baseline UA: kept {keep.sum()}/{keep.size} rows (≤ {UA_IMP_MAX_KOHM:g} kΩ).")
+
+                    try:
+                        ua_plot, ids_plot = _order_rows_by_region_then_peak(
+                            ua_plot, rel_t, ids_plot,
+                            pre_only=True, include_zero=True
+                        )
+                    except Exception as e:
+                        print(f"[warn] Baseline UA: resort failed after mask: {e}")
+                else:
+                    print("[warn] Baseline UA: impedance mask would remove all rows; skipping mask.")
+        except Exception as e:
+            print(f"[warn] Baseline UA impedance mask failed: {e}")
+        # ---- Split UA rows into region groups for baseline plotting ----
+        ua_groups_baseline = []
+        if ua_plot is not None:
+            ids_arr = np.asarray(ids_plot) if ids_plot is not None else np.full(ua_plot.shape[0], np.nan)
+            regs = np.array(
+                [_ua_region_code_from_elec(int(e)) if np.isfinite(e) else 1_000_000 for e in ids_arr],
+                dtype=int
+            )
+
+            def _append_group(mask: np.ndarray, label: str):
+                if mask.size and np.count_nonzero(mask):
+                    ua_groups_baseline.append(
+                        {"mat": ua_plot[mask, :], "ids": (ids_arr[mask] if ids_plot is not None else None), "label": label}
+                    )
+
+            # M1 group = inferior(2) + superior(3), PMd=1, SMA=0
+            _append_group((regs == 2) | (regs == 3), "M1i+M1s")
+            _append_group((regs == 1), "PMd")
+            _append_group((regs == 0), "SMA")
+
+    # If we haven't built groups yet, make a single-panel default:
+    if ua_plot is not None and not ua_groups_baseline:
+        ua_groups_baseline = [{"mat": ua_plot, "ids": ids_plot, "label": "UA (all)"}]
+
 
     # ---- helper that renders one combined figure (behavior + Intan + UA) ----
     def _render_and_save_baseline(
-        beh_time0, beh_lines0, *,
+        beh_time0, beh_pos0, beh_vel0, *,
         title_beh0,
         out_dir, fname_prefix,
-        beh_time1=None, beh_lines1=None, title_beh1=None,
-        beh_labels: list[str] = None
+        beh_time1=None, beh_pos1=None, beh_vel1=None,
+        title_beh1=None,
+        beh_labels: list[str] = None,
+        ua_groups: list[dict] = None
     ):
         import matplotlib.gridspec as gridspec
         beh_labels = beh_labels or []
+        ua_groups = ua_groups or []
 
-        have_beh0 = isinstance(beh_lines0, np.ndarray) and beh_lines0.size > 0
-        have_beh1 = isinstance(beh_lines1, np.ndarray) and beh_lines1.size > 0
+        have_pos0 = isinstance(beh_pos0, np.ndarray) and beh_pos0.ndim == 2 and beh_pos0.size > 0
+        have_vel0 = isinstance(beh_vel0, np.ndarray) and beh_vel0.ndim == 2 and beh_vel0.size > 0
+        have_pos1 = isinstance(beh_pos1, np.ndarray) and beh_pos1.ndim == 2 and beh_pos1.size > 0
+        have_vel1 = isinstance(beh_vel1, np.ndarray) and beh_vel1.ndim == 2 and beh_vel1.size > 0
 
-        nrows = (1 if have_beh0 else 0) + (1 if have_beh1 else 0) \
-                + (1 if intan_med is not None else 0) \
-                + (1 if ua_plot  is not None else 0)
+        # ---- kinematics row order: cam0_pos, cam1_pos, cam0_vel, cam1_vel ----
+        ratios = []
+        row_kinds = []
+        def _append_beh(kind):
+            ratios.append(BEH_RATIO); row_kinds.append(("beh", kind))
+
+        if have_pos0: _append_beh("cam0_pos")
+        if have_pos1: _append_beh("cam1_pos")
+        if have_vel0: _append_beh("cam0_vel")
+        if have_vel1: _append_beh("cam1_vel")
+
+        # Spacer before Intan if any behavior rows exist
+        has_intan = (intan_med is not None)
+        if has_intan and any(k[0] == "beh" for k in row_kinds):
+            ratios.append(GAP_BEH_INTAN); row_kinds.append(("gap", None))
+
+        # Intan
+        if has_intan:
+            intan_ratio = max(MIN_HEATMAP_RATIO, CH_RATIO_PER_ROW * intan_med.shape[0]) * float(INTAN_SCALE)
+            ratios.append(intan_ratio); row_kinds.append(("intan", None))
+
+        # UA groups
+        if ua_groups:
+            for g in ua_groups:
+                mat_g = g["mat"]
+                label_g = g.get("label", "")
+                rows = (mat_g.shape[0] if mat_g is not None else 0)
+                base = max(MIN_HEATMAP_RATIO, CH_RATIO_PER_ROW * rows)
+                scale = 0.5 if (("pmd" in label_g.lower()) or ("sma" in label_g.lower())) else 1.0
+                ratios.append(base * scale * UA_COMPACT_FACTOR)
+                row_kinds.append(("ua", label_g))
+
+        nrows = len(ratios)
         if nrows == 0:
             print("[baseline] nothing to plot.")
             return
 
-        height_ratios = []
-        if have_beh0: height_ratios.append(1.0)
-        if have_beh1: height_ratios.append(1.0)
-        if intan_med is not None: height_ratios.append(1.0)
-        if ua_plot  is not None:  height_ratios.append(1.0)
-
-        fig = plt.figure(figsize=(14, 3.2 * sum(height_ratios)))
-        gs = gridspec.GridSpec(
-            nrows=nrows, ncols=2, figure=fig,
-            width_ratios=[1.0, 0.04], height_ratios=height_ratios, hspace=0.28, wspace=0.15
+        fig = plt.figure(
+            figsize=(FIG_WIDTH_IN, HEIGHT_PER_RATIO_IN * sum(ratios)),
+            constrained_layout=False  # or True if you prefer auto spacing
         )
 
+        gs = gridspec.GridSpec(
+            nrows=nrows, ncols=2, figure=fig,
+            width_ratios=[1.0, 0.02], height_ratios=ratios, hspace=0.18, wspace=0.05
+        )
+
+        # Helper with a legend toggle
+        def _plot_lines(ax, t, lines, labels, title, ylabel, show_legend: bool):
+            if not (isinstance(lines, np.ndarray) and lines.ndim == 2 and lines.size > 0):
+                ax.axis("off"); return
+            K = lines.shape[0]
+            for i in range(K):
+                lab = labels[i] if i < len(labels) else f"trace_{i+1}"
+                ax.plot(t, lines[i], lw=1.2, alpha=0.95, label=lab)
+            ax.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
+            _ylabel_horizontal(ax, ylabel)
+            if title:  # only set when non-empty
+                ax.set_title(title)
+            if show_legend and K:
+                ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5),
+                        frameon=False, fontsize=9, ncols=1, borderaxespad=0.0)
+            ax.grid(alpha=0.15, linestyle=":")
+
+
         row = 0
-        ax_b0 = ax_b1 = ax_i = ax_u = None
+        ua_axes = []
+        events_label = f"{_rates_selection_tag.lower()} events"
 
-        events_label = f"{_rates_selection_tag.lower()} events"  # "curated events" or "all events"
+        # We'll count behavior panels as we render; show legend only on the 3rd one.
+        beh_plot_count = 0
+        total_beh_rows = sum(1 for k in row_kinds if k[0] == "beh")
 
-        # Cam-0
-        if have_beh0:
-            ax_b0 = fig.add_subplot(gs[row, 0])
-            K0 = beh_lines0.shape[0]
-            for i in range(K0):
-                label = beh_labels[i] if i < len(beh_labels) else f"trace_{i+1}"
-                ax_b0.plot(beh_time0, beh_lines0[i], lw=1.25, label=label, alpha=0.95)
-            ax_b0.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
-            ax_b0.set_ylabel("Δ (a.u.)")
-            ax_b0.set_title(title_beh0)
-            if K0:
-                ax_b0.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False, fontsize=9, ncols=1, borderaxespad=0.0)
-            ax_b0.grid(alpha=0.15, linestyle=":")
-            if BOX_ASPECT is not None:
-                ax_b0.set_box_aspect(BOX_ASPECT)   # <<< add this
-            row += 1
+        for kind, subkind in row_kinds:
+            if kind == "beh":
+                beh_plot_count += 1
+                show_legend = (beh_plot_count == 3)  # legend only on the third kinematics row
 
-        # Cam-1
-        if have_beh1:
-            ax_b1 = fig.add_subplot(gs[row, 0])
-            K1 = beh_lines1.shape[0]
-            for i in range(K1):
-                label = beh_labels[i] if i < len(beh_labels) else f"trace_{i+1}"
-                ax_b1.plot(beh_time1, beh_lines1[i], lw=1.25, label=label, alpha=0.95)
-            ax_b1.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
-            ax_b1.set_ylabel("Δ (a.u.)")
-            ax_b1.set_title(title_beh1 or "Median Kinematics (Cam-1)")
-            if K1:
-                ax_b1.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False, fontsize=9, ncols=1, borderaxespad=0.0)
-            ax_b1.grid(alpha=0.15, linestyle=":")
-            if BOX_ASPECT is not None:
-                ax_b1.set_box_aspect(BOX_ASPECT)   # <<< add this
-            row += 1
+                # Determine camera/time and which data to plot
+                if subkind in ("cam0_pos", "cam0_vel"):
+                    cam_label = "Cam-0"
+                    t_use     = beh_time0
+                else:
+                    cam_label = "Cam-1"
+                    t_use     = beh_time1
 
-        # Intan
-        if intan_med is not None:
-            ax_i     = fig.add_subplot(gs[row, 0])
-            ax_i_cax = fig.add_subplot(gs[row, 1])
-            # Intan
-            im0 = ax_i.imshow(
-                intan_med, aspect="auto", cmap=COLORMAP, origin="lower",
-                extent=[rel_t[0], rel_t[-1], 0, intan_med.shape[0]],
-                vmin=VMIN_INTAN_BASELINE, vmax=VMAX_INTAN_BASELINE
-            )
-            if BOX_ASPECT is not None:
-                ax_i.set_box_aspect(BOX_ASPECT)
+                if subkind.endswith("_pos"):
+                    metric_label = "\n Position Δ (a.u.)"
+                    y_label      = f"{cam_label} {metric_label}"
+                    lines_use    = beh_pos0 if subkind == "cam0_pos" else beh_pos1
+                else:
+                    metric_label = "\n Velocity (a.u./ms)"
+                    y_label      = f"{cam_label} {metric_label}"
+                    lines_use    = beh_vel0 if subkind == "cam0_vel" else beh_vel1
+
+                # Only the FIRST kinematics row gets a title; others blank
+                if beh_plot_count == 1:
+                    if subkind.startswith("cam0"):
+                        base_title = (title_beh0 or "Cam-0 Kinematics")
+                    else:
+                        base_title = (title_beh1 or "Cam-1 Kinematics")
+                    title_txt = base_title  # no “— Position/Velocity” suffix; y-axis already says that
+                else:
+                    title_txt = ""
+
+                ax = fig.add_subplot(gs[row, 0])
+                _plot_lines(ax, t_use, lines_use, beh_labels, title_txt, y_label, show_legend)
+
+                # Hide x tick labels unless this is the LAST behavior row
+                if beh_plot_count < total_beh_rows:
+                    ax.set_xlabel(""); ax.tick_params(axis="x", labelbottom=False)
+                ax._is_time_axis = True
+                row += 1
+                continue
+
+            if kind == "gap":
+                ax_gap = fig.add_subplot(gs[row, 0])
+                ax_gap.axis("off")
+                row += 1
+                continue
+
+            if kind == "intan":
+                # Intan row
+                ax_i     = fig.add_subplot(gs[row, 0])
+                ax_i_cax = fig.add_subplot(gs[row, 1])
+
+                im0 = ax_i.imshow(
+                    intan_med, aspect="auto", cmap=COLORMAP, origin="lower",
+                    extent=[rel_t[0], rel_t[-1], 0, intan_med.shape[0]],
+                    vmin=VMIN_INTAN_BASELINE, vmax=VMAX_INTAN_BASELINE
+                )
+                ax_i.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
+                ax_i.set_title(
+                    f"No stim. Neural Activity (median Δ across {n_ev_i} {events_label})"
+                )
+                ax_i.set_xlabel(""); ax_i.tick_params(axis="x", labelbottom=False)
+                _ylabel_horizontal(ax_i, f"IP {intan_med.shape[0]} chs")
+
+                ax_i_cax.set_xticks([]); ax_i_cax.set_yticks([])
+                ax_i._is_time_axis = True
+
+                # create the colorbar in the dedicated cax
+                cb0 = fig.colorbar(im0, cax=ax_i_cax)
+                # cb0 = fig.colorbar(im0, cax=ax_i_cax, ticks = ticker.MultipleLocator(20))
+                cb0.solids.set_edgecolor('face')
+                cb0.ax.tick_params(width=1.2, labelsize=9)
+                cb0.set_label("Δ FR (Hz)")
+
+                row += 1
+                continue
+
+            if kind == "ua":
+                label_g = subkind
+                g = ua_groups[len(ua_axes)]
+                mat_g = g["mat"]
+                ax_u     = fig.add_subplot(gs[row, 0])
+                ax_u_cax = fig.add_subplot(gs[row, 1])
+                # pick vrange per group
+                vmin_g, vmax_g = VMIN_UA_BASELINE, VMAX_UA_BASELINE
+                if "sma" in (label_g or "").lower():
+                    # use SMA-specific range if defined
+                    vmin_g = globals().get("VMIN_SMA_BASELINE", vmin_g)
+                    vmax_g = globals().get("VMAX_SMA_BASELINE", vmax_g)
+
+                im1 = ax_u.imshow(
+                    mat_g, aspect="auto", cmap=COLORMAP, origin="lower",
+                    extent=[rel_t[0], rel_t[-1], 0, mat_g.shape[0]],
+                    vmin=vmin_g, vmax=vmax_g
+                )
+
+                ax_u.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
+                _ylabel_horizontal(ax_u, f"{label_g} {mat_g.shape[0]} chs")
+                ax_u.set_yticks([]); ax_u.tick_params(left=False, labelleft=False)
+                ax_u._is_time_axis = True
                 
-            ax_i.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
-            ax_i.set_title(
-                f"Intan (median Δ across {n_ev_i} {events_label}) • Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
-            )
-            ax_i.set_ylabel("Intan ch")
-            cb0 = fig.colorbar(im0, cax=ax_i_cax)
-            cb0.set_label("Δ FR (Hz)")
-            row += 1
+                if (len(ua_axes) == len(ua_groups) - 1):
+                    ax_u.set_xlabel("Time (ms) rel. stim")
+                else:
+                    ax_u.set_xlabel(""); ax_u.tick_params(axis="x", labelbottom=False)
 
-        # UA
-        if ua_plot is not None:
-            ax_u     = fig.add_subplot(gs[row, 0])
-            ax_u_cax = fig.add_subplot(gs[row, 1])
-            # UA
-            im1 = ax_u.imshow(
-                ua_plot, aspect="auto", cmap=COLORMAP, origin="lower",
-                extent=[rel_t[0], rel_t[-1], 0, ua_plot.shape[0]],
-                vmin=VMIN_UA_BASELINE, vmax=VMAX_UA_BASELINE
-            )
-            if BOX_ASPECT is not None:
-                ax_u.set_box_aspect(BOX_ASPECT)
+                cb1 = fig.colorbar(im1, cax=ax_u_cax)
+                try: cb1.solids.set_edgecolor('face')
+                except: pass
+                cb1.ax.tick_params(width=1.2, labelsize=9)
+                cb1.outline.set_linewidth(1.0)
+                # cb1.set_label("Δ FR (Hz)")
 
-            ax_u.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
-            ax_u.set_title(
-                f"Utah Array (median Δ across {n_ev_u} {events_label}) • Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
-            )
-            ax_u.set_xlabel("Time (ms) rel. stim")
-            ax_u.set_ylabel(""); ax_u.set_yticks([]); ax_u.tick_params(left=False, labelleft=False)
-
-            rcp.add_ua_region_bar(ax_u, ua_plot.shape[0], ua_chan_ids_1based=ids_plot)
-            cb1 = fig.colorbar(im1, cax=ax_u_cax)
-            cb1.set_label("Δ FR (Hz) NOTE SCALE")
+                ua_axes.append(ax_u)
+                row += 1
+                continue
 
         # Sync x-lims
-        for ax in (ax for ax in (ax_b0, ax_b1, ax_i, ax_u) if ax is not None):
-            ax.set_xlim(*WIN_MS)
-
-        # save (unchanged aside from filename)
+        for ax in [a for a in fig.axes if isinstance(a, plt.Axes)]:
+            if getattr(ax, "_is_time_axis", False):
+                ax.set_xlim(*WIN_MS)
+        fig.suptitle("Baseline", fontsize=13, fontweight="bold", y=0.995, va="top")
         out_path = out_dir / f"UA_{port_lbl}__Depth{depth_lbl}__{_rates_selection_tag}_baseline_{fname_prefix}.png"
+        fig.subplots_adjust(top=0.96)           # pull axes up toward the top
         fig.savefig(out_path, dpi=300, bbox_inches="tight", pad_inches=0.25)
         plt.close(fig)
         print(f"[baseline] Wrote {out_path}")
@@ -616,7 +1010,7 @@ def main_baselines():
     else:
         beh_labels = []
 
-    # POSITION
+    # POSITION + VELOCITY (overlayed) — SINGLE FIGURE
     pos0 = _smooth_lines_gaussian_filtfilt(cam0["pos"], cam0["t"], GAUSS_SMOOTH_MS) if cam0 else None
     pos1 = _smooth_lines_gaussian_filtfilt(cam1["pos"], cam1["t"], GAUSS_SMOOTH_MS) if cam1 else None
     if pos0 is not None:
@@ -624,42 +1018,28 @@ def main_baselines():
     if pos1 is not None:
         pos1 = _apply_relative_offsets_by_ref(pos1, beh_labels, KEYPOINTS_ORDER)
 
-    if pos0 is not None or pos1 is not None:
-        _render_and_save_baseline(
-            cam0["t"] if cam0 else (cam1["t"] if cam1 else None),
-            pos0,
-            title_beh0=(f"Kinematics (Cam-0) • Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
-                        + (f" • Gaussian (filtfilt) σ={GAUSS_SMOOTH_MS:g} ms" if GAUSS_SMOOTH_MS > 0 else "")) if cam0 else "",
-            out_dir=FIG.base_pos, fname_prefix="rates_with_kinematics_position",
-            beh_time1=(cam1["t"] if cam1 else None),
-            beh_lines1=pos1,
-            title_beh1=(f"Kinematics (Cam-1) • Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
-                        + (f" • Gaussian (filtfilt) σ={GAUSS_SMOOTH_MS:g} ms" if GAUSS_SMOOTH_MS > 0 else "")) if cam1 else None,
-            beh_labels=beh_labels
-        )
-    else:
-        _render_and_save_baseline(None, None, title_beh0="", out_dir=FIG.base_pos,
-                                fname_prefix="rates_with_kinematics_position", beh_labels=[])
-
-    # VELOCITY
     vel0 = _smooth_lines_gaussian_filtfilt(cam0["vel"], cam0["t"], GAUSS_SMOOTH_MS) if cam0 else None
     vel1 = _smooth_lines_gaussian_filtfilt(cam1["vel"], cam1["t"], GAUSS_SMOOTH_MS) if cam1 else None
-    if vel0 is not None or vel1 is not None:
+
+    if (pos0 is not None) or (pos1 is not None):
         _render_and_save_baseline(
             cam0["t"] if cam0 else (cam1["t"] if cam1 else None),
-            vel0,
-            title_beh0=("Kinematics Velocity (Cam-0) • Low-pass (Butterworth) then central diff"
+            pos0, vel0,
+            title_beh0=(f"Kinematics / Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
                         + (f" • Gaussian (filtfilt) σ={GAUSS_SMOOTH_MS:g} ms" if GAUSS_SMOOTH_MS > 0 else "")) if cam0 else "",
-            out_dir=FIG.base_vel, fname_prefix="rates_with_kinematics_velocity",
+            out_dir=FIG.base_posvel, fname_prefix="rates_with_kinematics",
             beh_time1=(cam1["t"] if cam1 else None),
-            beh_lines1=vel1,
-            title_beh1=("Kinematics Velocity (Cam-1) • Low-pass (Butterworth) then central diff"
-                        + (f" • Gaussian (filtfilt) σ={GAUSS_SMOOTH_MS:g} ms" if GAUSS_SMOOTH_MS > 0 else "")) if cam1 else None,
-            beh_labels=beh_labels
+            beh_pos1=pos1, beh_vel1=vel1,
+            title_beh1=(f""),
+            beh_labels=beh_labels,
+            ua_groups=ua_groups_baseline
         )
     else:
-        _render_and_save_baseline(None, None, title_beh0="", out_dir=FIG.base_vel,
-                                fname_prefix="rates_with_kinematics_velocity", beh_labels=[])
+        _render_and_save_baseline(
+            None, None, None, title_beh0="",
+            out_dir=FIG.base_posvel, fname_prefix="rates_with_kinematics",
+            beh_labels=[], ua_groups=ua_groups_baseline
+    )
 
 def _as_list(x):
     if x is None:
@@ -676,9 +1056,20 @@ def _median_behavior_line(series_on_common: np.ndarray,
                           min_trials: int) -> Tuple[np.ndarray, np.ndarray, int]:
     s = np.asarray(series_on_common, float)
 
-    segs, rel_t = rcp.extract_peristim_segments(
-        s[None, :], t_common_ms, stim_ms, win_ms=win_ms, min_trials=min_trials
-    )
+    try:
+        segs, rel_t = rcp.extract_peristim_segments(
+            s[None, :], t_common_ms, stim_ms, win_ms=win_ms, min_trials=min_trials
+        )
+    except RuntimeError as e:
+        # Typical message: "Only 0 peri-stim segments available ..."
+        if "Only 0 peri-stim segments" in str(e):
+            # Build a reasonable rel_t and return NaNs
+            dt = np.nanmedian(np.diff(t_common_ms)) if t_common_ms.size > 1 else 1.0
+            rel_t = np.arange(win_ms[0], win_ms[1] + 1e-9, dt, dtype=float)
+            return np.full(rel_t.size, np.nan, float), rel_t, 0
+        else:
+            raise
+
     if segs.size == 0:
         dt = np.nanmedian(np.diff(t_common_ms)) if t_common_ms.size > 1 else 1.0
         rel_t = np.arange(win_ms[0], win_ms[1] + 1e-9, dt, dtype=float)
@@ -1056,256 +1447,263 @@ def main():
     if not files:
         raise SystemExit(f"[error] No combined aligned NPZs found at {ALIGNED_ROOT}")
 
-    for file in files:
-        try:
-            NPRW_rate, NPRW_t, UA_rate, UA_t, stim_ms_abs, meta = rcp.load_combined_npz(file)
-            # Try to get per-row UA electrode IDs (1..256), + NSP mapping (1..128/256)
+    for k, file in enumerate(files):
+        if k < 2:
+            continue
+        NPRW_rate, NPRW_t, UA_rate, UA_t, stim_ms_abs, meta = rcp.load_combined_npz(file)
+        # Try to get per-row UA electrode IDs (1..256), + NSP mapping (1..128/256)
+        ua_ids_1based = None
+
+        with np.load(file, allow_pickle=True) as z:
+            if "ua_row_to_elec" in z.files:
+                ua_ids_1based = np.asarray(z["ua_row_to_elec"], dtype=int).ravel()
+            else:
+                # legacy fallbacks just in case
+                for key in ("ua_ids_1based", "ua_elec_per_row", "ua_electrodes", "ua_chan_ids_1based"):
+                    if key in z.files:
+                        ua_ids_1based = np.asarray(z[key], dtype=int).ravel()
+                        break
+
+        # sanity: ensure length matches UA rows (plot uses row order)
+        if ua_ids_1based is not None and ua_ids_1based.size != UA_rate.shape[0]:
+            print(f"[warn] ua_row_to_elec len={ua_ids_1based.size} != UA rows={UA_rate.shape[0]} — ignoring")
             ua_ids_1based = None
 
-            with np.load(file, allow_pickle=True) as z:
-                if "ua_row_to_elec" in z.files:
-                    ua_ids_1based = np.asarray(z["ua_row_to_elec"], dtype=int).ravel()
-                else:
-                    # legacy fallbacks just in case
-                    for key in ("ua_ids_1based", "ua_elec_per_row", "ua_electrodes", "ua_chan_ids_1based"):
-                        if key in z.files:
-                            ua_ids_1based = np.asarray(z[key], dtype=int).ravel()
-                            break
+        sess = meta.get("session", file.stem)
 
-            # sanity: ensure length matches UA rows (plot uses row order)
-            if ua_ids_1based is not None and ua_ids_1based.size != UA_rate.shape[0]:
-                print(f"[warn] ua_row_to_elec len={ua_ids_1based.size} != UA rows={UA_rate.shape[0]} — ignoring")
-                ua_ids_1based = None
+        # stim times aligned to Intan aligned timebase
+        stim_ms = rcp.aligned_stim_ms(stim_ms_abs, meta)
 
-            sess = meta.get("session", file.stem)
+        # ---------- Behavior (already mapped to common grid in the NPZ) ----------
+        with np.load(file, allow_pickle=True) as z:
+            common_t = z["intan_t_ms_aligned"].astype(float)
+            beh_idx   = z.get("beh_common_idx", np.array([], dtype=np.int64)).astype(np.int64)
+            beh_valid = z.get("beh_common_valid", np.array([], dtype=bool)).astype(bool)
+            cam0      = z.get("beh_cam0", np.zeros((0,0), np.float32)).astype(float)
+            cam1      = z.get("beh_cam1", np.zeros((0,0), np.float32)).astype(float)
+            raw0 = z.get("beh_cam0_cols", None)
+            raw1 = z.get("beh_cam1_cols", None)
+            cam0_cols = [str(x) for x in _as_list(raw0)]
+            cam1_cols = [str(x) for x in _as_list(raw1)]
 
-            # stim times aligned to Intan aligned timebase
-            stim_ms = rcp.aligned_stim_ms(stim_ms_abs, meta)
+        # ---- interpolate here (gentle, respects invalid rows) ----
+        if cam0.size:
+            cam0 = cam0.copy()
+            # do not “invent” values on invalid rows
+            if beh_valid.size >= cam0.shape[0]:
+                cam0[~beh_valid[:cam0.shape[0]], :] = np.nan
+            cam0 = _interp_nans_2d_by_col(cam0, max_gap=4)
 
-            # ---------- Behavior (already mapped to common grid in the NPZ) ----------
-            with np.load(file, allow_pickle=True) as z:
-                common_t = z["intan_t_ms_aligned"].astype(float)
-                beh_idx   = z.get("beh_common_idx", np.array([], dtype=np.int64)).astype(np.int64)
-                beh_valid = z.get("beh_common_valid", np.array([], dtype=bool)).astype(bool)
-                cam0      = z.get("beh_cam0", np.zeros((0,0), np.float32)).astype(float)
-                cam1      = z.get("beh_cam1", np.zeros((0,0), np.float32)).astype(float)
-                raw0 = z.get("beh_cam0_cols", None)
-                raw1 = z.get("beh_cam1_cols", None)
-                cam0_cols = [str(x) for x in _as_list(raw0)]
-                cam1_cols = [str(x) for x in _as_list(raw1)]
+        if cam1.size:
+            cam1 = cam1.copy()
+            if beh_valid.size >= cam1.shape[0]:
+                cam1[~beh_valid[:cam1.shape[0]], :] = np.nan
+            cam1 = _interp_nans_2d_by_col(cam1, max_gap=4)
 
-            # ---- interpolate here (gentle, respects invalid rows) ----
-            if cam0.size:
-                cam0 = cam0.copy()
-                # do not “invent” values on invalid rows
-                if beh_valid.size >= cam0.shape[0]:
-                    cam0[~beh_valid[:cam0.shape[0]], :] = np.nan
-                cam0 = _interp_nans_2d_by_col(cam0, max_gap=4)
+        cam0_M, cam0_names = _select_matrix(cam0, cam0_cols)
+        cam1_M, cam1_names = _select_matrix(cam1, cam1_cols)
 
-            if cam1.size:
-                cam1 = cam1.copy()
-                if beh_valid.size >= cam1.shape[0]:
-                    cam1[~beh_valid[:cam1.shape[0]], :] = np.nan
-                cam1 = _interp_nans_2d_by_col(cam1, max_gap=4)
+        # z-score each column independently
+        cam0_M = _z_per_column(cam0_M) if cam0_M.size else cam0_M
+        cam1_M = _z_per_column(cam1_M) if cam1_M.size else cam1_M
 
-            cam0_M, cam0_names = _select_matrix(cam0, cam0_cols)
-            cam1_M, cam1_names = _select_matrix(cam1, cam1_cols)
+        # Map samples to bins using precomputed indices; mask out-of-tolerance
+        bin_idx = np.where(beh_valid, beh_idx, -1)
 
-            # z-score each column independently
-            cam0_M = _z_per_column(cam0_M) if cam0_M.size else cam0_M
-            cam1_M = _z_per_column(cam1_M) if cam1_M.size else cam1_M
+        # Aggregate to common grid (you already have this)
+        cam0_on_grid = _aggregate_columns_to_bins(bin_idx, cam0_M, common_t.size)
+        cam1_on_grid = _aggregate_columns_to_bins(bin_idx, cam1_M, common_t.size)
 
-            # Map samples to bins using precomputed indices; mask out-of-tolerance
-            bin_idx = np.where(beh_valid, beh_idx, -1)
+        # >>> Low-pass filter position and compute velocity (on-grid) <<<
+        cam0_pos_filt, cam0_vel, _ = butter_lowpass_pos_and_vel(cam0_on_grid, common_t, cutoff_hz=10.0, order=3)
+        cam1_pos_filt, cam1_vel, _ = butter_lowpass_pos_and_vel(cam1_on_grid, common_t, cutoff_hz=10.0, order=3)
 
-            # Aggregate to common grid (you already have this)
-            cam0_on_grid = _aggregate_columns_to_bins(bin_idx, cam0_M, common_t.size)
-            cam1_on_grid = _aggregate_columns_to_bins(bin_idx, cam1_M, common_t.size)
+        # Keep only stim times with a full window inside the behavior timeline
+        if common_t.size >= 2:
+            dt_ms = float(np.nanmedian(np.diff(common_t)))
+        else:
+            dt_ms = 1.0  # fallback
 
-            # >>> Low-pass filter position and compute velocity (on-grid) <<<
-            cam0_pos_filt, cam0_vel, _ = butter_lowpass_pos_and_vel(cam0_on_grid, common_t, cutoff_hz=10.0, order=3)
-            cam1_pos_filt, cam1_vel, _ = butter_lowpass_pos_and_vel(cam1_on_grid, common_t, cutoff_hz=10.0, order=3)
+        t0, t1 = float(common_t[0]), float(common_t[-1])
+        left_ok  = stim_ms + WIN_MS[0] >= t0
+        right_ok = stim_ms + WIN_MS[1] <= t1
+        stim_ms_beh = stim_ms[left_ok & right_ok]
 
-            # Now build the peri-stim median *position* lines from the filtered positions:
-            cam0_lines, beh_rel_t, cam0_ntr = _median_lines_for_columns(cam0_pos_filt, common_t, stim_ms)
-            cam1_lines, _,          cam1_ntr = _median_lines_for_columns(cam1_pos_filt, common_t, stim_ms)
+        # Now build the peri-stim median *position* lines from the filtered positions:
+        cam0_lines, beh_rel_t, cam0_ntr = _median_lines_for_columns(cam0_pos_filt, common_t, stim_ms_beh)
+        cam1_lines, _,          cam1_ntr = _median_lines_for_columns(cam1_pos_filt, common_t, stim_ms_beh)
 
-            # And for the velocity plot, use the filtered-position-derived velocity directly (no extra despike needed):
-            cam0_v_lines, beh_rel_t_v, cam0_v_ntr = _median_lines_for_columns(cam0_vel, common_t, stim_ms)
-            cam1_v_lines, _,             cam1_v_ntr = _median_lines_for_columns(cam1_vel, common_t, stim_ms)
+        cam0_v_lines, beh_rel_t_v, cam0_v_ntr = _median_lines_for_columns(cam0_vel, common_t, stim_ms_beh)
+        cam1_v_lines, _,             cam1_v_ntr = _median_lines_for_columns(cam1_vel, common_t, stim_ms_beh)
 
-            # Position traces
-            if cam0_lines.size:
-                cam0_lines = _smooth_lines_gaussian_filtfilt(cam0_lines, beh_rel_t, GAUSS_SMOOTH_MS)
-            if cam1_lines.size:
-                cam1_lines = _smooth_lines_gaussian_filtfilt(cam1_lines, beh_rel_t, GAUSS_SMOOTH_MS)
+        # Position traces
+        if cam0_lines.size:
+            cam0_lines = _smooth_lines_gaussian_filtfilt(cam0_lines, beh_rel_t, GAUSS_SMOOTH_MS)
+        if cam1_lines.size:
+            cam1_lines = _smooth_lines_gaussian_filtfilt(cam1_lines, beh_rel_t, GAUSS_SMOOTH_MS)
 
-            # Velocity traces
-            if cam0_v_lines.size:
-                cam0_v_lines = _smooth_lines_gaussian_filtfilt(cam0_v_lines, beh_rel_t_v, GAUSS_SMOOTH_MS)
-            if cam1_v_lines.size:
-                cam1_v_lines = _smooth_lines_gaussian_filtfilt(cam1_v_lines, beh_rel_t_v, GAUSS_SMOOTH_MS)
+        # Velocity traces
+        if cam0_v_lines.size:
+            cam0_v_lines = _smooth_lines_gaussian_filtfilt(cam0_v_lines, beh_rel_t_v, GAUSS_SMOOTH_MS)
+        if cam1_v_lines.size:
+            cam1_v_lines = _smooth_lines_gaussian_filtfilt(cam1_v_lines, beh_rel_t_v, GAUSS_SMOOTH_MS)
+
+        try:
+            overall_title, video_file = build_title_from_csv(METADATA_CSV, br_file=meta.get("br_idx"))
+        except Exception as e:
+            print(f"[warn] metadata parse failed: {e}")
+            overall_title, video_file = ("Condition: n/a, n/a Hz, n/a µA, n/a mm, n/a ms, Delay: 0 ms", None)
+
+        # Decide availability
+        have_cam0 = isinstance(cam0_lines, np.ndarray) and cam0_lines.ndim == 2 and cam0_lines.size > 0
+        have_cam1 = isinstance(cam1_lines, np.ndarray) and cam1_lines.ndim == 2 and cam1_lines.size > 0
+
+        # counts for display
+        beh_ntr = cam0_ntr if (have_cam0 and not have_cam1) else (
+                cam1_ntr if (have_cam1 and not have_cam0) else max(cam0_ntr, cam1_ntr))
+
+        title_kinematics = f"Kinematics / Referenced to first {int(NORMALIZE_FIRST_MS)} ms (n={beh_ntr} trials)"
+        # Derive behavior labels from whichever camera has names, but simplify them
+        if len(cam0_names) > 0:
+            beh_labels = _simple_beh_labels([_strip_cam_prefix(n) for n in cam0_names], KEYPOINTS_ORDER)
+        elif len(cam1_names) > 0:
+            beh_labels = _simple_beh_labels([_strip_cam_prefix(n) for n in cam1_names], KEYPOINTS_ORDER)
+        else:
+            beh_labels = []
+
+        # --- NPRW ---
+        NPRW_med, rel_time_ms_i, n_nprw = _safe_extract_segments(
+            NPRW_rate, NPRW_t, stim_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS
+        )
+        if NPRW_med is None:
+            print(f"[warn] {sess}: 0 NPRW peri-stim segments after in-range filtering.")
+
+        # --- UA ---
+        UA_med, ua_rel_time_ms, n_ua = _safe_extract_segments(
+            UA_rate, UA_t, stim_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS
+        )
+        if UA_med is None:
+            print(f"[warn] {sess}: 0 UA peri-stim segments after in-range filtering.")
+        
+        # ---- Impedance-based exclusion for PERI-STIM UA panel ----
+        if EXCLUDE_UA_HIGH_Z and UA_med is not None and ua_ids_1based is not None:
+            # load impedances (same helper + files as above)
+            def _try_load_imp(p: Path, tag: str):
+                if not p:
+                    return
+                if not p.exists():
+                    print(f"[warn] UA impedance file not found for port {tag}: {p}")
+                    return
+                try:
+                    d = load_impedances_from_textedit_dump(p)
+                    imp_by_elec.update(d)
+                    print(f"[info] Parsed {len(d)} UA impedances from {p.name} (port {tag}).")
+                except Exception as e:
+                    print(f"[warn] could not parse UA impedances from {p} (port {tag}): {e}")
+
+            imp_by_elec: dict[int, float] = {}
+            # try to get port from meta; fall back to 'A', also load the other side
+            port_from_meta = str(meta.get("port", meta.get("ua_port", "A"))).strip().upper()
+            _port = port_from_meta if port_from_meta in ("A", "B") else "A"
+            _try_load_imp(IMP_FILES.get(_port), _port)
+            _other = "B" if _port == "A" else "A"
+            _try_load_imp(IMP_FILES.get(_other), _other)
 
             try:
-                overall_title, video_file = build_title_from_csv(METADATA_CSV, br_file=meta.get("br_idx"))
+                ids_arr = np.asarray(ua_ids_1based).astype(float)
+                if ids_arr.size == UA_med.shape[0]:
+                    keep = np.ones(ids_arr.size, dtype=bool)
+                    any_imp = False
+                    for r, eid in enumerate(ids_arr):
+                        if not np.isfinite(eid):
+                            continue
+                        z = imp_by_elec.get(int(eid))
+                        if z is not None and np.isfinite(z):
+                            any_imp = True
+                            if z > UA_IMP_MAX_KOHM:
+                                keep[r] = False
+                    if any_imp:
+                        if keep.any():
+                            UA_med = UA_med[keep, :]
+                            ua_ids_1based = ua_ids_1based[keep]
+                            print(f"[info] Peri UA: kept {keep.sum()}/{keep.size} rows (≤ {UA_IMP_MAX_KOHM:g} kΩ).")
+                            try:
+                                UA_med, ua_ids_1based = _order_rows_by_region_then_peak(
+                                    UA_med, ua_rel_time_ms, ua_ids_1based,
+                                    pre_only=True, include_zero=True
+                                )
+                            except Exception as e:
+                                print(f"[warn] Peri UA: resort failed after mask: {e}")
+                        else:
+                            print("[warn] Peri UA: impedance mask would remove all rows; skipping mask.")
+                else:
+                    print("[warn] Peri UA: ids length != UA rows; skipping impedance mask.")
             except Exception as e:
-                print(f"[warn] metadata parse failed: {e}")
-                overall_title, video_file = ("Condition: n/a, n/a Hz, n/a µA, n/a mm, n/a ms, Delay: 0 ms", None)
-
-            # Decide availability
-            have_cam0 = isinstance(cam0_lines, np.ndarray) and cam0_lines.ndim == 2 and cam0_lines.size > 0
-            have_cam1 = isinstance(cam1_lines, np.ndarray) and cam1_lines.ndim == 2 and cam1_lines.size > 0
-
-            # counts for display
-            beh_ntr = cam0_ntr if (have_cam0 and not have_cam1) else (
-                    cam1_ntr if (have_cam1 and not have_cam0) else max(cam0_ntr, cam1_ntr))
-
-            # Titles
-            if have_cam0 and have_cam1:
-                title_kinematics = (
-                    f"Median Kinematics Right Camera (Cam-0) "
-                    f"Video: {video_file if video_file is not None else 'n/a'} (n={beh_ntr} trials)"
+                print(f"[warn] Peri UA impedance mask failed: {e}")
+        # --- UA: final ordering to MATCH BASELINE (region, then earliest pre-stim peak on top)
+        if UA_med is not None and ua_ids_1based is not None:
+            try:
+                UA_med, ua_ids_1based = _order_rows_by_region_then_peak(
+                    UA_med, ua_rel_time_ms, ua_ids_1based,
+                    pre_only=True, include_zero=True, peak_mode="max", earliest_at_top=True
                 )
-                title_cam1 = "Median Kinematics Left Camera (Cam-1)"
-            elif have_cam0:
-                title_kinematics = (
-                    f"Median Kinematics (Cam-0) "
-                    f"Video: {video_file if video_file is not None else 'n/a'} (n={beh_ntr} trials)"
-                )
-                title_cam1 = None
-            elif have_cam1:
-                title_kinematics = (
-                    f"Median Kinematics (Cam-1) "
-                    f"Video: {video_file if video_file is not None else 'n/a'} (n={beh_ntr} trials)"
-                )
-                title_cam1 = None
-            else:
-                title_kinematics = ""
-                title_cam1 = None
+            except Exception as e:
+                print(f"[warn] Peri UA: final baseline-style ordering failed: {e}")
 
+        # locate the Intan stim_stream.npz and locate stimulated channels
+        bundles_root = OUT_BASE / "bundles" / "NPRW"
+        stim_npz = bundles_root / f"{sess}_Intan_bundle" / "stim_stream.npz"
+        stim_locs = None
+        if stim_npz.exists():
+            try:
+                stim_locs = rcp.detect_stim_channels_from_npz(stim_npz, eps=1e-12, min_edges=1)
+            except Exception as e:
+                print(f"[warn] stim-site detection failed for {sess}: {e}")
+                
+        # ---------------- POSITION plot ----------------
+        out_svg_posvel = FIG.peri_posvel / f"{sess}__Intan_vs_UA__peri_stim_heatmaps__posvel.png"
 
-            # Derive behavior labels from whichever camera has names, but simplify them
-            if len(cam0_names) > 0:
-                beh_labels = _simple_beh_labels([_strip_cam_prefix(n) for n in cam0_names], KEYPOINTS_ORDER)
-            elif len(cam1_names) > 0:
-                beh_labels = _simple_beh_labels([_strip_cam_prefix(n) for n in cam1_names], KEYPOINTS_ORDER)
-            else:
-                beh_labels = []
+        title_NA = (
+            f"Neural Activity (median Δ across {n_nprw} all events))"
+        )
+        beh_time_for_both = beh_rel_t  # or beh_rel_t_v if that's the canonical
 
-            # --- NPRW/Intan ---
-            NPRW_segments, rel_time_ms_i = rcp.extract_peristim_segments(
-                rate_hz=NPRW_rate, t_ms=NPRW_t, stim_ms=stim_ms,
-                win_ms=WIN_MS, min_trials=MIN_TRIALS
-            )
-            NPRW_zeroed = rcp.baseline_zero_each_trial(
-                NPRW_segments, rel_time_ms_i, normalize_first_ms=NORMALIZE_FIRST_MS
-            )
-            NPRW_med = rcp.median_across_trials(NPRW_zeroed)
-
-            # ---------- UA: same logic but keep its own rel_time_ms ----------
-            UA_segments, ua_rel_time_ms = rcp.extract_peristim_segments(
-                rate_hz=UA_rate, t_ms=UA_t, stim_ms=stim_ms,
-                win_ms=WIN_MS, min_trials=MIN_TRIALS
-            )
-            UA_zeroed = rcp.baseline_zero_each_trial(
-                UA_segments, ua_rel_time_ms, normalize_first_ms=NORMALIZE_FIRST_MS
-            )
-            UA_med = rcp.median_across_trials(UA_zeroed)
-
-            # locate the Intan stim_stream.npz and locate stimulated channels
-            bundles_root = OUT_BASE / "bundles" / "NPRW"
-            stim_npz = bundles_root / f"{sess}_Intan_bundle" / "stim_stream.npz"
-            stim_locs = None
-            if stim_npz.exists():
-                try:
-                    stim_locs = rcp.detect_stim_channels_from_npz(stim_npz, eps=1e-12, min_edges=1)
-                except Exception as e:
-                    print(f"[warn] stim-site detection failed for {sess}: {e}")
-                    
-            # ---------------- POSITION plot ----------------
-            out_svg_pos = FIG.peri_pos / f"{sess}__Intan_vs_UA__peri_stim_heatmaps__position.png"
-
-            title_top_pos = (
-                f"Median Δ in firing rate (Referenced to first {int(NORMALIZE_FIRST_MS)} ms)\n"
-                f"NPRW/Intan: {sess} (n={NPRW_segments.shape[0]} trials)"
-            )
-            title_bot_pos = f"{rcp.ua_title_from_meta(meta)} (n={UA_segments.shape[0]} trials)"
-
-            rcp.stacked_heatmaps_plus_behv(
-                NPRW_med, UA_med, rel_time_ms_i, ua_rel_time_ms,
-                out_svg_pos, title_kinematics, title_top_pos, title_bot_pos, cmap=COLORMAP,
-                vmin_intan=VMIN_INTAN, vmax_intan=VMAX_INTAN,
-                vmin_ua=VMIN_UA, vmax_ua=VMAX_UA,
-                probe=probe, probe_locs=locs, stim_idx=stim_locs,
-                probe_title="NPRW probe (stim sites highlighted)",
-                ua_ids_1based=ua_ids_1based,
-                ua_sort="region_then_elec",
-                beh_rel_time=beh_rel_t,
-                beh_cam0_lines=cam0_lines if have_cam0 else None,
-                beh_cam1_lines=cam1_lines if have_cam1 else None,
-                beh_labels=beh_labels,
-                sess=sess,
-                overall_title=overall_title,
-                title_cam1=title_cam1,
-            )
-
-            print(f"[PLOT] POSITION saved → {out_svg_pos}")
-
-            # Update display titles to say "Velocity"
-            if have_cam0 and have_cam1:
-                title_kinematics_v = (
-                    f"Median Kinematics Velocity Right Camera (Cam-0) "
-                    f"Video: {video_file if video_file is not None else 'n/a'} (n={max(cam0_v_ntr, cam1_v_ntr)} trials)"
-                )
-                title_cam1_v = "Median Kinematics Velocity Left Camera (Cam-1)"
-            elif have_cam0:
-                title_kinematics_v = (
-                    f"Median Kinematics Velocity (Cam-0) "
-                    f"Video: {video_file if video_file is not None else 'n/a'} (n={cam0_v_ntr} trials)"
-                )
-                title_cam1_v = None
-            elif have_cam1:
-                title_kinematics_v = (
-                    f"Median Kinematics Velocity (Cam-1) "
-                    f"Video: {video_file if video_file is not None else 'n/a'} (n={cam1_v_ntr} trials)"
-                )
-                title_cam1_v = None
-            else:
-                title_kinematics_v = title_kinematics  # fallback
-                title_cam1_v = title_cam1
-
-            out_svg_vel = FIG.peri_vel / f"{sess}__Intan_vs_UA__peri_stim_heatmaps__velocity.png"
-
-            title_top_vel = title_top_pos  # same neural titles
-            title_bot_vel = title_bot_pos
-
-            rcp.stacked_heatmaps_plus_behv(
-                NPRW_med, UA_med, rel_time_ms_i, ua_rel_time_ms,
-                out_svg_vel, title_kinematics_v, title_top_vel, title_bot_vel, cmap=COLORMAP,
-                vmin_intan=VMIN_INTAN, vmax_intan=VMAX_INTAN,
-                vmin_ua=VMIN_UA, vmax_ua=VMAX_UA,
-                probe=probe, probe_locs=locs, stim_idx=stim_locs,
-                probe_title="NPRW probe (stim sites highlighted)",
-                ua_ids_1based=ua_ids_1based,
-                ua_sort="region_then_elec",
-                beh_rel_time=beh_rel_t_v,                  # velocity timebase
-                beh_cam0_lines=cam0_v_lines if cam0_v_lines.size else None,
-                beh_cam1_lines=cam1_v_lines if cam1_v_lines.size else None,
-                beh_labels=beh_labels,
-                sess=sess,
-                overall_title=overall_title,
-                title_cam1=title_cam1_v,
-            )
-
-            print(f"[PLOT] VELOCITY saved → {out_svg_vel}")
-            
-        except Exception as e:
-            print(f"[error] Failed on {file.name}: {e}")
+        # if nothing to plot at all, skip
+        if (NPRW_med is None) and (UA_med is None) and not (have_cam0 or have_cam1):
+            print(f"[skip] {sess}: no NPRW/UA segments and no behavior traces.")
             continue
+
+        # choose time vectors only if the corresponding matrix exists
+        t_intan_for_plot = rel_time_ms_i if NPRW_med is not None else None
+        t_ua_for_plot    = ua_rel_time_ms if UA_med is not None else None
+
+        rcp.stacked_heatmaps_plus_behv(
+            NPRW_med, UA_med,
+            t_intan_for_plot, t_ua_for_plot,
+            out_svg_posvel, title_kinematics, title_NA,
+            cmap=COLORMAP,
+            vmin_intan=VMIN_INTAN, vmax_intan=VMAX_INTAN,
+            probe=probe, probe_locs=locs, stim_idx=stim_locs,
+            probe_title="NPRW probe (stim sites highlighted)",
+            ua_ids_1based=ua_ids_1based,
+            ua_sort="none",                      # <-- keep the order we just set
+            beh_rel_time=beh_time_for_both,
+            beh_cam0_lines=cam0_lines,
+            beh_cam1_lines=cam1_lines,
+            beh_cam0_vel_lines=cam0_v_lines,
+            beh_cam1_vel_lines=cam1_v_lines,
+            beh_labels=beh_labels,
+            title_cam1="",
+            title_cam0_vel="",
+            title_cam1_vel="",
+            sess=sess,
+            overall_title=overall_title,
+        )
 
 if __name__ == "__main__":
     # plot the aligned baseline traces
     main_baselines()
     
     # plot stim trials
-    # main()
+    main()
+

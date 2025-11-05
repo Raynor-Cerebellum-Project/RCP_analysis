@@ -26,7 +26,7 @@ BR_SESSION_FOLDERS = rcp.list_br_sessions(DATA_ROOT, PARAMS.blackrock_rel)
 RATES = PARAMS.UA_rate_est or {}
 BIN_MS     = float(RATES.get("bin_ms", 1.0))
 SIGMA_MS   = float(RATES.get("sigma_ms", 50.0))
-THRESH     = float(RATES.get("detect_threshold", 4.5))
+THRESH     = float(RATES.get("detect_threshold", 3))
 PEAK_SIGN  = str(RATES.get("peak_sign", "neg"))
     
 XLS = rcp.ua_excel_path(REPO_ROOT, PARAMS.probes)
@@ -229,14 +229,24 @@ def _ua_arrays_from_idx_rows(n_ch: int, mapped_nsp: np.ndarray, idx_rows: np.nda
     return ua_elec_per_row, ua_nsp_per_row
 
 def main(limit_sessions: Optional[int] = None):
-    br_session_folders = BR_SESSION_FOLDERS  # read the global into a local
-    if limit_sessions is not None:           # allow 0 cleanly
-        br_session_folders = br_session_folders[:limit_sessions]
+    sess_folders = BR_SESSION_FOLDERS  # read the global into a local
+    # limit_sessions = [13, 14, 15, 16, 17]
+    if limit_sessions:
+        if isinstance(limit_sessions, int):
+            # 1-based: 11 -> the 11th folder
+            idx = limit_sessions - 1 if limit_sessions > 0 else limit_sessions
+            sess_folders = [sess_folders[idx]]
+        elif isinstance(limit_sessions, (list, tuple)):
+            # 1-based indices: e.g., (2, 5, 11)
+            idxs = [(i - 1 if i > 0 else i) for i in limit_sessions]
+            sess_folders = [sess_folders[i] for i in idxs]
+        else:
+            pass
 
-    print("Found session folders:", len(br_session_folders))
+    print("Found session folders:", len(sess_folders))
     saved_paths: list[Path] = []
 
-    for sess in br_session_folders:
+    for sess in sess_folders:
         print(f"=== Session: {sess.name} ===")
         bundle = rcp.build_blackrock_bundle(sess, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH) # sync pulses and stuff
         rcp.save_UA_bundle_npz(sess.name, bundle, BUNDLES_OUT)
