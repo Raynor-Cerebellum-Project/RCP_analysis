@@ -103,19 +103,30 @@ def main():
     print('OCR ready.                                      ', file=sys.stderr)
 
     if target.is_file():
-        out_csv = target.with_name(f"{target.stem}_ocr.csv")
+        ocr_root = target.parent / "OCR"
+        ocr_root.mkdir(parents=True, exist_ok=True)
+        out_csv = ocr_root / f"{target.stem}_ocr.csv"
         process_video(target, READER, out_csv)
+
     elif target.is_dir():
         files = sorted(p for p in target.rglob('*') if p.suffix.lower() in VIDEO_EXTS)
         if not files:
             print(f"[warn] No video files with extensions {sorted(VIDEO_EXTS)} under {target}", file=sys.stderr)
             return
+
+        ocr_root = target / "OCR"
         for p in files:
-            out_csv = p.with_name(f"{p.stem}_ocr.csv")
+            # Mirror subdirectory structure under OCR/
+            rel = p.relative_to(target)              # e.g., "sub/a/b/vid.mp4"
+            out_dir = (ocr_root / rel.parent)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_csv = out_dir / f"{p.stem}_ocr.csv"
             process_video(p, READER, out_csv)
+
     else:
         print(f"[error] Path not found: {target}", file=sys.stderr)
         sys.exit(1)
+
 
 if __name__ == '__main__':
     main()

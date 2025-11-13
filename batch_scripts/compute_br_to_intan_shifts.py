@@ -193,10 +193,10 @@ def main():
     if not sessions:
         raise SystemExit(f"[error] No NPRW rate files under {NPRW_CKPT_ROOT}")
 
-    sess_to_intan_idx, intan_idx_to_sess = rcp.build_session_index_map(sessions)
+    _, intan_idx_to_sess = rcp.build_session_index_map(sessions)
 
     # ---------- mapping CSV ----------
-    intan_to_br = rcp.read_intan_to_br_map(METADATA_CSV)
+    intan_to_br = rcp.get_metadata_mapping(METADATA_CSV, "Intan_File", "BR_File")
     print(f"[map] Loaded Intan→BR rows: {len(intan_to_br)}")
 
     template = load_template(TEMPLATE)

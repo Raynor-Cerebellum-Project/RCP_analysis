@@ -43,8 +43,8 @@ if UA_MAP is None:
 # If you want to point to absolute files instead, change IMP_BASE to that folder.
 IMP_BASE = OUT_BASE.parents[0]
 IMP_FILES = {
-    "A": IMP_BASE / "Utah_imp_Bank_A_start",
-    "B": IMP_BASE / "Utah_imp_Bank_B_start",
+    "A": IMP_BASE / "Impedances" / "Utah_imp_Bank_A_start",
+    "B": IMP_BASE / "Impedances" / "Utah_imp_Bank_B_start",
 }
 
 # ---- Filenames ----

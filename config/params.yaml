@@ -7,8 +7,6 @@ paths:
 kinematics:
   keypoints: [Wrist, fingertip, MCP, start, target]
   num_camera: 2
-  # Example alt:
-  # keypoints = ("shoulder", "elbow", "wrist", "finger")
 
 # ---- Spike preprocessing ----
 highpass_hz: 300.0
@@ -57,15 +55,7 @@ UA_rate_est:
   detect_threshold: 3
   peak_sign: "both"
 
-# ---- per-session overrides ---- # Placeholder
-default_stim_num: 1
+# ---- per-session overrides
 sessions:
   BL_RW_003_Session_1:
-    probe: "NPRW"
-
-  Nike_reaching_002_Session_01:
-    probe: "UA"
-    array: "M1s" # Placeholder
-
-  Bert_reaching_001:
-    probe: "NPRW"
+    probe: "NPRW" # Placeholder

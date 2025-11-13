@@ -1,11 +1,9 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict
 import io, json, re, zipfile
 import numpy as np
 import spikeinterface as si
-import spikeinterface.extractors as se
-import spikeinterface.preprocessing as spre
 from probeinterface import Probe
 from dataclasses import dataclass
 import RCP_analysis as rcp
@@ -90,22 +88,6 @@ def reorder_recording_to_geometry(rec: si.BaseRecording, perm: np.ndarray) -> si
     except Exception:
         from spikeinterface.core import ChannelSliceRecording
         return ChannelSliceRecording(rec, channel_ids=ordered_ids)
-
-# ----------------------
-# Preprocessing
-# ----------------------
-def local_cm_reference(
-    rec: si.BaseRecording,
-    freq_min: float = 300.0,
-    inner_outer_radius_um: Tuple[float, float] = (30.0, 150.0),
-) -> si.BaseRecording:
-    """
-    High-pass + local common-median reference using an annulus [inner, outer] in µm.
-    """
-    rec_hp = spre.highpass_filter(rec, freq_min=freq_min)
-    rmin, rmax = inner_outer_radius_um
-    rec_lref = spre.common_reference(rec_hp, reference="local", operator="median", local_radius=(float(rmin), float(rmax)))
-    return rec_lref
 
 _SAN = re.compile(r'[^0-9A-Za-z_]+')
 def _safe(s: str) -> str:
@@ -246,7 +228,7 @@ def extract_stim_triggers_and_blocks(
         pulse_sizes=pulse_sizes,
 )
 
-def extract_and_save_stim_npz(
+def extract_stim_npz(
     sess_folder: Path,
     out_root: Path,
     stim_stream_name: str = "Stim channel",
@@ -291,11 +273,8 @@ def extract_and_save_stim_npz(
     print(f"[STIM] saved stim stream + triggers -> {out_npz}")
     return out_npz
 
-# ----------------------
-# Other streams
-# ----------------------
-
-def extract_and_save_other_streams_npz(
+# AUX streams
+def extract_aux_streams_npz(
     sess_folder: Path,
     out_root: Path,
     include_streams: tuple[str, ...] = ("USB board ADC input channel",),

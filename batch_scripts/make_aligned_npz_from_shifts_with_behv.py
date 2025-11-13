@@ -577,8 +577,6 @@ def main():
             else:
                 print(f"[warn] no behavior CSV (both or single-cam) found for BR {br_idx:03d} in {BEHV_CKPT_ROOT}")
 
-            # TODO: add print statement for windows
-
             combined_meta = dict(
                 session=session,
                 intan_idx=intan_idx,

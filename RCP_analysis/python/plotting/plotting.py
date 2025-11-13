@@ -80,6 +80,7 @@ def stacked_heatmaps_plus_behv(
     title_kinematics, title_NA,
     *, cmap="jet",
     vmin_intan=None, vmax_intan=None,
+    vmin_ua=None, vmax_ua=None,
     probe=None, probe_locs=None, stim_idx=None,
     probe_title="Probe (Intan)", probe_width_ratio=0.15, probe_marker_size=28,
     probe_gap_ratio=0.04,
@@ -353,18 +354,42 @@ def stacked_heatmaps_plus_behv(
     # ---------- UA heatmaps (optional) ----------
     if has_ua:
         for gi, g in enumerate(ua_groups):
-            mat_g = g["mat"];
+            mat_g   = g["mat"]
             label_g = g.get("label", "")
+
+            # 1) start from your existing per-label default
             vmin_g, vmax_g = UA_VRANGE_BY_LABEL.get(label_g, UA_VRANGE_DEFAULT)
+
+            # 2) apply call-time overrides (scalar or dict). Call-time wins.
+            def _pick(override, current, label):
+                # allow: scalar number OR dict of label->value
+                if override is None:
+                    return current
+                if isinstance(override, dict):
+                    # allow dict[str, (min,max)] or separate dicts
+                    val = override.get(label, None)
+                    if val is None:
+                        return current
+                    if isinstance(val, (tuple, list)) and len(val) == 2:
+                        # when dict maps label -> (min,max)
+                        # caller would set only vmin_ua OR vmax_ua, so guard:
+                        return val[0] if current is vmin_g else val[1]
+                    return float(val)
+                # scalar
+                return float(override)
+
+            vmin_g = _pick(vmin_ua, vmin_g, label_g)
+            vmax_g = _pick(vmax_ua, vmax_g, label_g)
 
             ax_u     = fig.add_subplot(gs[row, 0])
             ax_u_cax = fig.add_subplot(gs[row, 1])
-            
+
             im1 = ax_u.imshow(
                 mat_g, aspect="auto", cmap=cmap, origin="lower",
                 extent=[t_ua[0], t_ua[-1], 0, mat_g.shape[0]],
                 vmin=vmin_g, vmax=vmax_g
             )
+            
             ax_u.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
             ax_u.axvspan(-5.0, 105.0, color="gray", alpha=1)
             _ylabel_horizontal(ax_u, f"{label_g} {mat_g.shape[0]} chs")

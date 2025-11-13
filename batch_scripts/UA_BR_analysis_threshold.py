@@ -3,15 +3,22 @@ from pathlib import Path
 from typing import Optional
 import gc
 import numpy as np
-import io, codecs, re, csv
+import re, csv
 from sklearn.decomposition import PCA
 
 # SpikeInterface
 import spikeinterface as si
 import spikeinterface.preprocessing as spre
 import RCP_analysis as rcp
+""" 
+    This script preprocesses the Blackrock data.
+    Input:
+        
+    Output:
+        
+"""
 
-# ---------- CONFIG ----------
+# ---------- Config ----------
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
 DATA_ROOT = rcp.resolve_data_root(PARAMS)
@@ -71,53 +78,6 @@ def _build_session_index_map(nprw_ckpt_root: Path) -> tuple[dict[str,int], dict[
         raise RuntimeError(f"No NPRW rate files under {nprw_ckpt_root}")
     return sess_to_intan, intan_to_sess
 
-def _read_intan_to_br_map(csv_path: Path) -> dict[int, int]:
-    """
-    Robust CSV reader. Returns {Intan_File index -> BR_File index}.
-    Accepts headers like: Intan_File, BR_File (case/punct in any form).
-    """
-    def norm(s: str) -> str:
-        return re.sub(r"[^a-z0-9]", "", s.lower())
-    raw = csv_path.read_bytes()
-    try_order = []
-    if raw.startswith(codecs.BOM_UTF8):
-        try_order = ["utf-8-sig"]
-    elif raw.startswith(codecs.BOM_UTF16_LE):
-        try_order = ["utf-16-le"]
-    elif raw.startswith(codecs.BOM_UTF16_BE):
-        try_order = ["utf-16-be"]
-    try_order += ["utf-8", "cp1252", "latin1", "utf-16"]
-    text = None
-    for enc in try_order:
-        try:
-            text = raw.decode(enc); break
-        except UnicodeDecodeError:
-            continue
-    if text is None:
-        text = raw.decode("latin1", errors="replace")
-
-    rdr = csv.DictReader(io.StringIO(text))
-    if not rdr.fieldnames:
-        raise ValueError("CSV has no header row")
-    fmap = {norm(k): k for k in rdr.fieldnames if k}
-
-    def pick(*names):
-        for n in names:
-            if n in fmap: return fmap[n]
-        raise KeyError(f"CSV missing one of: {names}")
-
-    col_intan = pick("intan_file","intanfile","intan","intanindex","intanfileindex")
-    col_br    = pick("br_file","brfile","br","brindex","brfileindex")
-
-    out = {}
-    for row in rdr:
-        try:
-            out[int(str(row[col_intan]).strip())] = int(str(row[col_br]).strip())
-        except Exception:
-            pass
-    if not out:
-        raise ValueError("No (Intan, BR) rows parsed")
-    return out
 
 def _resolve_intan_session_for_br_idx(
     meta_csv: Path,
@@ -132,7 +92,7 @@ def _resolve_intan_session_for_br_idx(
         return None
 
     # 1) {Intan_File -> BR_File}
-    intan_to_br = _read_intan_to_br_map(meta_csv)
+    intan_to_br = rcp.get_metadata_mapping(METADATA_CSV, "Intan_File", "BR_File")
 
     # 2) invert to {BR_File -> Intan_File}
     br_to_intan = {b: i for i, b in intan_to_br.items()}
@@ -295,13 +255,7 @@ def main(limit_sessions: Optional[int] = None):
                 print(f"[debug] region {g}: singleton -> left unreferenced")
         print("[debug] group sizes:", [len(g) for g in groups])
 
-        rec_ref = rec_hp # temporarily bypass referencing
-        # --- now we can reference using those groups ---
-        # rec_ref = spre.common_reference(
-        #     rec_hp, reference="global", operator="median", groups=groups
-        # )
-
-        # TODO can use detect_and_remove_bad_channels to remove high impedance channels
+        rec_ref = rec_hp
 
         # Default: no artifact windows
         block_bounds = np.empty((0, 2), dtype=int)
@@ -310,7 +264,8 @@ def main(limit_sessions: Optional[int] = None):
         # default to cleaned=ref unless we actually remove
         rec_artif_removed = rec_ref
         fs_ua = float(rec_ref.get_sampling_frequency())
-
+        blank_windows = None
+        
         if br_idx is None:
             print(f"[WARN] Could not parse BR index from session folder '{sess.name}'. Skipping artifact removal.")
         else:
@@ -347,7 +302,7 @@ def main(limit_sessions: Optional[int] = None):
             valid = (ends_ua > starts_ua) & (starts_ua >= 0) & (ends_ua <= n_total)
             starts_ua = starts_ua[valid]
             ends_ua   = ends_ua[valid]
-
+            
             if starts_ua.size:
                 ms_before = 5.0
                 tail_ms   = 5.0
@@ -361,6 +316,13 @@ def main(limit_sessions: Optional[int] = None):
                     ms_after=ms_after,     # one window long enough for all spans
                     mode="zeros",          # or "linear"
                 )
+                pad_before_samp = int(round(ms_before * fs_ua / 1000.0))
+                pad_after_samp  = int(round(tail_ms  * fs_ua / 1000.0))
+
+                starts_exp = np.clip(starts_ua - pad_before_samp, 0, None)
+                ends_exp   = np.clip(ends_ua   + pad_after_samp,  0, n_total)
+
+                blank_windows = {0: np.column_stack([starts_exp, ends_exp])}  # seg 0
             else:
                 print("[WARN] all artifact intervals invalid after shift; skipping artifact removal.")
         else:
@@ -383,31 +345,46 @@ def main(limit_sessions: Optional[int] = None):
             bin_ms=BIN_MS,
             sigma_ms=SIGMA_MS,
             n_jobs=PARAMS.parallel_jobs,
+            blank_windows_samples=blank_windows,
         )
 
         # rate_hz is (n_channels, n_bins) -> transpose to (n_bins, n_channels)
         X = rate_hz.T
 
-        # PCA for visualization
-        pca = PCA(n_components=5, random_state=0)
-        pcs = pca.fit_transform(X)            # shape: (n_bins, 5)
-        explained_var = pca.explained_variance_ratio_  # shape: (5,)
+        # 1) Zero-impute NaNs for PCA
+        X_filled = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Transpose back to (n_components, n_bins) for consistency
-        pcs_T = pcs.T.astype(np.float32)
-        
+        # 2) Mean-center columns using nan-aware means from the original data
+        col_means = np.nanmean(X, axis=0)
+        col_means = np.where(np.isfinite(col_means), col_means, 0.0)
+        Xc = X_filled - col_means[None, :]
+
+        # 2b) If total variance is ~0, skip PCA cleanly
+        total_var = np.var(Xc, axis=0).sum()
+        n_comp = min(5, Xc.shape[0], Xc.shape[1])
+        if n_comp >= 1 and total_var > 0.0:
+            pca = PCA(n_components=n_comp, random_state=0)
+            pcs = pca.fit_transform(Xc)                     # (n_bins, n_comp)
+            explained_var = np.nan_to_num(
+                pca.explained_variance_ratio_, nan=0.0
+            ).astype(np.float32)
+            pcs_T = pcs.T.astype(np.float32)                # (n_comp, n_bins)
+        else:
+            pcs_T = np.empty((0, Xc.shape[0]), dtype=np.float32)
+            explained_var = np.empty((0,), dtype=np.float32)
+
         out_npz = CKPT_OUT / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
         
         # infer common field names across SI versions
-        names = peaks.dtype.names
+        names = getattr(peaks, "dtype", None)
+        names = names.names if names is not None else ()
         samp_f = "sample_index" if "sample_index" in names else ("sample_ind" if "sample_ind" in names else None)
         chan_f = "channel_index" if "channel_index" in names else ("channel_ind" if "channel_ind" in names else None)
         amp_f  = "amplitude" if "amplitude" in names else None
 
-        # convenience arrays (optional)
-        peak_sample = peaks[samp_f].astype(np.int64)   if samp_f else None
-        peak_ch     = peaks[chan_f].astype(np.int16)   if chan_f else None
-        peak_amp    = peaks[amp_f].astype(np.float32)  if amp_f  else None
+        peak_sample = peaks[samp_f].astype(np.int64)   if (samp_f and peaks.size) else None
+        peak_ch     = peaks[chan_f].astype(np.int16)   if (chan_f and peaks.size) else None
+        peak_amp    = peaks[amp_f].astype(np.float32)  if (amp_f  and peaks.size) else None
         
         save = dict(
             rate_hz=rate_hz.astype(np.float32),

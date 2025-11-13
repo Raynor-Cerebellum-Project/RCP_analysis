@@ -1,15 +1,76 @@
 from __future__ import annotations
 from pathlib import Path
 import pandas as pd, numpy as np
-import json, csv, re, io, codecs
+import json, csv, re
 import spikeinterface as si
 import spikeinterface.extractors as se
 import spikeinterface.preprocessing as spre
 from typing import Dict, Any, Optional, Tuple
 from ..functions.intan_preproc import load_stim_geometry, make_identity_probe_from_geom
 
+# --- Building OCR and DLC dictionary for mapping ---
+def _parse_condition_cam(path: Path):
+    """
+    Take in names such as:
+      NRR_RW007_001_[date]_Cam-0_ocr.csv
+      NRR_RW007_001_[date]_Cam-1DLC_Resnet50_....csv
+    and outputs the condition ID, camera #, and DLC or OCR file
+    """
+    name = path.name
+    if "_Cam-" not in name: # If not from a camera, ignore files
+        return None, None
+
+    cond_id, after = name.split("_Cam-", 1) # Get condition ID
+    if not after:
+        return None, None
+
+    cam_char = after[0] # Get camera
+    if cam_char not in "0123456789": # won't have more than 10 cameras I guess
+        return None, None
+    return cond_id, int(cam_char)
+
+def find_per_cond_inputs(video_root: Path) -> Dict[str, dict]:
+    """
+    Scan VIDEO_ROOT/DLC for OCR/DLC files and keep newest file.
+    Return conditions that have both cams for both 'ocr' and 'dlc'
+    """
+    per: Dict[str, dict] = {}  # cond -> {'ocr': {cam: Path}, 'dlc': {cam: Path}}
+    for subdir, csv_type in (("DLC", "dlc"), ("OCR", "ocr")):
+        root = video_root / subdir
+        if not root.is_dir():
+            continue
+        for path in root.rglob("NRR_*_Cam-*.csv"):
+            cond_id, cam_num = _parse_condition_cam(path)
+            if not cond_id or cam_num is None:
+                continue
+            bucket = per.setdefault(cond_id, {"ocr": {}, "dlc": {}})
+            prev = bucket[csv_type].get(cam_num)
+            if prev is None or path.stat().st_mtime > prev.stat().st_mtime:
+                bucket[csv_type][cam_num] = path
+
+    required = {0, 1}
+    return {
+        cond: d for cond, d in per.items()
+        if set(d["ocr"]) >= required and set(d["dlc"]) >= required
+    }
+
+def get_metadata_mapping(meta_csv: Path, field1: str, field2: str) -> Dict[int, int]:
+    """
+    Gets field1 to field2 mapping using the metadata
+    """
+    with meta_csv.open(encoding="utf-8-sig", newline="") as f:
+        rdr = csv.DictReader(f)
+        if not rdr.fieldnames:
+            raise ValueError(f"{meta_csv.name}: missing header row")
+        return {
+            int(row[field1].strip()): int(row[field2].strip())
+            for row in rdr
+            if row.get(field1) and row.get(field2)
+        }
+
 # ---------- Helper functions ----------
 def _norm(s: str) -> str:
+    """Lowercase and strip non-alphanumerics; useful for tolerant CSV header matching."""
     return re.sub(r'[^a-z0-9]+', '', str(s).lower())
 
 def _find_col(df: pd.DataFrame, candidates: list[str]) -> str:
@@ -20,48 +81,150 @@ def _find_col(df: pd.DataFrame, candidates: list[str]) -> str:
             return lookup[key]
     raise KeyError(f"Missing any of {candidates}; sample cols: {list(df.columns)[:8]}")
 
-# Behavior CSV helpers
-def _read_csv_text_fallback(p: Path) -> str:
-    raw = p.read_bytes()
-    try_order = []
-    if raw.startswith(codecs.BOM_UTF8):       try_order = ["utf-8-sig"]
-    elif raw.startswith(codecs.BOM_UTF16_LE): try_order = ["utf-16-le"]
-    elif raw.startswith(codecs.BOM_UTF16_BE): try_order = ["utf-16-be"]
-    try_order += ["utf-8", "cp1252", "latin1", "utf-16"]
-    for enc in try_order:
-        try: return raw.decode(enc)
-        except UnicodeDecodeError: continue
-    return raw.decode("latin1", errors="replace")
+# OCR / DLC
+def load_ocr_map(ocr_csv: Path) -> pd.DataFrame:
+    """
+    Load OCR file TODO
+    """
+    df = pd.read_csv(ocr_csv)
+    col_avi = _find_col(df, ["AVI_framenum","avi_framenum","avi_frame","avi"])
+    col_ocr = _find_col(df, ["OCR_framenum","ocr_framenum","ocr_frame","ocr"])
+    col_cor = _find_col(df, ["CORRECTED_framenum","corrected_framenum","corrected_frame","corrected"])
 
-def _csv_dictreader(p: Path) -> csv.DictReader:
-    text = _read_csv_text_fallback(p)
-    rdr = csv.DictReader(io.StringIO(text))
-    if not rdr.fieldnames:
-        raise ValueError(f"{p.name}: no header row")
-    return rdr
+    out = df[[col_avi, col_ocr, col_cor]].copy()
+    for c in out.columns:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
 
-def _build_int_map_from_csv(p: Path, left_cols: tuple[str, ...], right_cols: tuple[str, ...]) -> dict[int,int]:
-    rdr = _csv_dictreader(p)
-    colmap = {_norm(c): c for c in rdr.fieldnames if c}
-    def pick(names): 
-        for n in names:
-            k = _norm(n)
-            if k in colmap: return colmap[k]
-        raise KeyError(f"{p.name}: missing one of {names}; saw {rdr.fieldnames}")
-    cL = pick(left_cols); cR = pick(right_cols)
-    out: dict[int,int] = {}
-    for row in rdr:
-        try: out[int(float(str(row[cL]).strip()))] = int(float(str(row[cR]).strip()))
-        except Exception: pass
+    last = out.dropna(subset=[col_ocr, col_cor]).tail(1)
+    if last.empty:
+        raise ValueError(f"{ocr_csv} has no valid OCR rows.")
+    try:
+        last_ocr = int(np.rint(float(last[col_ocr].iloc[0])))
+        last_cor = int(np.rint(float(last[col_cor].iloc[0])))
+        if last_ocr != last_cor:
+            print(f"[warn] {ocr_csv.name}: last OCR_framenum ({last_ocr}) != CORRECTED_framenum ({last_cor}); continuing.")
+    except Exception:
+        pass
+
+    return out.rename(columns={col_avi:"AVI_framenum", col_ocr:"OCR_framenum", col_cor:"CORRECTED_framenum"})
+
+def load_dlc(dlc_csv: Path) -> pd.DataFrame:
+    """
+        Load DLC file. If the first column is 'frame' (in any header
+        level), use it as the AVI_framenum index; otherwise use 0..N-1.
+        Columns are flattened and cast to numeric where possible. TODO
+    """
+    df = pd.read_csv(dlc_csv, header=[0, 1, 2])
+
+    # Detect a 'frame' first column (any header level says 'frame')
+    first = df.columns[0]
+    levels = [first] if not isinstance(first, tuple) else list(first)
+    levels_lc = [str(x).strip().lower() for x in levels]
+
+    if any(x == "frame" for x in levels_lc):
+        frame_col = pd.to_numeric(df.iloc[:, 0], errors="coerce")
+        df = df.drop(columns=[df.columns[0]])
+        idx = pd.Index(np.rint(frame_col.values).astype("Int64"), name="AVI_framenum")
+    else:
+        # Drop DLC “scorer/index” style column if present
+        first0 = str(levels[0]).lower()
+        if first0 in ("scorer", "index", ""):
+            df = df.drop(columns=[df.columns[0]])
+        idx = pd.RangeIndex(len(df), name="AVI_framenum")
+
+    # Flatten multi-index columns
+    flat_cols = []
+    for col in df.columns.values:
+        if isinstance(col, tuple):
+            parts = [str(x) for x in col if str(x) != "nan"]
+        else:
+            parts = [str(col)]
+        flat_cols.append("_".join(parts).strip())
+    df.columns = flat_cols
+
+    # Numeric where possible
+    for c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df.index = idx
+    return df
+
+def align_dlc_to_corrected(dlc_df: pd.DataFrame, ocr_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Map DLC rows (indexed by AVI_framenum) into a DataFrame indexed by
+    CORRECTED_framenum. Dropped frames become NaNs. TODO
+    """
+    # Round to nearest int when constructing mapping; NaNs are dropped
+    map_df = ocr_df.dropna(subset=["AVI_framenum", "CORRECTED_framenum"]).copy()
+    map_df["AVI_framenum"] = np.rint(map_df["AVI_framenum"].to_numpy()).astype(int)
+    map_df["CORRECTED_framenum"] = np.rint(map_df["CORRECTED_framenum"].to_numpy()).astype(int)
+
+    avi_to_corr = dict(zip(map_df["AVI_framenum"].values, map_df["CORRECTED_framenum"].values))
+
+    max_corr = int(np.rint(ocr_df["CORRECTED_framenum"].dropna().max()))
+    out = pd.DataFrame(
+        index=pd.RangeIndex(0, max_corr + 1, name="CORRECTED_framenum"),
+        columns=dlc_df.columns,
+        dtype=float,
+    )
+
+    # place DLC rows at corrected positions
+    # dlc_df.index is AVI_framenum (nullable int); coerce to ints where present
+    for avi, row in dlc_df.iterrows():
+        if pd.isna(avi):
+            continue
+        avi_int = int(np.rint(float(avi)))
+        corr = avi_to_corr.get(avi_int)
+        if corr is not None:
+            out.loc[corr] = row.values
+
     return out
 
-def load_video_to_br_map(meta_csv: Path) -> dict[int,int]:
-    return _build_int_map_from_csv(meta_csv, ("video_file","videofile","video"),
-                                              ("br_file","brfile","br"))
+def frame2sample_br_ns5_sync(
+    n_corrected: int,
+    ns_path: Path,
+    sync_chan: int,
+):
+    """
+    Read Blackrock NS5, detect rising edges on `sync_chan`,
+    and return sample indices corresponding to the frames.
 
-def read_intan_to_br_map(csv_path: Path) -> dict[int,int]:
-    return _build_int_map_from_csv(csv_path, ("intan_file","intanfile","intan","intanindex","intanfileindex"),
-                                              ("br_file","brfile","br","brindex","brfileindex"))
+    Returns:
+    samples: (n_corrected,) int32
+    """
+    # Load sync channel
+    rec = se.read_blackrock(str(ns_path), stream_id="5")
+    ch_ids = list(rec.get_channel_ids())  # typically ints
+    if sync_chan not in ch_ids:
+        raise KeyError(f"Channel id {sync_chan} not found in {ns_path.name}. First few: {ch_ids[:8]}")
+    sig = rec.get_traces(channel_ids=[sync_chan]).astype(np.float32).squeeze()
+
+    # --- rising-edge detection with hysteresis
+    if sig.size == 0:
+        raise RuntimeError("Empty sync signal.")
+    # downsampled stats for thresholds
+    step = max(1, sig.size // 20000)
+    ds = sig[::step]
+    lo = 0.5 * (ds.min() + ds.max())
+    hi = 0.5 * (lo + ds.max())
+
+    edges = []
+    high = False
+    for i, v in enumerate(sig):
+        if not high and v >= hi:
+            edges.append(i)
+            high = True
+        elif high and v <= lo:
+            high = False
+
+    edges = np.asarray(edges, dtype=np.int32)
+    if edges.size < n_corrected:
+        raise RuntimeError(
+            f"NS5 rising edges ({edges.size}) fewer than corrected frames ({n_corrected})."
+        )
+
+    samples = edges[:n_corrected]
+    return samples
 
 _CAM_IN_NAME_RE = re.compile(r"Cam[-_]?([01])", re.IGNORECASE)
 
@@ -195,102 +358,6 @@ def load_behavior_npz(csv_path: Path, num_cam: int):
     cam0 = df[cam0_cols].to_numpy(dtype=np.float32) if cam0_cols else np.zeros((len(df), 0), np.float32)
     cam1 = np.zeros((len(df), 0), np.float32)
     return ns5_sample, cam0, cam0_cols, cam1, cam1_cols
-
-# OCR / DLC
-def load_ocr_map(ocr_csv: Path) -> pd.DataFrame:
-    df = pd.read_csv(ocr_csv)
-    col_avi = _find_col(df, ["AVI_framenum","avi_framenum","avi_frame","avi"])
-    col_ocr = _find_col(df, ["OCR_framenum","ocr_framenum","ocr_frame","ocr"])
-    col_cor = _find_col(df, ["CORRECTED_framenum","corrected_framenum","corrected_frame","corrected"])
-
-    out = df[[col_avi, col_ocr, col_cor]].copy()
-    for c in out.columns:
-        out[c] = pd.to_numeric(out[c], errors="coerce")
-
-    last = out.dropna(subset=[col_ocr, col_cor]).tail(1)
-    if last.empty:
-        raise ValueError(f"{ocr_csv} has no valid OCR rows.")
-    try:
-        last_ocr = int(np.rint(float(last[col_ocr].iloc[0])))
-        last_cor = int(np.rint(float(last[col_cor].iloc[0])))
-        if last_ocr != last_cor:
-            print(f"[warn] {ocr_csv.name}: last OCR_framenum ({last_ocr}) != CORRECTED_framenum ({last_cor}); continuing.")
-    except Exception:
-        pass
-
-    return out.rename(columns={col_avi:"AVI_framenum", col_ocr:"OCR_framenum", col_cor:"CORRECTED_framenum"})
-
-def load_dlc(dlc_csv: Path) -> pd.DataFrame:
-    """
-    Load DLC CSV (3 header rows). If the first column is 'frame' (in any header
-    level), use it as the AVI_framenum index; otherwise use 0..N-1.
-    Columns are flattened and cast to numeric where possible.
-    """
-    df = pd.read_csv(dlc_csv, header=[0, 1, 2])
-
-    # Detect a 'frame' first column (any header level says 'frame')
-    first = df.columns[0]
-    levels = [first] if not isinstance(first, tuple) else list(first)
-    levels_lc = [str(x).strip().lower() for x in levels]
-
-    if any(x == "frame" for x in levels_lc):
-        frame_col = pd.to_numeric(df.iloc[:, 0], errors="coerce")
-        df = df.drop(columns=[df.columns[0]])
-        idx = pd.Index(np.rint(frame_col.values).astype("Int64"), name="AVI_framenum")
-    else:
-        # Drop DLC “scorer/index” style column if present
-        first0 = str(levels[0]).lower()
-        if first0 in ("scorer", "index", ""):
-            df = df.drop(columns=[df.columns[0]])
-        idx = pd.RangeIndex(len(df), name="AVI_framenum")
-
-    # Flatten multi-index columns
-    flat_cols = []
-    for col in df.columns.values:
-        if isinstance(col, tuple):
-            parts = [str(x) for x in col if str(x) != "nan"]
-        else:
-            parts = [str(col)]
-        flat_cols.append("_".join(parts).strip())
-    df.columns = flat_cols
-
-    # Numeric where possible
-    for c in df.columns:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    df.index = idx
-    return df
-
-def expand_dlc_to_corrected(dlc_df: pd.DataFrame, ocr_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Map DLC rows (indexed by AVI_framenum) into a DataFrame indexed by
-    CORRECTED_framenum. Dropped frames become NaNs.
-    """
-    # Round to nearest int when constructing mapping; NaNs are dropped
-    map_df = ocr_df.dropna(subset=["AVI_framenum", "CORRECTED_framenum"]).copy()
-    map_df["AVI_framenum"] = np.rint(map_df["AVI_framenum"].to_numpy()).astype(int)
-    map_df["CORRECTED_framenum"] = np.rint(map_df["CORRECTED_framenum"].to_numpy()).astype(int)
-
-    avi_to_corr = dict(zip(map_df["AVI_framenum"].values, map_df["CORRECTED_framenum"].values))
-
-    max_corr = int(np.rint(ocr_df["CORRECTED_framenum"].dropna().max()))
-    out = pd.DataFrame(
-        index=pd.RangeIndex(0, max_corr + 1, name="CORRECTED_framenum"),
-        columns=dlc_df.columns,
-        dtype=float,
-    )
-
-    # place DLC rows at corrected positions
-    # dlc_df.index is AVI_framenum (nullable int); coerce to ints where present
-    for avi, row in dlc_df.iterrows():
-        if pd.isna(avi):
-            continue
-        avi_int = int(np.rint(float(avi)))
-        corr = avi_to_corr.get(avi_int)
-        if corr is not None:
-            out.loc[corr] = row.values
-
-    return out
 
 # ---------- Intan utils ----------
 def list_intan_sessions(root: Path) -> list[Path]:
@@ -445,46 +512,6 @@ def load_intan_adc(npz_path: Path) -> tuple[np.ndarray, np.ndarray, float]:
         chxT = np.vstack([chxT, np.zeros_like(chxT)])
     return chxT[0].astype(np.float32), chxT[1].astype(np.float32), fs
 
-def detect_rising_edges(sig: np.ndarray) -> np.ndarray:
-    """Fast hysteresis threshold rising-edge detector."""
-    if sig.size == 0:
-        return np.array([], dtype=np.int64)
-    ds = sig[:: max(1, sig.size // 20000)]
-    lo = 0.5 * (ds.min() + ds.max())
-    hi = 0.5 * (lo + ds.max())
-    edges, state = [], False
-    for i, v in enumerate(sig):
-        if not state and v >= hi:
-            edges.append(i); state = True
-        elif state and v <= lo:
-            state = False
-    return np.asarray(edges, dtype=np.int64)
-
-def load_br_sync(ns_path: Path, chan_id: int, stream_id: str | int | None = None):
-    """
-    Load a sync channel from a Blackrock NSx file via spikeinterface.
-    If stream_id is None, let SI pick (works for ns2/ns5 etc.). For strict ns5 pass '5'.
-    """
-    rec = se.read_blackrock(str(ns_path), all_annotations=True, stream_id=str(stream_id) if stream_id else None)
-    fs = float(rec.get_sampling_frequency())
-    ids = list(map(str, rec.get_channel_ids()))
-    target = str(chan_id)
-    if target not in ids:
-        raise KeyError(f"Channel id {chan_id} not in {ns_path.name}. Have: {ids[:8]} …")
-    col = ids.index(target)
-    sig = rec.get_traces(channel_ids=[target]).astype(np.float32).squeeze()
-    return sig, fs
-
-def corrected_to_time_ns5(n_corrected: int, ns_path: Path, sync_chan: int):
-    """Return (ns5_samples, t_sec, fs) arrays of length n_corrected, using rising edges."""
-    sig, fs = load_br_sync(ns_path, sync_chan, stream_id=5)
-    edges = detect_rising_edges(sig)
-    if edges.size < n_corrected:
-        raise RuntimeError(f"NS5 rising edges ({edges.size}) fewer than corrected frames ({n_corrected}).")
-    samples = edges[:n_corrected].astype(np.int64)
-    t_sec = samples / float(fs)
-    return samples, t_sec, fs
-
 # Analysis / alignment
 def extract_peristim_segments(
     rate_hz: np.ndarray,
@@ -551,12 +578,25 @@ def baseline_zero_each_trial(
     base = np.nanmean(segments[:, :, mask], axis=2, keepdims=True)  # (n_trials, n_ch, 1)
     return segments - base # TODO This is subtracting baseline, can try using FRtrial = FR trial/(FR baseline + 1)
 
-def median_across_trials(zeroed_segments: np.ndarray):
+def median_across_trials(zeroed_segments: np.ndarray) -> np.ndarray:
     """
-    Find median across trials per channel.
-    Input: (n_trials, n_ch, n_twin) -> returns (n_ch, n_twin)
+    Median across trials per channel×time, ignoring NaNs.
+    If a (ch, t) bin is all-NaN across trials, the result stays NaN.
+    Input:  (n_trials, n_ch, n_t)  ->  (n_ch, n_t)
     """
-    return np.nanmedian(zeroed_segments, axis=0)
+    z = np.asarray(zeroed_segments, dtype=float)
+    med = np.ma.median(np.ma.masked_invalid(z), axis=0).filled(np.nan)
+    return med
+
+def variance_across_trials(zeroed_segments: np.ndarray) -> np.ndarray:
+    """
+    Variance across trials per channel×time, ignoring NaNs.
+    If a (ch, t) bin is all-NaN across trials, the result stays NaN.
+    Input:  (n_trials, n_ch, n_t)  ->  (n_ch, n_t)
+    """
+    z = np.asarray(zeroed_segments, dtype=float)
+    var = np.ma.var(np.ma.masked_invalid(z), axis=0).filled(np.nan)
+    return var
 
 # Stim
 def load_stim_detection(npz_path: Path) -> Dict[str, np.ndarray]:
@@ -686,9 +726,6 @@ def build_session_index_map(intan_sessions: list[str]) -> tuple[dict[str,int], d
 # Small helpers
 # =============================================================================
 
-def _norm(s: str) -> str:
-    """Lowercase and strip non-alphanumerics; useful for tolerant CSV header matching."""
-    return re.sub(r'[^a-z0-9]+', '', str(s).lower())
 
 def _rglob_many(root: Path, patterns: tuple[str, ...]) -> list[Path]:
     """rglob multiple patterns and return a flat list."""
@@ -696,163 +733,6 @@ def _rglob_many(root: Path, patterns: tuple[str, ...]) -> list[Path]:
     for pat in patterns:
         out.extend(root.rglob(pat))
     return out
-
-# =============================================================================
-# Trial / Video index parsing
-# =============================================================================
-
-# Optional date block with flexible separators: _YYYY_MMDD_HHMMSS or _YYYY-MMDD-HHMMSS
-_DATE_OPT = r'(?:_[0-9]{4}[_-][0-9]{4}[_-][0-9]{6})?'
-
-# Extract the video index (second 3-digit block), e.g. 'NRR_RW001_002[_date]' -> 2
-_TRIAL_VIDEO_IDX_RE = re.compile(
-    rf'NRR_[A-Za-z]+(?:\d{{3}})_(\d{{3}}){_DATE_OPT}(?:\b|_)',
-    re.IGNORECASE
-)
-
-def extract_video_idx_from_trial(trial: str) -> Optional[int]:
-    """
-    Returns the Video_File index from names like:
-      NRR_RW001_002
-      NRR_RW001_002_2025_0915_141059
-    -> 2  (i.e., the second 3-digit block)
-    """
-    m = _TRIAL_VIDEO_IDX_RE.search(trial)
-    if m:
-        return int(m.group(1))
-    # Fallback: last 3-digit token (dates are 4/4/6, so won’t collide)
-    nums = re.findall(r'(?<!\d)(\d{3})(?!\d)', trial)
-    return int(nums[-1]) if nums else None
-
-# =============================================================================
-# File-name parsing (OCR + DLC)
-# =============================================================================
-
-# Accept:
-#   NRR_RW003_001[_date]_Cam-0_ocr.csv
-#   NRR_RW003_001[_date]_Cam-0DLC_Resnet50_....csv
-_TRIAL_CAM_ANY_RE = re.compile(
-    rf'^(?P<trial>NRR_[A-Za-z]+[0-9]{{3}}_[0-9]{{3}}){_DATE_OPT}'
-    r'_Cam-(?P<cam>[01])(?:(?P<dlc>DLC.*\.csv)|(?:_|-)?ocr\.csv)$',
-    re.IGNORECASE
-)
-
-def parse_trial_cam_kind(p: Path) -> Tuple[Optional[str], Optional[int], Optional[str]]:
-    """
-    Returns (trial, cam, kind) for a given OCR/DLC CSV path.
-    kind ∈ {'ocr','dlc'} or (None,None,None) if no match.
-    """
-    m = _TRIAL_CAM_ANY_RE.match(p.name)
-    if not m:
-        return None, None, None
-    trial = m.group("trial")
-    cam = int(m.group("cam"))
-    kind = "dlc" if m.group("dlc") else "ocr"
-    return trial, cam, kind
-
-def find_per_trial_inputs(
-    video_root: Path,
-    *,
-    require_both_cams_and_kinds: bool = False,
-) -> Dict[str, dict]:
-    """
-    Scan VIDEO_ROOT (and VIDEO_ROOT/DLC if present) for OCR/DLC files and keep newest by mtime.
-
-    Returns:
-      {
-        trial: {
-          'ocr': { 0: Path, 1: Path, ... },
-          'dlc': { 0: Path, 1: Path, ... },
-        }
-      }
-    """
-    per: Dict[str, dict] = {}
-    patterns = ("NRR_*_Cam-[01]*.csv",)
-
-    # Collect candidate files from both the root and DLC subdir (if present).
-    search_roots = [video_root]
-    dlc_dir = video_root / "DLC"
-    if dlc_dir.exists():
-        search_roots.append(dlc_dir)
-
-    for root in search_roots:
-        try:
-            for p in _rglob_many(root, patterns):
-                trial, cam, kind = parse_trial_cam_kind(p)
-                if trial is None:
-                    continue
-                d = per.setdefault(trial, {"ocr": {}, "dlc": {}})
-                prev = d[kind].get(cam)
-                if prev is None or p.stat().st_mtime > prev.stat().st_mtime:
-                    d[kind][cam] = p
-        except FileNotFoundError:
-            # If a search root doesn't exist, just skip it.
-            continue
-
-    if not require_both_cams_and_kinds:
-        return per
-
-    # Keep only trials that have BOTH cams (0 & 1) for BOTH OCR and DLC.
-    return {
-        t: d for t, d in per.items()
-        if set(d["ocr"].keys()) >= {0, 1} and set(d["dlc"].keys()) >= {0, 1}
-    }
-
-# =============================================================================
-# CSV: Video_File → BR_File
-# =============================================================================
-
-def load_video_to_br_map(meta_csv: Path) -> dict[int, int]:
-    """
-    Returns { video_idx -> br_idx } from METADATA_CSV.
-    Tolerates common encodings and small header-name variations.
-    """
-    encodings = ("utf-8", "utf-8-sig", "cp1252", "latin-1", "mac_roman")
-    last_err: Optional[Exception] = None
-
-    for enc in encodings:
-        try:
-            with meta_csv.open("r", newline="", encoding=enc, errors="strict") as f:
-                rdr = csv.DictReader(f)
-                cols = { _norm(c): c for c in (rdr.fieldnames or []) }
-
-                def col(*cands: str) -> str:
-                    for c in cands:
-                        k = _norm(c)
-                        if k in cols:
-                            return cols[k]
-                    raise KeyError(
-                        f"Missing any of columns {cands}; "
-                        f"found={list(cols.values()) or '[] (no header?)'}"
-                    )
-
-                c_video = col("video_file", "videofile", "video")
-                c_br    = col("br_file", "brfile", "br")
-
-                out: dict[int, int] = {}
-                for row in rdr:
-                    v_raw = str(row.get(c_video, "")).strip()
-                    b_raw = str(row.get(c_br, "")).strip()
-                    if not v_raw or not b_raw:
-                        continue
-                    try:
-                        out[int(float(v_raw))] = int(float(b_raw))  # robust to "001", "1.0"
-                    except Exception:
-                        continue
-
-                if out and enc != "utf-8":
-                    print(f"[info] Read {meta_csv.name} with encoding={enc}.")
-                if not out:
-                    print(f"[warn] No Video_File→BR_File pairs found in {meta_csv.name}.")
-                return out
-
-        except UnicodeDecodeError as e:
-            last_err = e
-            continue
-
-    raise RuntimeError(
-        f"Could not decode {meta_csv} with tried encodings; last error: {last_err}"
-    )
 
 # =============================================================================
 # Blackrock (.ns5/.ns6) locating
@@ -864,6 +744,7 @@ def _nsx_token_score(p: Path, token: str) -> tuple[int, float, int]:
     st = p.stat()
     return (strong, st.st_mtime, st.st_size)
 
+# Default
 def find_nsx_by_br_index(
     br_root: Path,
     br_idx: int,
@@ -882,24 +763,24 @@ def find_nsx_by_br_index(
         print(f"[warn] No obvious NSx name match for BR {token}; using {best.name}")
     return best
 
-def find_nsx_for_trial(
+def find_ns5_by_br_index(br_root: Path, br_idx: int) -> Optional[Path]:
+    return find_nsx_by_br_index(br_root, br_idx, exts=("*.ns5",))
+
+# Backup?
+def find_nsx_for_cond(
     br_root: Path,
-    trial: str,
+    cond: str,
     exts: tuple[str, ...] = ("*.ns5", "*.ns6"),
 ) -> Optional[Path]:
     """
-    Locate an NSx whose stem contains the trial id. Prefer newest mtime, then size.
+    Locate an NSx whose stem contains the condition id. Prefer newest mtime, then size.
     """
-    trial_low = trial.lower()
-    hits = [p for p in _rglob_many(br_root, exts) if trial_low in p.stem.lower()]
+    cond_low = cond.lower()
+    hits = [p for p in _rglob_many(br_root, exts) if cond_low in p.stem.lower()]
     if not hits:
         return None
     hits.sort(key=lambda p: (p.stat().st_mtime, p.stat().st_size), reverse=True)
     return hits[0]
 
-# Explicit ns5-only wrappers (handy when you must avoid .ns6)
-def find_ns5_by_br_index(br_root: Path, br_idx: int) -> Optional[Path]:
-    return find_nsx_by_br_index(br_root, br_idx, exts=("*.ns5",))
-
-def find_ns5_for_trial(br_root: Path, trial: str) -> Optional[Path]:
-    return find_nsx_for_trial(br_root, trial, exts=("*.ns5",))
+def find_ns5_for_cond(br_root: Path, cond: str) -> Optional[Path]:
+    return find_nsx_for_cond(br_root, cond, exts=("*.ns5",))

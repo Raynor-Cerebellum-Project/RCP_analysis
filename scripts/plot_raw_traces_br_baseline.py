@@ -50,8 +50,8 @@ if UA_MAP is None:
 # ---- Impedance file(s) ----
 IMP_BASE = OUT_BASE.parents[0]
 IMP_FILES = {
-    "A": IMP_BASE / "Utah_imp_Bank_A_start",
-    "B": IMP_BASE / "Utah_imp_Bank_B_start",
+    "A": IMP_BASE / "Impedances" / "Utah_imp_Bank_A_start",
+    "B": IMP_BASE / "Impedances" / "Utah_imp_Bank_B_start",
 }
 
 def _group_tag_from_elecs(rec, ch_group):

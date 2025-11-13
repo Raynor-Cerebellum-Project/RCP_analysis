@@ -7,7 +7,15 @@ import pandas as pd
 import spikeinterface as si
 import spikeinterface.extractors as se
 from spikeinterface.sortingcomponents.peak_detection import detect_peaks
-from scipy.signal import butter, filtfilt
+from scipy.signal import fftconvolve
+
+def _gauss_kernel_from_sigma_bins(sigma_bins: float, radius_mult: float = 4.0):
+    sigma_bins = max(1e-9, float(sigma_bins))
+    r = int(np.ceil(radius_mult * sigma_bins))
+    x = np.arange(-r, r+1, dtype=float)
+    k = np.exp(-(x**2) / (2.0 * sigma_bins**2))
+    k /= k.sum()
+    return k
 
 # ---------- BR utils ----------
 def list_br_sessions(data_root: Path, blackrock_rel: str) -> list[Path]:
@@ -396,6 +404,7 @@ def threshold_mua_rates(
     bin_ms: float,
     sigma_ms: float,
     n_jobs: int,
+    blank_windows_samples: dict[int, np.ndarray] | None = None,
 ):
     """
     Threshold-crossing MUA → binned + Gaussian-smoothed firing rates.
@@ -409,6 +418,7 @@ def threshold_mua_rates(
     peak_t_ms : (n_peaks,) float
         Global peak times in ms (segment offsets applied).
     """
+    
     fs = float(recording.get_sampling_frequency())
     n_ch = int(recording.get_num_channels())
     n_seg = int(recording.get_num_segments())
@@ -419,8 +429,6 @@ def threshold_mua_rates(
 
     # 1) Detect peaks
     noise_levels = si.get_noise_levels(recording, method="mad", return_in_uV=False) # They didn't write return_in_uV in their documentation
-    
-    # 1) Detect peaks
     peaks = detect_peaks(
         recording,
         method="by_channel_torch",
@@ -429,7 +437,6 @@ def threshold_mua_rates(
         noise_levels=noise_levels,
         n_jobs=n_jobs,
     )
-
     # --- Deduplicate near-coincident peaks per (segment, channel): cluster + keep strongest ---
     ch_field, samp_field, seg_field, amp_field = (
         "channel_index", "sample_index", "segment_index", "amplitude"
@@ -501,9 +508,9 @@ def threshold_mua_rates(
     peak_t_ms = peak_samp_global.astype(np.float32) * (1000.0 / fs)
 
     # 2) Bin counts per segment
-    counts_all, t_all = [], []
-    sigma_bins = max(1e-9, sigma_ms / bin_ms)  # ms → bins
     bin_offset = 0
+    counts_all, t_all, blank_masks = [], [], []
+    sigma_bins = max(1e-9, sigma_ms / bin_ms)
 
     for seg in range(n_seg):
         n_samps = seg_n_samps[seg]
@@ -517,7 +524,6 @@ def threshold_mua_rates(
             seg_peaks = peaks if n_seg == 1 else None
             if seg_peaks is None:
                 raise RuntimeError("No segment field in peaks for multi-segment recording.")
-
         if seg_peaks.size > 0:
             ch_idx = seg_peaks[ch_field].astype(np.int64, copy=False)
             samp   = seg_peaks[samp_field].astype(np.int64, copy=False)
@@ -525,44 +531,93 @@ def threshold_mua_rates(
             np.add.at(counts, (ch_idx, bins), 1)
 
         counts_all.append(counts)
+
+        # ---- build a bin-level blank mask from sample windows ----
+        blank_mask_seg = np.zeros(seg_bins, dtype=bool)
+        if blank_windows_samples is not None and seg in blank_windows_samples:
+            win = np.asarray(blank_windows_samples[seg], dtype=np.int64)
+            win = win[(win[:,1] > win[:,0]) & (win[:,0] < n_samps) & (win[:,1] > 0)]
+            if win.size:
+                # convert sample windows -> bin-range [b0,b1)
+                b0 = np.clip(win[:,0] // bin_samps, 0, seg_bins)
+                # inclusive end in samples -> exclusive end in bins
+                b1 = np.clip((win[:,1] + bin_samps - 1) // bin_samps, 0, seg_bins)
+                for i0, i1 in zip(b0, b1):
+                    blank_mask_seg[i0:i1] = True
+        blank_masks.append(blank_mask_seg)
+
+        # times
         t_ms = (np.arange(seg_bins, dtype=np.float32) + 0.5 + bin_offset) * bin_ms
         t_all.append(t_ms)
         bin_offset += seg_bins
 
     counts_cat = np.concatenate(counts_all, axis=1)
     t_cat_ms   = np.concatenate(t_all)
+    blank_mask = np.concatenate(blank_masks) if blank_masks else np.zeros(counts_cat.shape[1], bool)
+    fs_bins = 1000.0 / float(bin_ms)
 
-    # 3) Gaussian smoothing → Hz
-    fs_bins = 1000.0 / float(bin_ms)  # bins per second
     if counts_cat.shape[1] < 4:
         counts_smooth = counts_cat.astype(float, copy=False)
+        if blank_mask.any():
+            counts_smooth[:, blank_mask] = np.nan
     else:
-        # Map Gaussian sigma to an approximate -3 dB cutoff:
-        # For a Gaussian, H(f) = exp(-(2π f σ)^2 / 2); |H| = 1/√2 at f_c = sqrt(ln 2) / (2π σ)
-        # Use sigma_ms to set a comparable Butterworth cutoff.
-        sigma_sec = max(1e-9, float(sigma_ms) / 1000.0)
-        fc_hz = (np.sqrt(np.log(2.0)) / (2.0 * np.pi * sigma_sec))  # ~0.132 / sigma_sec
+        sigma_bins = float(sigma_ms) / float(bin_ms)
+        k = _gauss_kernel_from_sigma_bins(max(1e-9, sigma_bins), radius_mult=4.0)
+        r = (k.size - 1) // 2  # kernel radius in bins
 
-        # Normalize for butter() (0..1 where 1 = Nyquist)
-        nyq = 0.5 * fs_bins
-        wn = min(0.999, max(1e-6, fc_hz / nyq))
+        X = counts_cat.astype(float, copy=False)
+        valid0 = np.isfinite(X)
 
-        b, a = butter(N=4, Wn=wn, btype="low", analog=False)
+        # ---- dilate blank mask by kernel radius (avoid half-kernels) ----
+        if blank_mask.any():
+            pad = np.zeros(r, dtype=int)
+            dil = np.convolve(np.r_[pad, blank_mask.astype(int), pad],
+                            np.ones(2 * r + 1, dtype=int), mode="same") > 0
+            blank_dil = dil[r:-r]
+        else:
+            blank_dil = np.zeros(X.shape[1], dtype=bool)
 
-        # filtfilt default padlen = 3*(max(len(a), len(b)) - 1)
-        # If too short, reduce padlen safely.
-        T = counts_cat.shape[1]
-        default_padlen = 3 * (max(len(a), len(b)) - 1)
-        padlen = default_padlen if T > default_padlen else max(0, T - 1)
+        # base validity for smoothing
+        valid = valid0 & (~blank_dil)
 
-        try:
-            counts_smooth = filtfilt(b, a, counts_cat.astype(float, copy=False),
-                                     axis=1, padlen=padlen)
-        except ValueError:
-            # If still too short/edgey, fall back to no filtering
-            counts_smooth = counts_cat.astype(float, copy=False)
+        # ---- gentle inpainting: fill only short NaN runs (≤ r) per channel ----
+        def _interp_short_gaps(y: np.ndarray, max_gap: int) -> np.ndarray:
+            out = y.copy()
+            isn = ~np.isfinite(out)
+            if not isn.any():
+                return out
+            starts = np.where(isn & ~np.r_[False, isn[:-1]])[0]
+            ends   = np.where(isn & ~np.r_[isn[1:],  False])[0]
+            for s, e in zip(starts, ends):
+                gap = e - s + 1
+                L, R = s - 1, e + 1
+                if gap <= max_gap and L >= 0 and R < out.size and np.isfinite(out[L]) and np.isfinite(out[R]):
+                    out[s:e+1] = np.interp(np.arange(s, e+1), [L, R], [out[L], out[R]])
+            return out
 
-    rate_hz = counts_smooth * fs_bins  # counts/bin → Hz
+        X_filled = X.copy()
+        # don’t inpaint original hard blank bins; only regular NaNs from data
+        hard_nan = ~valid0
+        for i in range(X.shape[0]):
+            xi = X_filled[i]
+            # protect true blanks
+            xi[blank_dil] = np.nan
+            X_filled[i] = _interp_short_gaps(xi, r)
+
+        # ---- normalized single-pass convolution with reflect padding ----
+        Xp = np.pad(np.where(valid, X_filled, 0.0), ((0, 0), (r, r)), mode="reflect")
+        Wp = np.pad(valid.astype(float),          ((0, 0), (r, r)), mode="reflect")
+
+        num = fftconvolve(Xp, k[None, :], mode="same")[:, r:-r]
+        den = fftconvolve(Wp, k[None, :], mode="same")[:, r:-r]
+
+        counts_smooth = num / np.clip(den, 1e-12, None)
+
+        # keep hard blanks strictly NaN in the output (use original blank_mask, not dilated)
+        counts_smooth[:, blank_mask] = np.nan
+
+    # Finally convert counts→Hz
+    rate_hz = counts_smooth * fs_bins
     return rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms
 
 __all__ = [
