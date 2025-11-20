@@ -5,6 +5,8 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import RCP_analysis as rcp
+import spikeinterface.extractors as se
+import spikeinterface.preprocessing as spre
 matplotlib.use("Agg")
 matplotlib.rcParams['svg.fonttype'] = 'none'
 
@@ -21,17 +23,17 @@ YLIM_UV = None                               # tighten or set to None for autosc
 # ---- Resolving paths ----
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-OUT_BASE  = rcp.resolve_output_root(PARAMS); OUT_BASE.mkdir(parents=True, exist_ok=True)
-DATA_ROOT = rcp.resolve_data_root(PARAMS)
-INTAN_ROOT = rcp.resolve_intan_root(PARAMS)
+SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
+OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
+INTAN_ROOT = SESSION_LOC / "Intan"; INTAN_ROOT.mkdir(parents=True, exist_ok=True)
+BR_ROOT = SESSION_LOC / "Blackrock"; BR_ROOT.mkdir(parents=True, exist_ok=True)
 
-SESSION = getattr(PARAMS, "session", None)
 # --- metadata + shifts CSV (for Intan session & anchor_ms) ---
-metadata_rel = getattr(PARAMS, "metadata_rel", None) or ""
-METADATA_CSV = (DATA_ROOT / metadata_rel).resolve()
-SHIFTS_CSV   = METADATA_CSV.parent / "br_to_intan_shifts.csv"
-ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
-PATH_UA_SI   = OUT_BASE / "checkpoints" / "UA" / f"pp_global__{SESSION}_{BR_IDX:03d}__NS6"
+METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
+SHIFTS_CSV   = METADATA_ROOT / "br_to_intan_shifts.csv"
+PATH_UA_SI   = OUT_BASE / "checkpoints" / "UA" / f"pp_global__{Path(PARAMS.session)}_{BR_IDX:03d}__NS6"
+ALIGNED_CKPT_ROOT = OUT_BASE / "checkpoints" / "Aligned"
 
 # Build short tags
 amp_tag = ("auto" if YLIM_UV is None else (f"pm_{abs(YLIM_UV[1]):g}uV" if YLIM_UV[0] == -YLIM_UV[1] else f"{YLIM_UV[0]:g}to{YLIM_UV[1]:g}uV"))
@@ -88,19 +90,43 @@ def parse_elec_nsp_from_id(x) -> tuple[int|None, int|None]:
     return (int(m3.group(0)), None) if m3 else (None, None)
 
 # find the BR session folder under the Blackrock tree
-def _find_br_session_dir(data_root: Path, blackrock_rel: str | None, session: str | None, br_idx: int) -> Path:
-    # Use the same utility you use elsewhere to list BR sessions
-    br_folders = rcp.list_br_sessions(data_root, blackrock_rel)
+def _find_br_session_dir(
+    br_root: Path,
+    session: str | None,
+    br_idx: int,
+) -> Path:
+    """
+    Find the BR session folder under br_root corresponding to BR index br_idx.
+
+    If `session` is provided, prefer folders whose name starts with that
+    session string and ends with '_{br_idx:03d}'.
+    """
+    br_folders = rcp.list_br_sessions(br_root)
+
     if session:
-        cands = [p for p in br_folders if p.name.startswith(session) and re.search(rf'_{br_idx:03d}$', p.name)]
+        # Prefer: session prefix + _NNN
+        cands = [
+            p for p in br_folders
+            if p.name.startswith(session) and re.search(rf"_{br_idx:03d}$", p.name)
+        ]
         if not cands:
-            # fallback: any folder ending with _BR
-            cands = [p for p in br_folders if re.search(rf'_{br_idx:03d}$', p.name)]
+            # Fallback: any folder ending with _NNN
+            cands = [
+                p for p in br_folders
+                if re.search(rf"_{br_idx:03d}$", p.name)
+            ]
     else:
-        cands = [p for p in br_folders if re.search(rf'_{br_idx:03d}$', p.name)]
+        cands = [
+            p for p in br_folders
+            if re.search(rf"_{br_idx:03d}$", p.name)
+        ]
+
     if not cands:
         raise SystemExit(f"[error] could not locate BR session folder for BR {br_idx:03d}")
+
+    # Latest / lexicographically last candidate
     return sorted(cands)[-1]
+
 
 # ---- Helpers ----
 # Impedance parsing
@@ -303,8 +329,8 @@ def _load_br_to_intan_map_full(shifts_csv: Path) -> dict[int, dict]:
 # ---- Main ----
 def main():
     # UA recording (RAW NS6 traces, not CMR)
-    sess_dir = _find_br_session_dir(DATA_ROOT, getattr(PARAMS, "blackrock_rel", None), SESSION, BR_IDX)
-    rec_raw = rcp.load_ns6_spikes(sess_dir)
+    sess_dir = _find_br_session_dir(BR_ROOT, SESSION_LOC, BR_IDX)
+    rec_raw = se.read_blackrock(sess_dir, stream_name = 'nsx6', all_annotations=True)
 
     # Keep channel indexing consistent with UA mapping (no properties, just IDs/ordering)
     # Returns (recording_with_renamed_ids, idx_rows) → we only need the recording here
@@ -381,9 +407,10 @@ def main():
     anchor_ms = float(sess_entry.get("anchor_ms", 0.0))
 
     try:
-        rec_ir = rcp.read_intan_recording(INTAN_ROOT / intan_session, stream_name=IR_STREAM)
+        rec_ir = se.read_split_intan_files(INTAN_ROOT / intan_session, mode="concatenate", stream_name=IR_STREAM, use_names_as_ids=True)
+        rec_ir = spre.unsigned_to_signed(rec_ir) # Convert UInt16 to int16
     except Exception as e:
-        raise SystemExit(f"[error] read_intan_recording failed for Intan session {intan_session}: {e}")
+        raise SystemExit(f"[warn] Reading IR stream failed: Intan={intan_session}: {e}")
 
     sig, fs_ir = _extract_signal_fs(rec_ir)
     if sig is None or sig.size == 0:
@@ -400,7 +427,7 @@ def main():
 
     # Optional: peaks from aligned NPZ
     peak_ch = peak_t_ms = None
-    aligned_npz = _find_aligned_file(ALIGNED_ROOT, BR_IDX)
+    aligned_npz = _find_aligned_file(ALIGNED_CKPT_ROOT, BR_IDX)
     if aligned_npz is not None:
         z = np.load(aligned_npz, allow_pickle=True)
         peak_ch, peak_t_ms = _safe_peaks_UA(z)

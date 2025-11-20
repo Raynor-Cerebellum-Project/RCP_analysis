@@ -5,6 +5,8 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import spikeinterface as si
+import spikeinterface.preprocessing as spre
+import spikeinterface.extractors as se
 import RCP_analysis as rcp
 matplotlib.use("Agg")
 matplotlib.rcParams['svg.fonttype'] = 'none'
@@ -21,16 +23,15 @@ YLIM_UV = (-50, 50)                               # tighten or set to None for a
 # ---- Resolving paths ----
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-OUT_BASE  = rcp.resolve_output_root(PARAMS); OUT_BASE.mkdir(parents=True, exist_ok=True)
-DATA_ROOT = rcp.resolve_data_root(PARAMS)
-INTAN_ROOT = rcp.resolve_intan_root(PARAMS)
+SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
+OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
+INTAN_ROOT = SESSION_LOC / "Intan"; INTAN_ROOT.mkdir(parents=True, exist_ok=True)
 
-SESSION = getattr(PARAMS, "session", None)
-metadata_rel = getattr(PARAMS, "metadata_rel", None) or ""
-METADATA_CSV = (DATA_ROOT / metadata_rel).resolve()
-SHIFTS_CSV   = METADATA_CSV.parent / "br_to_intan_shifts.csv"
+METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
+SHIFTS_CSV   = METADATA_ROOT / "br_to_intan_shifts.csv"
 
-ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
+ALIGNED_CKPT_ROOT = OUT_BASE / "checkpoints" / "Aligned"
 PATH_UA_SI   = OUT_BASE / "checkpoints" / "UA" / f"pp_global__{SESSION}_{BR_IDX:03d}__NS6"
 
 # --- UA mapping (needed to infer UA port) ---
@@ -303,11 +304,13 @@ def main():
     intan_session = sess_entry["session"]
     anchor_ms = float(sess_entry.get("anchor_ms", 0.0))
 
+    # IR edges
     try:
-        rec_ir = rcp.read_intan_recording(INTAN_ROOT / intan_session, stream_name=IR_STREAM)
+        rec_ir = se.read_split_intan_files(INTAN_ROOT / intan_session, mode="concatenate", stream_name=IR_STREAM, use_names_as_ids=True)
+        rec_ir = spre.unsigned_to_signed(rec_ir) # Convert UInt16 to int16
     except Exception as e:
-        raise SystemExit(f"[error] read_intan_recording failed for Intan session {intan_session}: {e}")
-
+        raise SystemExit(f"[warn] Reading IR stream failed: Intan={intan_session}: {e}")
+            
     sig, fs_ir = _extract_signal_fs(rec_ir)
     if sig is None or sig.size == 0:
         raise SystemExit(f"[error] No IR signal for Intan session {intan_session}.")
@@ -323,7 +326,7 @@ def main():
 
     # Optional: peaks from aligned NPZ
     peak_ch = peak_t_ms = None
-    aligned_npz = _find_aligned_file(ALIGNED_ROOT, BR_IDX)
+    aligned_npz = _find_aligned_file(ALIGNED_CKPT_ROOT, BR_IDX)
     if aligned_npz is not None:
         z = np.load(aligned_npz, allow_pickle=True)
         peak_ch, peak_t_ms = _safe_peaks_UA(z)

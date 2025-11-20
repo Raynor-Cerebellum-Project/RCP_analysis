@@ -1,4 +1,3 @@
-from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 import re, csv
@@ -9,21 +8,16 @@ import spikeinterface.extractors as se
 from spikeinterface.sortingcomponents.peak_detection import detect_peaks
 from scipy.signal import fftconvolve
 
-def _gauss_kernel_from_sigma_bins(sigma_bins: float, radius_mult: float = 4.0):
-    sigma_bins = max(1e-9, float(sigma_bins))
-    r = int(np.ceil(radius_mult * sigma_bins))
-    x = np.arange(-r, r+1, dtype=float)
-    k = np.exp(-(x**2) / (2.0 * sigma_bins**2))
-    k /= k.sum()
-    return k
-
 # ---------- BR utils ----------
-def list_br_sessions(data_root: Path, blackrock_rel: str) -> list[Path]:
+def list_br_sessions(br_root: Path) -> list[Path]:
     """
-    List Blackrock sessions under data_root/blackrock_rel.
-    A session can be either a directory or a base filename for NSx/NEV pairs.
+    List Blackrock sessions under br_root.
+
+    A session can be either:
+      - a subdirectory, or
+      - a base filename for NSx/NEV pairs in br_root.
     """
-    root = data_root / blackrock_rel
+    root = br_root
     if not root.exists():
         raise FileNotFoundError(f"Session root not found: {root}")
 
@@ -34,78 +28,89 @@ def list_br_sessions(data_root: Path, blackrock_rel: str) -> list[Path]:
 
     # Case 2: sessions are loose NSx/NEV files in the root
     files = [p for p in root.iterdir() if p.is_file()]
-    nsx_nev = [p for p in files if p.suffix.lower().startswith(".ns") or p.suffix.lower() == ".nev"]
+    nsx_nev = [
+        p for p in files
+        if p.suffix.lower().startswith(".ns") or p.suffix.lower() == ".nev"
+    ]
     if not nsx_nev:
         raise FileNotFoundError(f"No NSx/NEV files found under {root}.")
     bases = sorted({p.stem for p in nsx_nev})
     return [root / b for b in bases]
 
 def ua_excel_path(repo_root: Path, probes_cfg: dict | None) -> Optional[Path]:
-    ua_cfg = (probes_cfg or {}).get("UA", {})
-    rel = ua_cfg.get("mapping_excel_rel") or ua_cfg.get("mapping_mat_rel")
+    ua_cfg = (probes_cfg).get("UA")
+    rel = ua_cfg.get("mapping_mat_rel")
     if not rel:
         return None
     p = (repo_root / rel) if not str(rel).startswith("/") else Path(rel)
     return p if p.exists() else None
 
-# ---------- BR loaders ----------
-def _load_nsx(sess: Path, ext: str):
+
+# bundle extraction
+def extract_blackrock_bundle(sess: Path, out_dir, camera_sync_ch, triangle_sync_ch) -> dict:
     """
-    Load a Blackrock .nsx file by extension (e.g. ns2, ns5, ns6).
-    - sess is the session path
-    Returns a SpikeInterface BlackrockRecordingExtractor
+    Build and save BR bundle:
+      - ns5: pull specific sync channels (Ex: 134=camera, 138=triangle) if present
+      - ns2: pull ALL channels present
     """
-    sess = Path(sess)
-    root = sess if sess.is_dir() else sess.parent
-    base = sess.name if not sess.is_dir() else sorted({p.stem for p in root.glob("*.ns*")})[0]
-    f = root / f"{base}.{ext}"
-    if not f.exists():
-        raise FileNotFoundError(f"Missing {ext} for base {base} in {root}")
-    print(f"[LOAD] {f.name}")
-    return se.read_blackrock(str(f), all_annotations=True)
+    bundle: Dict[str, Any] = {}
 
-def load_ns6_spikes(sess: Path):
-    rec = _load_nsx(sess, "ns6")
-    ids = _ensure_int_ids(rec)
-    print(f"[NS6] {len(ids)}")
-    return rec
+    # ns5 (aux streams / sync)
+    camera_sync = None
+    triangle_sync = None
+    fs_ns5 = None
+    try:
+        rec_ns5 = se.read_blackrock(sess, stream_name = 'nsx5', all_annotations=True)
+        fs_ns5 = rec_ns5.get_sampling_frequency()
+        ids_ns5 = rec_ns5.get_channel_ids().astype(int)
 
-def load_ns5_aux(sess: Path):
-    rec = _load_nsx(sess, "ns5")
-    ids = _ensure_int_ids(rec)
-    print(f"[NS5] {len(ids)} channels → {ids.tolist()}")
-    return rec
+        if camera_sync_ch in ids_ns5:
+            camera_sync = rec_ns5.get_traces(segment_index=0, channel_ids=[str(camera_sync_ch)]).ravel()
+        else:
+            print("[WARN] camera_sync channel not found in ns5.")
 
-def load_ns2_digi(sess: Path):
-    rec = _load_nsx(sess, "ns2")
-    ids = _ensure_int_ids(rec)
-    print(f"[NS2] {len(ids)} channels → {ids.tolist()}")
-    return rec
+        if triangle_sync_ch in ids_ns5:
+            triangle_sync = rec_ns5.get_traces(segment_index=0, channel_ids=[str(triangle_sync_ch)]).ravel()
+        else:
+            print("[WARN] triangle_sync channel not found in ns5.")
 
-# ---------- Mapping helpers ----------
-def _ensure_int_ids(rec) -> np.ndarray:
-    """
-    Convert channel IDs from a SI RecordingExtractor to integers.
-    Ex: Cases where IDs are strings like 'chan-001'
-    """
-    ids = rec.get_channel_ids()
-    out = []
-    for cid in ids:
-        try:
-            out.append(int(cid))
-        except Exception:
-            m = re.search(r"(\d+)", str(cid))
-            if not m:
-                raise ValueError(f"Unparsable channel id: {cid!r}")
-            out.append(int(m.group(1)))
-    return np.array(out, dtype=int)
+    except FileNotFoundError:
+        print("[WARN] ns5 not found; syncs unavailable.")
 
-def pick_cols_by_ids(rec, wanted_ids) -> Tuple[list[int], list[int]]:
-    ids = _ensure_int_ids(rec)
-    id2col = {ch: i for i, ch in enumerate(ids)}
-    cols = [id2col[c] for c in wanted_ids if c in id2col]
-    missing = [c for c in wanted_ids if c not in id2col]
-    return cols, missing
+    aux = {
+        "fs": fs_ns5,
+        "camera_sync": camera_sync,
+        "triangle_sync": triangle_sync,
+    }
+
+    # extract ns2 (all channels)
+    digi = {"fs": None, "channels": {}}
+    try:
+        rec_ns2 = se.read_blackrock(sess, stream_name = 'nsx2', all_annotations=True)
+        digi["fs"] = rec_ns2.get_sampling_frequency()
+
+        ids_ns2 = rec_ns2.get_channel_ids().astype(int)
+        tr_ns2 = rec_ns2.get_traces()
+
+        # add ALL columns present
+        for col, cid in enumerate(ids_ns2):
+            digi["channels"][f"ch{cid}"] = tr_ns2[:, col]
+    except FileNotFoundError:
+        print("[WARN] ns2 not found; no digital channels.")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    
+    np.savez_compressed(
+        out_dir / f"{sess}_UA_bundle.npz",
+        aux_fs=aux['fs'],
+        camera_sync=aux["camera_sync"],
+        triangle_sync=aux["triangle_sync"],
+        digi_fs=digi["fs"],
+        **digi["channels"],
+    )
+    print(f"[SAVED] {out_dir / f'{sess}_UA_bundle.npz'}")
+    return bundle
+
 
 # Parsing MAP file excel file (xlsm)
 def _parse_nsp_channel(val) -> Optional[int]:
@@ -214,7 +219,7 @@ def _lookup_ua_port(meta_csv: Path, br_idx: int) -> Optional[str]:
 
     return None
 
-def align_mapping_index_to_recording(recording, mapped_nsp: np.ndarray, br_idx, meta_csv) -> np.ndarray:
+def _align_mapping_index_to_recording(recording, mapped_nsp: np.ndarray, br_idx, meta_csv) -> np.ndarray:
     """
     Build an electrode->row index map, using NSP channel ids from `mapped_nsp`.
     For UA Port A, channel IDs are 1..128.
@@ -267,6 +272,7 @@ def align_mapping_index_to_recording(recording, mapped_nsp: np.ndarray, br_idx, 
 
     return idx_rows
 
+# Mapping
 def apply_ua_mapping_by_renaming(recording, mapped_nsp: np.ndarray, br_idx, meta_csv):
     """
     Rename channel IDs to include UA electrode + NSP channel mapping.
@@ -284,7 +290,7 @@ def apply_ua_mapping_by_renaming(recording, mapped_nsp: np.ndarray, br_idx, meta
         For each electrode (1..len(mapped_nsp)), the recording row index or -1 if absent.
     """
     # Map each electrode -> row index on this recording (handles Port B → 1..128 normalization)
-    idx_rows = align_mapping_index_to_recording(recording, mapped_nsp, br_idx, meta_csv)  # shape (N_elec,)
+    idx_rows = _align_mapping_index_to_recording(recording, mapped_nsp, br_idx, meta_csv)  # shape (N_elec,)
 
     # Build the positional list of new channel IDs
     ch_ids = list(recording.get_channel_ids())
@@ -308,93 +314,20 @@ def apply_ua_mapping_by_renaming(recording, mapped_nsp: np.ndarray, br_idx, meta
 
     return renamed, idx_rows
 
-# ---------- Bundles (NS5+NS2 only) ----------
-def build_blackrock_bundle(sess: Path, camera_sync_ch, triangle_sync_ch) -> dict:
-    """
-    Build a bundle:
-      - ns5: pull specific sync channels (Ex: 134=camera, 138=triangle) if present
-      - ns2: pull ALL channels present
-    """
-    bundle: Dict[str, Any] = {}
-
-    # ---------------- NS5 (syncs) ----------------
-    intan_sync = None
-    camera_sync = None
-    triangle_sync = None
-    fs_ns5 = None
-    try:
-        rec_ns5 = load_ns5_aux(sess)
-        fs_ns5 = float(rec_ns5.get_sampling_frequency())
-
-        # map channel id -> column index
-        ids_ns5 = _ensure_int_ids(rec_ns5)
-        id2col_ns5 = {int(ch): i for i, ch in enumerate(ids_ns5)}
-
-        wanted_sync = {camera_sync_ch: "camera_sync", triangle_sync_ch: "triangle_sync"}
-        present = [cid for cid in wanted_sync if cid in id2col_ns5]
-        if not present:
-            print("[WARN] ns5 present but camera_sync or triangle_sync not found.")
-
-        if present:
-            n_frames = int(rec_ns5.get_num_frames(0))
-            tr_ns5 = rec_ns5.get_traces(0, 0, end_frame=n_frames).astype(np.float32)
-            for cid in present:
-                col = id2col_ns5[cid]
-                if cid == camera_sync_ch:
-                    camera_sync = tr_ns5[:, col]
-                elif cid == triangle_sync_ch:
-                    triangle_sync = tr_ns5[:, col]
-    except FileNotFoundError:
-        print("[WARN] ns5 not found; syncs unavailable.")
-    bundle["aux"] = {
-        "fs": fs_ns5,
-        "intan_sync": intan_sync,
-        "camera_sync": camera_sync,
-        "triangle_sync": triangle_sync,
-    }
-
-    # ---------------- NS2 (all channels) ----------------
-    digi = {"fs": None, "channels": {}}
-    try:
-        rec_ns2 = load_ns2_digi(sess)
-        fs_ns2 = float(rec_ns2.get_sampling_frequency())
-        digi["fs"] = fs_ns2
-
-        ids_ns2 = _ensure_int_ids(rec_ns2)
-        n_frames = int(rec_ns2.get_num_frames(0))
-        tr_ns2 = rec_ns2.get_traces(0, 0, rec_ns2.get_num_frames(0)).astype(np.float32)
-
-        # add ALL columns present
-        for col, cid in enumerate(ids_ns2):
-            digi["channels"][f"ch{int(cid)}"] = tr_ns2[:, col]
-    except FileNotFoundError:
-        print("[WARN] ns2 not found; no digital channels.")
-    bundle["digi"] = digi
-
-    return bundle
-
-def save_UA_bundle_npz(sess_name: str, bundle: dict, out_dir: Path):
-    out_dir.mkdir(parents=True, exist_ok=True)
-    aux = bundle.get("aux", {})
-    digi = bundle.get("digi", {})
-
-    np.savez_compressed(
-        out_dir / f"{sess_name}_UA_bundle.npz",
-        aux_fs=np.array(aux.get("fs", np.nan), dtype=np.float32),
-        intan_sync=aux.get("intan_sync", np.array([])),
-        camera_sync=aux.get("camera_sync", np.array([])),
-        triangle_sync=aux.get("triangle_sync", np.array([])),
-        digi_fs=np.array(digi.get("fs", np.nan), dtype=np.float32),
-        **{k: v for k, v in digi.get("channels", {}).items()},
-    )
-    print(f"[SAVED] {out_dir / f'{sess_name}_UA_bundle.npz'}")
-
 def ua_region_from_elec(e: int) -> int:
     if e <= 0:      return -1
     if e <= 64:     return 0  # SMA
     if e <= 128:    return 1  # Dorsal premotor
     if e <= 192:    return 2  # M1 inferior
     return 3                  # M1 superior
+
+def _gauss_kernel_from_sigma_bins(sigma_bins: float, radius_mult: float = 4.0):
+    sigma_bins = max(1e-9, float(sigma_bins))
+    r = int(np.ceil(radius_mult * sigma_bins))
+    x = np.arange(-r, r+1, dtype=float)
+    k = np.exp(-(x**2) / (2.0 * sigma_bins**2))
+    k /= k.sum()
+    return k
 
 ## This function used by Intan too
 def threshold_mua_rates(
@@ -438,19 +371,16 @@ def threshold_mua_rates(
         n_jobs=n_jobs,
     )
     # --- Deduplicate near-coincident peaks per (segment, channel): cluster + keep strongest ---
-    ch_field, samp_field, seg_field, amp_field = (
-        "channel_index", "sample_index", "segment_index", "amplitude"
-    )
-
     dedup_ms = 0.5
     dedup_samp = max(1, int(round(dedup_ms * 1e-3 * fs)))
 
     # Build keys
+    ch_field, samp_field, seg_field, amp_field = ("channel_index", "sample_index", "segment_index", "amplitude")
     seg_key = (peaks[seg_field] if seg_field in peaks.dtype.names
             else np.zeros(peaks.shape[0], dtype=np.int64))
-    ch_key  = peaks[ch_field].astype(np.int64, copy=False)
+    ch_key  = peaks[ch_field].astype(np.int32, copy=False)
     t_key   = peaks[samp_field].astype(np.int64, copy=False)
-    amp_val = np.abs(peaks[amp_field]) if amp_field in peaks.dtype.names else np.ones(len(peaks))
+    amp_val = np.abs(peaks[amp_field].astype(np.float32)) if amp_field in peaks.dtype.names else np.ones(len(peaks))
 
     # Sort by (segment, channel, time)
     order = np.lexsort((t_key, ch_key, seg_key))
@@ -535,13 +465,13 @@ def threshold_mua_rates(
         # ---- build a bin-level blank mask from sample windows ----
         blank_mask_seg = np.zeros(seg_bins, dtype=bool)
         if blank_windows_samples is not None and seg in blank_windows_samples:
-            win = np.asarray(blank_windows_samples[seg], dtype=np.int64)
+            win = np.asarray(blank_windows_samples[seg], dtype=np.int32)
             win = win[(win[:,1] > win[:,0]) & (win[:,0] < n_samps) & (win[:,1] > 0)]
             if win.size:
                 # convert sample windows -> bin-range [b0,b1)
                 b0 = np.clip(win[:,0] // bin_samps, 0, seg_bins)
                 # inclusive end in samples -> exclusive end in bins
-                b1 = np.clip((win[:,1] + bin_samps - 1) // bin_samps, 0, seg_bins)
+                b1 = np.clip((win[:,1] + bin_samps) // bin_samps, 0, seg_bins)
                 for i0, i1 in zip(b0, b1):
                     blank_mask_seg[i0:i1] = True
         blank_masks.append(blank_mask_seg)
@@ -568,7 +498,7 @@ def threshold_mua_rates(
         X = counts_cat.astype(float, copy=False)
         valid0 = np.isfinite(X)
 
-        # ---- dilate blank mask by kernel radius (avoid half-kernels) ----
+        # ---- (avoid half-kernels) ----
         if blank_mask.any():
             pad = np.zeros(r, dtype=int)
             dil = np.convolve(np.r_[pad, blank_mask.astype(int), pad],
@@ -580,7 +510,7 @@ def threshold_mua_rates(
         # base validity for smoothing
         valid = valid0 & (~blank_dil)
 
-        # ---- gentle inpainting: fill only short NaN runs (≤ r) per channel ----
+        # ---- inpainting: fill only short NaN runs (≤ r) per channel ----
         def _interp_short_gaps(y: np.ndarray, max_gap: int) -> np.ndarray:
             out = y.copy()
             isn = ~np.isfinite(out)
@@ -618,12 +548,10 @@ def threshold_mua_rates(
 
     # Finally convert counts→Hz
     rate_hz = counts_smooth * fs_bins
-    return rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms
+    return rate_hz.astype(np.float32), t_cat_ms, counts_cat.astype(np.uint32), peaks, peak_t_ms
 
 __all__ = [
-    "list_br_sessions", "ua_excel_path",
-    "load_ns6_spikes", "load_ns5_aux", "load_ns2_digi",
-    "load_UA_mapping_from_excel", "apply_ua_mapping_by_renaming",
+    "list_br_sessions", "ua_excel_path", "load_UA_mapping_from_excel", "apply_ua_mapping_by_renaming",
     "build_blackrock_bundle", "save_UA_bundle_npz",
     "threshold_mua_rates", "ua_region_from_elec"
 ]

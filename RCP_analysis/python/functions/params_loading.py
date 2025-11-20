@@ -14,11 +14,6 @@ class experimentParams:
 
     # file locations (must be RELATIVE, if present)
     geom_mat_rel: Optional[str] = None
-    metadata_rel: Optional[str] = None
-    blackrock_rel: Optional[str] = None
-    video_rel: Optional[str] = None
-    intan_root_rel: Optional[str] = None
-    output_root: Optional[str] = None
 
     # processing + per-probe/session config
     highpass_hz: float = 300.0
@@ -39,7 +34,7 @@ class experimentParams:
 
 
 def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams:
-    cfg = yaml.safe_load(yaml_path.read_text()) or {}
+    cfg = yaml.safe_load(yaml_path.read_text())
 
     def expand_placeholders(obj): # Expand placeholders such as {REPO_ROOT}
         if isinstance(obj, str):
@@ -52,34 +47,23 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
 
     cfg = expand_placeholders(cfg)
 
-    # ---- paths block (single source of truth) ----
+    # ---- paths block ----
     paths = cfg.get("paths", {}) or {}
     data_root = paths.get("data_root", str(repo_root / "data"))
     location  = paths.get("location")
     session   = paths.get("session")
     geom_mat_rel = paths.get("geom_mat_rel")
 
-    blackrock_rel  = str(Path(location) / "Blackrock")
-    intan_root_rel = str(Path(location) /"Intan")
-    video_rel      = str(Path(location) /"Video")
-    output_root    = str(Path(location) /"results")
-    metadata_rel = str(Path(location) / "Metadata" / f"{session}_metadata.csv")
-
     kin_cfg = dict(cfg.get("kinematics", {}) or {})
     kin_cfg["num_camera"] = kin_cfg.get("num_camera")
-    kin_cfg["keypoints"] = tuple(map(str.strip, str(kin_cfg["keypoints"]).split(",")))
+    kin_cfg["keypoints"] = tuple(map(str.strip, (kin_cfg["keypoints"])))
 
-    # ---- assemble dataclass ----
+    # dataclass
     params = experimentParams(
         data_root=str(data_root),
         location=location,
         session=session,
         geom_mat_rel=geom_mat_rel,
-        metadata_rel=metadata_rel,
-        blackrock_rel=blackrock_rel,
-        video_rel=video_rel,
-        intan_root_rel=intan_root_rel,
-        output_root=output_root,
 
         highpass_hz=float(cfg.get("highpass_hz", 300.0)),
         probes=cfg.get("probes", {}) or {},
@@ -95,42 +79,33 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
     )
     return params
 
-def _join_rel(base: Path, rel: Optional[str]) -> Optional[Path]: # Adding base_root to relative paths
-    if not rel:
-        return None
-    params = Path(rel)
-    if params.is_absolute():
-        raise ValueError(f"Absolute path not allowed: {rel}")
-    return (base / params).resolve()
-
-def resolve_data_root(params) -> Path:
-    return Path(params.data_root).resolve()
-
-def resolve_output_root(params) -> Path:
-    base = resolve_data_root(params)
-    return _join_rel(base, params.output_root) or (base / "results")
-
-def resolve_intan_root(params) -> Path:
-    base = resolve_data_root(params)
-    return _join_rel(base, params.intan_root_rel) or base
-
-def resolve_session_intan_dir(params, session_key: str) -> Path:
-    base = resolve_intan_root(params)
-    rel = (params.sessions or {}).get(session_key, {}).get("intan_rel")
-    return _join_rel(base, rel) or base
-
 def resolve_probe_geom_path(params, repo_root: Path, session_key: Optional[str] = None) -> Path:
-    # session override
+    """
+    Resolve the geometry/mapping .mat path.
+
+    Priority:
+      1) Session-specific probe → mapping_mat_rel or geom_mat_rel
+      2) Global params.geom_mat_rel
+    """
+    rel = None
+
+    # 1) Session-specific override
     if session_key:
-        probe = (params.sessions or {}).get(session_key, {}).get("probe")
-        if probe:
-            rel = ((params.probes or {}).get(probe) or {}).get("mapping_mat_rel") \
-                  or ((params.probes or {}).get(probe) or {}).get("geom_mat_rel")
-            if rel:
-                return _join_rel(repo_root, rel)
+        sessions = getattr(params, "sessions", {}) or {}
+        probes   = getattr(params, "probes", {}) or {}
 
-    # global fallback
-    if params.geom_mat_rel:
-        return _join_rel(repo_root, params.geom_mat_rel)
+        sess_cfg  = sessions.get(session_key, {})
+        probe_key = sess_cfg.get("probe")
+        if probe_key:
+            probe_cfg = probes.get(probe_key, {})
+            rel = probe_cfg.get("mapping_mat_rel") or probe_cfg.get("geom_mat_rel")
 
-    raise FileNotFoundError("Missing geometry/mapping path.")
+    # 2) Global fallback
+    if not rel:
+        rel = getattr(params, "geom_mat_rel", None)
+
+    if not rel:
+        raise FileNotFoundError("Missing geometry/mapping path (no mapping_mat_rel/geom_mat_rel found).")
+
+    # rel is always something like "config/ImecPrimateStimRec128_...mat"
+    return (repo_root / rel).resolve()

@@ -25,7 +25,8 @@ CHANNELS_TO_SHOW = list(range(96, 128))  # 32 channels -> 4 figures
 # ---- Resolving paths ----
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-OUT_BASE  = rcp.resolve_output_root(PARAMS); OUT_BASE.mkdir(parents=True, exist_ok=True)
+SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
+OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
 
 # Pull session name from params (fallback to NRR_RW_001)
 SESSION = getattr(PARAMS, "session", None)
@@ -36,7 +37,7 @@ if SESSION is None:
     except Exception:
         SESSION = "NRR_RW_001"
 
-ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
+ALIGNED_CKPT_ROOT = OUT_BASE / "checkpoints" / "Aligned"
 PATH_UA_SI = OUT_BASE / "checkpoints" / "UA" / f"pp_global__{SESSION}_{BR_IDX:03d}__NS6"
 
 OUT_DIR = OUT_BASE / "figures" / "debug_8ch_aligned" / "UA" / f"{SESSION}__BR_{BR_IDX:03d}"
@@ -139,7 +140,7 @@ def main():
     adjust_ms = (ADJUST_SAMPLES / fs_ua) * 1000.0
 
     # Find and load aligned npz by suffix (for the same BR index)
-    PATH_ALIGNED_NPZ = _find_aligned_file(ALIGNED_ROOT, BR_IDX)
+    PATH_ALIGNED_NPZ = _find_aligned_file(ALIGNED_CKPT_ROOT, BR_IDX)
     z = np.load(PATH_ALIGNED_NPZ, allow_pickle=True)
 
     # --- channel indexing mode ---

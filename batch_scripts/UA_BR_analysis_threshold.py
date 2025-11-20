@@ -6,31 +6,32 @@ import numpy as np
 import re, csv
 from sklearn.decomposition import PCA
 
-# SpikeInterface
 import spikeinterface as si
 import spikeinterface.preprocessing as spre
+import spikeinterface.extractors as se
 import RCP_analysis as rcp
 """ 
     This script preprocesses the Blackrock data.
     Input:
-        
+        .ns6 files from Intan
     Output:
-        
+        Checkpoint after preprocessing
+        Checkpoint after thresholding and calculating MUA peak locations and firing rate
 """
 
 # ---------- Config ----------
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-DATA_ROOT = rcp.resolve_data_root(PARAMS)
-OUT_BASE  = rcp.resolve_output_root(PARAMS); OUT_BASE.mkdir(parents=True, exist_ok=True)
-METADATA_CSV = (DATA_ROOT / PARAMS.metadata_rel).resolve()
-if not METADATA_CSV.exists():
-    print(f"[WARN] metadata CSV not found at {METADATA_CSV} — BR↔Intan mapping may be skipped.")
-SHIFT_CSV = (DATA_ROOT / PARAMS.metadata_rel).resolve().parents[0] / "br_to_intan_shifts.csv"
+SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
+OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
+BR_ROOT = SESSION_LOC / "Blackrock"; BR_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
+SHIFT_CSV = METADATA_ROOT / "br_to_intan_shifts.csv"
 
-BR_SESSION_FOLDERS = rcp.list_br_sessions(DATA_ROOT, PARAMS.blackrock_rel)
+BR_SESSION_FOLDERS = rcp.list_br_sessions(BR_ROOT)
 
-RATES = PARAMS.UA_rate_est or {}
+RATES = PARAMS.UA_rate_est
 BIN_MS     = float(RATES.get("bin_ms", 1.0))
 SIGMA_MS   = float(RATES.get("sigma_ms", 50.0))
 THRESH     = float(RATES.get("detect_threshold", 3))
@@ -42,14 +43,13 @@ if UA_MAP is None:
     raise RuntimeError("UA mapping required for mapping on NS6.")
 
 # Sync channels
-PROBE_CFG = (PARAMS.probes or {}).get("UA", {})
-CAMERA_SYNC_CH = float(PROBE_CFG.get("camera_sync_ch", 134))
-TRIANGLE_SYNC_CH = float(PROBE_CFG.get("triangle_sync_ch", 138.0))
+UA_CFG = PARAMS.probes.get("UA")
+CAMERA_SYNC_CH = int(UA_CFG.get("camera_sync_ch", 134))
+TRIANGLE_SYNC_CH = int(UA_CFG.get("triangle_sync_ch", 138))
 
-BUNDLES_OUT = OUT_BASE / "bundles" / "UA"
-CKPT_OUT = OUT_BASE / "checkpoints" / "UA"
+UA_BUNDLES = OUT_BASE / "bundles" / "UA"
+UA_CKPT_OUT = OUT_BASE / "checkpoints" / "UA"; UA_CKPT_OUT.mkdir(parents=True, exist_ok=True)
 NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
-CKPT_OUT.mkdir(parents=True, exist_ok=True)
 
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
@@ -78,6 +78,14 @@ def _build_session_index_map(nprw_ckpt_root: Path) -> tuple[dict[str,int], dict[
         raise RuntimeError(f"No NPRW rate files under {nprw_ckpt_root}")
     return sess_to_intan, intan_to_sess
 
+def _ua_arrays_from_idx_rows(n_ch: int, mapped_nsp: np.ndarray, idx_rows: np.ndarray):
+    ua_elec_per_row = -np.ones(n_ch, dtype=int)
+    ua_nsp_per_row  = -np.ones(n_ch, dtype=int)
+    for elec0, row in enumerate(idx_rows):
+        if 0 <= row < n_ch:
+            ua_elec_per_row[row] = elec0 + 1
+            ua_nsp_per_row[row]  = int(mapped_nsp[elec0])
+    return ua_elec_per_row, ua_nsp_per_row
 
 def _resolve_intan_session_for_br_idx(
     meta_csv: Path,
@@ -116,15 +124,6 @@ def _stim_npz_for_br_idx(meta_csv: Path, out_base: Path, br_idx: int, nprw_ckpt_
     bundles_root = out_base / "bundles" / "NPRW"
     return bundles_root / f"{sess}_Intan_bundle" / "stim_stream.npz"
 
-def _br_idx_from_name(name: str) -> Optional[int]:
-    # Prefer the trailing 3 digits after the last underscore
-    m = re.search(r'_(\d{3})$', name)
-    if m:
-        return int(m.group(1))
-    # Fallback: take the last 3-digit group if the name has a suffix
-    hits = re.findall(r'_(\d{3})(?=_)', name)
-    return int(hits[-1]) if hits else None
-
 def _load_shift_row_by_br_idx(metadata_path: Path, br_idx: int) -> Optional[dict]:
     """
     Read br_to_intan_shifts.csv and return the row for this br_idx.
@@ -156,6 +155,7 @@ def _anchor_from_shifts_row(row: dict) -> tuple[int, float]:
         return int(round(anchor_ms * 1e-3 * fs_intan)), fs_intan
     return 0, fs_intan
 
+# For triangle pulse corrected stuff, save for later
 def load_anchor_for_session(out_base: Path, session: str) -> tuple[int, float]:
     """
     Return (anchor_sample_intan, fs_intan) from figures/align_BR_to_Intan/br_to_intan_shifts.csv.
@@ -177,19 +177,10 @@ def load_anchor_for_session(out_base: Path, session: str) -> tuple[int, float]:
                     return int(round(anchor_ms * 1e-3 * fs_intan)), fs_intan
                 break
 
-    return 0, 30000.0  # fallback if no row
-
-def _ua_arrays_from_idx_rows(n_ch: int, mapped_nsp: np.ndarray, idx_rows: np.ndarray):
-    ua_elec_per_row = -np.ones(n_ch, dtype=int)
-    ua_nsp_per_row  = -np.ones(n_ch, dtype=int)
-    for elec0, row in enumerate(idx_rows):
-        if 0 <= row < n_ch:
-            ua_elec_per_row[row] = elec0 + 1
-            ua_nsp_per_row[row]  = int(mapped_nsp[elec0])
-    return ua_elec_per_row, ua_nsp_per_row
+    return 0, 30000.0
 
 def main(limit_sessions: Optional[int] = None):
-    sess_folders = BR_SESSION_FOLDERS  # read the global into a local
+    sess_folders = BR_SESSION_FOLDERS
     # limit_sessions = [13, 14, 15, 16, 17]
     if limit_sessions:
         if isinstance(limit_sessions, int):
@@ -204,66 +195,43 @@ def main(limit_sessions: Optional[int] = None):
             pass
 
     print("Found session folders:", len(sess_folders))
-    saved_paths: list[Path] = []
 
     for sess in sess_folders:
         print(f"=== Session: {sess.name} ===")
-        bundle = rcp.build_blackrock_bundle(sess, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH) # sync pulses and stuff
-        rcp.save_UA_bundle_npz(sess.name, bundle, BUNDLES_OUT)
+        rcp.extract_blackrock_bundle(sess, UA_BUNDLES, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH) # Extract sync pulses and stuff
+        rec_ns6 = se.read_blackrock(sess, stream_name = 'nsx6', all_annotations=True) # Load BR file
         
-        rec_ns6 = rcp.load_ns6_spikes(sess)
-        br_idx = _br_idx_from_name(sess.name) # resolve br index
+        br_idx = int(sess.name.split('_')[-1]) # resolve br index
+        n_ch = rec_ns6.get_num_channels()
+        
         rec_ns6, idx_rows = rcp.apply_ua_mapping_by_renaming(rec_ns6, UA_MAP["mapped_nsp"], br_idx, METADATA_CSV)
-
         rec_hp  = spre.highpass_filter(rec_ns6, freq_min=float(PARAMS.highpass_hz))
+        
         # --- build UA arrays from idx_rows (no SI properties) ---
-        n_ch = rec_hp.get_num_channels()
-        ua_elec_per_row, ua_nsp_per_row = _ua_arrays_from_idx_rows(
-            n_ch, UA_MAP["mapped_nsp"], idx_rows
-        )
+        ua_elec_per_row, ua_nsp_per_row = _ua_arrays_from_idx_rows(n_ch, UA_MAP["mapped_nsp"], idx_rows)
         row_from_elec = idx_rows.astype(int, copy=False)
-
-        def _region_from_elec(e: int) -> int:
-            if e <= 0:      return -1   # missing / unmapped
-            if e <= 64:     return 0    # SMA
-            if e <= 128:    return 1    # Dorsal premotor
-            if e <= 192:    return 2    # M1 inferior
-            return 3                    # M1 superior
-
-        ua_region_per_row = np.array([_region_from_elec(int(e)) for e in ua_elec_per_row], dtype=np.int8)
+        ua_region_per_row = np.array([rcp.ua_region_from_elec(int(elec_num)) for elec_num in ua_elec_per_row], dtype=np.int8)
         ua_region_names   = np.array(["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"], dtype=object)
-
-        # Optionally split unknowns (-1) into unique groups so they don't median-reference each other
         UA_probe = ua_region_per_row.copy()
-        if np.any(UA_probe < 0):
-            start_gid = (UA_probe[UA_probe >= 0].max() + 1) if np.any(UA_probe >= 0) else 0
-            gid = start_gid
-            for i, r in enumerate(UA_probe):
-                if r < 0:
-                    UA_probe[i] = gid
-                    gid += 1
-
+        
         # --- convert labels -> list of channel-ID lists (what SI expects) ---
-        # IMPORTANT: use rec_hp (exists now) — rec_ref is not created yet.
         ch_ids = np.asarray(rec_hp.get_channel_ids())
         groups = []
-        for g in np.unique(UA_probe):
-            idx = np.where(UA_probe == g)[0]
+        for group in np.unique(UA_probe):
+            idx = np.where(UA_probe == group)[0]
             if idx.size >= 2:
                 groups.append(ch_ids[idx].tolist())
             else:
-                print(f"[debug] region {g}: singleton -> left unreferenced")
-        print("[debug] group sizes:", [len(g) for g in groups])
-
-        rec_ref = rec_hp
+                print(f"[debug] region {group}: singleton -> left unreferenced")
+        print("[debug] group sizes:", [len(group) for group in groups])
 
         # Default: no artifact windows
         block_bounds = np.empty((0, 2), dtype=int)
         shifts_row = None
         
         # default to cleaned=ref unless we actually remove
-        rec_artif_removed = rec_ref
-        fs_ua = float(rec_ref.get_sampling_frequency())
+        rec_artif_removed = rec_hp
+        fs_ua = float(rec_hp.get_sampling_frequency())
         blank_windows = None
         
         if br_idx is None:
@@ -297,7 +265,7 @@ def main(limit_sessions: Optional[int] = None):
             ends_ua   = np.round((ends_intan   - anchor_samp_intan) * scale).astype(np.int64)
 
             # validity + clipping
-            n_total = rec_ref.get_num_frames() if hasattr(rec_ref, "get_num_frames") else rec_ref.get_num_samples()
+            n_total = rec_hp.get_num_samples()
             ends_ua = np.minimum(ends_ua, n_total)
             valid = (ends_ua > starts_ua) & (starts_ua >= 0) & (ends_ua <= n_total)
             starts_ua = starts_ua[valid]
@@ -310,7 +278,7 @@ def main(limit_sessions: Optional[int] = None):
                 ms_after  = float(dur_ms.max() + tail_ms)
 
                 rec_artif_removed = spre.remove_artifacts(
-                    rec_ref,
+                    rec_hp,
                     list_triggers=[starts_ua.tolist()],
                     ms_before=ms_before,
                     ms_after=ms_after,     # one window long enough for all spans
@@ -331,13 +299,12 @@ def main(limit_sessions: Optional[int] = None):
             elif shifts_row is None:
                 print("[WARN] no shift row found for this BR index; skipping artifact removal.")
             
-        # save the cleaned preprocessed recording
-        out_geom = CKPT_OUT / f"pp_global__{sess.name}__NS6"
-        out_geom.mkdir(parents=True, exist_ok=True)
-        rec_artif_removed.save(folder=out_geom, overwrite=True)
-        print(f"[{sess.name}] (ns6) saved preprocessed -> {out_geom}")
+        out_npz_loc = UA_CKPT_OUT / f"pp_global__{sess.name}__NS6"
+        out_npz_loc.mkdir(parents=True, exist_ok=True)
+        rec_artif_removed.save(folder=out_npz_loc, overwrite=True)
+        print(f"[{sess.name}] (ns6) saved preprocessed -> {out_npz_loc}")
 
-        # compute rates FROM THE CLEANED RECORDING
+        # compute rates
         rate_hz, t_cat_ms, counts_cat, peaks, peaks_t_ms = rcp.threshold_mua_rates(
             rec_artif_removed,
             detect_threshold=THRESH,
@@ -347,42 +314,37 @@ def main(limit_sessions: Optional[int] = None):
             n_jobs=PARAMS.parallel_jobs,
             blank_windows_samples=blank_windows,
         )
-
-        # rate_hz is (n_channels, n_bins) -> transpose to (n_bins, n_channels)
-        X = rate_hz.T
-
-        # 1) Zero-impute NaNs for PCA
-        X_filled = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # 2) Mean-center columns using nan-aware means from the original data
-        col_means = np.nanmean(X, axis=0)
+        
+        X = rate_hz.T # transpose to (n_bins, n_channels)
+        X_filled = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0) # Zero-impute NaNs for PCA
+        col_means = np.nanmean(X, axis=0) #Nan-aware means from the original data
         col_means = np.where(np.isfinite(col_means), col_means, 0.0)
-        Xc = X_filled - col_means[None, :]
+        Xc = X_filled - col_means[None, :] # Mean-center columns
 
-        # 2b) If total variance is ~0, skip PCA cleanly
+        # If total variance is ~0, skip PCA
         total_var = np.var(Xc, axis=0).sum()
         n_comp = min(5, Xc.shape[0], Xc.shape[1])
         if n_comp >= 1 and total_var > 0.0:
             pca = PCA(n_components=n_comp, random_state=0)
-            pcs = pca.fit_transform(Xc)                     # (n_bins, n_comp)
+            pcs = pca.fit_transform(Xc) # (n_bins, n_comp)
             explained_var = np.nan_to_num(
                 pca.explained_variance_ratio_, nan=0.0
             ).astype(np.float32)
-            pcs_T = pcs.T.astype(np.float32)                # (n_comp, n_bins)
+            pcs_T = pcs.T.astype(np.float32) # (n_comp, n_bins)
         else:
             pcs_T = np.empty((0, Xc.shape[0]), dtype=np.float32)
             explained_var = np.empty((0,), dtype=np.float32)
 
-        out_npz = CKPT_OUT / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
+        out_npz = UA_CKPT_OUT / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
         
         # infer common field names across SI versions
         names = getattr(peaks, "dtype", None)
         names = names.names if names is not None else ()
-        samp_f = "sample_index" if "sample_index" in names else ("sample_ind" if "sample_ind" in names else None)
+        samp_f = "sample_index" if "sample_index" in names else ("sample_ind" if "sample_ind" in names else None) #TODO shorten
         chan_f = "channel_index" if "channel_index" in names else ("channel_ind" if "channel_ind" in names else None)
         amp_f  = "amplitude" if "amplitude" in names else None
 
-        peak_sample = peaks[samp_f].astype(np.int64)   if (samp_f and peaks.size) else None
+        peak_sample = peaks[samp_f].astype(np.int64)   if (samp_f and peaks.size) else None #TODO shorten
         peak_ch     = peaks[chan_f].astype(np.int16)   if (chan_f and peaks.size) else None
         peak_amp    = peaks[amp_f].astype(np.float32)  if (amp_f  and peaks.size) else None
         
@@ -418,64 +380,10 @@ def main(limit_sessions: Optional[int] = None):
         if peak_amp is not None:    save["peak_amp"] = peak_amp
         
         np.savez_compressed(out_npz, **save)
-
         print(f"[{sess.name}] saved rate matrix + PCA -> {out_npz}")
 
         # cleanup to keep memory stable on long batches
-        del bundle, rec_ns6, rec_hp, rec_ref, rec_artif_removed, rate_hz, t_cat_ms, counts_cat
+        del rec_ns6, rec_hp, rec_artif_removed, rate_hz, t_cat_ms, counts_cat
         gc.collect()
-
-        saved_paths.append(out_geom)
-
-    # if not saved_paths:
-    #     raise RuntimeError("No sessions processed; nothing to concatenate.")
-    
-    # # --- concat + sorting (per-channel, no geometry)
-    # print("Concatenating preprocessed sessions...")
-    # recs_for_concat = []
-    # for p in saved_paths:
-    #     try:
-    #         r = si.load(p)
-    #     except Exception:
-    #         r = si.load_extractor(p / "si_folder.json")
-    #     recs_for_concat.append(r)
-
-    # rec_concat = concatenate_recordings(recs_for_concat)
-    # gc.collect()
-
-    # sorting_ms5 = sorters.run_sorter(
-    #     "mountainsort5",
-    #     recording=rec_concat,
-    #     folder=str(OUT_BASE / "mountainsort5"),
-    #     remove_existing_folder=True,
-    #     verbose=True,
-    #     scheme="2",
-    #     # scheme1_detect_channel_radius=1,
-    #     detect_threshold=6,
-    #     npca_per_channel=3,
-    #     filter=False, whiten=True,
-    #     delete_temporary_recording=True, progress_bar=True,
-    # )
-
-    # sa_folder = OUT_BASE / "sorting_ms5_analyzer"
-    # phy_folder = OUT_BASE / "phy_ms5"
-
-    # sa = create_sorting_analyzer(
-    #     sorting=sorting_ms5,
-    #     recording=rec_concat,
-    #     folder=sa_folder,
-    #     overwrite=True,
-    #     sparse=False,
-    # )
-    # sa.compute("random_spikes", method="uniform", max_spikes_per_unit=1000, seed=0)
-    # sa.compute("waveforms", ms_before=1.0, ms_after=2.0, progress_bar=True)
-    # sa.compute("templates")
-    # sa.compute("principal_components", n_components=3, mode="by_channel_global", progress_bar=True)
-    # sa.compute("spike_amplitudes")
-
-    # export_to_phy(sa, output_folder=phy_folder, copy_binary=True, remove_if_exists=True)
-    
-    # print(f"Phy export ready: {phy_folder}")
-
 if __name__ == "__main__":
     main(limit_sessions=None)

@@ -19,15 +19,14 @@ import RCP_analysis as rcp
 # ---------- CONFIG / PATHS ----------
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-OUT_BASE  = rcp.resolve_output_root(PARAMS); OUT_BASE.mkdir(parents=True, exist_ok=True)
+SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
+OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
 
-# Match the same radii used when creating the pp_local_* preprocessed folders
-probe_cfg = (PARAMS.probes or {}).get("NPRW", {})
-inner = float(probe_cfg.get("local_radius_inner", 30.0))
-outer = float(probe_cfg.get("local_radius_outer", 150.0))
+NPRW_CFG = PARAMS.probes.get("NPRW")
+RADII = (PARAMS.probes.get("NPRW").get("local_radius_inner"), PARAMS.probes.get("NPRW").get("local_radius_outer"))
 
-CHECKPOINT_NPRW = OUT_BASE / "checkpoints" / "NPRW"
-PATTERN = f"pp_local_{int(inner)}_{int(outer)}__interp_*"
+NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
+PATTERN = f"pp_local_{int(RADII[0])}_{int(RADII[1])}__interp_*"
 
 # Parallel job settings (reuse your PARAMS)
 global_job_kwargs = dict(n_jobs=getattr(PARAMS, "parallel_jobs", 1),
@@ -65,13 +64,13 @@ print(f"[INFO] Using sorter: {SORTER} with params: {sorter_params}")
 
 # ---------- MAIN ----------
 def main():
-    pp_dirs = sorted(CHECKPOINT_NPRW.glob(PATTERN))
+    pp_dirs = sorted(NPRW_CKPT_ROOT.glob(PATTERN))
     if not pp_dirs:
-        print(f"[WARN] No preprocessed folders found at: {CHECKPOINT_NPRW}/{PATTERN}")
+        print(f"[WARN] No preprocessed folders found at: {NPRW_CKPT_ROOT}/{PATTERN}")
         return
-
+        
     for pp_dir in pp_dirs:
-        sess_name = pp_dir.name.replace(f"pp_local_{int(inner)}_{int(outer)}__interp_", "")
+        sess_name = pp_dir.name.replace(f"pp_local_{int(RADII[0])}_{int(RADII[1])}__interp_", "")
         print(f"\n[RUN] Session: {sess_name}")
         print(f"      Loading recording from: {pp_dir}")
 

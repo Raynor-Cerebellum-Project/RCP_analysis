@@ -1,109 +1,72 @@
-from __future__ import annotations
 from pathlib import Path
 import numpy as np
 import csv
-
-# ---------- CONFIG ----------
-from pathlib import Path
 import spikeinterface.extractors as se
 import RCP_analysis as rcp
 
+# ---------- Config ----------
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-DATA_ROOT = rcp.resolve_data_root(PARAMS)
-OUT_BASE  = rcp.resolve_output_root(PARAMS); OUT_BASE.mkdir(parents=True, exist_ok=True)
-
-# Template and output
-TEMPLATE = REPO_ROOT / "config" / "br_intan_align_template.mat"
-
-BR_ROOT       = (DATA_ROOT / PARAMS.blackrock_rel); BR_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_CSV  = (DATA_ROOT / PARAMS.metadata_rel)
-METADATA_ROOT = METADATA_CSV.parent
-METADATA_ROOT.mkdir(parents=True, exist_ok=True)
-
+SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
+OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
+BR_ROOT = SESSION_LOC / "Blackrock"; BR_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
 NPRW_BUNDLES   = OUT_BASE / "bundles" / "NPRW"
 NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
+TEMPLATE = REPO_ROOT / "config" / "br_intan_align_template.mat"
 
-# Sync channels
-NPRW_PROBE_CFG = (PARAMS.probes or {}).get("NPRW", {})
-NPRW_CAMERA_SYNC_CH = int(NPRW_PROBE_CFG.get("triangle_sync_ch", 1))
-
-UA_PROBE_CFG = (PARAMS.probes or {}).get("UA", {})
-UA_CAMERA_SYNC_CH = int(UA_PROBE_CFG.get("camera_sync_ch", 134))
-TRIANGLE_SYNC_CH = int(UA_PROBE_CFG.get("triangle_sync_ch", 138))
+# Probe params, sync channels
+NPRW_CFG = PARAMS.probes.get("NPRW")
+NPRW_CAMERA_SYNC_CH = int(NPRW_CFG.get("triangle_sync_ch", 1))
+UA_CFG = PARAMS.probes.get("UA")
+CAMERA_SYNC_CH = int(UA_CFG.get("camera_sync_ch", 134))
+TRIANGLE_SYNC_CH = int(UA_CFG.get("triangle_sync_ch", 138))
 MATCH_WINDOW_MS = 1000.0
 
-def _z(x: np.ndarray) -> np.ndarray:
+def _xcorr_normalized(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     x = np.asarray(x, float)
-    return (x - x.mean()) / (x.std() + 1e-12)
+    y = np.asarray(y, float)
 
-def xcorr_normalized(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    xz, yz = _z(x), _z(y)
-    c = np.correlate(xz, yz, mode="full")
+    # Handle empty inputs early
+    if x.size == 0 or y.size == 0:
+        return np.array([], dtype=float), np.array([], dtype=int)
+
+    # Z-score each signal
+    x = x - x.mean()
+    x /= x.std() + 1e-12
+
+    y = y - y.mean()
+    y /= y.std() + 1e-12
+
+    # Full cross-correlation
+    c = np.correlate(x, y, mode="full")
     if c.size:
         c /= (np.max(np.abs(c)) + 1e-12)
+
+    # Lags: from -(len(y)-1) to (len(x)-1)
     lags = np.arange(-(y.size - 1), x.size)
     return c, lags
 
-def peak_lags(corr: np.ndarray, lags: np.ndarray, height: float = 0.95) -> np.ndarray:
-    try:
-        from scipy.signal import find_peaks
-        idx, _ = find_peaks(corr, height=height)
-        return lags[idx].astype(int)
-    except Exception:
-        mid = np.arange(1, corr.size - 1)
-        mask = (corr[mid-1] < corr[mid]) & (corr[mid] >= corr[mid+1]) & (corr[mid] >= height)
-        return lags[mid[mask]].astype(int)
-
-# ===========================
-# Template matching on Intan (lock)
-# ===========================
-
+# Template matching on Intan
 def load_template(template_mat_path: Path) -> np.ndarray:
     from scipy.io import loadmat
     m = loadmat(str(template_mat_path))
     if "template" not in m:
-        raise KeyError("'template' not found in br_intan_align_template.mat")
+        raise KeyError("Template not in br_intan_align_template.mat")
     return np.asarray(m["template"], float).squeeze()
 
 def find_locs_via_template(adc_lock: np.ndarray, template: np.ndarray, fs: float, peak=0.95) -> np.ndarray:
-    corr, lags = xcorr_normalized(adc_lock, template)
-    locs = peak_lags(corr, lags, height=peak)
+    corr, lags = _xcorr_normalized(adc_lock, template)
+    try:
+        from scipy.signal import find_peaks
+        idx, _ = find_peaks(corr, height=peak)
+        locs = lags[idx].astype(int)
+    except Exception:
+        mid = np.arange(1, corr.size - 1)
+        mask = (corr[mid-1] < corr[mid]) & (corr[mid] >= corr[mid+1]) & (corr[mid] >= peak)
+        locs = lags[mid[mask]].astype(int)
     return locs
-
-def build_br_window(
-    rec_br,
-    br_ch,
-    fs_br: float,
-    fs_intan: float,
-    g: int,                 # Intan coarse anchor (loc)
-    search_n: int,          # ± Intan samples you'll try
-    big_window_sec: float = 20.0,   # make this large enough to include direction flips
-    extra_pad_sec: float = 0.5,     # small safety pad on both sides
-) -> tuple[int, int, np.ndarray]:
-    """
-    Build a large BR window centered at the mapped Intan time, with padding for the
-    ±search_n Intan shifts (converted to BR samples). Returns [start:end) and br_win.
-    """
-    n_br = rec_br.get_num_frames()
-    br_center = int(round(g * fs_br / fs_intan))
-
-    # How much BR padding is needed so ±search_n (Intan samples) still fits:
-    pad_br = int(np.ceil(search_n * (fs_br / fs_intan)))
-
-    # Base half-width from the 'big' window + extra pad
-    half = int(round((big_window_sec / 2.0) * fs_br))
-    extra = int(round(extra_pad_sec * fs_br))
-    half_total = half + pad_br + extra
-
-    # Clamp to file bounds
-    s = max(0, br_center - half_total)
-    e = min(n_br, br_center + half_total)
-    if e - s < 8:
-        e = min(n_br, s + 8)
-
-    br_win = rec_br.get_traces(start_frame=s, end_frame=e, channel_ids=[br_ch], return_in_uV=False)
-    return s, e, br_win.squeeze().astype(float, copy=False)
 
 def refine_anchor_with_loc_and_br0(
     rec_br,
@@ -119,7 +82,7 @@ def refine_anchor_with_loc_and_br0(
     """
     BR origin is 0. Align BR[0:W) against Intan starting at time loc/fs_intan,
     then refine with additional ±n BR-sample shifts. Return:
-      anchor_sample (Intan), delta_intan_samples, dt_ms, debug dict.
+      shift_sample (Intan), delta_intan_samples, dt_ms, debug dict.
     """
     # ---- BR window: start at 0 ----
     n_br_total = rec_br.get_num_frames()
@@ -166,7 +129,7 @@ def refine_anchor_with_loc_and_br0(
 
     # ---- Convert best BR shift to Intan samples; final anchor = loc + delta_i ----
     delta_i = int(round(best_n * r))
-    anchor  = int(np.clip(loc + delta_i, 0, N_i - 1))
+    shift  = int(np.clip(loc + delta_i, 0, N_i - 1))
     dt_ms   = 1000.0 * delta_i / float(fs_intan)
 
     dbg = {
@@ -176,123 +139,111 @@ def refine_anchor_with_loc_and_br0(
         "best_rms": float(best_rms),
         "Li": int(max(8, round(N_b * r))),
     }
-    return anchor, int(delta_i), float(dt_ms), dbg
+    return shift, int(delta_i), float(dt_ms), dbg
 
-# ---------- discover Intan sessions (from NPRW rates) ----------
-def session_from_rates_path(p: Path) -> str:
-    stem = p.stem
-    body = stem[len("rates__"):]
-    return body.split("__bin", 1)[0]
-    
 def main():
-    if not METADATA_CSV.exists():
-        raise SystemExit(f"[error] mapping CSV not found: {METADATA_CSV}")
-
+    # Load Intan sessions (from processed Intan rate files)
     rate_files = sorted(NPRW_CKPT_ROOT.rglob("rates__*.npz"))
-    sessions = sorted({session_from_rates_path(p) for p in rate_files })
+    sessions = sorted({p.stem[len("rates__"):].split("__bin", 1)[0] for p in rate_files })
     if not sessions:
         raise SystemExit(f"[error] No NPRW rate files under {NPRW_CKPT_ROOT}")
 
     _, intan_idx_to_sess = rcp.build_session_index_map(sessions)
 
-    # ---------- mapping CSV ----------
+    # Load metadata
+    if not METADATA_CSV.exists():
+        raise SystemExit(f"[error] mapping CSV not found: {METADATA_CSV}")
     intan_to_br = rcp.get_metadata_mapping(METADATA_CSV, "Intan_File", "BR_File")
     print(f"[map] Loaded Intan→BR rows: {len(intan_to_br)}")
 
+    # Load template
     template = load_template(TEMPLATE)
 
-    # ---------- iterate pairs, compute anchor, write shifts CSV ----------
+    # iterate BR Intan pairs, compute shift, and write shifts to CSV
     summary_rows = []
     for intan_idx, br_idx in sorted(intan_to_br.items()):
-        session = intan_idx_to_sess.get(intan_idx)
-        if session is None:
+        intan_sess = intan_idx_to_sess.get(intan_idx)
+        if intan_sess is None:
             print(f"[warn] No session name for Intan_File={intan_idx} (skipping)")
             continue
 
-        adc_npz = NPRW_BUNDLES / f"{session}_Intan_bundle" / "USB_board_ADC_input_channel.npz"
+        adc_npz = NPRW_BUNDLES / f"{intan_sess}_Intan_bundle" / "aux_streams.npz"
         if not adc_npz.exists():
             print(f"[warn] Intan ADC bundle missing: {adc_npz} (skip Intan {intan_idx} → BR {br_idx})")
             continue
 
         # Load Intan ADC
         try:
-            adc_triangle, adc_lock, fs_intan = rcp.load_intan_adc(adc_npz)
+            intan_triangle_signal, intan_BR_start_signal, fs_intan = rcp.load_intan_aux(adc_npz)
         except Exception as e:
-            print(f"[error] load_intan_adc failed for {adc_npz}: {e}")
+            print(f"[error] load_intan_aux failed for {adc_npz}: {e}")
             continue
 
-        # Template-match on LOCK to get block starts
-        locs = find_locs_via_template(adc_lock, template, fs_intan, peak=0.95)
-        print(f"[locs] Intan {intan_idx:03d} peaks ≥0.95: {locs.size} | first 10: {locs[:10].tolist() if locs.size else []}")
-        if locs.size == 0:
-            print(f"[warn] No template peaks found for {session}; skipping.")
+        # Template-match on BR_sync_signal to get block starts
+        br_sync_locs = find_locs_via_template(intan_BR_start_signal, template, fs_intan, peak=0.95)
+        print(f"[locs] Intan {intan_idx:03d} peaks ≥0.95: {br_sync_locs.size} | first 10: {br_sync_locs[:10].tolist() if br_sync_locs.size else []}")
+        if br_sync_locs.size == 0:
+            print(f"[warn] No template peaks found for {intan_sess}; skipping.")
             continue
         
         # ---- load BR (lazy) ----
         fs_br = float("nan")
         rec_br = None
-        br_ch = None
-        dur_intan_sec = len(adc_triangle) / fs_intan
+        dur_intan_sec = len(intan_triangle_signal) / fs_intan
         dur_br_sec = float("nan")
 
-        br_ns5 = BR_ROOT / f"{PARAMS.session}_{br_idx:03d}.ns5"
+        br_ns5_file = BR_ROOT / f"{PARAMS.session}_{br_idx:03d}.ns5"
         use_br = False
-        if br_ns5.exists():
+        if br_ns5_file.exists():
             try:
-                rec_br = se.read_blackrock(br_ns5)  # does not load all data
-                fs_br = float(rec_br.get_sampling_frequency())
+                rec_br = se.read_blackrock(br_ns5_file)  # does not load all data
+                fs_br = rec_br.get_sampling_frequency()
                 # map TRIANGLE_SYNC_CH to a valid channel id
-                ch_ids = np.array(rec_br.get_channel_ids())
-                br_ch = None
-                tri_id = str(TRIANGLE_SYNC_CH)
-
-                if tri_id in ch_ids:
-                    # TRIANGLE_SYNC_CH is an actual channel id (most robust path)
-                    br_ch = tri_id
-                elif 0 <= tri_id < ch_ids.size:
-                    # treat it as a zero-based index into the list
-                    br_ch = int(ch_ids[tri_id])
-
-                use_br = (br_ch is not None)
-                if not use_br:
-                    print(f"[note] TRIANGLE_SYNC_CH={tri_id} not found in BR channels; skipping BR refinement.")
+                if str(TRIANGLE_SYNC_CH) not in rec_br.get_channel_ids():
+                    print(f"[note] TRIANGLE_SYNC_CH={str(TRIANGLE_SYNC_CH)} not found in BR channels; skipping BR refinement.")
+                else:
+                    use_br = False # TODO Set to true after fixing triangle alignment
                 try:
                     dur_br_sec = rec_br.get_num_frames() / fs_br
                 except Exception:
                     pass
             except Exception as e:
-                print(f"[note] BR open failed for {br_ns5}: {e}")
+                print(f"[note] BR open failed for {br_ns5_file}: {e}")
                 rec_br, fs_br, use_br = None, float("nan"), False
 
+
+
+
+
+
+        # refine each block using triangle sync channel TODO FIX THIS
         LOC_REFINE_N = 50        # like MATLAB's N
         locs_rows = []
         locs_rows_dt = []
-
-        for b, loc in enumerate(locs.astype(int)):
+        
+        for block, loc in enumerate(br_sync_locs): # loc is a candidate for Intan sample where BR recording starts before refinement
             if use_br:
-                g = int(loc)  # coarse Intan anchor from template on Intan
-                search_n_br = int(round(LOC_REFINE_N * fs_br / fs_intan))  # same span but on BR grid
-                ref_i, d_i, dt_ms, dbg = refine_anchor_with_loc_and_br0(
-                    rec_br=rec_br, br_ch=br_ch, fs_br=fs_br,
-                    adc_triangle_intan=adc_triangle, fs_intan=fs_intan,
-                    loc=g, search_n_br=search_n_br, br_window_sec=20.0, normalize_both=False
+                search_n_br = int(round(LOC_REFINE_N * fs_br / fs_intan)) # Width of searching through BR samples
+                shift_sample_intan, delta_intan_samples, dt_ms, debug_dict = refine_anchor_with_loc_and_br0(
+                    rec_br=rec_br, br_ch=str(TRIANGLE_SYNC_CH), fs_br=fs_br,
+                    adc_triangle_intan=intan_triangle_signal, fs_intan=fs_intan,
+                    loc=loc, search_n_br=search_n_br, br_window_sec=20.0, normalize_both=False
                 )
                 # record ref_i as triangle_loc_sample and d_i as delta_samples
 
-                locs_rows.append((b, g, int(ref_i), int(d_i)))
+                locs_rows.append((block, loc, int(shift_sample_intan), int(delta_intan_samples)))
                 locs_rows_dt.append(dt_ms)
 
-                if b < 3:
-                    print(f"[block {b}] BR[{dbg['br_start']}:{dbg['br_end']}) len={dbg['br_end']-dbg['br_start']} | "
-                        f"Intan g={g} → ref_i={ref_i} (Δ_i={d_i:+d} samp, n_br={dbg['best_n_br']:+d}, {dt_ms:+.3f} ms) "
-                        f"| Li={dbg['Li']} best_rms={dbg['best_rms']:.6g}")
+                if block < 3:
+                    print(f"[block {block}] BR[{debug_dict['br_start']}:{debug_dict['br_end']}) len={debug_dict['br_end']-debug_dict['br_start']} | "
+                        f"Intan loc={loc} → ref_i={shift_sample_intan} (Δ_i={delta_intan_samples:+d} samp, n_br={debug_dict['best_n_br']:+d}, {dt_ms:+.3f} ms) "
+                        f"| Li={debug_dict['Li']} best_rms={debug_dict['best_rms']:.6g}")
             else:
-                g = int(loc)
-                locs_rows.append((b, g, g, 0))
+                locs_rows.append((block, loc, loc, 0))
                 locs_rows_dt.append(float('nan'))
-            break # TODO hacky fix
+            break
 
-        # write per-block CSV (you reference locs_csv later)
+        # write per-block CSV (you reference locs_csv later) - TODO this is writing the triangle fix outputs
         locs_csv = METADATA_ROOT / "template_locs" / f"intan_{intan_idx:03d}__template_locs.csv"
         locs_csv.parent.mkdir(parents=True, exist_ok=True)
         with locs_csv.open("w", newline="") as f:
@@ -300,16 +251,23 @@ def main():
             w.writerow(["block_idx", "lock_loc_sample", "triangle_loc_sample", "delta_samples"])
             w.writerows(locs_rows)
 
-        # initial/ refined anchor from block 0
-        anchor0    = locs_rows[0][1]  # lock_loc_sample
-        anchor     = locs_rows[0][2]  # triangle_loc_sample
-        tri_delta  = locs_rows[0][3]  # delta_samples
-        anchor_sec = anchor / fs_intan
-        anchor_ms  = anchor_sec * 1000.0
 
-        refined = np.array([r[2] for r in locs_rows], dtype=int)   # triangle_loc_sample (refined)
-        deltas  = np.array([r[3] for r in locs_rows], dtype=int)   # delta_samples
-        dt_ms   = np.array([d for d in locs_rows_dt if d == d], dtype=float)  # drop NaNs
+
+
+
+
+
+        # TODO Just using the first one now
+        # initial/ refined anchor from block 0
+        template_shift_sample    = locs_rows[0][1]
+        adjusted_shift_sample     = locs_rows[0][2]
+        adjustment_samples  = locs_rows[0][3]
+        shift_sec = adjusted_shift_sample / fs_intan
+        shift_ms  = shift_sec * 1000.0
+
+        refined = np.array([r[2] for r in locs_rows])   # triangle_loc_sample (refined)
+        deltas  = np.array([r[3] for r in locs_rows])   # delta_samples
+        dt_ms   = np.array([d for d in locs_rows_dt if d == d])  # drop NaNs
 
         if refined.size:
             parts = [
@@ -325,25 +283,24 @@ def main():
             
         # keep CSV summary row
         summary_rows.append(dict(
-            session=session,
+            session=intan_sess,
             intan_idx=intan_idx,
             br_idx=br_idx,
             adc_npz=str(adc_npz),
-            br_ns5=str(br_ns5),
-            fs_intan=float(fs_intan),
-            fs_br=float(fs_br),
-            anchor_sample=int(anchor),
-            anchor_seconds=float(anchor_sec),
-            anchor_ms=float(anchor_ms),
-            dur_intan_sec=float(dur_intan_sec),
-            dur_br_sec=float(dur_br_sec),
-            triangle_refined_from=int(anchor0),
-            triangle_refine_delta_samples=int(tri_delta),
+            br_ns5=str(br_ns5_file),
+            fs_intan=fs_intan,
+            fs_br=fs_br,
+            anchor_sample=adjusted_shift_sample,
+            anchor_seconds=shift_sec,
+            anchor_ms=shift_ms,
+            dur_intan_sec=dur_intan_sec,
+            dur_br_sec=dur_br_sec,
+            triangle_refined_from=template_shift_sample,
+            triangle_refine_delta_samples=adjustment_samples,
             n_locs=len(locs_rows),
             locs_csv=str(locs_csv),
         ))
-
-        print(f"[anchor] Intan {intan_idx:03d} ↔ BR {br_idx:03d} : anchor={anchor:+d} samp ({anchor_sec:+.6f} s)")
+        print(f"[shift] Intan {intan_idx:03d} ↔ BR {br_idx:03d} : shift={adjusted_shift_sample:+d} samp ({shift_sec:+.6f} s)")
 
     # ---------- write alignment summary CSV ----------
     if summary_rows:
@@ -354,7 +311,7 @@ def main():
             w.writerows(summary_rows)
         print(f"[done] wrote shifts → {out_csv}")
     else:
-        print("[done] no rows to write (no anchors).")
+        print("[done] no rows to write (no shifts).")
  
 if __name__ == "__main__":
     main()

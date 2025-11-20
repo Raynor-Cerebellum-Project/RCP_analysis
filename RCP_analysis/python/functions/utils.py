@@ -4,9 +4,7 @@ import pandas as pd, numpy as np
 import json, csv, re
 import spikeinterface as si
 import spikeinterface.extractors as se
-import spikeinterface.preprocessing as spre
 from typing import Dict, Any, Optional, Tuple
-from ..functions.intan_preproc import load_stim_geometry, make_identity_probe_from_geom
 
 # --- Building OCR and DLC dictionary for mapping ---
 def _parse_condition_cam(path: Path):
@@ -364,21 +362,6 @@ def list_intan_sessions(root: Path) -> list[Path]:
     root = Path(root)
     return sorted([p for p in root.iterdir() if p.is_dir()])
 
-def read_intan_recording(
-    folder: Path,
-    stream_name: str = "RHS2000 amplifier channel",
-) -> si.BaseRecording:
-    """
-    Read a single Intan session folder (RHS split files).
-    """
-    folder = Path(folder)
-    rec = se.read_split_intan_files(folder, mode="concatenate", stream_name=stream_name, use_names_as_ids=True)
-    # If UInt16, convert to signed int16 (common for Intan)
-    if rec.get_dtype().kind == "u":
-        rec = spre.unsigned_to_signed(rec)
-        rec = spre.astype(rec, dtype="int16")
-    return rec
-
 def save_recording(rec: si.BaseRecording, out_dir: Path) -> None:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -436,81 +419,27 @@ def load_combined_npz(p: Path):
     return i_rate, i_t.astype(float), u_rate, u_t.astype(float), stim_ms.astype(float), meta
 
 # ---- alignment utils ----
-# Helper functions for ADC dataloading
-def _npz_meta_dict(arr):
-    if arr is None:
-        return {}
-    try:
-        obj = arr.item() if hasattr(arr, "item") else arr
-    except Exception:
-        obj = arr
-    if isinstance(obj, (bytes, str)):
-        try:
-            return json.loads(obj)
-        except Exception:
-            return {}
-    return obj if isinstance(obj, dict) else {}
+def load_intan_aux(npz_path: Path) -> tuple[np.ndarray, np.ndarray, float]:
+    aux_file = np.load(npz_path, allow_pickle=True, mmap_mode="r")
 
-def _ensure_channels_first(arr2d: np.ndarray) -> np.ndarray:
-    n0, n1 = arr2d.shape
-    if n0 <= 512 and n1 > n0:
-        return arr2d.T
-    if n1 <= 512 and n0 > n1:
-        return arr2d
-    return arr2d.T if n0 <= n1 else arr2d
-
-def _pick_fs_hz(meta, z):
-    for k in ("fs_hz","fs","sampling_rate_hz","sampling_rate","sample_rate_hz","sample_rate"):
-        if isinstance(meta, dict) and k in meta:
-            try: return float(meta[k])
-            except Exception: pass
-    if z is not None and "t" in z.files:
-        t = np.asarray(z["t"], dtype=float)
-        dt = np.nanmedian(np.diff(t))
-        if dt > 0:
-            return 1.0/dt
-    return None
-
-def load_intan_adc(npz_path: Path) -> tuple[np.ndarray, np.ndarray, float]:
-    """
-    Returns (adc_triangle, adc_lock, fs) from Intan USB ADC bundle (.npz).
-    If only a generic 2D matrix is present, returns channel 0 as 'triangle', 1 as 'lock'.
-    """
-    z = np.load(npz_path, allow_pickle=True, mmap_mode="r")
-    meta = _npz_meta_dict(z["meta"]) if "meta" in z.files else {}
-    fs = float(_pick_fs_hz(meta, z) or 30000.0)
-
-    if any(k.startswith("chunk_") for k in z.files):
-        keys = sorted(k for k in z.files if k.startswith("chunk_"))
-        ch0, ch1 = [], []
-        for k in keys:
-            a = z[k]
-            if a.ndim == 2 and a.shape[1] >= 2:
-                ch0.append(a[:,0].astype(np.float32))
-                ch1.append(a[:,1].astype(np.float32))
-            elif a.ndim == 1:
-                ch0.append(a.astype(np.float32))
-        if not ch0:
-            raise RuntimeError("No usable chunk_* arrays in ADC NPZ")
-        tri = np.concatenate(ch0)
-        lock = np.concatenate(ch1) if ch1 else tri * 0.0
-        return tri, lock, fs
-
-    if "board_adc_data" in z.files and getattr(z["board_adc_data"], "ndim", 0) == 2:
-        A = z["board_adc_data"]
+    # meta / fs
+    if "meta" in aux_file.files:
+        meta = json.loads(str(aux_file["meta"]))
     else:
-        A = None
-        for k in z.files:
-            a = z[k]
-            if hasattr(a, "ndim") and a.ndim == 2:
-                A = a; break
-        if A is None:
-            raise RuntimeError(f"No 2D array in {npz_path}")
+        raise RuntimeError(f"No 'meta' in {npz_path}")
+    
+    if "aux_traces" not in aux_file.files:
+        raise RuntimeError(f"No 'aux_traces' in {npz_path}")
 
-    chxT = _ensure_channels_first(np.asarray(A))
-    if chxT.shape[0] < 2:
-        chxT = np.vstack([chxT, np.zeros_like(chxT)])
-    return chxT[0].astype(np.float32), chxT[1].astype(np.float32), fs
+    aux_signal = aux_file["aux_traces"] # (n_channels, n_samples)
+    if aux_signal.ndim != 2:
+        raise RuntimeError(f"'aux_traces' in {npz_path} is not 2D, got shape {aux_signal.shape}")
+    if aux_signal.shape[0] < 2:
+        aux_signal = np.vstack([aux_signal, np.zeros_like(aux_signal)])
+
+    triangle_sync_signal  = aux_signal[0] # TODO Make these channels customizable?
+    br_template_signal = aux_signal[1]
+    return triangle_sync_signal, br_template_signal, float(meta["fs_hz"])
 
 # Analysis / alignment
 def extract_peristim_segments(
@@ -677,13 +606,6 @@ def detect_stim_channels_from_npz(
 
         # geometry order is already respected if upstream wrote order='geometry'
         return np.unique(active).astype(int)
- 
-def build_probe_and_locs_from_geom(geom_path: Path, radius_um: float = 5.0):
-    """Load your saved geometry -> ProbeInterface Probe + (n_ch,2) locs."""
-    geom = load_stim_geometry(geom_path)                  # your project format
-    probe = make_identity_probe_from_geom(geom, radius_um=radius_um)  # ProbeInterface Probe
-    locs  = probe.contact_positions.astype(float)         # (n_ch, 2)
-    return probe, locs
 
 # Other func
 def aligned_stim_ms(stim_ms_abs: np.ndarray, meta: dict) -> np.ndarray:

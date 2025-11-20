@@ -1,4 +1,3 @@
-from __future__ import annotations
 from pathlib import Path
 import pandas as pd
 import sys
@@ -15,16 +14,14 @@ import RCP_analysis as rcp
 # ---------- Config ----------
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-DATA_ROOT = rcp.resolve_data_root(PARAMS)
-OUT_BASE  = rcp.resolve_output_root(PARAMS); OUT_BASE.mkdir(parents=True, exist_ok=True)
-
-BR_ROOT    = (DATA_ROOT / PARAMS.blackrock_rel); BR_ROOT.mkdir(parents=True, exist_ok=True)
-VIDEO_ROOT = (DATA_ROOT / PARAMS.video_rel);     VIDEO_ROOT.mkdir(parents=True, exist_ok=True)
-
+SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
+OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
+BR_ROOT = SESSION_LOC / "Blackrock"; BR_ROOT.mkdir(parents=True, exist_ok=True)
+VIDEO_ROOT = SESSION_LOC / "Video"; VIDEO_ROOT.mkdir(parents=True, exist_ok=True)
 BEHV_BUNDLES   = OUT_BASE / "bundles" / "behavior"
-BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "behavior"
-BEHV_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_CSV  = (DATA_ROOT / PARAMS.metadata_rel).resolve(); METADATA_CSV.parent.mkdir(parents=True, exist_ok=True)
+BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "behavior"; BEHV_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
 
 def main():
     print(f"[scan] VIDEO_ROOT={VIDEO_ROOT}")

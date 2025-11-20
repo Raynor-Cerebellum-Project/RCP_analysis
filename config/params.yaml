@@ -15,9 +15,9 @@ probes:
   UA:
     n_channels: 256
     mapping_mat_rel: "config/1106-22, 24, 42, 44 SN 11386-024040.xlsm"
-    camera_sync_ch: 134 # MAKE SURE THESE CHANNELS ARE CORRECT
-    triangle_sync_ch: 138 # MAKE SURE THESE CHANNELS ARE CORRECT
-    # geom_mat_rel: ""   # (optional) if you want a specific .mat for UA
+    camera_sync_ch: 134
+    triangle_sync_ch: 138
+    # geom_mat_rel: ""   # (optional) if you want a specific one for UA
 
   NN_DBS:
     local_radius_inner: 40 # Placeholder
@@ -35,6 +35,7 @@ probes:
     mapping_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
     neural_data_stream: "RHS2000 amplifier channel"
     stim_data_stream: "Stim channel"
+    aux_stream: "USB board ADC input channel"
 
 # ---- chunking / parallel ----
 parallel_jobs: 8

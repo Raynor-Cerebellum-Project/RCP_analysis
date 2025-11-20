@@ -106,26 +106,32 @@ As long as you have the inputs:
 Preprocessing and spike sorting are handled in Python using [SpikeInterface](https://spikeinterface.readthedocs.io/)
 
 **Steps:**
-1. Load neural data and config (location to data, geometry and mapping)
-2. Load geometry and mapping (.mat file)
-3. Preprocess Intan (.rhs) data (high-pass filter, common local median reference default radius: 30, 150)  
-4. Build bundles for data other then neural data (save as .npz file) (2 sync channels) (`intan_preproc.build_intan_bundle`) - TODO: Convert to NWB format
-5. Extract stim data (save as .npz file)
-6. Save per-session preprocessed data
+1. Load geometry and mapping (.mat file)
+2. Extract stim data and locations of stim pulses (individual pulses and blocks) - saves .npz file
+3. Extract auxiliary data (sync pulses) - saves .npz file TODO: Convert to NWB format
+4. Load Intan neural data, attach probe info, and reorder based on mapping
+5. Preprocess Intan (.rhs) data (high-pass filter, common local median reference default radius: 30, 150)
+6. Zero stim regions with $\pm$ 20
+7. Threshold and calculate MUA (peaks), firing rate TODO: Artifact correction via PCA
+8. PCA of the firing rate matrix (not used right now)
+9. Saves .npz file per sesson
 
-Try plotting per channel + probe
+**Steps:**
+TODO:
+1. Concatenate sessions for sorting  
+2. Run Kilosort4 (KS4)
+3. Export results in Phy format
+4. Optional now: SLAy
+5. Separate by condition
 
-7. **TODO** Artifact correction via PCA fitting
-8. Concatenate sessions for sorting  
-9. Run Kilosort4 (KS4) with Intan geometry and mapping
-10. Export results in Phy format
-11. **TODO** Optional now: SLAy
-12. **TODO** Separate by condition
-13. **TODO** Firing rate (FR) estimation using Gaussian filter?
-14. **TODO** Align with BR using two sync pulses (one from BR side)
-
-## 3. Align BR data to Intan
+## 3. Compute time difference between BR and Intan recordings
 `batch_scripts/compute_br_to_intan_shifts.py`
+
+1. Load metadata to match intan files to BR files
+2. Load template sent from BR to Intan and Intan ADC file
+3. Match the template to the BR template signal
+4. TODO: Refine alignment using the triangle sync pulse
+5. Save the shifts and adjusted shifts calculated from these two signals
 
 ## 4. Neural data preprocessing (BR / UA)
 `batch_scripts/UA_Intan_analysis_threshold.py`

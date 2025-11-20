@@ -8,54 +8,37 @@ import matplotlib
 matplotlib.use("Agg")
 from scipy.signal import filtfilt
 from scipy.signal.windows import gaussian as _scipy_gaussian
+import spikeinterface.preprocessing as spre
+import spikeinterface.extractors as se
 
 import RCP_analysis as rcp
-
-
-# ---------- small helpers ----------
-def _ensure_dir(p: Path) -> Path:
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-def _subdir(root: Path, *parts: str) -> Path:
-    return _ensure_dir(root.joinpath(*parts))
 
 # ---------- CONFIG / roots ----------
 REPO_ROOT  = Path(__file__).resolve().parents[1]
 PARAMS     = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-
-DATA_ROOT  = rcp.resolve_data_root(PARAMS)
-OUT_BASE   = _ensure_dir(rcp.resolve_output_root(PARAMS))
-INTAN_ROOT = _ensure_dir(rcp.resolve_intan_root(PARAMS))
-
-# ---------- metadata ----------
-# Guard against missing metadata_rel; loader should set it, but be defensive
-metadata_rel = getattr(PARAMS, "metadata_rel", None) or ""
-METADATA_CSV  = (DATA_ROOT / metadata_rel).resolve()
-METADATA_ROOT = _ensure_dir(METADATA_CSV.parent)
+SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
+OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
+INTAN_ROOT = SESSION_LOC / "Intan"; INTAN_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
 SHIFTS_CSV    = METADATA_ROOT / "br_to_intan_shifts.csv"
 
 # ---------- checkpoints / bundles ----------
-CKPT_ROOT       = _subdir(OUT_BASE, "checkpoints")
-BEHV_CKPT_ROOT  = _subdir(CKPT_ROOT, "behavior")           # where *_Cam-0_aligned.csv live
-BASELINE_ROOT   = _subdir(BEHV_CKPT_ROOT, "baseline_concat")
-ALIGNED_OUT     = _subdir(BASELINE_ROOT, "rates_from_curated")
-
-BUNDLES_ROOT    = _subdir(OUT_BASE, "bundles")
-NPRW_BUNDLES    = _subdir(BUNDLES_ROOT, "NPRW")
-
-NPRW_CKPT_ROOT  = _subdir(CKPT_ROOT, "NPRW")
-UA_CKPT_ROOT    = _subdir(CKPT_ROOT, "UA")
+NPRW_CKPT_ROOT  = OUT_BASE / "checkpoints" / "NPRW"
+UA_CKPT_ROOT    = OUT_BASE / "checkpoints" / "UA"
+BEHV_CKPT_ROOT  = OUT_BASE / "checkpoints" / "behavior"
+BASELINE_ROOT   = OUT_BASE / "checkpoints" / "behavior" / "baseline_concat"
+ALIGNED_OUT     = OUT_BASE / "checkpoints" / "behavior" / "baseline_concat" / "rates_from_curated"
+NPRW_BUNDLES    = OUT_BASE / "bundles" / "NPRW"
 
 # ---------- analysis constants ----------
 IR_STREAM        = "USB board digital input channel"  # stream to preview
 DEFAULT_BR_FS    = 30000.0  # Hz; override if you know the true ns5 rate
-WIN_MS           = (-750.0, 750.0)
+WIN_MS           = (-600.0, 600.0)
 BASELINE_FIRST_MS = 150.0
 
 # ---------- keypoints order (from YAML, with fallback) ----------
-KEYPOINTS_ORDER = tuple((PARAMS.kinematics or {}).get("keypoints", ())
-                        or ("wrist", "middle_finger_base", "middle_finger_tip"))
+KEYPOINTS_ORDER = tuple((PARAMS.kinematics).get("keypoints"))
 
 CURATED_EVENTS_A = []
 CURATED_EVENTS_B = []
@@ -78,34 +61,6 @@ def find_ua_rates_by_index(ua_ckpt_root: Path, br_idx: int) -> Path | None:
         return None
     pref = [p for p in cands if re.search(r"__sigma?25ms", p.stem)]
     return pref[0] if pref else cands[-1]
-
-def _resample_rate_to_time(rate_hz: np.ndarray, t_src: np.ndarray, t_tgt: np.ndarray) -> np.ndarray:
-    n_ch = rate_hz.shape[0]
-    out = np.empty((n_ch, t_tgt.size), dtype=np.float32)
-    r32 = rate_hz.astype(np.float32, copy=False)
-    for ch in range(n_ch):
-        out[ch] = np.interp(t_tgt, t_src, r32[ch])
-    return out
-
-def _overlap_and_resample_to_intan(i_rate, i_t, u_rate, u_t):
-    if i_t.size == 0 or u_t.size == 0:
-        return i_rate[:, :0], i_t[:0], u_rate[:, :0], {"overlap_bins": 0, "dt_i_ms": np.nan}
-    t0 = max(float(i_t[0]), float(u_t[0]))
-    t1 = min(float(i_t[-1]), float(u_t[-1]))
-    if not (t1 > t0):
-        return i_rate[:, :0], i_t[:0], u_rate[:, :0], {"overlap_bins": 0, "dt_i_ms": np.nan}
-    mi = (i_t >= t0) & (i_t <= t1)
-    common_t = i_t[mi]
-    i_trim = i_rate[:, mi]
-    if common_t.size < 2:
-        return i_rate[:, :0], i_t[:0], u_rate[:, :0], {"overlap_bins": 0, "dt_i_ms": np.nan}
-    mu = (u_t >= common_t[0]) & (u_t <= common_t[-1])
-    u_crop, u_t_crop = u_rate[:, mu], u_t[mu]
-    if u_t_crop.size < 2:
-        return i_rate[:, :0], i_t[:0], u_rate[:, :0], {"overlap_bins": 0, "dt_i_ms": np.nan}
-    u_on_common = _resample_rate_to_time(u_crop, u_t_crop, common_t)
-    dt_i = float(np.median(np.diff(common_t)))
-    return i_trim, common_t, u_on_common, {"overlap_bins": int(common_t.size), "dt_i_ms": dt_i}
 
 def _window_rate_around_events(rate: np.ndarray, t_vec_ms: np.ndarray,
                                event_ms: np.ndarray, pre_ms: float, post_ms: float):
@@ -184,7 +139,6 @@ def _build_videoidx_to_trial_map(cam:int=0) -> dict[int,str]:
 
     return {k: v[0] for k, v in picked.items()}
 
-# --- robust name normalization ---
 def _norm_name(s: str) -> str:
     s = str(s).lower()
     s = re.sub(r'[^a-z0-9]+', '_', s)
@@ -509,7 +463,7 @@ def build_peri_event_windows(trial: str,
 
 # ---------- helpers ----------
 def _read_csv_robust(path: Path) -> pd.DataFrame:
-    encodings = ("utf-8", "utf-8-sig", "cp1252", "latin-1", "mac_roman")
+    encodings = ("utf-8", "utf-8-sig")
     last_err = None
     for enc in encodings:
         try:
@@ -678,7 +632,6 @@ def _resolve_curated_indices_for_port(port: str, total_n: int):
     keep = np.unique(keep[(keep >= 0) & (keep < int(total_n))])
     return keep if keep.size else None
 
-
 # ---------- main ----------
 def main():
     if not METADATA_CSV.exists():
@@ -690,16 +643,13 @@ def main():
     shifts_full = _load_br_to_intan_map_full(SHIFTS_CSV)
 
     df_raw = _read_csv_robust(METADATA_CSV)
-    if df_raw.empty:
-        print(f"[warn] Metadata CSV is empty: {METADATA_CSV}")
-        return
     df = _norm_cols(df_raw)
 
-    col_notes = _pick_col(df, ["notes","note","comments","comment"])
-    col_port  = _pick_col(df, ["ua_port","uaport","port"])
-    col_depth = _pick_col(df, ["depth_mm","depth","ua_depth_mm","ua_depth"])
-    col_br    = _pick_col(df, ["br_file","brfile","br"])
-    col_video = _pick_col(df, ["video_file","videofile","video"])
+    col_notes = _pick_col(df, ["notes"])
+    col_port  = _pick_col(df, ["ua_port"])
+    col_depth = _pick_col(df, ["depth_mm","depth"])
+    col_br    = _pick_col(df, ["br_file"])
+    col_video = _pick_col(df, ["video_file"])
 
     if col_notes is None:
         print("[error] No 'Notes' column in metadata.", file=sys.stderr)
@@ -760,8 +710,8 @@ def main():
             trial = videoidx_to_trial.get(video_idx) if video_idx is not None else None
 
             sess_entry = shifts_full.get(br_num) if br_num is not None else None
-            intan_session = (sess_entry or {}).get("session")
-            row_anchor_ms = float((sess_entry or {}).get("anchor_ms", 0.0))
+            intan_session = (sess_entry).get("session")
+            row_anchor_ms = float((sess_entry).get("anchor_ms", 0.0))
 
             debug_flag = (str(port).upper() != "B")
             print(f"BASELINE[{port} | Depth={depth_label}]: Trial={trial or 'n/a'}  Intan={intan_session or 'n/a'}  "
@@ -772,9 +722,10 @@ def main():
 
             # IR edges
             try:
-                rec_ir = rcp.read_intan_recording(INTAN_ROOT / intan_session, stream_name=IR_STREAM)
+                rec_ir = se.read_split_intan_files(INTAN_ROOT / intan_session, mode="concatenate", stream_name=IR_STREAM, use_names_as_ids=True)
+                rec_ir = spre.unsigned_to_signed(rec_ir) # Convert UInt16 to int16
             except Exception as e:
-                print(f"[warn] read_intan_recording failed: Intan={intan_session}: {e}")
+                print(f"[warn] Reading IR stream failed: Intan={intan_session}: {e}")
                 continue
 
             sig, fs = _extract_signal_fs(rec_ir)
@@ -902,22 +853,39 @@ def main():
 
         # ===== NPRW/UA rate windows (always produce ALL; add CURATED if keep exists) =====
         print(f"[rates] UA={port}: extracting NPRW/UA rate windows (ALL"
-            f"{' + CURATED' if (keep is not None and keep.size) else ''})...")
+              f"{' + CURATED' if (keep is not None and keep.size) else ''})...")
 
         # Accumulators per selection label
         acc = {
             "ALL": {
                 "i_chunks": [], "u_chunks": [], "evt_ms": [],
                 "sess": [], "br": [], "gidx": [], "lidx": [],
-                "rel_t_ref": None
+                "rel_t_i_ref": None,  # Intan peri-event time axis
+                "rel_t_u_ref": None,  # UA peri-event time axis
             }
         }
         if keep is not None and keep.size:
             acc["CURATED"] = {
                 "i_chunks": [], "u_chunks": [], "evt_ms": [],
                 "sess": [], "br": [], "gidx": [], "lidx": [],
-                "rel_t_ref": None
+                "rel_t_i_ref": None,
+                "rel_t_u_ref": None,
             }
+
+        # helper for optional resampling across *sessions* (never UA→Intan)
+        def _resample_win(win: np.ndarray, t_src: np.ndarray, t_tgt: np.ndarray) -> np.ndarray:
+            """
+            win: (N, C, T_src), t_src/t_tgt: (T,)
+            Resample along time to t_tgt.
+            """
+            if win.size == 0 or t_src.size == 0 or t_tgt.size == 0:
+                return win
+            n_ev, n_ch, _T = win.shape
+            out = np.empty((n_ev, n_ch, t_tgt.size), dtype=np.float32)
+            for e in range(n_ev):
+                for ch in range(n_ch):
+                    out[e, ch] = np.interp(t_tgt, t_src, win[e, ch].astype(np.float32, copy=False))
+            return out
 
         for blk in session_blocks:
             g0, g1 = int(blk["concat_start"]), int(blk["concat_end"])
@@ -932,7 +900,6 @@ def main():
                 if sel_global.size:
                     sel["CURATED"] = (sel_global - g0).astype(int)
 
-            # If nothing to keep for this block (e.g., curated empty), still do ALL
             if not sel:
                 sel = {"ALL": np.arange(n_this, dtype=int)}
 
@@ -940,62 +907,72 @@ def main():
             ua_rates_npz    = find_ua_rates_by_index(UA_CKPT_ROOT, int(blk["br_idx"]) if blk["br_idx"] is not None else -1)
             if intan_rates_npz is None or ua_rates_npz is None:
                 print(f"[rates] skip session={blk['intan_session']}: missing rates "
-                    f"(Intan={bool(intan_rates_npz)}, UA={bool(ua_rates_npz)})")
+                      f"(Intan={bool(intan_rates_npz)}, UA={bool(ua_rates_npz)})")
                 continue
 
             i_rate, i_t_ms, *_ = rcp.load_rate_npz(intan_rates_npz)
             u_rate, u_t_ms, *_ = rcp.load_rate_npz(ua_rates_npz)
 
+            # Align Intan to BR frame using anchor; UA already in BR ms
             i_t_ms_al = i_t_ms - float(blk["anchor_ms"])
             u_t_ms_al = u_t_ms
 
-            i_trim, common_t, u_on_common, st = _overlap_and_resample_to_intan(i_rate, i_t_ms_al, u_rate, u_t_ms_al)
-            if common_t.size == 0:
-                print(f"[rates] session={blk['intan_session']}: no overlap after alignment.")
-                continue
+            # dt diagnostics (for logging/meta only)
+            dt_i = float(np.median(np.diff(i_t_ms_al))) if i_t_ms_al.size > 1 else np.nan
+            dt_u = float(np.median(np.diff(u_t_ms_al))) if u_t_ms_al.size > 1 else np.nan
+            st = {"dt_i_ms": dt_i, "dt_u_ms": dt_u}
+            print(f"[rates] session={blk['intan_session']}: dt_i≈{dt_i:.3f} ms, dt_u≈{dt_u:.3f} ms (native bins)")
 
-            # Build per-selection windows and persist per-session files
             for tag, sel_local in sel.items():
                 if sel_local.size == 0:
                     continue
 
+                # Event centers in BR ms (same for Intan+UA; different dt, same origin)
                 evt_ms_al = (blk["evt_sec"][sel_local].astype(float) * 1000.0) - float(blk["anchor_ms"])
 
-                i_win, rel_t_rate = _window_rate_around_events(i_trim, common_t, evt_ms_al, -WIN_MS[0], WIN_MS[1])
-                u_win, _          = _window_rate_around_events(u_on_common, common_t, evt_ms_al, -WIN_MS[0], WIN_MS[1])
+                # Build peri-event windows using native timebases
+                i_win, rel_t_i = _window_rate_around_events(
+                    i_rate, i_t_ms_al, evt_ms_al, -WIN_MS[0], WIN_MS[1]
+                )
+                u_win, rel_t_u = _window_rate_around_events(
+                    u_rate, u_t_ms_al, evt_ms_al, -WIN_MS[0], WIN_MS[1]
+                )
 
-                # Ensure a common rel_t across sessions within each selection tag
-                if acc[tag]["rel_t_ref"] is None:
-                    acc[tag]["rel_t_ref"] = rel_t_rate.copy()
-                elif not np.allclose(rel_t_rate, acc[tag]["rel_t_ref"], atol=1e-6):
-                    def _resample_win(win: np.ndarray, t_src: np.ndarray, t_tgt: np.ndarray) -> np.ndarray:
-                        n_ev, n_ch, _T = win.shape
-                        out = np.empty((n_ev, n_ch, t_tgt.size), dtype=np.float32)
-                        for e in range(n_ev):
-                            for ch in range(n_ch):
-                                out[e, ch] = np.interp(t_tgt, t_src, win[e, ch].astype(np.float32, copy=False))
-                        return out
-                    i_win = _resample_win(i_win, rel_t_rate, acc[tag]["rel_t_ref"])
-                    u_win = _resample_win(u_win, rel_t_rate, acc[tag]["rel_t_ref"])
+                # Ensure per-tag consistent rel_t across sessions separately for Intan/UA
+                if acc[tag]["rel_t_i_ref"] is None:
+                    acc[tag]["rel_t_i_ref"] = rel_t_i.copy()
+                elif not np.allclose(rel_t_i, acc[tag]["rel_t_i_ref"], atol=1e-6):
+                    i_win = _resample_win(i_win, rel_t_i, acc[tag]["rel_t_i_ref"])
+                    rel_t_i = acc[tag]["rel_t_i_ref"]
+
+                if acc[tag]["rel_t_u_ref"] is None:
+                    acc[tag]["rel_t_u_ref"] = rel_t_u.copy()
+                elif not np.allclose(rel_t_u, acc[tag]["rel_t_u_ref"], atol=1e-6):
+                    u_win = _resample_win(u_win, rel_t_u, acc[tag]["rel_t_u_ref"])
+                    rel_t_u = acc[tag]["rel_t_u_ref"]
 
                 # Accumulate
                 acc[tag]["i_chunks"].append(i_win.astype(np.float32, copy=False))
                 acc[tag]["u_chunks"].append(u_win.astype(np.float32, copy=False))
                 acc[tag]["evt_ms"].append(evt_ms_al.astype(np.float32, copy=False))
-                acc[tag]["sess"].append(np.array([blk["intan_session"]]*i_win.shape[0], dtype=object))
-                acc[tag]["br"].append(np.array([int(blk["br_idx"]) if blk["br_idx"] is not None else -1]*i_win.shape[0], dtype=np.int32))
+                acc[tag]["sess"].append(
+                    np.array([blk["intan_session"]] * i_win.shape[0], dtype=object)
+                )
+                acc[tag]["br"].append(
+                    np.array([int(blk["br_idx"]) if blk["br_idx"] is not None else -1] * i_win.shape[0],
+                             dtype=np.int32)
+                )
 
                 # For indices, store global and local (relative to concat)
                 if tag == "ALL":
                     sel_global_for_tag = np.arange(g0, g1, dtype=int)
                 else:
-                    # CURATED
                     sel_global_for_tag = (sel_local + g0).astype(int)
 
                 acc[tag]["gidx"].append(sel_global_for_tag.astype(np.int32, copy=False))
                 acc[tag]["lidx"].append(sel_local.astype(np.int32, copy=False))
 
-                # Per-session save
+                # Per-session save (native dt for each side)
                 out_rates = ALIGNED_OUT / (
                     f"rates_from_curated__UA_{_sanitize(str(port))}"
                     f"__Depth{_sanitize(str(depth_label))}"
@@ -1006,19 +983,24 @@ def main():
                     out_rates,
                     intan_rate_win=i_win.astype(np.float32),
                     ua_rate_win=u_win.astype(np.float32),
-                    rate_t_rel_ms=acc[tag]["rel_t_ref"].astype(np.float32),
+                    intan_t_rel_ms=rel_t_i.astype(np.float32),
+                    ua_t_rel_ms=rel_t_u.astype(np.float32),
                     event_center_ms=evt_ms_al.astype(np.float32),
                     port=str(port),
                     depth_mm=str(depth_label),
                     intan_session=str(blk["intan_session"]),
                     br_idx=int(blk["br_idx"]) if blk["br_idx"] is not None else -1,
-                    dt_ms_target=float(st.get("dt_i_ms", np.nan)),
+                    dt_intan_ms=float(st.get("dt_i_ms", np.nan)),
+                    dt_ua_ms=float(st.get("dt_u_ms", np.nan)),
                     n_events_kept=int(sel_local.size),
                     curated_global_indices=sel_global_for_tag.astype(int),
                     curated_local_indices=sel_local.astype(int),
                     intan_rates=str(intan_rates_npz),
                     ua_rates=str(ua_rates_npz),
-                    align_note="Intan ms aligned by subtracting anchor_ms; UA left on BR ms; UA resampled to Intan grid."
+                    align_note=(
+                        "Intan ms aligned to BR by subtracting anchor_ms; "
+                        "UA kept on BR ms; Intan/UA peri-event windows use native binning."
+                    ),
                 )
                 print(f"[rates] wrote {out_rates}")
 
@@ -1042,7 +1024,8 @@ def main():
                 out_cat,
                 intan_rate_win=i_all.astype(np.float32),
                 ua_rate_win=u_all.astype(np.float32),
-                rate_t_rel_ms=A["rel_t_ref"].astype(np.float32),
+                intan_t_rel_ms=A["rel_t_i_ref"].astype(np.float32),
+                ua_t_rel_ms=A["rel_t_u_ref"].astype(np.float32),
                 event_center_ms=evt_all.astype(np.float32),
                 event_session=sess_all,
                 event_br_idx=br_all.astype(np.int32),
@@ -1051,11 +1034,53 @@ def main():
                 port=str(port),
                 depth_mm=str(depth_label),
                 n_events_total=int(i_all.shape[0]),
-                align_note=("All sessions resampled to a common relative timebase (first seen for this selection). "
-                            "Intan ms aligned by subtracting anchor_ms; UA left on BR ms; UA resampled to Intan grid.")
+                align_note=(
+                    "Peri-event rate windows saved separately for Intan and UA with native binning; "
+                    "timebases are already in a common BR-aligned origin."
+                ),
             )
             print(f"[rates][{tag}] wrote {out_cat}  "
-                f"(N={i_all.shape[0]}, Intan_ch={i_all.shape[1]}, UA_ch={u_all.shape[1]}, T={i_all.shape[2]})")
+                  f"(N={i_all.shape[0]}, Intan_ch={i_all.shape[1]}, UA_ch={u_all.shape[1]}, "
+                  f"T_intan={i_all.shape[2]}, T_UA={u_all.shape[2]})")
+
+        # Concatenate across sessions and save per selection
+        for tag, A in acc.items():
+            if not A["i_chunks"]:
+                continue
+            i_all = np.concatenate(A["i_chunks"], axis=0)
+            u_all = np.concatenate(A["u_chunks"], axis=0)
+            evt_all = np.concatenate(A["evt_ms"], axis=0)
+            sess_all = np.concatenate(A["sess"], axis=0)
+            br_all   = np.concatenate(A["br"],   axis=0)
+            gidx_all = np.concatenate(A["gidx"], axis=0)
+            lidx_all = np.concatenate(A["lidx"], axis=0)
+
+            out_cat = ALIGNED_OUT / (
+                f"rates_from_curated__UA_{_sanitize(str(port))}"
+                f"__Depth{_sanitize(str(depth_label))}__{tag}.npz"
+            )
+            np.savez_compressed(
+                out_cat,
+                intan_rate_win=i_all.astype(np.float32),
+                ua_rate_win=u_all.astype(np.float32),
+                intan_t_rel_ms=A["rel_t_i_ref"].astype(np.float32),
+                ua_t_rel_ms=A["rel_t_u_ref"].astype(np.float32),
+                event_center_ms=evt_all.astype(np.float32),
+                event_session=sess_all,
+                event_br_idx=br_all.astype(np.int32),
+                curated_global_idx=gidx_all.astype(np.int32),
+                curated_local_idx=lidx_all.astype(np.int32),
+                port=str(port),
+                depth_mm=str(depth_label),
+                n_events_total=int(i_all.shape[0]),
+                align_note=(
+                    "Peri-event rate windows saved separately for Intan and UA with native binning; "
+                    "timebases share a BR-aligned origin."
+                ),
+            )
+            print(f"[rates][{tag}] wrote {out_cat}  "
+                f"(N={i_all.shape[0]}, Intan_ch={i_all.shape[1]}, UA_ch={u_all.shape[1]}, "
+                f"T_intan={i_all.shape[2]}, T_UA={u_all.shape[2]})")
 
 if __name__ == "__main__":
     main()

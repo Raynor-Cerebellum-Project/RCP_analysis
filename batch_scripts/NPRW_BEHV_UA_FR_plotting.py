@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import re
+from scipy.io import loadmat
 
 import RCP_analysis as rcp
 
@@ -43,20 +44,12 @@ GAP_BEH_INTAN    = 0.25  # height "ratio" for a spacer row between behavior and 
 FIG_WIDTH_IN         = 16.0        # ← overall width (inches)
 HEIGHT_PER_RATIO_IN  = 4.0         # ← height per unit of `ratios` sum
 
-# ---------- helpers ----------
-def _ensure_dir(p: Path) -> Path:
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-def _subdir(root: Path, *parts: str) -> Path:
-    return _ensure_dir(root.joinpath(*parts))
-
 # ---------- params / roots ----------
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
 
-DATA_ROOT = rcp.resolve_data_root(PARAMS)
-OUT_BASE  = _ensure_dir(rcp.resolve_output_root(PARAMS))
+SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
+OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
 
 # ---------- Impedance loading ----------
 UA_IMP_MAX_KOHM = 1000.0        # threshold for excluding UA rows; adjust as needed
@@ -70,43 +63,57 @@ IMP_FILES = {
 }
 
 # ---------- figures ----------
-FIG_ROOT   = _subdir(OUT_BASE, "figures")
-PERI_FIG   = _subdir(FIG_ROOT, "peri_stim")
-
-FIG = SimpleNamespace(
-    peri_posvel=_subdir(PERI_FIG, "posvel_traces"),
-)
+FIG_ROOT   = OUT_BASE / "figures"
+PERI_FIG   = FIG_ROOT / "peri_stim"
+FIG = SimpleNamespace(peri_posvel=PERI_FIG / "posvel_traces")
 
 # ---------- checkpoints / inputs ----------
-CKPT_ROOT    = _subdir(OUT_BASE, "checkpoints")
-ALIGNED_ROOT = _subdir(CKPT_ROOT, "Aligned")
-BEHAV_ROOT   = _subdir(CKPT_ROOT, "behavior", "baseline_concat")
-
-# ---------- metadata / mapping ----------
-# Metadata CSV (derive, create parent if missing)
-METADATA_CSV = (DATA_ROOT / (PARAMS.metadata_rel or "")).resolve()
-_ensure_dir(METADATA_CSV.parent)
+ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
+BEHAV_ROOT   = OUT_BASE / "checkpoints" / "behavior" / "baseline_concat"
+NPRW_BUNDLES   = OUT_BASE / "bundles" / "NPRW"
+METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
 
 # UA mapping (only load if path exists and probes provided)
 XLS = rcp.ua_excel_path(REPO_ROOT, getattr(PARAMS, "probes", {}))
 UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS and Path(XLS).exists() else None
 
+GEOM_PATH = (
+    Path(PARAMS.geom_mat_rel).resolve()
+    if getattr(PARAMS, "geom_mat_rel", None) and str(PARAMS.geom_mat_rel).startswith("/")
+    else (REPO_ROOT / PARAMS.geom_mat_rel).resolve()
+    if getattr(PARAMS, "geom_mat_rel", None)
+    else rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT, session_key=None)
+)
+
 # ---------- kinematics ----------
 # Tuple order for keypoints (robust to missing config)
-KEYPOINTS_ORDER = tuple((PARAMS.kinematics or {}).get("keypoints", ()))
+KEYPOINTS_ORDER = tuple(PARAMS.kinematics.get("keypoints"))
 RATES_DIR = BEHAV_ROOT / "rates_from_curated"
 
-def _pick_rates_all_path(rates_dir: Path) -> tuple[Path, str]:
-    cur = sorted(rates_dir.glob("rates_from_curated__UA_*__Depth*__CURATED.npz"))
-    al  = sorted(rates_dir.glob("rates_from_curated__UA_*__Depth*__ALL.npz"))
+def _pick_rates_all_path(rates_dir: Path, ua_port_choice: str = "A") -> tuple[Path, str]:
+    """
+    Prefer, in order:
+      1) CURATED, port-specific, session-aggregated (no __BR_) 
+      2) ALL,     port-specific, session-aggregated (no __BR_)
+      5) last ALL of anything (per-BR, etc.)
+    """
+    def _no_br(lst):
+        # keep only files that do NOT have __BR_ in the name
+        return [p for p in lst if "__BR_" not in p.name]
+    
+    cur = sorted(rates_dir.glob(f"rates_from_curated__UA_{ua_port_choice}__Depth*__CURATED.npz"))
+    cur = _no_br(cur)
     if cur:
         return cur[-1], "CURATED"
-    if al:
-        return al[-1], "ALL"
-    # dummy placeholder; caller will print a friendly error
+    
+    all_port = sorted(rates_dir.glob(f"rates_from_curated__UA_{ua_port_choice}__Depth*__ALL.npz"))
+    all_port = _no_br(all_port)
+    if all_port:
+        return all_port[-1], "ALL"
     return rates_dir / "rates_from_curated__UA_X__DepthY__ALL.npz", "ALL"
 
-RATES_ALL_PATH, _rates_selection_tag = _pick_rates_all_path(RATES_DIR)
+RATES_ALL_PATH, _rates_selection_tag = _pick_rates_all_path(RATES_DIR, "A")
 
 _imp_pat_elecnum = re.compile(
     r"\belec\s*\d+\s*-\s*(\d{1,3})\s+([0-9]+(?:\.[0-9]+)?)\s*(k?ohms?|kΩ|ohms?|Ω)\b",
@@ -634,7 +641,8 @@ def main_baselines():
     with np.load(RATES_ALL_PATH, allow_pickle=True) as z:
         intan_win = z["intan_rate_win"].astype(float) if "intan_rate_win" in z.files else np.zeros((0,0,0), float)
         ua_win    = z["ua_rate_win"].astype(float)    if "ua_rate_win"    in z.files else np.zeros((0,0,0), float)
-        rel_t     = z["rate_t_rel_ms"].astype(float)  if "rate_t_rel_ms"  in z.files else np.arange(0.0)
+        intan_t     = z["intan_t_rel_ms"].astype(float)  if "intan_t_rel_ms"  in z.files else np.arange(0.0)
+        ua_t     = z["ua_t_rel_ms"].astype(float)  if "ua_t_rel_ms"  in z.files else np.arange(0.0)
         # keep for later lookups
         all_dir   = RATES_ALL_PATH.parent
         port_lbl  = str(z.get("port", "B"))
@@ -662,10 +670,10 @@ def main_baselines():
     intan_med = None; ua_med = None
     # ---- baseline-zero per event/channel; then median across events ----
     if n_ev_i:
-        i_zero = rcp.baseline_zero_each_trial(intan_win, rel_t, normalize_first_ms=NORMALIZE_FIRST_MS)
+        i_zero = rcp.baseline_zero_each_trial(intan_win, intan_t, normalize_first_ms=NORMALIZE_FIRST_MS)
         intan_med = np.nanmedian(i_zero, axis=0)
     if n_ev_u:
-        u_zero = rcp.baseline_zero_each_trial(ua_win,    rel_t, normalize_first_ms=NORMALIZE_FIRST_MS)
+        u_zero = rcp.baseline_zero_each_trial(ua_win,    ua_t, normalize_first_ms=NORMALIZE_FIRST_MS)
         ua_med = np.nanmedian(u_zero, axis=0)
         
     intan_var = None; ua_var = None
@@ -779,7 +787,7 @@ def main_baselines():
 
                     try:
                         ua_plot, ids_plot = _order_rows_by_region_then_peak(
-                            ua_plot, rel_t, ids_plot,
+                            ua_plot, ua_t, ids_plot,
                             pre_only=True, include_zero=True
                         )
                     except Exception as e:
@@ -1021,7 +1029,7 @@ def main_baselines():
                 vmax_i = VMAX_INTAN_BASELINE if intan_vmax is None else float(intan_vmax)
                 im0 = ax_i.imshow(
                     intan_mat, aspect="auto", cmap=COLORMAP, origin="lower",
-                    extent=[rel_t[0], rel_t[-1], 0, intan_mat.shape[0]],
+                    extent=[intan_t[0], intan_t[-1], 0, intan_mat.shape[0]],
                     vmin=vmin_i, vmax=vmax_i
                 )
                 
@@ -1058,7 +1066,7 @@ def main_baselines():
 
                 im1 = ax_u.imshow(
                     mat_g, aspect="auto", cmap=COLORMAP, origin="lower",
-                    extent=[rel_t[0], rel_t[-1], 0, mat_g.shape[0]],
+                    extent=[ua_t[0], ua_t[-1], 0, mat_g.shape[0]],
                     vmin=vmin_g, vmax=vmax_g
                 )
 
@@ -1549,18 +1557,26 @@ def build_title_from_csv(
     return ", ".join(parts), video_file
 
 def main():
-    # Intan probe (optional, only used if you later want a probe panel like NPRW)
-    try:
-        GEOM_PATH = (
-            Path(PARAMS.geom_mat_rel).resolve()
-            if getattr(PARAMS, "geom_mat_rel", None) and str(PARAMS.geom_mat_rel).startswith("/")
-            else (REPO_ROOT / PARAMS.geom_mat_rel).resolve()
-            if getattr(PARAMS, "geom_mat_rel", None)
-            else rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT, session_key=None)
-        )
-        probe, locs = rcp.build_probe_and_locs_from_geom(GEOM_PATH)
-    except Exception:
-        probe, locs = None, None
+    mat_probe = loadmat(Path(GEOM_PATH))
+    intan_geom = {}
+    intan_geom["x"] = mat_probe["xcoords"].ravel()
+    intan_geom["y"] = mat_probe["ycoords"].ravel()
+    assert intan_geom["x"].size == intan_geom["y"].size, "x/y must have same length"
+    if "chanMap0ind" in mat_probe: # 0-based device mapping if present
+        intan_probe_mapping = intan_geom["device_index_0based"] = mat_probe["chanMap0ind"].ravel()
+    else:
+        raise ValueError("No 0-based chanmap in .mat geometry file.")
+    if intan_probe_mapping.size != intan_geom["x"].size:
+        raise ValueError("device_index_0based length != #contacts")
+    
+    # Build ProbeInterface Probe
+    nprw_probe = Probe(ndim=2)
+    nprw_probe.set_contacts(positions=np.c_[intan_geom["x"], intan_geom["y"]], shapes="square", shape_params={"width": 12.0})
+    nprw_probe.set_device_channel_indices(intan_probe_mapping )# Apply mapping
+    
+    probe.set_device_channel_indices(np.arange(probe.get_contact_count(), dtype=int))
+    locs  = probe.contact_positions.astype(float)         # (n_ch, 2)
+    
     files = sorted(ALIGNED_ROOT.glob("aligned__*.npz"))
     if not files:
         raise SystemExit(f"[error] No combined aligned NPZs found at {ALIGNED_ROOT}")
@@ -1595,9 +1611,7 @@ def main():
 
         # ---------- Behavior (already mapped to common grid in the NPZ) ----------
         with np.load(file, allow_pickle=True) as z:
-            common_t = z["intan_t_ms_aligned"].astype(float)
-            beh_idx   = z.get("beh_common_idx", np.array([], dtype=np.int64)).astype(np.int64)
-            beh_valid = z.get("beh_common_valid", np.array([], dtype=bool)).astype(bool)
+            intan_t = z["intan_t_ms_aligned"].astype(float)  if "intan_t_ms_aligned"  in z.files else np.arange(0.0)
             cam0      = z.get("beh_cam0", np.zeros((0,0), np.float32)).astype(float)
             cam1      = z.get("beh_cam1", np.zeros((0,0), np.float32)).astype(float)
             raw0 = z.get("beh_cam0_cols", None)
@@ -1605,18 +1619,11 @@ def main():
             cam0_cols = [str(x) for x in _as_list(raw0)]
             cam1_cols = [str(x) for x in _as_list(raw1)]
 
-        # ---- interpolate here (gentle, respects invalid rows) ----
+        
+        # ---- interpolate here (gentle NaN interpolation only) ----
         if cam0.size:
-            cam0 = cam0.copy()
-            # do not “invent” values on invalid rows
-            if beh_valid.size >= cam0.shape[0]:
-                cam0[~beh_valid[:cam0.shape[0]], :] = np.nan
             cam0 = _interp_nans_2d_by_col(cam0, max_gap=4)
-
         if cam1.size:
-            cam1 = cam1.copy()
-            if beh_valid.size >= cam1.shape[0]:
-                cam1[~beh_valid[:cam1.shape[0]], :] = np.nan
             cam1 = _interp_nans_2d_by_col(cam1, max_gap=4)
 
         cam0_M, cam0_names = _select_matrix(cam0, cam0_cols)
@@ -1626,34 +1633,31 @@ def main():
         cam0_M = _z_per_column(cam0_M) if cam0_M.size else cam0_M
         cam1_M = _z_per_column(cam1_M) if cam1_M.size else cam1_M
 
-        # Map samples to bins using precomputed indices; mask out-of-tolerance
-        bin_idx = np.where(beh_valid, beh_idx, -1)
-
-        # Aggregate to common grid (you already have this)
-        cam0_on_grid = _aggregate_columns_to_bins(bin_idx, cam0_M, common_t.size)
-        cam1_on_grid = _aggregate_columns_to_bins(bin_idx, cam1_M, common_t.size)
+        # Behavior already on Intan grid → no binning needed
+        cam0_on_grid = cam0_M
+        cam1_on_grid = cam1_M
 
         # >>> Low-pass filter position and compute velocity (on-grid) <<<
-        cam0_pos_filt, cam0_vel, _ = butter_lowpass_pos_and_vel(cam0_on_grid, common_t, cutoff_hz=10.0, order=3)
-        cam1_pos_filt, cam1_vel, _ = butter_lowpass_pos_and_vel(cam1_on_grid, common_t, cutoff_hz=10.0, order=3)
+        cam0_pos_filt, cam0_vel, _ = butter_lowpass_pos_and_vel(cam0_on_grid, intan_t, cutoff_hz=10.0, order=3)
+        cam1_pos_filt, cam1_vel, _ = butter_lowpass_pos_and_vel(cam1_on_grid, intan_t, cutoff_hz=10.0, order=3)
 
         # Keep only stim times with a full window inside the behavior timeline
-        if common_t.size >= 2:
-            dt_ms = float(np.nanmedian(np.diff(common_t)))
+        if intan_t.size >= 2:
+            dt_ms = float(np.nanmedian(np.diff(intan_t)))
         else:
             dt_ms = 1.0  # fallback
 
-        t0, t1 = float(common_t[0]), float(common_t[-1])
+        t0, t1 = float(intan_t[0]), float(intan_t[-1])
         left_ok  = stim_ms + WIN_MS[0] >= t0
         right_ok = stim_ms + WIN_MS[1] <= t1
         stim_ms_beh = stim_ms[left_ok & right_ok]
 
         # Now build the peri-stim median *position* lines from the filtered positions:
-        cam0_lines, beh_rel_t, cam0_ntr = _median_lines_for_columns(cam0_pos_filt, common_t, stim_ms_beh)
-        cam1_lines, _,          cam1_ntr = _median_lines_for_columns(cam1_pos_filt, common_t, stim_ms_beh)
+        cam0_lines, beh_rel_t, cam0_ntr = _median_lines_for_columns(cam0_pos_filt, intan_t, stim_ms_beh)
+        cam1_lines, _,          cam1_ntr = _median_lines_for_columns(cam1_pos_filt, intan_t, stim_ms_beh)
 
-        cam0_v_lines, beh_rel_t_v, cam0_v_ntr = _median_lines_for_columns(cam0_vel, common_t, stim_ms_beh)
-        cam1_v_lines, _,             cam1_v_ntr = _median_lines_for_columns(cam1_vel, common_t, stim_ms_beh)
+        cam0_v_lines, beh_rel_t_v, cam0_v_ntr = _median_lines_for_columns(cam0_vel, intan_t, stim_ms_beh)
+        cam1_v_lines, _,             cam1_v_ntr = _median_lines_for_columns(cam1_vel, intan_t, stim_ms_beh)
 
         # Position traces
         if cam0_lines.size:
@@ -1793,8 +1797,7 @@ def main():
                 print(f"[warn] Peri UA VAR: ordering failed: {e}")
                 
         # locate the Intan stim_stream.npz and locate stimulated channels
-        bundles_root = OUT_BASE / "bundles" / "NPRW"
-        stim_npz = bundles_root / f"{sess}_Intan_bundle" / "stim_stream.npz"
+        stim_npz = NPRW_BUNDLES / f"{sess}_Intan_bundle" / "stim_stream.npz"
         stim_locs = None
         if stim_npz.exists():
             try:
@@ -1806,7 +1809,7 @@ def main():
         out_svg_posvel = FIG.peri_posvel / f"Cond_{br_idx}__peri_stim__posvel.png"
 
         title_NA = (f"Neural Activity (median Δ across {n_nprw} events)")
-        beh_time_for_both = beh_rel_t  # or beh_rel_t_v if that's the canonical
+        beh_time_for_both = beh_rel_t 
 
         # if nothing to plot at all, skip
         if (NPRW_med is None) and (UA_med is None) and not (have_cam0 or have_cam1):
@@ -1840,6 +1843,9 @@ def main():
             overall_title=overall_title,
         )
         # --- Variance fig ---
+        t_intan_for_plot = rel_time_ms_i_var if NPRW_var is not None else None
+        t_ua_for_plot    = ua_rel_time_ms_var if UA_var is not None else None
+        
         out_svg_posvel_var = FIG.peri_posvel / f"Cond_{br_idx}__peri_stim__posvel_VAR.png"
         title_NA_var = f"Neural Activity VAR (variance of Δ across {n_nprw_var} events)"
         rcp.stacked_heatmaps_plus_behv(
