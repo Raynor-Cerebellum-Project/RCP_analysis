@@ -6,7 +6,9 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import re
+from probeinterface import Probe
 from scipy.io import loadmat
+
 
 import RCP_analysis as rcp
 
@@ -1573,9 +1575,7 @@ def main():
     nprw_probe = Probe(ndim=2)
     nprw_probe.set_contacts(positions=np.c_[intan_geom["x"], intan_geom["y"]], shapes="square", shape_params={"width": 12.0})
     nprw_probe.set_device_channel_indices(intan_probe_mapping )# Apply mapping
-    
-    probe.set_device_channel_indices(np.arange(probe.get_contact_count(), dtype=int))
-    locs  = probe.contact_positions.astype(float)         # (n_ch, 2)
+    locs  = nprw_probe.contact_positions.astype(float)    
     
     files = sorted(ALIGNED_ROOT.glob("aligned__*.npz"))
     if not files:
@@ -1826,7 +1826,7 @@ def main():
             out_svg_posvel, title_kinematics, title_NA,
             cmap=COLORMAP,
             vmin_intan=VMIN_INTAN, vmax_intan=VMAX_INTAN,
-            probe=probe, probe_locs=locs, stim_idx=stim_locs,
+            probe=nprw_probe, probe_locs=locs, stim_idx=stim_locs,
             probe_title="NPRW probe (stim sites highlighted)",
             ua_ids_1based=ua_ids_1based,
             ua_sort="none",
