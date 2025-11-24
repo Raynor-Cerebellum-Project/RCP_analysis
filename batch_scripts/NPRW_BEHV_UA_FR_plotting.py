@@ -1857,7 +1857,7 @@ def main():
             vmin_intan=0.0, vmax_intan=40000.0,
             vmin_ua={"M1i+M1s": 0.0, "PMd": 0.0, "SMA": 0.0},
             vmax_ua={"M1i+M1s": 10000.0, "PMd": 10000.0, "SMA": 10000.0},
-            probe=probe, probe_locs=locs, stim_idx=stim_locs,
+            probe=nprw_probe, probe_locs=locs, stim_idx=stim_locs,
             probe_title="NPRW probe (stim sites highlighted)",
             ua_ids_1based=ua_ids_for_var,
             ua_sort="none",

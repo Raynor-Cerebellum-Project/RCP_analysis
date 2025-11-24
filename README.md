@@ -59,8 +59,8 @@ data and results (output) can be chosen to be other directories in config.
 git clone https://github.com/Raynor-Cerebellum-Project/RCP_analysis.git
 cd RCP_analysis
 
-# 2) create env from environment.yml CHECK IF WE NEED ALL THESE PACKAGES
-conda env create -f environment.yml -n pipeline python=3.10
+# 2) create environment
+conda env create -f environment.yml -n pipeline
 
 # 3) install package and requirements
 conda activate pipeline

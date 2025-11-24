@@ -204,11 +204,11 @@ def main(limit_sessions: Optional[int] = None):
         br_idx = int(sess.name.split('_')[-1]) # resolve br index
         n_ch = rec_ns6.get_num_channels()
         
-        rec_ns6, idx_rows = rcp.apply_ua_mapping_by_renaming(rec_ns6, UA_MAP["mapped_nsp"], br_idx, METADATA_CSV)
+        rec_ns6, idx_rows = rcp.apply_ua_mapping_by_renaming(rec_ns6, UA_MAP, br_idx, METADATA_CSV)
         rec_hp  = spre.highpass_filter(rec_ns6, freq_min=float(PARAMS.highpass_hz))
         
         # --- build UA arrays from idx_rows (no SI properties) ---
-        ua_elec_per_row, ua_nsp_per_row = _ua_arrays_from_idx_rows(n_ch, UA_MAP["mapped_nsp"], idx_rows)
+        ua_elec_per_row, ua_nsp_per_row = _ua_arrays_from_idx_rows(n_ch, UA_MAP, idx_rows)
         row_from_elec = idx_rows.astype(int, copy=False)
         ua_region_per_row = np.array([rcp.ua_region_from_elec(int(elec_num)) for elec_num in ua_elec_per_row], dtype=np.int8)
         ua_region_names   = np.array(["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"], dtype=object)

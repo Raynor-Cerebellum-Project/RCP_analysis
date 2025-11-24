@@ -45,7 +45,6 @@ def ua_excel_path(repo_root: Path, probes_cfg: dict | None) -> Optional[Path]:
     p = (repo_root / rel) if not str(rel).startswith("/") else Path(rel)
     return p if p.exists() else None
 
-
 # bundle extraction
 def extract_blackrock_bundle(sess: Path, out_dir, camera_sync_ch, triangle_sync_ch) -> dict:
     """
@@ -111,11 +110,9 @@ def extract_blackrock_bundle(sess: Path, out_dir, camera_sync_ch, triangle_sync_
     print(f"[SAVED] {out_dir / f'{sess}_UA_bundle.npz'}")
     return bundle
 
-
-# Parsing MAP file excel file (xlsm)
-def _parse_nsp_channel(val) -> Optional[int]:
+def _parse_nsp_channel(val) -> int | None:
     """
-    Parse excel mapping file into an NSP channel int
+    Parse excel mapping file into an NSP channel int.
     Ex: converts 'ch-15' to 15
     """
     if val is None:
@@ -125,176 +122,115 @@ def _parse_nsp_channel(val) -> Optional[int]:
     m = re.search(r'(\d+)', str(val))
     return int(m.group(1)) if m else None
 
-def load_UA_mapping_from_excel(xls_path: Path, sheet: str | int = 0, n_elec: int | None = None) -> Dict[str, Any]:
+
+def load_UA_mapping_from_excel(
+    xls_path: Path,
+    sheet: str | int = 0,
+    n_elec: int | None = None,
+) -> dict[str, Any]:
     """
-    Read the excel sheet that has columns like:
-      - 'NSP ch' (values like 'ch-01')
-      - 'Elec#'  (1..N)
-    This function resolves the non-sequential mapping ("smattering") between electrode
-    numbers and NSP channel IDs. The output array is indexed by electrode position:
-        mapped_nsp[i] = NSP channel wired to Electrode #(i+1)
-    Example:
-        If the MAP file indicates that Electrode #1 is connected to NSP ch-146,
-        then mapped_nsp[0] == 146
-    Input:
-        xls_path: Path to the excel file
-        sheet:    Sheet name or index (default 0)
-        n_elec:   Optionally specify the number of electrodes (otherwise inferred)
-    Returns:
-      {
-        'mapped_nsp': np.ndarray (N,), NSP channel numbers in **correct order**,
-        'n_channels': int
-      }
+    Use pandas only to load the sheet, then convert columns to numpy
+    and do all processing in pure numpy.
     """
     xls_path = Path(xls_path)
     if not xls_path.exists():
         raise FileNotFoundError(f"Excel not found: {xls_path}")
 
+    # Load into DataFrame
     df = pd.read_excel(xls_path, sheet_name=sheet)
 
-    def find_col(names):
-        cols = {re.sub(r'[^a-z0-9]+', '', c.lower()): c for c in map(str, df.columns)}
-        for n in names:
-            key = re.sub(r'[^a-z0-9]+', '', n.lower())
-            if key in cols:
-                return cols[key]
-        return None
+    if "NSP ch" not in df.columns or "Elec#" not in df.columns:
+        raise ValueError(
+            f"Expected columns NSP ch and Elec# not found.\n"
+            f"Columns present: {list(df.columns)}"
+        )
 
-    nsp_col  = find_col(["NSP ch", "NSP", "NSP Channel", "Channel", "CH"])
-    elec_col = find_col(["Elec#", "Elec #", "Electrode", "Electrode #"])
-    if nsp_col is None or elec_col is None:
-        raise ValueError(f"Could not find NSP/Electrode columns in {xls_path.name}. Columns: {list(df.columns)}")
+    # Convert to NumPy
+    nsp_np  = df["NSP ch"].to_numpy()
+    elec_np = df["Elec#"].to_numpy()
 
-    nsp  = df[nsp_col].map(_parse_nsp_channel)
-    elec = pd.to_numeric(df[elec_col], errors="coerce").astype("Int64")
-    mask = nsp.notna() & elec.notna()
-    nsp  = nsp[mask].astype(int).to_numpy()
-    elec = elec[mask].astype(int).to_numpy()
+    # ----- Parse both columns with NumPy loops -----
+    parsed_nsp = np.char.replace(nsp_np.astype(str), "ch-", "").astype(int)
 
+    parsed_elec = np.array([int(v) if v is not None and not pd.isna(v) else None
+                            for v in elec_np], dtype=object)
+
+    # valid mask
+    mask = [(parsed_nsp[i] is not None and parsed_elec[i] is not None)
+            for i in range(len(parsed_nsp))]
+
+    nsp  = np.array([parsed_nsp[i]  for i in range(len(mask)) if mask[i]], dtype=int)
+    elec = np.array([parsed_elec[i] for i in range(len(mask)) if mask[i]], dtype=int)
+
+    # ----- Build mapping -----
     max_elec = int(n_elec or elec.max())
     mapped_nsp = np.zeros(max_elec, dtype=int)
     mapped_nsp[elec - 1] = nsp
-    return {"mapped_nsp": mapped_nsp, "n_channels": int(max_elec)}
 
-def _lookup_ua_port(meta_csv: Path, br_idx: int) -> Optional[str]:
+    return mapped_nsp
+
+
+
+# Mapping
+def _align_mapping_index_to_recording(
+    recording,
+    mapped_nsp: np.ndarray,
+    br_idx: int,
+    meta_csv: Path,
+) -> np.ndarray:
     """
-    Return UA_port for a given BR index from the metadata CSV.
-    Accepts column variants: UA_port / UA Port / port / uaport, and BR / BR_File / br_file.
+    For each electrode NSP id in `mapped_nsp`, return the recording row index or -1.
+
+    Assumptions:
+    - metadata CSV has columns: BR_File, UA_port
+    - UA_port is 'A' or 'B'
+    - recording.get_channel_ids() -> local NSP ids 1..128 (per port)
+    - mapped_nsp uses 1..128 for Port A, 129..256 for Port B
     """
+    # ---- get UA_port for this BR index ----
+    ua_port = None
     if not meta_csv.exists():
         print(f"[WARN] metadata CSV not found at {meta_csv}")
-        return None
+    else:
+        with meta_csv.open("r", newline="") as f:
+            rdr = csv.DictReader(f)
+            if not rdr.fieldnames:
+                print(f"[WARN] {meta_csv.name} has no header")
+            elif "BR_File" not in rdr.fieldnames or "UA_port" not in rdr.fieldnames:
+                print(f"[WARN] metadata missing BR_File and/or UA_port columns (have: {rdr.fieldnames})")
+            else:
+                for row in rdr:
+                    try:
+                        if int(row["BR_File"]) == int(br_idx):
+                            ua_port = (row["UA_port"] or "").strip().upper() or None
+                            break
+                    except Exception:
+                        continue
 
-    def norm(s: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", s.lower())
+    # ---- local channel ids from Recording ----
+    ch_ids = np.asarray(recording.get_channel_ids(), int)
 
-    with meta_csv.open("r", newline="") as f:
-        rdr = csv.DictReader(f)
-        if not rdr.fieldnames:
-            print(f"[WARN] {meta_csv.name} has no header")
-            return None
-        fmap = {norm(k): k for k in rdr.fieldnames if k}
+    # If this is Port B, shift local ids by +128 to match mapped_nsp convention
+    if ua_port == "B":
+        ch_ids = ch_ids + 128
 
-        # pick header names robustly
-        def pick(*names):
-            for n in names:
-                if n in fmap:
-                    return fmap[n]
-            return None
+    # NSP id -> row index
+    id_to_row = {int(ch): i for i, ch in enumerate(ch_ids)}
 
-        col_br = pick("br","brfile","br_file","brindex","br_fileindex")
-        col_port = pick("uaport","ua_port","ua port","port")
-
-        if col_br is None or col_port is None:
-            print(f"[WARN] metadata missing BR and/or UA_port columns (have: {rdr.fieldnames})")
-            return None
-
-        for row in rdr:
-            try:
-                if int(str(row[col_br]).strip()) == int(br_idx):
-                    val = str(row[col_port]).strip()
-                    return val.upper() if val else None
-            except Exception:
-                continue
-
-    return None
-
-def _align_mapping_index_to_recording(recording, mapped_nsp: np.ndarray, br_idx, meta_csv) -> np.ndarray:
-    """
-    Build an electrode->row index map, using NSP channel ids from `mapped_nsp`.
-    For UA Port A, channel IDs are 1..128.
-    For UA Port B, channel IDs are 129..256 (i.e., local 1..128 + 128).
-    We *offset the recording channel IDs* when port == 'B' so lookups happen in 129..256.
-    """
-    ua_port = _lookup_ua_port(meta_csv, br_idx)
-    ch_ids_raw = np.array(recording.get_channel_ids())
-
-    # Primary path: numeric channel_ids from the Recording
-    try:
-        ch_ids_num = ch_ids_raw.astype(int)
-        if ua_port and ua_port.upper() == 'B':
-            # make the keys 129..256 so they match mapped_nsp for Port B
-            keys = ch_ids_num + 128
-        else:
-            keys = ch_ids_num
-        id_to_row = {int(k): i for i, k in enumerate(keys)}
-    except Exception:
-        id_to_row = {}
-
-    # Fallback: derive numeric ids from properties (often already NSP ids)
-    if not id_to_row:
-        for key in ("nsp_channel", "electrode_id", "nsx_chan_id", "channel_name"):
-            if key in recording.get_property_keys():
-                vals = recording.get_property(key)
-                def v2i(v):
-                    if isinstance(v, (int, np.integer)): return int(v)
-                    m = re.search(r'(\d+)', str(v)); return int(m.group(1)) if m else None
-                ints = np.array([v2i(v) for v in vals], dtype=object)
-                # If these are local 1..128 and we're on Port B, offset them.
-                ints_num = np.array([int(x) for x in ints if x is not None], dtype=int)
-                # Heuristic: if max <= 128 and port B, add 128
-                if ua_port and ua_port.upper() == 'B' and ints_num.size and ints_num.max() <= 128:
-                    ints_adj = [int(x)+128 if x is not None else None for x in ints]
-                else:
-                    ints_adj = ints
-                id_to_row = {int(iv): i for i, iv in enumerate(ints_adj) if iv is not None}
-                break
-
-    # Map each electrode's NSP id -> recording row, -1 if missing
+    # ---- build output: per electrode NSP id → row index ----
+    mapped_nsp = np.asarray(mapped_nsp, int)
     idx_rows = np.full(mapped_nsp.shape, -1, dtype=int)
-    for elec_idx0, nsp_id in enumerate(mapped_nsp):
-        try:
-            nsp_id = int(nsp_id)
-        except Exception:
-            continue
-        row = id_to_row.get(nsp_id, -1)
-        idx_rows[elec_idx0] = row
+
+    for elec_idx, nsp_id in enumerate(mapped_nsp):
+        idx_rows[elec_idx] = id_to_row.get(int(nsp_id), -1)
 
     return idx_rows
 
-# Mapping
-def apply_ua_mapping_by_renaming(recording, mapped_nsp: np.ndarray, br_idx, meta_csv):
-    """
-    Rename channel IDs to include UA electrode + NSP channel mapping.
+def apply_ua_mapping_by_renaming(recording, mapped_nsp: np.ndarray, br_idx: int, meta_csv: Path):
+    idx_rows = _align_mapping_index_to_recording(recording, mapped_nsp, br_idx, meta_csv)
 
-    Example new ID format for mapped rows:
-        'UAe003_NSP017'   # electrode 3, NSP channel 17 (after port normalization)
-
-    Unmapped rows retain their original channel_id.
-
-    Returns
-    -------
-    renamed : BaseRecording
-        New recording with renamed channel_ids.
-    idx_rows : np.ndarray[int]
-        For each electrode (1..len(mapped_nsp)), the recording row index or -1 if absent.
-    """
-    # Map each electrode -> row index on this recording (handles Port B → 1..128 normalization)
-    idx_rows = _align_mapping_index_to_recording(recording, mapped_nsp, br_idx, meta_csv)  # shape (N_elec,)
-
-    # Build the positional list of new channel IDs
     ch_ids = list(recording.get_channel_ids())
-    new_ids = [str(ch) for ch in ch_ids]  # default: keep original for unmapped rows
+    new_ids = [str(ch) for ch in ch_ids]
 
     n_ch = recording.get_num_channels()
     for elec0, row in enumerate(idx_rows):
@@ -303,15 +239,11 @@ def apply_ua_mapping_by_renaming(recording, mapped_nsp: np.ndarray, br_idx, meta
             nsp = int(mapped_nsp[elec0])
             new_ids[row] = f"UAe{elec:03d}_NSP{nsp:03d}"
 
-    # IMPORTANT: rename_channels returns a *new* recording
     renamed = recording.rename_channels(new_ids)
-
-    mapped = sum(1 for r in idx_rows if 0 <= r < n_ch)
+    mapped = np.count_nonzero((idx_rows >= 0) & (idx_rows < n_ch))
     print(f"[MAP] renamed {mapped}/{n_ch} rows with UA mapping ('UAe###_NSP###').")
 
-    # If you still want the fast reverse lookup later, you can stash it as an annotation:
     renamed.set_annotation("ua_row_index_from_electrode", idx_rows.astype(int))
-
     return renamed, idx_rows
 
 def ua_region_from_elec(e: int) -> int:
