@@ -133,7 +133,7 @@ TODO:
 5. Save the shifts and adjusted shifts calculated from these two signals
 
 ## 4. Neural data preprocessing (BR / UA)
-`batch_scripts/UA_Intan_analysis_threshold.py`
+`batch_scripts/UA_BR_analysis_threshold.py`
 
 **Steps:**
 1. Load neural data (.ns6) and config (location to data, geometry and mapping)
