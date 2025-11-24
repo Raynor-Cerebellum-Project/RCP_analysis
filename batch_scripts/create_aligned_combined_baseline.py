@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-from __future__ import annotations
 from pathlib import Path
 import re, sys, csv
 import numpy as np

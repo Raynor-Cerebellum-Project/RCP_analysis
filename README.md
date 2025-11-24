@@ -5,12 +5,12 @@ This repository contains the analysis pipeline for preprocessing, quantifying, a
 
 ![alt text](https://github.com/Raynor-Cerebellum-Project/RCP_analysis/blob/main/docs/pipeline_schematic.png "pipeline_schematic")
 
+[Summary of recorded signals](https://docs.google.com/document/d/1C4-xSWL8n7P_mMrYqlUxQR6blz9WIHDU4B7O9bxhMnE/edit?tab=t.0)
+
 TODO:
 - Switch to hdf5
 - Calculation of behavioral metrics
 - Artifact correction using template subtraction of stimulation artifacts
-
-[Summary of recorded signals](https://docs.google.com/document/d/1C4-xSWL8n7P_mMrYqlUxQR6blz9WIHDU4B7O9bxhMnE/edit?tab=t.0)
 
 [Example final figures: Bert's plots for headturn](https://docs.google.com/presentation/d/1z6fLBiO8Wbell_FSsJK0Mcj66stKMJZmZtJu6tcY7FA/edit?slide=id.g35fb40ee04d_0_42#slide=id.g35fb40ee04d_0_42)
 
@@ -135,34 +135,32 @@ TODO:
 3. Preprocess UA data (high-pass filter)  
 4. Build bundles for data other then neural data (save as .npz file) (2 sync digital channels in .ns5 and other .ns2 files) (`br_preproc.build_blackrock_bundle`) - TODO: Convert to NWB format
 5. Save per-session preprocessed data
-New pipeline using thresholding:
-6. Using thresholding to detect spikes
-7. **TODO** Use PCA to separate MUA within a cluster
-8. FR estimation
-12. Use as template to align Intan with BR using .ns5 sync pulses (two from BR side)
-13. Use as template to align DLC kinematics file using the .ns5 sync pulses
+6. Thresholding to detect spikes
+7. FR estimation
+8. Use as template to align Intan with BR using .ns5 sync pulses (two from BR side)
+9. Use as template to align DLC kinematics file using the .ns5 sync pulses
 
-Old pipeline envisioned:
-6. Concatenate sessions for sorting
-7. Run Mountainsort5 (MS5) with UA mapping (per-channel sorting)
-8. Export results in Phy format
-9. Optional now: SLAy
-10. Separate by condition
-11. FR estimation
-12. Use as template to align Intan with BR using .ns5 sync pulses (two from BR side)
-13. Use as template to align DLC kinematics file using the .ns5 sync pulses
+**TODO** Use Mixture of Gaussians to separate MUA within a cluster
+TODO:
+1. Concatenate sessions for sorting
+2. Run Mountainsort5 (MS5) for UA
+3. Export results in Phy format
+4. Optional now: SLAy
+5. Separate by condition
+6. FR estimation after sorting
+7. Use as template to align Intan with BR using .ns5 sync pulses (two from BR side)
+8. Use as template to align DLC kinematics file using the .ns5 sync pulses
 
 ## 5. Behavioral Analysis and Stim timing Processing
 `batch_scripts/make_aligned_npz_from_shifts_with_behv.py`
-TODO: Need to convert from MATLAB
-TODO:
-1. DLC labeling and annotations
-2. Identify movement segments from DLC data
-3. Load stimulation timing from Intan
-4. Plot movement traces (how to align? based on velocity or based on stim timing?, try to plot baseline aligned by velocity first)
-5. Calculate movement metrics (Previously: Endpoint error, Absolute endpoint error, Variance (in velocity) after stim, Variance (in velocity) after endpoint, Max speed, Avg speed, Endpoint oscillation, FFTPower after endpoint)
-6. Calculate significance relative to baseline
-7. Plot bargraphs
+1. Concatenate sessions for sorting
+2. Run Mountainsort5 (MS5) for UA
+3. Export results in Phy format
+4. Optional now: SLAy
+5. Separate by condition
+6. FR estimation after sorting
+7. Use as template to align Intan with BR using .ns5 sync pulses (two from BR side)
+8. Use as template to align DLC kinematics file using the .ns5 sync pulses
 
 ## 6. Create aligned baseline
 `batch_scripts/create_aligned_combined_baseline.py`
@@ -170,7 +168,12 @@ TODO:
 ## 7. Make baseline and peri-stim plots
 `batch_scripts/NPRW_BEHV_UA_FR_plotting.py`
 
-
+TODO:
+3. Load stimulation timing from Intan
+4. Plot movement traces (how to align? based on velocity or based on stim timing?, try to plot baseline aligned by velocity first)
+5. Calculate movement metrics (Previously: Endpoint error, Absolute endpoint error, Variance (in velocity) after stim, Variance (in velocity) after endpoint, Max speed, Avg speed, Endpoint oscillation, FFTPower after endpoint)
+6. Calculate significance relative to baseline
+7. Plot bargraphs
 
 ---
 

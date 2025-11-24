@@ -218,6 +218,7 @@ def main():
         rows = list(rdr)
 
     br2video = _load_br_to_video_map(METADATA_CSV)
+    br_to_intan = rcp.get_metadata_mapping(METADATA_CSV, "BR_File", "Intan_File")
 
     if not rows:
         raise SystemExit("[error] shifts CSV has no rows")

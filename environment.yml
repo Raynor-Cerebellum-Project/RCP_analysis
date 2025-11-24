@@ -18,6 +18,7 @@ dependencies:
   - pyqt
   - openpyxl
   - ipykernel
+  - cv2
 
   # torch + cuda
   - pytorch=2.5.1
