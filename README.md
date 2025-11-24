@@ -51,8 +51,7 @@ data and results (output) can be chosen to be other directories in config.
 ---
 
 # Installing the pipeline
-
-
+Use Anaconda prompt if in windows
 ```bash
 *navigate to desired directory*
 # 1) clone repo
