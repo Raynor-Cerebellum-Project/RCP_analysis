@@ -3,18 +3,12 @@
 ## Overview
 This repository contains the analysis pipeline for preprocessing, quantifying, and comparing stimulation trials from the Raynor experiments.  
 
-The workflow supports:
-- Preprocessing of kinematics (Frame correction, alignment between cameras and to Blackrock (BR))
-- Preprocessing Neuropixel read/write probe (NPRW) neural data
-- Aligning BR recordings to Intan recordings
-- Preprocessing Utah Array (UA) neural data
-- Creating aligned .npz files TODO: switch to hdf5
-- Combining baseline conditions for an aggregated baseline
-- Visualization plots (Kinematics, NPRW, UA)
+![alt text](https://github.com/Raynor-Cerebellum-Project/RCP_analysis/blob/main/docs/pipeline_schematic.png "pipeline_schematic")
 
-
-- TODO: Calculation of behavioral metrics TODO: Convert from MATLAB
-- TODO: Artifact correction using template subtraction of stimulation artifacts
+TODO:
+- Switch to hdf5
+- Calculation of behavioral metrics
+- Artifact correction using template subtraction of stimulation artifacts
 
 [Summary of recorded signals](https://docs.google.com/document/d/1C4-xSWL8n7P_mMrYqlUxQR6blz9WIHDU4B7O9bxhMnE/edit?tab=t.0)
 
