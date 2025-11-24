@@ -1,0 +1,28 @@
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+
+  # core numerics
+  - numpy<2
+  - scipy
+  - pandas
+  - scikit-learn
+  - matplotlib
+
+  # misc
+  - pyqt
+  - openpyxl
+  - ipykernel
+
+  # torch + cuda
+  - pytorch=2.5.1
+  - pytorch-cuda=12.1
+  - spikeinterface=0.101.*
+  - pip:
+      - easyocr
+      - opencv-python-headless
