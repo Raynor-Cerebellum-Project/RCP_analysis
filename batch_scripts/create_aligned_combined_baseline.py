@@ -8,7 +8,6 @@ from scipy.signal import filtfilt
 from scipy.signal.windows import gaussian as _scipy_gaussian
 import spikeinterface.preprocessing as spre
 import spikeinterface.extractors as se
-
 import RCP_analysis as rcp
 
 # ---------- CONFIG / roots ----------

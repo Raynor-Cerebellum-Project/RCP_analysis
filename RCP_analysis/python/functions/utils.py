@@ -54,17 +54,28 @@ def find_per_cond_inputs(video_root: Path) -> Dict[str, dict]:
 
 def get_metadata_mapping(meta_csv: Path, field1: str, field2: str) -> Dict[int, int]:
     """
-    Gets field1 to field2 mapping using the metadata
+    Gets field1 → field2 mapping using the metadata.
+
+    Skips rows where:
+    - Either field is missing
+    - Either field can't be converted to int (e.g. empty, '-', 'NA', etc.)
     """
     with meta_csv.open(encoding="utf-8-sig", newline="") as f:
         rdr = csv.DictReader(f)
         if not rdr.fieldnames:
             raise ValueError(f"{meta_csv.name}: missing header row")
-        return {
-            int(row[field1].strip()): int(row[field2].strip())
-            for row in rdr
-            if row.get(field1) and row.get(field2)
-        }
+
+        mapping: Dict[int, int] = {}
+        for row in rdr:
+            try:
+                k = int((row[field1] or "").strip())
+                v = int((row[field2] or "").strip())
+            except (KeyError, TypeError, ValueError):
+                # missing field, None, non-int, '-', etc.
+                continue
+            mapping[k] = v
+
+        return mapping
 
 # ---------- Helper functions ----------
 def _norm(s: str) -> str:
@@ -184,7 +195,7 @@ def frame2sample_br_ns5_sync(
     sync_chan: int,
 ):
     """
-    Read Blackrock NS5, detect rising edges on `sync_chan`,
+    Read Blackrock NS5, detect rising edges on,
     and return sample indices corresponding to the frames.
 
     Returns:

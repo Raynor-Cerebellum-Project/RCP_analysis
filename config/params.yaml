@@ -12,10 +12,10 @@ kinematics:
 highpass_hz: 300.0
 
 probes:
-  UA:
+  UA: 
     n_channels: 256
     mapping_mat_rel: "config/1106-22, 24, 42, 44 SN 11386-024040.xlsm"
-    camera_sync_ch: 134
+    camera_sync_ch: 139
     triangle_sync_ch: 138
     # geom_mat_rel: ""   # (optional) if you want a specific one for UA
 

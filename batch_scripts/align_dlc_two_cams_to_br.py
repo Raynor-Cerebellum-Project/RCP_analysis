@@ -22,6 +22,8 @@ BEHV_BUNDLES   = OUT_BASE / "bundles" / "behavior"
 BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "behavior"; BEHV_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
 METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
 METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
+UA_CFG = PARAMS.probes.get("UA")
+CAMERA_SYNC_CH = int(UA_CFG.get("camera_sync_ch", 134))
 
 def main():
     print(f"[scan] VIDEO_ROOT={VIDEO_ROOT}")
@@ -70,7 +72,7 @@ def main():
             try:
                 frames_corrected = max(len(aligned_dlc0.index), len(aligned_dlc1.index)) # use the max of the two as length
                 ns5_samples = rcp.frame2sample_br_ns5_sync(frames_corrected, ns5_path,
-                                          sync_chan=str(getattr(PARAMS, "camera_sync_ch", '134')))
+                                          sync_chan=str(CAMERA_SYNC_CH))
                 aligned_dlc0 = aligned_dlc0.reindex(range(frames_corrected)); aligned_dlc1 = aligned_dlc1.reindex(range(frames_corrected))
                 aligned_dlc0.insert(0, "ns5_sample", ns5_samples);   aligned_dlc1.insert(0, "ns5_sample", ns5_samples)
                 # Put in max lenght vector (What if mismatch?)
