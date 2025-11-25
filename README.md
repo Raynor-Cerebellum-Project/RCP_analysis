@@ -56,7 +56,7 @@ cd RCP_analysis
 conda env create -f environment.yml -n pipeline
 
 # 3) install package and requirements
-conda activate pipelinecamera_sync_ch
+conda activate pipeline
 python -m pip install --upgrade pip
 pip install -e .
 ```

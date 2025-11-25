@@ -18,12 +18,12 @@ dependencies:
   - pyqt
   - openpyxl
   - ipykernel
-  - cv2
 
   # torch + cuda
   - pytorch=2.5.1
   - pytorch-cuda=12.1
   - spikeinterface=0.101.*
+  - opencv
   - pip:
       - easyocr
-      - opencv-python-headless
+      # - opencv-python-headless
