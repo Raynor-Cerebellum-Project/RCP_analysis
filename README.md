@@ -57,7 +57,7 @@ conda env create -f environment.yml -n pipeline
 conda activate pipeline
 python -m pip install --upgrade pip
 
-# 3) Install easyocr without letting pip touch PyTorch
+# 3) install easyocr without letting pip affect PyTorch
 python -m pip install easyocr --no-deps
 
 # 4) install RCP_analysis package in editable mode
