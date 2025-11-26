@@ -34,4 +34,4 @@ dependencies:
   - pytorch=2.5.1
   - pytorch-cuda=12.1
   - torchvision
-  - spikeinterface=0.101.*
+  - spikeinterface
