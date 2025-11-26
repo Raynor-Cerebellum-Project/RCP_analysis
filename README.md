@@ -45,7 +45,7 @@ data and results (output) can be chosen to be other directories in config.
 ---
 
 # Installing the pipeline
-Use **Anaconda Prompt** on windows
+Use **Anaconda Prompt** on windows, make sure you have CUDA installed
 ```bash
 *navigate to desired directory*
 # 1) clone repo
