@@ -45,7 +45,7 @@ data and results (output) can be chosen to be other directories in config.
 ---
 
 # Installing the pipeline
-Use Anaconda prompt if in windows
+Use **Anaconda Prompt** on windows
 ```bash
 *navigate to desired directory*
 # 1) clone repo
@@ -54,10 +54,13 @@ cd RCP_analysis
 
 # 2) create environment
 conda env create -f environment.yml -n pipeline
-
-# 3) install package and requirements
 conda activate pipeline
 python -m pip install --upgrade pip
+
+# 3) Install easyocr without letting pip touch PyTorch
+python -m pip install easyocr --no-deps
+
+# 4) install RCP_analysis package in editable mode
 pip install -e .
 ```
 
@@ -70,6 +73,8 @@ Run curation_scripts/OCR_frame_mapping_BT_edit.py by using:
 ```bash
 python curation_scripts/OCR_frame_mapping_BT_edit.py PATH_TO_VIDEO_FOLDER
 ```
+
+NOTE: Make sure to use double quotes for windows.
 This creates the OCR files for the pipeline
 
 # Details of the pipeline
