@@ -10,19 +10,19 @@ from .python.functions.utils import (
     load_ocr_map,
     load_dlc, 
     align_dlc_to_corrected,
-    find_ns5_for_cond,
     frame2sample_br_ns5_sync,
     
     list_intan_sessions,
     load_stim_detection, 
     save_recording,
+    stim_npz_path_from_br_idx,
+    load_shift_row_by_br_idx,
     
     build_session_index_map,
-    
-    find_nsx_by_br_index, 
-    find_nsx_for_cond, 
     find_ns5_by_br_index, 
     load_rate_npz,
+    
+    
     median_across_trials,
     variance_across_trials,
     extract_peristim_segments,
@@ -40,18 +40,16 @@ from .python.functions.intan_preproc import (
     reorder_recording_to_geometry,
     StimTriggerResult,
     extract_stim_npz,
-    extract_aux_streams_npz,
+    extract_intan_aux_streams_npz,
 )    
 # blackrock / UA
 from .python.functions.br_preproc import (
     threshold_mua_rates,
-    
     list_br_sessions,
     ua_excel_path,
     load_UA_mapping_from_excel,
-    apply_ua_mapping_by_renaming,
-    extract_blackrock_bundle,
-    ua_region_from_elec,
+    apply_ua_mapping_with_regions,
+    extract_br_aux_streams_npz,
 )
 
 # artifact correction (PCA template subtraction)
@@ -77,7 +75,6 @@ __all__ = [
     "load_ocr_map",
     "load_dlc", 
     "align_dlc_to_corrected",
-    "find_ns5_for_cond",
     "frame2sample_br_ns5_sync",
     
     "list_intan_sessions",
@@ -96,15 +93,13 @@ __all__ = [
     "variance_across_trials",
     "extract_peristim_segments",
     
+    
     "detect_stim_channels_from_npz",
     "baseline_zero_each_trial",
     "aligned_stim_ms", 
     "ua_title_from_meta",
     "parse_intan_session_dtkey", 
     "build_session_index_map",
-    
-    "find_nsx_by_br_index", 
-    "find_nsx_for_cond", 
     "find_ns5_by_br_index", 
     
     # BR/UA
@@ -112,13 +107,14 @@ __all__ = [
     "list_br_sessions",
     "ua_excel_path",
     "load_UA_mapping_from_excel",
-    "apply_ua_mapping_by_renaming",
-    "extract_blackrock_bundle",
-    "ua_region_from_elec",
+    "apply_ua_mapping_with_regions",
+    "extract_br_aux_streams_npz",
+    "stim_npz_path_from_br_idx",
+    "load_shift_row_by_br_idx"
 
     # Intan
     "extract_stim_npz",
-    "extract_aux_streams_npz",
+    "extract_intan_aux_streams_npz",
     "reorder_recording_to_geometry",
     "StimTriggerResult",
     

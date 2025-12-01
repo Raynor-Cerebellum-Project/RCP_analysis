@@ -46,100 +46,13 @@ UA_CFG = PARAMS.probes.get("UA")
 CAMERA_SYNC_CH = int(UA_CFG.get("camera_sync_ch", 134))
 TRIANGLE_SYNC_CH = int(UA_CFG.get("triangle_sync_ch", 138))
 
-UA_BUNDLES = OUT_BASE / "bundles" / "UA"
+UA_AUX_DATA = OUT_BASE / "aux_data" / "UA"
+NPRW_AUX_DATA = OUT_BASE / "aux_data" / "NPRW"
 UA_CKPT_OUT = OUT_BASE / "checkpoints" / "UA"; UA_CKPT_OUT.mkdir(parents=True, exist_ok=True)
 NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
 
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
-
-def _session_from_rates_path(p: Path) -> str:
-    # rates__NRR_RW001_250915_141052__bin1ms_sigma25ms.npz -> NRR_RW001_250915_141052
-    stem = p.stem
-    body = stem[len("rates__"):]
-    return body.split("__bin", 1)[0]
-
-def _parse_intan_session_dtkey(session: str) -> int:
-    # Sort sessions by YYMMDD_HHMMSS at end of name if present
-    m = re.search(r"(\d{6})_(\d{6})$", session)
-    if not m:
-        return int("9"*12)
-    return int(m.group(1) + m.group(2))
-
-def _build_session_index_map(nprw_ckpt_root: Path) -> tuple[dict[str,int], dict[int,str]]:
-    """Scan NPRW rates to build Intan session ↔ Intan_File index mapping."""
-    rate_files = sorted(nprw_ckpt_root.rglob("rates__*.npz"))
-    sessions = sorted({_session_from_rates_path(p) for p in rate_files},
-                      key=_parse_intan_session_dtkey)
-    sess_to_intan = {s: i+1 for i, s in enumerate(sessions)}
-    intan_to_sess = {i+1: s for i, s in enumerate(sessions)}
-    if not sessions:
-        raise RuntimeError(f"No NPRW rate files under {nprw_ckpt_root}")
-    return sess_to_intan, intan_to_sess
-
-def _ua_arrays_from_idx_rows(n_ch: int, mapped_nsp: np.ndarray, idx_rows: np.ndarray):
-    ua_elec_per_row = -np.ones(n_ch, dtype=int)
-    ua_nsp_per_row  = -np.ones(n_ch, dtype=int)
-    for elec0, row in enumerate(idx_rows):
-        if 0 <= row < n_ch:
-            ua_elec_per_row[row] = elec0 + 1
-            ua_nsp_per_row[row]  = int(mapped_nsp[elec0])
-    return ua_elec_per_row, ua_nsp_per_row
-
-def _resolve_intan_session_for_br_idx(
-    meta_csv: Path,
-    br_idx: int,
-    nprw_ckpt_root: Path
-) -> Optional[str]:
-    """
-    Use the provided metadata CSV and NPRW rates to map BR index -> Intan session name.
-    """
-    if not meta_csv.exists():
-        print(f"[WARN] mapping CSV not found: {meta_csv}")
-        return None
-
-    # 1) {Intan_File -> BR_File}
-    intan_to_br = rcp.get_metadata_mapping(METADATA_CSV, "Intan_File", "BR_File")
-
-    # 2) invert to {BR_File -> Intan_File}
-    br_to_intan = {b: i for i, b in intan_to_br.items()}
-    if br_idx not in br_to_intan:
-        print(f"[WARN] BR {br_idx:03d} not in mapping CSV.")
-        return None
-    intan_idx = br_to_intan[br_idx]
-
-    # 3) Build {Intan_File index -> session string} from NPRW rates
-    _, intan_idx_to_sess = _build_session_index_map(nprw_ckpt_root)
-    sess = intan_idx_to_sess.get(intan_idx)
-    if not sess:
-        print(f"[WARN] Intan_File {intan_idx} not found among NPRW rates.")
-        return None
-    return sess
-
-def _stim_npz_for_br_idx(meta_csv: Path, out_base: Path, br_idx: int, nprw_ckpt_root: Path) -> Optional[Path]:
-    sess = _resolve_intan_session_for_br_idx(meta_csv, br_idx, nprw_ckpt_root)
-    if not sess:
-        return None
-    bundles_root = out_base / "bundles" / "NPRW"
-    return bundles_root / f"{sess}_Intan_bundle" / "stim_stream.npz"
-
-def _load_shift_row_by_br_idx(metadata_path: Path, br_idx: int) -> Optional[dict]:
-    """
-    Read br_to_intan_shifts.csv and return the row for this br_idx.
-    Expected columns include: session (Intan), br_idx, anchor_ms, fs_intan, (optionally anchor_sample, etc.)
-    """
-    shifts_csv = metadata_path
-    if not shifts_csv.exists():
-        return None
-    with shifts_csv.open("r", newline="") as f:
-        rdr = csv.DictReader(f)
-        for row in rdr:
-            try:
-                if int(row.get("br_idx", "-1")) == int(br_idx):
-                    return row
-            except Exception:
-                continue
-    return None
 
 def _anchor_from_shifts_row(row: dict) -> tuple[int, float]:
     """
@@ -197,61 +110,45 @@ def main(limit_sessions: Optional[int] = None):
 
     for sess in sess_folders:
         print(f"=== Session: {sess.name} ===")
-        rcp.extract_blackrock_bundle(sess, UA_BUNDLES, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH) # Extract sync pulses and stuff
-        rec_ns6 = se.read_blackrock(sess, stream_name = 'nsx6', all_annotations=True) # Load BR file
+        rcp.extract_br_aux_streams_npz(sess, UA_AUX_DATA, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH) # Extract sync pulses and stuff
+        rec_ns6 = se.read_blackrock(sess, stream_name = 'nsx6', all_annotations=True) # Load neural data
         
         br_idx = int(sess.name.split('_')[-1]) # resolve br index
-        n_ch = rec_ns6.get_num_channels()
+        n_channels = rec_ns6.get_num_channels()
         
-        rec_ns6, idx_rows = rcp.apply_ua_mapping_by_renaming(rec_ns6, UA_MAP, br_idx, METADATA_CSV)
-        rec_hp  = spre.highpass_filter(rec_ns6, freq_min=float(PARAMS.highpass_hz))
-        
-        # --- build UA arrays from idx_rows (no SI properties) ---
-        ua_elec_per_row, ua_nsp_per_row = _ua_arrays_from_idx_rows(n_ch, UA_MAP, idx_rows)
-        row_from_elec = idx_rows.astype(int, copy=False)
-        ua_region_per_row = np.array([rcp.ua_region_from_elec(int(elec_num)) for elec_num in ua_elec_per_row], dtype=np.int8)
-        ua_region_names   = np.array(["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"], dtype=object)
-        UA_probe = ua_region_per_row.copy()
-        
-        # --- convert labels -> list of channel-ID lists (what SI expects) ---
-        ch_ids = np.asarray(rec_hp.get_channel_ids())
-        groups = []
-        for group in np.unique(UA_probe):
-            idx = np.where(UA_probe == group)[0]
-            if idx.size >= 2:
-                groups.append(ch_ids[idx].tolist())
-            else:
-                print(f"[debug] region {group}: singleton -> left unreferenced")
-        print("[debug] group sizes:", [len(group) for group in groups])
+        rec_ns6, idx_rows, ua_elec, ua_nsp, ua_region, ua_region_names = rcp.apply_ua_mapping_with_regions(rec_ns6, UA_MAP, br_idx, METADATA_CSV)
+        UA_probe = ua_region.copy()
 
-        # Default: no artifact windows
+        rec_hp  = spre.highpass_filter(rec_ns6, freq_min=float(PARAMS.highpass_hz))
+        region_idx, elec_count = np.unique(UA_probe, return_counts=True)
+        print(" | ".join(f"{ua_region_names[v]}: {c}" for v, c in zip(region_idx, elec_count)))
+
+        # artifact windows
         block_bounds = np.empty((0, 2), dtype=int)
         shifts_row = None
-        
-        # default to cleaned=ref unless we actually remove
-        rec_artif_removed = rec_hp
-        fs_ua = float(rec_hp.get_sampling_frequency())
         blank_windows = None
+        
+        # default to cleaned=ref unless we actually remove artifact
+        rec_artif_removed = rec_hp
+        fs_ua = rec_hp.get_sampling_frequency()
         
         if br_idx is None:
             print(f"[WARN] Could not parse BR index from session folder '{sess.name}'. Skipping artifact removal.")
         else:
             # 1) find Intan session via metadata + NPRW rates
-            stim_npz_path = _stim_npz_for_br_idx(METADATA_CSV, OUT_BASE, br_idx, NPRW_CKPT_ROOT)
+            stim_npz_path, intan_session_name = rcp.stim_npz_path_from_br_idx(br_idx, METADATA_CSV, NPRW_AUX_DATA)
             # 2) and fetch the shift row for the same BR index
-            shifts_row = _load_shift_row_by_br_idx(SHIFT_CSV, br_idx)
+            shifts_row = rcp.load_shift_row_by_br_idx(SHIFT_CSV, br_idx)
 
             if not stim_npz_path or not stim_npz_path.exists():
                 print(f"[WARN] stim_stream.npz not found for BR {br_idx:03d} (looked at {stim_npz_path}).")
             else:
-                # show the resolved Intan session name (parent of stim file)
-                intan_session = stim_npz_path.parent.name.replace("_Intan_bundle", "")
-                print(f"[map] BR {br_idx:03d} -> Intan session '{intan_session}'")
+                print(f"[map] BR {br_idx:03d} -> Intan session '{intan_session_name}'")
 
                 stim = rcp.load_stim_detection(stim_npz_path)
-                block_bounds = np.asarray(stim.get("block_bounds_samples", []), dtype=int)
+                block_bounds = stim.get("block_bounds_samples", [])
 
-        if block_bounds.size and shifts_row is not None:
+        if block_bounds.size and shifts_row is not None: # TODO check if we can simplify this block
             # Anchor from the SAME shifts row (important!)
             anchor_samp_intan, fs_intan = _anchor_from_shifts_row(shifts_row)
 
@@ -294,12 +191,11 @@ def main(limit_sessions: Optional[int] = None):
                 print("[WARN] all artifact intervals invalid after shift; skipping artifact removal.")
         else:
             if not block_bounds.size:
-                print("[WARN] no block spans found; skipping artifact removal.")
+                print("[WARN] no stim found, skipping artifact removal.")
             elif shifts_row is None:
-                print("[WARN] no shift row found for this BR index; skipping artifact removal.")
+                print("[WARN] no shift row found, skipping artifact removal.")
             
-        out_npz_loc = UA_CKPT_OUT / f"pp_global__{sess.name}__NS6"
-        out_npz_loc.mkdir(parents=True, exist_ok=True)
+        out_npz_loc = UA_CKPT_OUT / f"pp__{sess.name}__NS6"; out_npz_loc.mkdir(parents=True, exist_ok=True)
         rec_artif_removed.save(folder=out_npz_loc, overwrite=True)
         print(f"[{sess.name}] (ns6) saved preprocessed -> {out_npz_loc}")
 
@@ -356,12 +252,12 @@ def main(limit_sessions: Optional[int] = None):
             pcs=pcs_T,
             explained_var=explained_var.astype(np.float32),
 
-            # keep these if you still want mapping in the file, even though no SI properties:
-            ua_row_to_elec  = ua_elec_per_row.astype(np.int16),
-            ua_row_to_nsp   = ua_nsp_per_row.astype(np.int16),
-            ua_row_to_region = ua_region_per_row,
+            # UA indices
+            ua_index = idx_rows.astype(np.int16),
+            ua_elec  = ua_elec.astype(np.int16),
+            ua_nsp   = ua_nsp.astype(np.int16),
+            ua_region = ua_region,
             ua_region_names  = ua_region_names,
-            ua_row_index_from_electrode = row_from_elec.astype(np.int16),
 
             meta=dict(
                 detect_threshold=THRESH,
@@ -369,7 +265,7 @@ def main(limit_sessions: Optional[int] = None):
                 bin_ms=BIN_MS,
                 sigma_ms=SIGMA_MS,
                 fs=fs_ua,
-                n_channels=int(n_ch),
+                n_channels=int(n_channels),
                 session=str(sess.name),
             ),
         )

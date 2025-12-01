@@ -1,4 +1,3 @@
-from __future__ import annotations
 from pathlib import Path
 import pandas as pd, numpy as np
 import json, csv, re
@@ -77,45 +76,29 @@ def get_metadata_mapping(meta_csv: Path, field1: str, field2: str) -> Dict[int, 
 
         return mapping
 
-# ---------- Helper functions ----------
-def _norm(s: str) -> str:
-    """Lowercase and strip non-alphanumerics; useful for tolerant CSV header matching."""
-    return re.sub(r'[^a-z0-9]+', '', str(s).lower())
-
-def _find_col(df: pd.DataFrame, candidates: list[str]) -> str:
-    lookup = {_norm(str(c)): c for c in df.columns}
-    for name in candidates:
-        key = _norm(name)
-        if key in lookup:
-            return lookup[key]
-    raise KeyError(f"Missing any of {candidates}; sample cols: {list(df.columns)[:8]}")
-
 # OCR / DLC
 def load_ocr_map(ocr_csv: Path) -> pd.DataFrame:
     """
-    Load OCR file TODO
+    Load OCR file
     """
     df = pd.read_csv(ocr_csv)
-    col_avi = _find_col(df, ["AVI_framenum","avi_framenum","avi_frame","avi"])
-    col_ocr = _find_col(df, ["OCR_framenum","ocr_framenum","ocr_frame","ocr"])
-    col_cor = _find_col(df, ["CORRECTED_framenum","corrected_framenum","corrected_frame","corrected"])
+    col_avi = "AVI_framenum"
+    col_ocr = "OCR_framenum"
+    col_cor = "CORRECTED_framenum"
 
     out = df[[col_avi, col_ocr, col_cor]].copy()
     for c in out.columns:
         out[c] = pd.to_numeric(out[c], errors="coerce")
-
-    last = out.dropna(subset=[col_ocr, col_cor]).tail(1)
+    last = out.dropna().tail(1)
+    
     if last.empty:
         raise ValueError(f"{ocr_csv} has no valid OCR rows.")
-    try:
-        last_ocr = int(np.rint(float(last[col_ocr].iloc[0])))
-        last_cor = int(np.rint(float(last[col_cor].iloc[0])))
-        if last_ocr != last_cor:
-            print(f"[warn] {ocr_csv.name}: last OCR_framenum ({last_ocr}) != CORRECTED_framenum ({last_cor}); continuing.")
-    except Exception:
-        pass
-
-    return out.rename(columns={col_avi:"AVI_framenum", col_ocr:"OCR_framenum", col_cor:"CORRECTED_framenum"})
+    last_ocr = int(last[col_ocr].iloc[0])
+    last_cor = int(last[col_cor].iloc[0])
+    if last_ocr != last_cor:
+        print(f"[warn] {ocr_csv.name}: last OCR_framenum ({last_ocr}) != CORRECTED_framenum ({last_cor}); continuing.")
+        
+    return out
 
 def load_dlc(dlc_csv: Path) -> pd.DataFrame:
     """
@@ -429,7 +412,6 @@ def load_combined_npz(p: Path):
     meta = json.loads(d["align_meta"].item()) if "align_meta" in d.files else {}
     return i_rate, i_t.astype(float), u_rate, u_t.astype(float), stim_ms.astype(float), meta
 
-# ---- alignment utils ----
 def load_intan_aux(npz_path: Path) -> tuple[np.ndarray, np.ndarray, float]:
     aux_file = np.load(npz_path, allow_pickle=True, mmap_mode="r")
 
@@ -453,6 +435,24 @@ def load_intan_aux(npz_path: Path) -> tuple[np.ndarray, np.ndarray, float]:
     return triangle_sync_signal, br_template_signal, float(meta["fs_hz"])
 
 # Analysis / alignment
+def load_shift_row_by_br_idx(metadata_path: Path, br_idx: int) -> Optional[dict]:
+    """
+    Read br_to_intan_shifts.csv and return the row for this br_idx.
+    Expected columns include: session (Intan), br_idx, anchor_ms, fs_intan, (optionally anchor_sample, etc.)
+    """
+    shifts_csv = metadata_path
+    if not shifts_csv.exists():
+        return None
+    with shifts_csv.open("r", newline="") as f:
+        rdr = csv.DictReader(f)
+        for row in rdr:
+            try:
+                if int(row.get("br_idx", "-1")) == int(br_idx):
+                    return row
+            except Exception:
+                continue
+    return None
+
 def extract_peristim_segments(
     rate_hz: np.ndarray,
     t_ms: np.ndarray,
@@ -569,6 +569,54 @@ def load_stim_detection(npz_path: Path) -> Dict[str, np.ndarray]:
         "pulse_sizes": pulse_sizes,
     }
 
+def stim_npz_path_from_br_idx(
+    br_idx: int,
+    mapping_csv: Path,        # CSV with Intan_File, BR_File
+    nprw_aux_root: Path,
+) -> Optional[Path]:
+    """
+    Given a BR_File index (br_idx), return the corresponding
+    stim_stream.npz path for the matching Intan session, or None
+    if anything cannot be resolved.
+    """
+
+    # Map BR_File to Intan_File using metadata
+    if not mapping_csv.exists():
+        print(f"[WARN] mapping CSV not found: {mapping_csv}")
+        return None
+    br_to_intan = get_metadata_mapping(mapping_csv, "BR_File", "Intan_File")
+    if br_idx not in br_to_intan:
+        print(f"[WARN] BR {br_idx:03d} not in mapping CSV.")
+        return None
+    intan_idx = br_to_intan[br_idx]
+
+    # Get session name from Intan_streams folders
+    stream_dirs = sorted(
+        d for d in nprw_aux_root.glob("*_Intan_streams") if d.is_dir()
+    )
+    if not stream_dirs:
+        print(f"[WARN] No *_Intan_streams dirs under {nprw_aux_root}")
+        return None
+
+    # Strip the suffix to get session names
+    suffix = "_Intan_streams"
+    sessions = [
+        d.name[:-len(suffix)]
+        for d in stream_dirs
+        if d.name.endswith(suffix)
+    ]
+
+    # Intan_File is 1-based
+    if not (1 <= intan_idx <= len(sessions)):
+        print(f"[WARN] Intan_File {intan_idx} out of range for {len(sessions)} sessions.")
+        return None
+
+    session = sessions[intan_idx - 1]
+
+    stim_npz_path = nprw_aux_root / f"{session}_Intan_streams" / "stim_stream.npz"
+    return stim_npz_path, session
+
+
 def detect_stim_channels_from_npz(
     stim_npz_path: Path,
     eps: float = 1e-12,
@@ -654,66 +702,23 @@ def build_session_index_map(intan_sessions: list[str]) -> tuple[dict[str,int], d
     ordered = sorted(intan_sessions, key=parse_intan_session_dtkey)
     return ({sess: i+1 for i, sess in enumerate(ordered)},
             {i+1: s for i, s in enumerate(ordered)})
-
-# =============================================================================
-# Small helpers
-# =============================================================================
-
-
-def _rglob_many(root: Path, patterns: tuple[str, ...]) -> list[Path]:
-    """rglob multiple patterns and return a flat list."""
-    out: list[Path] = []
-    for pat in patterns:
-        out.extend(root.rglob(pat))
-    return out
-
-# =============================================================================
-# Blackrock (.ns5/.ns6) locating
-# =============================================================================
-
-def _nsx_token_score(p: Path, token: str) -> tuple[int, float, int]:
-    """Score NSx files by (strong token match, mtime, size)."""
-    strong = int(bool(re.search(rf"(?:^|[^0-9]){re.escape(token)}(?:[^0-9]|$)", p.stem)))
-    st = p.stat()
-    return (strong, st.st_mtime, st.st_size)
-
-# Default
-def find_nsx_by_br_index(
-    br_root: Path,
-    br_idx: int,
-    exts: tuple[str, ...] = ("*.ns5", "*.ns6"),
-) -> Optional[Path]:
-    """
-    Locate NSx by BR index (3-digit), preferring strong token match, newest mtime, then size.
-    """
-    hits = _rglob_many(br_root, exts)
-    if not hits:
-        return None
-    token = f"{br_idx:03d}"
-    hits.sort(key=lambda p: _nsx_token_score(p, token), reverse=True)
-    best = hits[0]
-    if token not in best.stem:
-        print(f"[warn] No obvious NSx name match for BR {token}; using {best.name}")
-    return best
-
+    
 def find_ns5_by_br_index(br_root: Path, br_idx: int) -> Optional[Path]:
-    return find_nsx_by_br_index(br_root, br_idx, exts=("*.ns5",))
+    """
+    Locate an .ns5 file whose stem ends with the 3-digit BR index, e.g.:
 
-# Backup?
-def find_nsx_for_cond(
-    br_root: Path,
-    cond: str,
-    exts: tuple[str, ...] = ("*.ns5", "*.ns6"),
-) -> Optional[Path]:
+        br_idx = 1   -> token '001' -> matches '*001.ns5'
+
+    If multiple matches exist, prefer:
+      1. Newest modification time
+      2. Largest size
     """
-    Locate an NSx whose stem contains the condition id. Prefer newest mtime, then size.
-    """
-    cond_low = cond.lower()
-    hits = [p for p in _rglob_many(br_root, exts) if cond_low in p.stem.lower()]
+    token = f"{br_idx:03d}"
+    # Only files like '...001.ns5'
+    hits = [p for p in br_root.rglob("*.ns5") if p.stem.endswith(token)]
     if not hits:
+        print(f"[warn] No NS5 file ending with {token}.ns5 under {br_root}")
         return None
+
     hits.sort(key=lambda p: (p.stat().st_mtime, p.stat().st_size), reverse=True)
     return hits[0]
-
-def find_ns5_for_cond(br_root: Path, cond: str) -> Optional[Path]:
-    return find_nsx_for_cond(br_root, cond, exts=("*.ns5",))

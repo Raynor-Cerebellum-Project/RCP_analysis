@@ -118,7 +118,7 @@ def apply_ua_mapping_properties(recording, mapped_nsp: np.ndarray):
       - 'ua_nsp_channel' : NSP channel id mapped to that row, or -1
 
     Per-recording annotation (any length):
-      - 'ua_row_index_from_electrode' : np.ndarray len == len(mapped_nsp),
+      - 'ua_row_index' : np.ndarray len == len(mapped_nsp),
         where entry i is the recording row index for electrode (i+1), or -1 if absent.
     """
     idx_rows = align_mapping_index_to_recording(recording, mapped_nsp)  # shape = (N_elec,)
@@ -139,7 +139,7 @@ def apply_ua_mapping_properties(recording, mapped_nsp: np.ndarray):
     recording.set_property("ua_nsp_channel", ua_nsp_per_row)
 
     # Store the per-electrode -> row-index map as an annotation (any shape allowed)
-    recording.set_annotation("ua_row_index_from_electrode", idx_rows.astype(int))
+    recording.set_annotation("ua_row_index", idx_rows.astype(int))
 
     mapped = int((ua_elec_per_row > 0).sum())
     print(f"[MAP] stamped UA mapping on {mapped}/{n_ch} rows (no geometry).")

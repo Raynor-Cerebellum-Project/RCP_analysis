@@ -135,17 +135,17 @@ def extract_stim_triggers_and_blocks(
 )
 
 def extract_stim_npz(
-    sess_folder: Path,
-    out_root: Path,
+    sess: Path,
+    out_dir: Path,
     stim_stream_name: str = "Stim channel",
     chanmap_perm: np.ndarray | None = None,
 ):
-    bundle_dir = out_root / f"{sess_folder.name}_Intan_bundle"; bundle_dir.mkdir(parents=True, exist_ok=True)
+    stim_npz_dir = out_dir / f"{sess.name}_Intan_streams"; stim_npz_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        rec = se.read_split_intan_files(sess_folder, mode="concatenate", stream_name=stim_stream_name, use_names_as_ids=True)
+        rec = se.read_split_intan_files(sess, mode="concatenate", stream_name=stim_stream_name, use_names_as_ids=True)
     except Exception as e:
-        print(f"[{sess_folder.name}] skip stream '{stim_stream_name}': {e}")
+        print(f"[{sess.name}] skip stream '{stim_stream_name}': {e}")
         return None
     rec_reordered = reorder_recording_to_geometry(rec, chanmap_perm)
     order = "geometry" if chanmap_perm is not None else "device"
@@ -163,7 +163,7 @@ def extract_stim_npz(
         "pulse_sizes": stim_ext.pulse_sizes.astype(np.int32),
     }
     meta = dict(
-        session=sess_folder.name,
+        session=sess.name,
         stream_name=stim_stream_name,
         fs_hz=rec_reordered.get_sampling_frequency(),
         n_channels=int(rec_reordered.get_num_channels()),
@@ -171,30 +171,30 @@ def extract_stim_npz(
         note="Raw stim stream and derived trigger/block outputs."
     )
 
-    out_npz = bundle_dir / "stim_stream.npz"
+    out_npz = stim_npz_dir / "stim_stream.npz"
     np.savez_compressed(out_npz, **arrays, meta=json.dumps(meta))
     print(f"[STIM] saved stim stream + triggers -> {out_npz}")
     return out_npz, arrays
 
 # AUX streams
-def extract_aux_streams_npz(
-    sess_folder: Path,
-    out_root: Path,
+def extract_intan_aux_streams_npz(
+    sess: Path,
+    out_dir: Path,
     aux_streams: tuple[str, ...] = ("USB board ADC input channel",),
 ):
-    bundle_dir = out_root / f"{sess_folder.name}_Intan_bundle"; bundle_dir.mkdir(parents=True, exist_ok=True)
+    aux_dir = out_dir / f"{sess.name}_Intan_streams"; aux_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        rec = se.read_split_intan_files(sess_folder, mode="concatenate", stream_name=aux_streams, use_names_as_ids=True)
+        rec = se.read_split_intan_files(sess, mode="concatenate", stream_name=aux_streams, use_names_as_ids=True)
         rec = spre.unsigned_to_signed(rec) # Convert UInt16 to int16
     except Exception as e:
-        print(f"[{sess_folder.name}] skip stream '{aux_streams}': {e}")
+        print(f"[{sess.name}] skip stream '{aux_streams}': {e}")
         return None
 
     aux_traces = rec.get_traces(return_scaled=True).T  # (n_channels, n_samples)
     
     meta = dict(
-        session=sess_folder.name,
+        session=sess.name,
         stream_name=aux_streams,
         fs_hz=rec.get_sampling_frequency(),
         n_channels=rec.get_num_channels(),
@@ -205,7 +205,7 @@ def extract_aux_streams_npz(
         note="Aux stream stored as a single array aux_traces.",
     )
     
-    out_npz = bundle_dir / f"aux_streams.npz"
+    out_npz = aux_dir / f"aux_streams.npz"
     np.savez_compressed(out_npz, aux_traces=aux_traces, meta=json.dumps(meta))
     print(f"[AUX] saved stream '{aux_streams}' -> {out_npz}")
     return out_npz

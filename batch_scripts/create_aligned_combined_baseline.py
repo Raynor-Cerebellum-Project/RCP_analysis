@@ -20,13 +20,13 @@ METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exis
 METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
 SHIFTS_CSV    = METADATA_ROOT / "br_to_intan_shifts.csv"
 
-# ---------- checkpoints / bundles ----------
+# ---------- checkpoints / aux_data ----------
 NPRW_CKPT_ROOT  = OUT_BASE / "checkpoints" / "NPRW"
 UA_CKPT_ROOT    = OUT_BASE / "checkpoints" / "UA"
 BEHV_CKPT_ROOT  = OUT_BASE / "checkpoints" / "behavior"
 BASELINE_ROOT   = OUT_BASE / "checkpoints" / "behavior" / "baseline_concat"
 ALIGNED_OUT     = OUT_BASE / "checkpoints" / "behavior" / "baseline_concat" / "rates_from_curated"
-NPRW_BUNDLES    = OUT_BASE / "bundles" / "NPRW"
+NPRW_AUX_DATA    = OUT_BASE / "aux_data" / "NPRW"
 
 # ---------- analysis constants ----------
 IR_STREAM        = "USB board digital input channel"  # stream to preview

@@ -30,7 +30,7 @@ INTAN_ROOT = SESSION_LOC / "Intan"; INTAN_ROOT.mkdir(parents=True, exist_ok=True
 METADATA_LOC  = SESSION_LOC / "Metadata"; METADATA_LOC.parent.mkdir(parents=True, exist_ok=True)
 GEOM_PATH = rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT)
 NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
-NPRW_BUNDLES   = OUT_BASE / "bundles" / "NPRW"; NPRW_BUNDLES.mkdir(parents=True, exist_ok=True)
+NPRW_AUX_DATA   = OUT_BASE / "aux_data" / "NPRW"; NPRW_AUX_DATA.mkdir(parents=True, exist_ok=True)
 
 # Intan streams
 NPRW_CFG = PARAMS.probes.get("NPRW")
@@ -116,11 +116,11 @@ def main(limit_sessions: Optional[int] = None):
         print(f"[RUN] session {sess.name}")
 
         # stim streams TODO anyway to leverage that this is sparse?
-        _, stim_ext_arrays = rcp.extract_stim_npz(sess_folder=sess, out_root=NPRW_BUNDLES, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
-        # stim_ext_arrays = rcp.load_stim_detection(NPRW_BUNDLES / f"{sess.name}_Intan_bundle" / "stim_stream.npz") - skip to speed up when debugging
+        _, stim_ext_arrays = rcp.extract_stim_npz(sess=sess, out_dir=NPRW_AUX_DATA, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
+        # stim_ext_arrays = rcp.load_stim_detection(NPRW_AUX_DATA / f"{sess.name}_Intan_streams" / "stim_stream.npz") - skip to speed up when debugging
         
         # aux streams (sync channels etc.)
-        rcp.extract_aux_streams_npz(sess_folder=sess, out_root=NPRW_BUNDLES, aux_streams=AUX_STREAM)
+        rcp.extract_intan_aux_streams_npz(sess=sess, out_dir=NPRW_AUX_DATA, aux_streams=AUX_STREAM)
 
         # Load Intan neural stream and reorder
         rec = se.read_split_intan_files(sess, mode="concatenate", stream_name=INTAN_STREAM, use_names_as_ids=True)
@@ -137,7 +137,7 @@ def main(limit_sessions: Optional[int] = None):
 
         rec_artif_removed = rec_ref  # fallback
 
-        fs = rec_reordered.get_sampling_frequency()
+        fs_nprw = rec_reordered.get_sampling_frequency()
         n_total = rec_reordered.get_num_samples()
         
         if block_bounds.size:
@@ -152,7 +152,7 @@ def main(limit_sessions: Optional[int] = None):
             if starts_samp.size:
                 ms_before_each = 20.0
                 tail_ms = 20.0
-                dur_ms    = (ends_samp - starts_samp) * 1000.0 / fs
+                dur_ms    = (ends_samp - starts_samp) * 1000.0 / fs_nprw
                 ms_after  = dur_ms.max() + tail_ms
 
                 rec_artif_removed = si.preprocessing.remove_artifacts(
@@ -210,7 +210,7 @@ def main(limit_sessions: Optional[int] = None):
                 peak_sign=PEAK_SIGN,
                 bin_ms=BIN_MS,
                 sigma_ms=SIGMA_MS,
-                fs=fs,
+                fs=fs_nprw,
                 n_channels=rec_artif_removed.get_num_channels(),
                 session=str(sess.name),
             ))

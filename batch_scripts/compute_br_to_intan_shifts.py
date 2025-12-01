@@ -12,7 +12,7 @@ OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
 BR_ROOT = SESSION_LOC / "Blackrock"; BR_ROOT.mkdir(parents=True, exist_ok=True)
 METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
 METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
-NPRW_BUNDLES   = OUT_BASE / "bundles" / "NPRW"
+NPRW_AUX_DATA   = OUT_BASE / "aux_data" / "NPRW"
 NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
 TEMPLATE = REPO_ROOT / "config" / "br_intan_align_template.mat"
 
@@ -167,9 +167,9 @@ def main():
             print(f"[warn] No session name for Intan_File={intan_idx} (skipping)")
             continue
 
-        adc_npz = NPRW_BUNDLES / f"{intan_sess}_Intan_bundle" / "aux_streams.npz"
+        adc_npz = NPRW_AUX_DATA / f"{intan_sess}_Intan_streams" / "aux_streams.npz"
         if not adc_npz.exists():
-            print(f"[warn] Intan ADC bundle missing: {adc_npz} (skip Intan {intan_idx} → BR {br_idx})")
+            print(f"[warn] Intan AUX stream missing: {adc_npz} (skip Intan {intan_idx} → BR {br_idx})")
             continue
 
         # Load Intan ADC

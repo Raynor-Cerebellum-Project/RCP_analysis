@@ -126,7 +126,7 @@ def _build_mat_struct(z: np.lib.npyio.NpzFile) -> dict:
     # names/cols as cellstr
     aligned["ua_region_names"]          = _to_cellstr(get("ua_region_names", np.array([], dtype=object)))
     aligned["ua_row_to_nsp"]            = _ensure_numeric(get("ua_row_to_nsp", np.array([], dtype=np.int16)))
-    aligned["ua_row_index_from_electrode"] = _ensure_numeric(get("ua_row_index_from_electrode", np.array([], dtype=np.int16)))
+    aligned["ua_row_index"]             = _ensure_numeric(get("ua_row_index", np.array([], dtype=np.int16)))
 
     aligned["ua_peaks"]                 = _ensure_numeric(get("ua_peaks", np.array([], dtype=np.float32)))
     aligned["ua_peaks_t_ms"]            = _ensure_numeric(get("ua_peaks_t_ms", np.array([], dtype=np.float32)))

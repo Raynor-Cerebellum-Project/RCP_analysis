@@ -72,7 +72,7 @@ FIG = SimpleNamespace(peri_posvel=PERI_FIG / "posvel_traces")
 # ---------- checkpoints / inputs ----------
 ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
 BEHAV_ROOT   = OUT_BASE / "checkpoints" / "behavior" / "baseline_concat"
-NPRW_BUNDLES   = OUT_BASE / "bundles" / "NPRW"
+NPRW_AUX_DATA   = OUT_BASE / "aux_data" / "NPRW"
 METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
 METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
 
@@ -1797,7 +1797,7 @@ def main():
                 print(f"[warn] Peri UA VAR: ordering failed: {e}")
                 
         # locate the Intan stim_stream.npz and locate stimulated channels
-        stim_npz = NPRW_BUNDLES / f"{sess}_Intan_bundle" / "stim_stream.npz"
+        stim_npz = NPRW_AUX_DATA / f"{sess}_Intan_streams" / "stim_stream.npz"
         stim_locs = None
         if stim_npz.exists():
             try:

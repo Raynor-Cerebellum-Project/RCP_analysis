@@ -1,6 +1,6 @@
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
-import re, csv
+from typing import Optional, Dict, Any
+import csv
 import numpy as np
 import pandas as pd
 import spikeinterface as si
@@ -45,84 +45,6 @@ def ua_excel_path(repo_root: Path, probes_cfg: dict | None) -> Optional[Path]:
     p = (repo_root / rel) if not str(rel).startswith("/") else Path(rel)
     return p if p.exists() else None
 
-# bundle extraction
-def extract_blackrock_bundle(sess: Path, out_dir, camera_sync_ch, triangle_sync_ch) -> dict:
-    """
-    Build and save BR bundle:
-      - ns5: pull specific sync channels (Ex: 134=camera, 138=triangle) if present
-      - ns2: pull ALL channels present
-    """
-    bundle: Dict[str, Any] = {}
-
-    # ns5 (aux streams / sync)
-    camera_sync = None
-    triangle_sync = None
-    fs_ns5 = None
-    try:
-        rec_ns5 = se.read_blackrock(sess, stream_name = 'nsx5', all_annotations=True)
-        fs_ns5 = rec_ns5.get_sampling_frequency()
-        ids_ns5 = rec_ns5.get_channel_ids().astype(int)
-
-        if camera_sync_ch in ids_ns5:
-            camera_sync = rec_ns5.get_traces(segment_index=0, channel_ids=[str(camera_sync_ch)]).ravel()
-        else:
-            print("[WARN] camera_sync channel not found in ns5.")
-
-        if triangle_sync_ch in ids_ns5:
-            triangle_sync = rec_ns5.get_traces(segment_index=0, channel_ids=[str(triangle_sync_ch)]).ravel()
-        else:
-            print("[WARN] triangle_sync channel not found in ns5.")
-
-    except FileNotFoundError:
-        print("[WARN] ns5 not found; syncs unavailable.")
-
-    aux = {
-        "fs": fs_ns5,
-        "camera_sync": camera_sync,
-        "triangle_sync": triangle_sync,
-    }
-
-    # extract ns2 (all channels)
-    digi = {"fs": None, "channels": {}}
-    try:
-        rec_ns2 = se.read_blackrock(sess, stream_name = 'nsx2', all_annotations=True)
-        digi["fs"] = rec_ns2.get_sampling_frequency()
-
-        ids_ns2 = rec_ns2.get_channel_ids().astype(int)
-        tr_ns2 = rec_ns2.get_traces()
-
-        # add ALL columns present
-        for col, cid in enumerate(ids_ns2):
-            digi["channels"][f"ch{cid}"] = tr_ns2[:, col]
-    except FileNotFoundError:
-        print("[WARN] ns2 not found; no digital channels.")
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    
-    np.savez_compressed(
-        out_dir / f"{sess}_UA_bundle.npz",
-        aux_fs=aux['fs'],
-        camera_sync=aux["camera_sync"],
-        triangle_sync=aux["triangle_sync"],
-        digi_fs=digi["fs"],
-        **digi["channels"],
-    )
-    print(f"[SAVED] {out_dir / f'{sess}_UA_bundle.npz'}")
-    return bundle
-
-def _parse_nsp_channel(val) -> int | None:
-    """
-    Parse excel mapping file into an NSP channel int.
-    Ex: converts 'ch-15' to 15
-    """
-    if val is None:
-        return None
-    if isinstance(val, (int, np.integer)):
-        return int(val)
-    m = re.search(r'(\d+)', str(val))
-    return int(m.group(1)) if m else None
-
-
 def load_UA_mapping_from_excel(
     xls_path: Path,
     sheet: str | int = 0,
@@ -151,7 +73,6 @@ def load_UA_mapping_from_excel(
 
     # ----- Parse both columns with NumPy loops -----
     parsed_nsp = np.char.replace(nsp_np.astype(str), "ch-", "").astype(int)
-
     parsed_elec = np.array([int(v) if v is not None and not pd.isna(v) else None
                             for v in elec_np], dtype=object)
 
@@ -169,24 +90,122 @@ def load_UA_mapping_from_excel(
 
     return mapped_nsp
 
+def extract_br_aux_streams_npz(sess, aux_dir, camera_sync_ch, triangle_sync_ch) -> dict:
+    """
+    Build and save BR aux streams in a unified format into ONE NPZ file:
 
+      - ns5: selected sync channels (camera, triangle) stacked as rows.
+      - ns2: all channels stacked as rows.
+
+    Output file (if anything found):
+      - <session_name>__BR_aux_data.npz
+
+    Contents (subset depending on availability):
+
+      ns5_aux_traces      : (n_ns5_channels, n_samples)
+      ns5_session         : str
+      ns5_stream_name     : "nsx5"
+      ns5_fs_hz           : float
+      ns5_channel_ids     : array of ints
+
+      ns2_aux_traces      : (n_ns2_channels, n_samples)
+      ns2_session         : str
+      ns2_stream_name     : "nsx2"
+      ns2_fs_hz           : float
+      ns2_channel_ids     : array of ints
+    """
+    aux_dir.mkdir(parents=True, exist_ok=True)
+    meta: Dict[str, Any] = {}
+
+    # save ns5, extract camera + triangle sync
+    try:
+        rec_ns5 = se.read_blackrock(sess, stream_name="nsx5", all_annotations=True)
+        
+        wanted = [camera_sync_ch, triangle_sync_ch]
+        chan_ids_ns5 = rec_ns5.get_channel_ids().astype(int)
+        traces_ns5 = []
+        labels_ns5 = []
+
+        for ch in wanted:
+            if ch in chan_ids_ns5:
+                tr = rec_ns5.get_traces(channel_ids=[str(ch)], return_scaled=True).ravel()
+                traces_ns5.append(tr)
+                labels_ns5.append(ch)
+            else:
+                print(f"[WARN] ns5: channel {ch} not found.")
+
+        if traces_ns5:
+            aux_traces_ns5 = np.stack(traces_ns5, axis=0)
+
+            meta.update(
+                ns5_aux_traces=aux_traces_ns5,
+                ns5_session=sess.name,
+                ns5_stream_name="nsx5",
+                ns5_fs_hz=rec_ns5.get_sampling_frequency(),
+                ns5_channel_ids=np.array(labels_ns5, dtype=int),
+            )
+            print(f"[AUX] prepared ns5 aux (channels {labels_ns5})")
+        else:
+            print("[WARN] ns5 found but no requested sync channels present; nothing saved for ns5.")
+
+    except FileNotFoundError:
+        print("[WARN] ns5 not found; syncs unavailable.")
+
+    # save ns2
+    try:
+        rec_ns2 = se.read_blackrock(str(sess), stream_name="nsx2", all_annotations=True)
+        aux_traces_ns2 = rec_ns2.get_traces(return_scaled=True).T  # (n_channels, n_samples)
+        
+        meta.update(
+            ns2_aux_traces=aux_traces_ns2,
+            ns2_session=sess.name,
+            ns2_stream_name="nsx2",
+            ns2_fs_hz=rec_ns2.get_sampling_frequency(),
+            ns2_channel_ids=rec_ns2.get_channel_ids().astype(int),
+        )
+        print(f"[AUX] prepared ns2 digi (n_channels={aux_traces_ns2.shape[0]})")
+
+    except FileNotFoundError:
+        print("[WARN] ns2 not found; no digital channels.")
+
+    # save
+    if meta:
+        out_npz = aux_dir / f"{sess.name}__BR_aux_data.npz"
+        np.savez_compressed(out_npz, **meta)
+        print(f"[AUX] saved combined BR aux streams to {out_npz}")
+    else:
+        print("[AUX] No aux streams found; nothing saved.")
+
+    return out_npz
 
 # Mapping
-def _align_mapping_index_to_recording(
+def apply_ua_mapping_with_regions(
     recording,
     mapped_nsp: np.ndarray,
     br_idx: int,
     meta_csv: Path,
-) -> np.ndarray:
+):
     """
-    For each electrode NSP id in `mapped_nsp`, return the recording row index or -1.
+    Apply UA mapping by renaming channels and build UA-related per-row arrays.
 
     Assumptions:
     - metadata CSV has columns: BR_File, UA_port
     - UA_port is 'A' or 'B'
     - recording.get_channel_ids() -> local NSP ids 1..128 (per port)
     - mapped_nsp uses 1..128 for Port A, 129..256 for Port B
+
+    Returns
+    -------
+    renamed : recording with renamed channel_ids
+    idx_rows : np.ndarray (n_electrodes,), electrode -> recording row index (or -1)
+    ua_elec_per_row : np.ndarray (n_channels,), row -> UA electrode number (or -1)
+    ua_nsp_per_row  : np.ndarray (n_channels,), row -> NSP id (or -1)
+    ua_region_per_row : np.ndarray (n_channels,), row -> region index {-1,0,1,2,3}
+    ua_region_names   : np.ndarray (4,), ["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"]
     """
+    ch_ids = np.asarray(recording.get_channel_ids(), int)
+    n_channels = ch_ids.size
+
     # ---- get UA_port for this BR index ----
     ua_port = None
     if not meta_csv.exists():
@@ -201,57 +220,72 @@ def _align_mapping_index_to_recording(
             else:
                 for row in rdr:
                     try:
-                        if int(row["BR_File"]) == int(br_idx):
-                            ua_port = (row["UA_port"] or "").strip().upper() or None
+                        if int(row["BR_File"]) == br_idx:
+                            ua_port = row["UA_port"] or None
                             break
                     except Exception:
                         continue
 
-    # ---- local channel ids from Recording ----
-    ch_ids = np.asarray(recording.get_channel_ids(), int)
-
-    # If this is Port B, shift local ids by +128 to match mapped_nsp convention
+    # If Port B, shift local 1..128 -> NSP 129..256
     if ua_port == "B":
         ch_ids = ch_ids + 128
 
-    # NSP id -> row index
-    id_to_row = {int(ch): i for i, ch in enumerate(ch_ids)}
+    # ---- NSP id -> row index ----
+    id_to_row = {ch: i for i, ch in enumerate(ch_ids)}
+    mapped_nsp_int = mapped_nsp.astype(int, copy=False)
 
-    # ---- build output: per electrode NSP id → row index ----
-    mapped_nsp = np.asarray(mapped_nsp, int)
-    idx_rows = np.full(mapped_nsp.shape, -1, dtype=int)
-
-    for elec_idx, nsp_id in enumerate(mapped_nsp):
+    # electrode -> row index (or -1)
+    idx_rows = np.full(mapped_nsp_int.shape, -1, dtype=int)
+    for elec_idx, nsp_id in enumerate(mapped_nsp_int):
         idx_rows[elec_idx] = id_to_row.get(int(nsp_id), -1)
 
-    return idx_rows
-
-def apply_ua_mapping_by_renaming(recording, mapped_nsp: np.ndarray, br_idx: int, meta_csv: Path):
-    idx_rows = _align_mapping_index_to_recording(recording, mapped_nsp, br_idx, meta_csv)
-
-    ch_ids = list(recording.get_channel_ids())
+    # ---- rename channels to UAe###_NSP### where applicable ----
     new_ids = [str(ch) for ch in ch_ids]
-
-    n_ch = recording.get_num_channels()
-    for elec0, row in enumerate(idx_rows):
-        if 0 <= row < n_ch:
-            elec = elec0 + 1
-            nsp = int(mapped_nsp[elec0])
+    for elec0, (row, nsp) in enumerate(zip(idx_rows, mapped_nsp_int)):
+        if 0 <= row < n_channels:
+            elec = elec0 + 1  # 1-based electrode index
             new_ids[row] = f"UAe{elec:03d}_NSP{nsp:03d}"
 
     renamed = recording.rename_channels(new_ids)
-    mapped = np.count_nonzero((idx_rows >= 0) & (idx_rows < n_ch))
-    print(f"[MAP] renamed {mapped}/{n_ch} rows with UA mapping ('UAe###_NSP###').")
+    mapped = np.count_nonzero((idx_rows >= 0) & (idx_rows < n_channels))
+    print(f"[MAP] renamed {mapped}/{n_channels} rows with UA mapping ('UAe###_NSP###').")
 
-    renamed.set_annotation("ua_row_index_from_electrode", idx_rows.astype(int))
-    return renamed, idx_rows
+    renamed.set_annotation("ua_row_index", idx_rows)
 
-def ua_region_from_elec(e: int) -> int:
-    if e <= 0:      return -1
-    if e <= 64:     return 0  # SMA
-    if e <= 128:    return 1  # Dorsal premotor
-    if e <= 192:    return 2  # M1 inferior
-    return 3                  # M1 superior
+    # ---- build per-row UA arrays ----
+    ua_elec = -np.ones(n_channels)
+    ua_nsp  = -np.ones(n_channels)
+    for elec0, row in enumerate(idx_rows):
+        if 0 <= row < n_channels:
+            ua_elec[row] = elec0 + 1
+            ua_nsp[row]  = int(mapped_nsp_int[elec0])
+
+    # region assignment from electrode number
+    def _ua_region_from_elec(e: int) -> int:
+        if e <= 0:    return -1
+        if e <= 64:   return 0  # SMA
+        if e <= 128:  return 1  # Dorsal premotor
+        if e <= 192:  return 2  # M1 inferior
+        return 3                # M1 superior
+
+    ua_region = np.fromiter(
+        (_ua_region_from_elec(int(e)) for e in ua_elec),
+        dtype=np.int8,
+        count=n_channels,
+    )
+    ua_region_names = np.array(
+        ["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"],
+        dtype=object,
+    )
+
+    return (
+        renamed,
+        idx_rows,
+        ua_elec,
+        ua_nsp,
+        ua_region,
+        ua_region_names,
+    )
 
 def _gauss_kernel_from_sigma_bins(sigma_bins: float, radius_mult: float = 4.0):
     sigma_bins = max(1e-9, float(sigma_bins))
@@ -261,7 +295,7 @@ def _gauss_kernel_from_sigma_bins(sigma_bins: float, radius_mult: float = 4.0):
     k /= k.sum()
     return k
 
-## This function used by Intan too
+## This function is used by Intan too
 def threshold_mua_rates(
     recording,
     detect_threshold: float,
@@ -272,28 +306,29 @@ def threshold_mua_rates(
     blank_windows_samples: dict[int, np.ndarray] | None = None,
 ):
     """
-    Threshold-crossing MUA → binned + Gaussian-smoothed firing rates.
+    Threshold-crossing MUA, binned, Gaussian-smoothed firing rates.
 
     Returns
     -------
-    rate_hz : (n_channels, n_bins) float
-    t_ms    : (n_bins,) float   # bin-center times in ms (concatenated across segments)
-    counts  : (n_channels, n_bins) int
-    peaks   : np.ndarray        # structured array from SpikeInterface (unchanged)
-    peak_t_ms : (n_peaks,) float
-        Global peak times in ms (segment offsets applied).
+    rate_hz : (n_channels, n_bins)
+    t_ms    : (n_bins,)   # bin-center times in ms (concatenated across segments)
+    counts  : (n_channels, n_bins)
+    peaks   : np.ndarray  # structured array from SpikeInterface
+    peak_t_ms : (n_peaks,) Global peak times in ms (segment offsets applied)
     """
     
-    fs = float(recording.get_sampling_frequency())
-    n_ch = int(recording.get_num_channels())
-    n_seg = int(recording.get_num_segments())
+    fs = recording.get_sampling_frequency()
+    n_ch = recording.get_num_channels()
+    n_seg = recording.get_num_segments()
 
-    bin_samps = int(round(bin_ms * 1e-3 * fs))
+    bin_samps = int(bin_ms * 1e-3 * fs)
     if bin_samps < 1:
         raise ValueError("bin_ms too small for sampling rate")
-
-    # 1) Detect peaks
+    
+    # Detect peaks
     noise_levels = si.get_noise_levels(recording, method="mad", return_in_uV=False) # They didn't write return_in_uV in their documentation
+    
+    print(f"[INFO] Spike bin size: {bin_samps}, Average noise level: {np.nanmean(noise_levels)}")
     peaks = detect_peaks(
         recording,
         method="by_channel_torch",
@@ -302,17 +337,15 @@ def threshold_mua_rates(
         noise_levels=noise_levels,
         n_jobs=n_jobs,
     )
-    # --- Deduplicate near-coincident peaks per (segment, channel): cluster + keep strongest ---
-    dedup_ms = 0.5
-    dedup_samp = max(1, int(round(dedup_ms * 1e-3 * fs)))
 
     # Build keys
     ch_field, samp_field, seg_field, amp_field = ("channel_index", "sample_index", "segment_index", "amplitude")
-    seg_key = (peaks[seg_field] if seg_field in peaks.dtype.names
-            else np.zeros(peaks.shape[0], dtype=np.int64))
-    ch_key  = peaks[ch_field].astype(np.int32, copy=False)
-    t_key   = peaks[samp_field].astype(np.int64, copy=False)
-    amp_val = np.abs(peaks[amp_field].astype(np.float32)) if amp_field in peaks.dtype.names else np.ones(len(peaks))
+    seg_key = (peaks[ch_field] if ch_field in peaks.dtype.names else np.zeros(peaks.shape[0], dtype=np.int64))
+    # if there are multiple segments
+    
+    ch_key  = peaks[ch_field].astype(np.int32, copy=False) # which channel
+    t_key   = peaks[samp_field].astype(np.int64, copy=False) # what time
+    amp_val = np.abs(peaks[amp_field].astype(np.float32)) if amp_field in peaks.dtype.names else np.ones(len(peaks)) # amplitude
 
     # Sort by (segment, channel, time)
     order = np.lexsort((t_key, ch_key, seg_key))
@@ -321,6 +354,10 @@ def threshold_mua_rates(
 
     keep = np.zeros(len(peaks), dtype=bool)
 
+    # Deduplicate MUA that are too close to each other. Cluster + keep strongest
+    dedup_ms = 0.5
+    dedup_samp = max(1, int(round(dedup_ms * 1e-3 * fs)))
+    
     # Iterate per segment–channel group
     for seg in np.unique(seg_key):
         for ch in np.unique(ch_key[seg_key == seg]):
@@ -354,22 +391,22 @@ def threshold_mua_rates(
             keep[best] = True
     peaks = peaks[keep]
 
-    # 1b) Build global peak time array in ms
+    # Build global peak time array in ms, this is just in case there are multiple segments in each recording
     # Compute cumulative sample offsets per segment: [0, n0, n0+n1, ...]
     seg_n_samps = [int(recording.get_num_frames(s)) for s in range(n_seg)]
     seg_offsets_samp = np.cumsum([0] + seg_n_samps[:-1]).astype(np.int64)
 
     if seg_field in peaks.dtype.names:
-        seg_idx = peaks[seg_field].astype(np.int64, copy=False)
+        seg_idx = peaks[seg_field].astype(np.int32, copy=False)
     else:
         if n_seg != 1:
             raise RuntimeError("No segment field in peaks for multi-segment recording.")
-        seg_idx = np.zeros(peaks.shape[0], dtype=np.int64)
+        seg_idx = np.zeros(peaks.shape[0], dtype=np.int32)
 
-    peak_samp_global = peaks[samp_field].astype(np.int64, copy=False) + seg_offsets_samp[seg_idx]
+    peak_samp_global = peaks[samp_field].astype(np.int32, copy=False) + seg_offsets_samp[seg_idx]
     peak_t_ms = peak_samp_global.astype(np.float32) * (1000.0 / fs)
 
-    # 2) Bin counts per segment
+    # Bin counts per segment
     bin_offset = 0
     counts_all, t_all, blank_masks = [], [], []
     sigma_bins = max(1e-9, sigma_ms / bin_ms)
@@ -483,7 +520,6 @@ def threshold_mua_rates(
     return rate_hz.astype(np.float32), t_cat_ms, counts_cat.astype(np.uint32), peaks, peak_t_ms
 
 __all__ = [
-    "list_br_sessions", "ua_excel_path", "load_UA_mapping_from_excel", "apply_ua_mapping_by_renaming",
-    "build_blackrock_bundle", "save_UA_bundle_npz",
-    "threshold_mua_rates", "ua_region_from_elec"
+    "list_br_sessions", "ua_excel_path", "load_UA_mapping_from_excel",
+    "extract_br_aux_streams_npz", "apply_ua_mapping_by_renaming", "ua_region_from_elec", "threshold_mua_rates"
 ]

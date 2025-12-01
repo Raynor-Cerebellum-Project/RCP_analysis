@@ -145,9 +145,9 @@ def main():
 
     # --- channel indexing mode ---
     UA_CHANNEL_MODE = "row"  # change to "elec" if CHANNELS_TO_SHOW are electrode IDs
-    ua_row_index_from_electrode = None
-    if "ua_row_index_from_electrode" in z.files:
-        ua_row_index_from_electrode = z["ua_row_index_from_electrode"].astype(int)
+    ua_row_index = None
+    if "ua_row_index" in z.files:
+        ua_row_index = z["ua_row_index"].astype(int)
     elif "ua_row_to_elec" in z.files:
         ua_row_to_elec = z["ua_row_to_elec"].astype(int).ravel()
         max_e = int(ua_row_to_elec.max()) if ua_row_to_elec.size else 0
@@ -155,14 +155,14 @@ def main():
         for r, e in enumerate(ua_row_to_elec):
             if 0 < e < inv.size:
                 inv[e] = r
-        ua_row_index_from_electrode = inv
+        ua_row_index = inv
 
     if UA_CHANNEL_MODE == "elec":
-        if ua_row_index_from_electrode is None:
-            raise RuntimeError("Need UA electrode→row mapping (ua_row_index_from_electrode or ua_row_to_elec).")
+        if ua_row_index is None:
+            raise RuntimeError("Need UA electrode→row mapping (ua_row_index or ua_row_to_elec).")
         CHANNEL_ROWS = []
         for e in CHANNELS_TO_SHOW:
-            r = int(ua_row_index_from_electrode[e]) if e < len(ua_row_index_from_electrode) else -1
+            r = int(ua_row_index[e]) if e < len(ua_row_index) else -1
             if r < 0:
                 print(f"[warn] electrode {e} has no mapped row; skipping.")
             else:

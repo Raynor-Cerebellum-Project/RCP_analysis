@@ -18,7 +18,7 @@ SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
 OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
 BR_ROOT = SESSION_LOC / "Blackrock"; BR_ROOT.mkdir(parents=True, exist_ok=True)
 VIDEO_ROOT = SESSION_LOC / "Video"; VIDEO_ROOT.mkdir(parents=True, exist_ok=True)
-BEHV_BUNDLES   = OUT_BASE / "bundles" / "behavior"
+BEHV_AUX_DATA   = OUT_BASE / "aux_data" / "behavior"
 BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "behavior"; BEHV_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
 METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
 METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
@@ -64,8 +64,6 @@ def main():
                 ns5_path = rcp.find_ns5_by_br_index(BR_ROOT, br_idx)
                 if ns5_path is None:
                     print(f"[warn] BR_File {br_idx:03d} not found by index; fallback to condition-name search.")
-        if ns5_path is None:
-            ns5_path = rcp.find_ns5_for_cond(BR_ROOT, cond)  # fallback using condition ID, should be the same
 
         # If nothing weird with mapping vid_idx to br path, start outputting
         if ns5_path is not None:

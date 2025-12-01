@@ -8,7 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
 SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
 OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
-NPRW_BUNDLES   = OUT_BASE / "bundles" / "NPRW"
+NPRW_AUX_DATA   = OUT_BASE / "aux_data" / "NPRW"
 NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
 UA_CKPT_ROOT   = OUT_BASE / "checkpoints" / "UA"
 ALIGNED_CKPT_ROOT   = OUT_BASE / "checkpoints" / "Aligned"; ALIGNED_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
@@ -38,8 +38,8 @@ def _meta_fs(meta):
         return float(meta.get("fs_hz", meta.get("fs", np.nan)))
     return None
 
-def try_load_stim_ms_from_intan_bundle(bundles_root: Path, session: str) -> np.ndarray | None:
-    stim_npz = bundles_root / f"{session}_Intan_bundle" / "stim_stream.npz"
+def try_load_stim_ms_from_intan_aux(aux_root: Path, session: str) -> np.ndarray | None:
+    stim_npz = aux_root / f"{session}_Intan_streams" / "stim_stream.npz"
     if not stim_npz.exists():
         return None
     with np.load(stim_npz, allow_pickle=False) as z:
@@ -249,22 +249,22 @@ def main():
             ua_rates_npz = cands[0]
             
             # --- pull mapping arrays from the UA rates npz ---
-            ua_row_to_elec = ua_row_to_region = ua_region_names = ua_row_to_nsp = ua_row_index_from_electrode = None
+            ua_row_to_elec = ua_row_to_region = ua_region_names = ua_row_to_nsp = ua_row_index = None
             with np.load(ua_rates_npz, allow_pickle=True) as z:
                 ua_row_to_elec = z["ua_row_to_elec"].astype(np.int16) if "ua_row_to_elec" in z else np.array([], dtype=np.int16)
                 ua_row_to_region = z["ua_row_to_region"].astype(np.int8) if "ua_row_to_region" in z else np.array([], dtype=np.int8)
                 ua_region_names = z["ua_region_names"] if "ua_region_names" in z else np.array([], dtype=object)
                 ua_row_to_nsp = z["ua_row_to_nsp"].astype(np.int16) if "ua_row_to_nsp" in z else np.array([], dtype=np.int16)
-                ua_row_index_from_electrode = (
-                    z["ua_row_index_from_electrode"].astype(np.int16)
-                    if "ua_row_index_from_electrode" in z else np.array([], dtype=np.int16)
+                ua_row_index = (
+                    z["ua_row_index"].astype(np.int16)
+                    if "ua_row_index" in z else np.array([], dtype=np.int16)
                 )
 
             intan_rate_hz, intan_t_ms, intan_meta, intan_pcs, intan_peaks, intan_peaks_t_ms, intan_peaks_t_sample, intan_expl = rcp.load_rate_npz(intan_rates_npz)
             ua_rate_hz, ua_t_ms, ua_meta, ua_pcs, ua_peaks, ua_peaks_t_ms, ua_peaks_t_sample, ua_expl = rcp.load_rate_npz(ua_rates_npz)
 
             # Optional stim times (absolute Intan ms)
-            stim_ms_abs = try_load_stim_ms_from_intan_bundle(NPRW_BUNDLES, session)
+            stim_ms_abs = try_load_stim_ms_from_intan_aux(NPRW_AUX_DATA, session)
 
             # --------- Apply Intan anchor shift to timebase ----------
             intan_t_ms_aligned = intan_t_ms - anchor_ms
@@ -371,7 +371,7 @@ def main():
                     # it can return empty arrays/cols for the missing cam.
                     (beh_ns5_sample,
                      beh_cam0, beh_cam0_cols,
-                     beh_cam1, beh_cam1_cols) = rcp.load_behavior_npz(beh_csv, NUM_CAM)
+                     beh_cam1, beh_cam1_cols) = rcp.load_behavior_npz(beh_csv, NUM_CAM) # TODO Make concise
 
                     print(f"[behavior] attached from {beh_csv.name} [{beh_kind}] (N={beh_ns5_sample.size})")
 
@@ -477,7 +477,7 @@ def main():
                 ua_row_to_region=ua_row_to_region,
                 ua_region_names=ua_region_names,
                 ua_row_to_nsp=ua_row_to_nsp,
-                ua_row_index_from_electrode=ua_row_index_from_electrode,
+                ua_row_index=ua_row_index,
 
                 # UA peaks (raw + "aligned" = same as raw in ms since UA wasn't shifted)
                 ua_peaks=_ua_peaks,
