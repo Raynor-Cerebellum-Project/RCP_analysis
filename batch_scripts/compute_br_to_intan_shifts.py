@@ -212,10 +212,6 @@ def main():
                 rec_br, fs_br, use_br = None, float("nan"), False
 
 
-
-
-
-
         # refine each block using triangle sync channel TODO FIX THIS
         LOC_REFINE_N = 50        # like MATLAB's N
         locs_rows = []

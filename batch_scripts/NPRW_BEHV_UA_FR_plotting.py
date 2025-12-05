@@ -9,7 +9,6 @@ import re
 from probeinterface import Probe
 from scipy.io import loadmat
 
-
 import RCP_analysis as rcp
 
 import matplotlib
@@ -29,6 +28,9 @@ VMIN_SMA_BASELINE, VMAX_SMA_BASELINE = -10, 35
 VMIN_INTAN, VMAX_INTAN = -50, 300
 VMIN_UA, VMAX_UA = -50, 150
 COLORMAP = "jet"
+
+ARTRMV_MS_BEFORE = 5.0
+ARTCORR_TAIL_MS   = 5.0
 
 # --- Velocity setting ---
 VEL_THRESH = 5.0          # absolute velocity threshold (a.u./ms) for despiking
@@ -149,8 +151,18 @@ def _safe_extract_segments(rate_hz, t_ms, stim_ms_in, win_ms, min_trials, normal
             rel_t = np.arange(win_ms[0], win_ms[1] + 1e-9, dt, dtype=float)
             return None, rel_t, 0
         raise
+    
     zeroed = rcp.baseline_zero_each_trial(segs, rel_t, normalize_first_ms=normalize_first_ms)
-    med = rcp.median_across_trials(zeroed)
+    
+    # drop bins with too few valid trials per channel
+    # zeroed: (n_events, n_channels, T)
+    valid_counts = np.isfinite(zeroed).sum(axis=0)      # (n_channels, T)
+    n_events = zeroed.shape[0]
+    # e.g. require at least 30% of events to be valid in that (ch, t) bin
+    min_bin_trials = max(15, int(0.5 * n_events))
+
+    med = rcp.median_across_trials(zeroed)              # (n_channels, T)
+    med[valid_counts < min_bin_trials] = np.nan
     return med, rel_t, int(segs.shape[0])  # or st.size
 
 def _safe_extract_segments_stat(rate_hz, t_ms, stim_ms_in, win_ms, min_trials, normalize_first_ms, stat: str):
@@ -176,14 +188,19 @@ def _safe_extract_segments_stat(rate_hz, t_ms, stim_ms_in, win_ms, min_trials, n
         raise
 
     zeroed = rcp.baseline_zero_each_trial(segs, rel_t, normalize_first_ms=normalize_first_ms)
+    # bin coverage
+    valid_counts = np.isfinite(zeroed).sum(axis=0)      # (n_channels, T)
+    n_events = zeroed.shape[0]
+    min_bin_trials = max(1, int(0.3 * n_events))
     if stat == "median":
         X = rcp.median_across_trials(zeroed)
     elif stat == "var":
         X = rcp.variance_across_trials(zeroed)
     else:
         raise ValueError("stat must be 'median' or 'var'")
+    # mask low-coverage bins
+    X[valid_counts < min_bin_trials] = np.nan
     return X, rel_t, int(segs.shape[0])
-
 
 def _order_rows_by_region_then_peak(
     ua_mat: np.ndarray,
@@ -703,7 +720,7 @@ def main_baselines():
                 chosen = cands[-1]  # newest
                 with np.load(chosen, allow_pickle=True) as zc:
                     # try direct arrays first
-                    for k in ("ua_row_to_elec", "ua_ids_1based", "row_to_elec", "ua_electrodes"):
+                    for k in ("ua_elec"):
                         if k in zc.files:
                             ua_ids_1based = np.asarray(zc[k], dtype=int).ravel()
                             break
@@ -714,12 +731,12 @@ def main_baselines():
                             with np.load(ua_rates_path, allow_pickle=True) as zr:
                                 if "meta" in zr.files:
                                     meta_u = zr["meta"].item()
-                                    for k in ("row_to_elec", "ua_row_to_elec", "ua_ids_1based", "ua_electrodes"):
+                                    for k in ("ua_elec"):
                                         if k in meta_u:
                                             ua_ids_1based = np.asarray(meta_u[k], dtype=int).ravel()
                                             break
                                 if ua_ids_1based is None:
-                                    for k in ("ua_row_to_elec", "ua_ids_1based", "row_to_elec", "ua_electrodes"):
+                                    for k in ("ua_elec"):
                                         if k in zr.files:
                                             ua_ids_1based = np.asarray(zr[k], dtype=int).ravel()
                                             break
@@ -1248,7 +1265,6 @@ def _median_lines_for_columns(series_on_common: np.ndarray,
     n_trials_used = int(max(kept_counts)) if kept_counts else 0
     return (np.vstack(lines) if len(lines) else np.zeros((0, rel_t_out.size))), rel_t_out, n_trials_used
 
-
 # ---------- Behavior (already mapped to common grid in the NPZ) ----------
 def _ordered_xy_indices(cam_cols: List[str],
                         keypoints: Tuple[str, ...] = KEYPOINTS_ORDER
@@ -1327,53 +1343,6 @@ def _z_per_column(M: np.ndarray) -> np.ndarray:
         else:
             out[:, j] = np.full_like(col, np.nan)
     return out
-
-def _aggregate_columns_to_bins(idx_bins: np.ndarray,
-                               values_2d: np.ndarray,
-                               n_bins: int) -> np.ndarray:
-    """
-    idx_bins: (N,) target bin per sample (-1 to ignore)
-    values_2d: (N, D) per-sample values (D can be 0)
-    returns: (n_bins, D) mean per bin (NaN where no samples)
-    """
-    # Normalize shapes
-    if values_2d is None:
-        values_2d = np.zeros((0, 0), float)
-    if values_2d.ndim == 1:
-        values_2d = values_2d[:, None]
-    N = values_2d.shape[0]
-    D = values_2d.shape[1]
-    if n_bins <= 0:
-        return np.zeros((0, D), float)
-    if idx_bins is None or idx_bins.size == 0 or N == 0:
-        return np.full((n_bins, D), np.nan, float)
-
-    # If mismatch in lengths, truncate to the common length (robust)
-    L = min(len(idx_bins), N)
-    idx_bins = idx_bins[:L]
-    values_2d = values_2d[:L, :]
-
-    out = np.full((n_bins, D), np.nan, float)
-    if D == 0:
-        return out
-
-    valid = (idx_bins >= 0) & (idx_bins < n_bins)
-    if not np.any(valid):
-        return out
-
-    for d in range(D):
-        vals = values_2d[:, d]
-        ok = valid & np.isfinite(vals)
-        if not np.any(ok):
-            continue
-        counts = np.zeros(n_bins, dtype=np.int32)
-        sums = np.zeros(n_bins, dtype=float)
-        np.add.at(counts, idx_bins[ok], 1)
-        np.add.at(sums,   idx_bins[ok], vals[ok])
-        hit = counts > 0
-        out[hit, d] = sums[hit] / counts[hit]
-    return out
-
 
 # delay parse
 def _parse_delay_ms(val) -> int:
@@ -1581,26 +1550,33 @@ def main():
     if not files:
         raise SystemExit(f"[error] No combined aligned NPZs found at {ALIGNED_ROOT}")
 
-    for k, file in enumerate(files):
-        if k < 2:
-            continue
+    for file in files:
         NPRW_rate, NPRW_t, UA_rate, UA_t, stim_ms_abs, meta = rcp.load_combined_npz(file)
         # Try to get per-row UA electrode IDs (1..256), + NSP mapping (1..128/256)
         ua_ids_1based = None
 
         with np.load(file, allow_pickle=True) as z:
-            if "ua_row_to_elec" in z.files:
-                ua_ids_1based = np.asarray(z["ua_row_to_elec"], dtype=int).ravel()
+            if "ua_elec" in z.files:
+                ua_ids_1based = np.asarray(z["ua_elec"], dtype=int).ravel()
             else:
                 # legacy fallbacks just in case
-                for key in ("ua_ids_1based", "ua_elec_per_row", "ua_electrodes", "ua_chan_ids_1based"):
+                for key in ("ua_elec"):
                     if key in z.files:
                         ua_ids_1based = np.asarray(z[key], dtype=int).ravel()
                         break
+            # NPRW_t = z["nprw_t_ms"].astype(float)  if "nprw_t_ms"  in z.files else np.arange(0.0)
+            # Behavior 
+            cam0      = z.get("beh_cam0", np.zeros((0,0), np.float32)).astype(float)
+            cam1      = z.get("beh_cam1", np.zeros((0,0), np.float32)).astype(float)
+            raw0 = z.get("beh_cam0_cols", None)
+            raw1 = z.get("beh_cam1_cols", None)
+            cam0_cols = [str(x) for x in _as_list(raw0)]
+            cam1_cols = [str(x) for x in _as_list(raw1)]
+            behv_t = z["beh_t_ms"].astype(float)  if "beh_t_ms"  in z.files else np.arange(0.0)
 
         # sanity: ensure length matches UA rows (plot uses row order)
         if ua_ids_1based is not None and ua_ids_1based.size != UA_rate.shape[0]:
-            print(f"[warn] ua_row_to_elec len={ua_ids_1based.size} != UA rows={UA_rate.shape[0]} — ignoring")
+            print(f"[warn] ua_elec len={ua_ids_1based.size} != UA rows={UA_rate.shape[0]} — ignoring")
             ua_ids_1based = None
 
         sess = meta.get("session", file.stem)
@@ -1609,17 +1585,6 @@ def main():
         # stim times aligned to Intan aligned timebase
         stim_ms = rcp.aligned_stim_ms(stim_ms_abs, meta)
 
-        # ---------- Behavior (already mapped to common grid in the NPZ) ----------
-        with np.load(file, allow_pickle=True) as z:
-            intan_t = z["intan_t_ms_aligned"].astype(float)  if "intan_t_ms_aligned"  in z.files else np.arange(0.0)
-            cam0      = z.get("beh_cam0", np.zeros((0,0), np.float32)).astype(float)
-            cam1      = z.get("beh_cam1", np.zeros((0,0), np.float32)).astype(float)
-            raw0 = z.get("beh_cam0_cols", None)
-            raw1 = z.get("beh_cam1_cols", None)
-            cam0_cols = [str(x) for x in _as_list(raw0)]
-            cam1_cols = [str(x) for x in _as_list(raw1)]
-
-        
         # ---- interpolate here (gentle NaN interpolation only) ----
         if cam0.size:
             cam0 = _interp_nans_2d_by_col(cam0, max_gap=4)
@@ -1638,26 +1603,20 @@ def main():
         cam1_on_grid = cam1_M
 
         # >>> Low-pass filter position and compute velocity (on-grid) <<<
-        cam0_pos_filt, cam0_vel, _ = butter_lowpass_pos_and_vel(cam0_on_grid, intan_t, cutoff_hz=10.0, order=3)
-        cam1_pos_filt, cam1_vel, _ = butter_lowpass_pos_and_vel(cam1_on_grid, intan_t, cutoff_hz=10.0, order=3)
+        cam0_pos_filt, cam0_vel, _ = butter_lowpass_pos_and_vel(cam0_on_grid, behv_t, cutoff_hz=10.0, order=3)
+        cam1_pos_filt, cam1_vel, _ = butter_lowpass_pos_and_vel(cam1_on_grid, behv_t, cutoff_hz=10.0, order=3)
 
-        # Keep only stim times with a full window inside the behavior timeline
-        if intan_t.size >= 2:
-            dt_ms = float(np.nanmedian(np.diff(intan_t)))
-        else:
-            dt_ms = 1.0  # fallback
-
-        t0, t1 = float(intan_t[0]), float(intan_t[-1])
+        t0, t1 = float(behv_t[0]), float(behv_t[-1])
         left_ok  = stim_ms + WIN_MS[0] >= t0
         right_ok = stim_ms + WIN_MS[1] <= t1
         stim_ms_beh = stim_ms[left_ok & right_ok]
 
         # Now build the peri-stim median *position* lines from the filtered positions:
-        cam0_lines, beh_rel_t, cam0_ntr = _median_lines_for_columns(cam0_pos_filt, intan_t, stim_ms_beh)
-        cam1_lines, _,          cam1_ntr = _median_lines_for_columns(cam1_pos_filt, intan_t, stim_ms_beh)
+        cam0_lines, beh_rel_t, cam0_ntr = _median_lines_for_columns(cam0_pos_filt, behv_t, stim_ms_beh)
+        cam1_lines, _,          cam1_ntr = _median_lines_for_columns(cam1_pos_filt, behv_t, stim_ms_beh)
 
-        cam0_v_lines, beh_rel_t_v, cam0_v_ntr = _median_lines_for_columns(cam0_vel, intan_t, stim_ms_beh)
-        cam1_v_lines, _,             cam1_v_ntr = _median_lines_for_columns(cam1_vel, intan_t, stim_ms_beh)
+        cam0_v_lines, beh_rel_t_v, cam0_v_ntr = _median_lines_for_columns(cam0_vel, behv_t, stim_ms_beh)
+        cam1_v_lines, _,             cam1_v_ntr = _median_lines_for_columns(cam1_vel, behv_t, stim_ms_beh)
 
         # Position traces
         if cam0_lines.size:
@@ -1799,7 +1758,7 @@ def main():
         # locate the Intan stim_stream.npz and locate stimulated channels
         stim_npz = NPRW_AUX_DATA / f"{sess}_Intan_streams" / "stim_stream.npz"
         stim_locs = None
-        if stim_npz.exists():
+        if stim_npz.exists(): # TODO this is taking up a lot of time, must be a way to speed up
             try:
                 stim_locs = rcp.detect_stim_channels_from_npz(stim_npz, eps=1e-12, min_edges=1)
             except Exception as e:
@@ -1829,7 +1788,7 @@ def main():
             probe=nprw_probe, probe_locs=locs, stim_idx=stim_locs,
             probe_title="NPRW probe (stim sites highlighted)",
             ua_ids_1based=ua_ids_1based,
-            ua_sort="none",
+            ua_sort="region_then_elec",
             beh_rel_time=beh_time_for_both,
             beh_cam0_lines=cam0_lines,
             beh_cam1_lines=cam1_lines,

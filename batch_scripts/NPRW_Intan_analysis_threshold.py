@@ -38,6 +38,10 @@ INTAN_STREAM = NPRW_CFG.get("neural_data_stream")
 STIM_STREAM = NPRW_CFG.get("stim_data_stream") # "Stim channel"
 AUX_STREAM = NPRW_CFG.get("aux_stream")
 
+
+ARTRMV_MS_BEFORE = 20.0
+ARTCORR_TAIL_MS = 20.0
+
 # Local reference params, both floats
 RADII = (PARAMS.probes.get("NPRW").get("local_radius_inner"), PARAMS.probes.get("NPRW").get("local_radius_outer"))
 RATES = PARAMS.intan_rate_est
@@ -74,10 +78,7 @@ params = rcp.PCAArtifactParams(
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
 
-def main(limit_sessions: Optional[int] = None):
-    # set limit_session to run only a few conditions
-    # limit_sessions = [3]
-    
+def main():
     # 1) Load geometry & mapping
     mat_probe = loadmat(Path(GEOM_PATH))
     intan_geom = {}
@@ -98,20 +99,9 @@ def main(limit_sessions: Optional[int] = None):
     
     # 2) Find sessions and load data from each Intan folder
     sess_folders = rcp.list_intan_sessions(INTAN_ROOT)
-    # limit_sessions logic needed
-    if limit_sessions:
-        if isinstance(limit_sessions, int):
-            idx = limit_sessions - 1 if limit_sessions > 0 else limit_sessions
-            sess_folders = [sess_folders[idx]]
-        elif isinstance(limit_sessions, (list, tuple)):
-            # 1-based indices: e.g., (2, 5, 11)
-            idxs = [(i - 1 if i > 0 else i) for i in limit_sessions]
-            sess_folders = [sess_folders[i] for i in idxs]
-        else:
-            pass
     print(f"Found Intan sessions: {len(sess_folders)}")
     
-    for sess in sess_folders:
+    for sess in sess_folders[:]: # Can tweak here to isolate sessions
         # 3) Extract stim sessions and aux channels
         print(f"[RUN] session {sess.name}")
 
@@ -134,6 +124,7 @@ def main(limit_sessions: Optional[int] = None):
         
         # block_bounds_samples: shape (# stim blocks, 2) in absolute samples
         block_bounds = stim_ext_arrays.get("block_bounds_samples")
+        blank_windows = None
 
         rec_artif_removed = rec_ref  # fallback
 
@@ -150,18 +141,24 @@ def main(limit_sessions: Optional[int] = None):
             ends_samp   = ends_samp[valid]
 
             if starts_samp.size:
-                ms_before_each = 20.0
-                tail_ms = 20.0
                 dur_ms    = (ends_samp - starts_samp) * 1000.0 / fs_nprw
-                ms_after  = dur_ms.max() + tail_ms
-
+                ms_after  = float(dur_ms.max() + ARTCORR_TAIL_MS)
+                
                 rec_artif_removed = si.preprocessing.remove_artifacts(
                     rec_ref,
                     list_triggers=starts_samp.tolist(),
-                    ms_before=ms_before_each,
+                    ms_before=ARTRMV_MS_BEFORE,
                     ms_after=ms_after,
                     mode="zeros",
                 )
+                
+                pad_before_samp = int(round(ARTRMV_MS_BEFORE * fs_nprw / 1000.0))
+                pad_after_samp  = int(round(ARTCORR_TAIL_MS  * fs_nprw / 1000.0))
+
+                starts_exp = np.clip(starts_samp - pad_before_samp, 0, None)
+                ends_exp   = np.clip(ends_samp   + pad_after_samp,  0, n_total)
+
+                blank_windows = {0: np.column_stack([starts_exp, ends_exp])}  # seg 0
             else:
                 print("[WARN] all block spans invalid or empty; skipping artifact removal.")
         else:
@@ -182,18 +179,26 @@ def main(limit_sessions: Optional[int] = None):
             bin_ms=BIN_MS,
             sigma_ms=SIGMA_MS,
             n_jobs=PARAMS.parallel_jobs,
+            blank_windows_samples=blank_windows,
         )
         
-        # transpose to (n_bins, n_channels)
-        X = rate_hz.T
+        X = rate_hz.T  # (n_bins, n_channels)
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # PCA for visualization
-        pca = PCA(n_components=5, random_state=0)
-        pcs = pca.fit_transform(X)            # shape: (n_bins, 5)
-        explained_var = pca.explained_variance_ratio_  # shape: (5,)
+        n_bins, n_ch = X.shape
+        n_comp = min(5, n_bins, n_ch)
 
-        # Transpose back to (n_components, n_bins) for consistency
-        pcs_T = pcs.T
+        total_var = np.var(X, axis=0).sum()
+        if n_comp >= 1 and total_var > 0.0:
+            pca = PCA(n_components=n_comp, random_state=0)
+            pcs = pca.fit_transform(X)  # (n_bins, n_comp)
+            explained_var = np.nan_to_num(
+                pca.explained_variance_ratio_, nan=0.0
+            ).astype(np.float32)
+            pcs_T = pcs.T.astype(np.float32)  # (n_comp, n_bins)
+        else:
+            pcs_T = np.empty((0, n_bins), dtype=np.float32)
+            explained_var = np.empty((0,), dtype=np.float32)
         
         out_npz = NPRW_CKPT_ROOT / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
 
@@ -231,4 +236,4 @@ def main(limit_sessions: Optional[int] = None):
         gc.collect()
 
 if __name__ == "__main__":
-    main(limit_sessions=None)
+    main()

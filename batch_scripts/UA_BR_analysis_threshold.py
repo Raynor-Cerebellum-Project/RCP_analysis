@@ -1,14 +1,14 @@
 from pathlib import Path
-from typing import Optional
-import gc
+import gc, csv
 import numpy as np
-import re, csv
 from sklearn.decomposition import PCA
 
 import spikeinterface as si
 import spikeinterface.preprocessing as spre
 import spikeinterface.extractors as se
 import RCP_analysis as rcp
+
+
 """ 
     This script preprocesses the Blackrock data.
     Input:
@@ -34,7 +34,10 @@ RATES = PARAMS.UA_rate_est
 BIN_MS     = float(RATES.get("bin_ms", 1.0))
 SIGMA_MS   = float(RATES.get("sigma_ms", 50.0))
 THRESH     = float(RATES.get("detect_threshold", 3))
-PEAK_SIGN  = str(RATES.get("peak_sign", "neg"))
+PEAK_SIGN  = str(RATES.get("peak_sign", "both"))
+
+ARTRMV_MS_BEFORE = 5.0
+ARTCORR_TAIL_MS   = 5.0
     
 XLS = rcp.ua_excel_path(REPO_ROOT, PARAMS.probes)
 UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS else None
@@ -91,24 +94,11 @@ def load_anchor_for_session(out_base: Path, session: str) -> tuple[int, float]:
 
     return 0, 30000.0
 
-def main(limit_sessions: Optional[int] = None):
+def main():
     sess_folders = BR_SESSION_FOLDERS
-    # limit_sessions = [13, 14, 15, 16, 17]
-    if limit_sessions:
-        if isinstance(limit_sessions, int):
-            # 1-based: 11 -> the 11th folder
-            idx = limit_sessions - 1 if limit_sessions > 0 else limit_sessions
-            sess_folders = [sess_folders[idx]]
-        elif isinstance(limit_sessions, (list, tuple)):
-            # 1-based indices: e.g., (2, 5, 11)
-            idxs = [(i - 1 if i > 0 else i) for i in limit_sessions]
-            sess_folders = [sess_folders[i] for i in idxs]
-        else:
-            pass
-
+    
     print("Found session folders:", len(sess_folders))
-
-    for sess in sess_folders:
+    for sess in sess_folders[:]: # Can tweak here to isolate sessions
         print(f"=== Session: {sess.name} ===")
         rcp.extract_br_aux_streams_npz(sess, UA_AUX_DATA, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH) # Extract sync pulses and stuff
         rec_ns6 = se.read_blackrock(sess, stream_name = 'nsx6', all_annotations=True) # Load neural data
@@ -168,20 +158,18 @@ def main(limit_sessions: Optional[int] = None):
             ends_ua   = ends_ua[valid]
             
             if starts_ua.size:
-                ms_before = 5.0
-                tail_ms   = 5.0
                 dur_ms    = (ends_ua - starts_ua) * 1000.0 / fs_ua
-                ms_after  = float(dur_ms.max() + tail_ms)
+                ms_after  = float(dur_ms.max() + ARTCORR_TAIL_MS)
 
                 rec_artif_removed = spre.remove_artifacts(
                     rec_hp,
-                    list_triggers=[starts_ua.tolist()],
-                    ms_before=ms_before,
+                    list_triggers=starts_ua.tolist(),
+                    ms_before=ARTRMV_MS_BEFORE,
                     ms_after=ms_after,     # one window long enough for all spans
                     mode="zeros",          # or "linear"
                 )
-                pad_before_samp = int(round(ms_before * fs_ua / 1000.0))
-                pad_after_samp  = int(round(tail_ms  * fs_ua / 1000.0))
+                pad_before_samp = int(round(ARTRMV_MS_BEFORE * fs_ua / 1000.0))
+                pad_after_samp  = int(round(ARTCORR_TAIL_MS  * fs_ua / 1000.0))
 
                 starts_exp = np.clip(starts_ua - pad_before_samp, 0, None)
                 ends_exp   = np.clip(ends_ua   + pad_after_samp,  0, n_total)
@@ -210,24 +198,22 @@ def main(limit_sessions: Optional[int] = None):
             blank_windows_samples=blank_windows,
         )
         
-        X = rate_hz.T # transpose to (n_bins, n_channels)
-        X_filled = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0) # Zero-impute NaNs for PCA
-        col_means = np.nanmean(X, axis=0) #Nan-aware means from the original data
-        col_means = np.where(np.isfinite(col_means), col_means, 0.0)
-        Xc = X_filled - col_means[None, :] # Mean-center columns
+        X = rate_hz.T  # (n_bins, n_channels)
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # If total variance is ~0, skip PCA
-        total_var = np.var(Xc, axis=0).sum()
-        n_comp = min(5, Xc.shape[0], Xc.shape[1])
+        n_bins, n_ch = X.shape
+        n_comp = min(5, n_bins, n_ch)
+
+        total_var = np.var(X, axis=0).sum()
         if n_comp >= 1 and total_var > 0.0:
             pca = PCA(n_components=n_comp, random_state=0)
-            pcs = pca.fit_transform(Xc) # (n_bins, n_comp)
+            pcs = pca.fit_transform(X)  # (n_bins, n_comp)
             explained_var = np.nan_to_num(
                 pca.explained_variance_ratio_, nan=0.0
             ).astype(np.float32)
-            pcs_T = pcs.T.astype(np.float32) # (n_comp, n_bins)
+            pcs_T = pcs.T.astype(np.float32)  # (n_comp, n_bins)
         else:
-            pcs_T = np.empty((0, Xc.shape[0]), dtype=np.float32)
+            pcs_T = np.empty((0, n_bins), dtype=np.float32)
             explained_var = np.empty((0,), dtype=np.float32)
 
         out_npz = UA_CKPT_OUT / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
@@ -281,4 +267,4 @@ def main(limit_sessions: Optional[int] = None):
         del rec_ns6, rec_hp, rec_artif_removed, rate_hz, t_cat_ms, counts_cat
         gc.collect()
 if __name__ == "__main__":
-    main(limit_sessions=None)
+    main()

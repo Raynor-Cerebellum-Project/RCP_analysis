@@ -3,10 +3,12 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import matplotlib.gridspec as gridspec
 from pathlib import Path
+import numpy.ma as ma
+from matplotlib import cm
 
 from probeinterface.plotting import plot_probe
 from probeinterface import Probe
-import RCP_analysis as rcp
+
 # ---- knobs ----
 GAP_AFTER_BEHAVIOR = True
 GAP_HEIGHT = 0.22   # relative height of the spacer row (tune to taste)
@@ -130,45 +132,73 @@ def stacked_heatmaps_plus_behv(
     ua_plot   = ua_med if has_ua else None
     ids_plot  = ua_ids_1based if has_ua and (ua_ids_1based is not None) else None
 
-    def _ua_region_code(elec: int) -> int:
+    def _ua_region_code(elec) -> int:
         try:
-            return int(rcp.ua_region_from_elec(int(elec)))
-        except Exception:
-            return 1_000_000  # unknown
+            e = int(elec)
+        except (TypeError, ValueError):
+            return 1_000_000  # unknown / bad value
+        if e <= 0:
+            return 1_000_000  # invalid / non-positive
+        if e <= 64:
+            return 0  # SMA
+        if e <= 128:
+            return 1  # Dorsal premotor
+        if e <= 192:
+            return 2  # M1 inferior
+        return 3      # M1 superior
 
     if has_ua:
-        if (ids_plot is not None) and (ua_sort != "none"):
-            ids = np.asarray(ids_plot, int)
-            valid = ids > 0
-            if ua_sort == "elec":
-                order_valid = np.argsort(ids[valid], kind="stable")
-            elif ua_sort == "region_then_elec":
-                regs = np.array([_ua_region_code(int(e)) for e in ids], int)
-                order_valid = np.lexsort((ids[valid], regs[valid]))
-            else:
-                order_valid = np.arange(valid.sum())
-            order = np.r_[np.where(valid)[0][order_valid], np.where(~valid)[0]]
-            ua_plot = ua_plot[order, :]
-            ids_plot = ids[order]
-
         if ids_plot is not None:
-            ids_arr = np.asarray(ids_plot)
-            regs = np.array([_ua_region_code(int(e)) if np.isfinite(e) else 1_000_000 for e in ids_arr], int)
+            ids_arr = np.asarray(ids_plot, float)
+
+            # define valid once: positive and finite
+            valid = np.isfinite(ids_arr) & (ids_arr > 0)
+
+            # compute regions once, with a large sentinel for bad IDs
+            regs = np.array(
+                [_ua_region_code(int(e)) if np.isfinite(e) and (e > 0) else 1_000_000
+                for e in ids_arr],
+                int,
+            )
+
+            if ua_sort != "none":
+                if ua_sort == "elec":
+                    order_valid = np.argsort(ids_arr[valid], kind="stable")
+
+                elif ua_sort == "region_then_elec":
+                    # sort by region, then electrode id
+                    order_valid = np.lexsort((ids_arr[valid], regs[valid]))
+
+                else:
+                    order_valid = np.arange(valid.sum())
+
+                order = np.r_[np.where(valid)[0][order_valid], np.where(~valid)[0]]
+                ua_plot = ua_plot[order, :]
+                ids_arr = ids_arr[order]
+                regs = regs[order]
+
+            # now group using the same regs
+            ua_groups = []
 
             def _append(mask, label):
                 if mask.sum():
-                    ua_groups.append({"mat": ua_plot[mask, :],
-                                      "ids": ids_arr[mask],
-                                      "label": label})
+                    ua_groups.append({
+                        "mat": ua_plot[mask, :],
+                        "ids": ids_arr[mask],
+                        "label": label,
+                    })
 
             _append((regs == 2) | (regs == 3), "M1i+M1s")
             _append((regs == 1), "PMd")
             _append((regs == 0), "SMA")
+
             other_mask = (regs >= 1_000_000)
             if other_mask.any():
                 _append(other_mask, "UA (other)")
+
         else:
             ua_groups = [{"mat": ua_plot, "ids": None, "label": "UA (all)"}]
+
 
     # ---------- Figure sizing ----------
     n_intan_rows = 1 if has_intan else 0
@@ -331,13 +361,24 @@ def stacked_heatmaps_plus_behv(
     if has_intan:
         ax_i     = fig.add_subplot(gs[row, 0])
         ax_i_cax = fig.add_subplot(gs[row, 1])
+        # Mask NaNs
+        intan_masked = ma.masked_invalid(intan_med)
+
+        # Make a copy of the cmap and set NaN color to gray
+        cmap_local_intan = cm.get_cmap(cmap).copy()
+        cmap_local_intan.set_bad(color="gray")
+
         im0 = ax_i.imshow(
-            intan_med, aspect="auto", cmap=cmap, origin="lower",
+            intan_masked,
+            aspect="auto",
+            cmap=cmap_local_intan,
+            origin="lower",
             extent=[t_intan[0], t_intan[-1], 0, intan_med.shape[0]],
-            vmin=vmin_intan, vmax=vmax_intan
+            vmin=vmin_intan,
+            vmax=vmax_intan,
         )
         ax_i.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
-        ax_i.axvspan(-20.0, 120.0, color="gray", alpha=1)
+        # ax_i.axvspan(-20.0, 120.0, color="gray", alpha=1)
         ax_i.set_title(title_NA); _ylabel_horizontal(ax_i, f"IP {intan_med.shape[0]} chs")
         ax_i_cax.cla(); [sp.set_visible(False) for sp in ax_i_cax.spines.values()]
         ax_i_cax.set_xticks([]); ax_i_cax.set_yticks([])
@@ -384,14 +425,22 @@ def stacked_heatmaps_plus_behv(
             ax_u     = fig.add_subplot(gs[row, 0])
             ax_u_cax = fig.add_subplot(gs[row, 1])
 
+
+            # Mask NaNs
+            mat_masked = ma.masked_invalid(mat_g)
+
+            # Make a copy of the cmap and set NaN color
+            cmap_local = cm.get_cmap(cmap).copy()
+            cmap_local.set_bad(color="gray")   # <- NaN = grey
+            
             im1 = ax_u.imshow(
-                mat_g, aspect="auto", cmap=cmap, origin="lower",
+                mat_masked, aspect="auto", cmap=cmap_local, origin="lower",
                 extent=[t_ua[0], t_ua[-1], 0, mat_g.shape[0]],
                 vmin=vmin_g, vmax=vmax_g
             )
             
             ax_u.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
-            ax_u.axvspan(-5.0, 105.0, color="gray", alpha=1)
+            # ax_u.axvspan(-5.0, 105.0, color="gray", alpha=1)
             _ylabel_horizontal(ax_u, f"{label_g} {mat_g.shape[0]} chs")
             ax_u.set_yticks([]); ax_u.tick_params(left=False, labelleft=False)
             ax_u._is_time_axis = True

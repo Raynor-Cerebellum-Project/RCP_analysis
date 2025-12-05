@@ -157,7 +157,7 @@ TODO:
 8. Use as template to align DLC kinematics file using the .ns5 sync pulses
 
 ## 5. Behavioral Analysis and Stim timing Processing
-`batch_scripts/make_aligned_npz_from_shifts_with_behv.py`
+`batch_scripts/make_aligned_npz_and_mat.py`
 1. Concatenate sessions for sorting
 2. Run Mountainsort5 (MS5) for UA
 3. Export results in Phy format

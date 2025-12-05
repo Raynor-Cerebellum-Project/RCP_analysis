@@ -80,12 +80,12 @@ def load_UA_mapping_from_excel(
     mask = [(parsed_nsp[i] is not None and parsed_elec[i] is not None)
             for i in range(len(parsed_nsp))]
 
-    nsp  = np.array([parsed_nsp[i]  for i in range(len(mask)) if mask[i]], dtype=int)
-    elec = np.array([parsed_elec[i] for i in range(len(mask)) if mask[i]], dtype=int)
+    nsp  = np.array([parsed_nsp[i]  for i in range(len(mask)) if mask[i]])
+    elec = np.array([parsed_elec[i] for i in range(len(mask)) if mask[i]])
 
     # ----- Build mapping -----
     max_elec = int(n_elec or elec.max())
-    mapped_nsp = np.zeros(max_elec, dtype=int)
+    mapped_nsp = np.zeros(max_elec)
     mapped_nsp[elec - 1] = nsp
 
     return mapped_nsp
@@ -184,6 +184,7 @@ def apply_ua_mapping_with_regions(
     mapped_nsp: np.ndarray,
     br_idx: int,
     meta_csv: Path,
+    port: str | None = None,
 ):
     """
     Apply UA mapping by renaming channels and build UA-related per-row arrays.
@@ -194,48 +195,69 @@ def apply_ua_mapping_with_regions(
     - recording.get_channel_ids() -> local NSP ids 1..128 (per port)
     - mapped_nsp uses 1..128 for Port A, 129..256 for Port B
 
+    Parameters
+    ----------
+    port : str or None
+        If 'A' or 'B', overrides the UA_port from the metadata CSV.
+        If None, UA_port is read from meta_csv (BR_File row).
+
     Returns
     -------
     renamed : recording with renamed channel_ids
     idx_rows : np.ndarray (n_electrodes,), electrode -> recording row index (or -1)
-    ua_elec_per_row : np.ndarray (n_channels,), row -> UA electrode number (or -1)
-    ua_nsp_per_row  : np.ndarray (n_channels,), row -> NSP id (or -1)
-    ua_region_per_row : np.ndarray (n_channels,), row -> region index {-1,0,1,2,3}
+    ua_elec : np.ndarray (n_channels,), row -> UA electrode number (or -1)
+    ua_nsp  : np.ndarray (n_channels,), row -> NSP id (or -1)
+    ua_region : np.ndarray (n_channels,), row -> region index {-1,0,1,2,3}
     ua_region_names   : np.ndarray (4,), ["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"]
     """
     ch_ids = np.asarray(recording.get_channel_ids(), int)
     n_channels = ch_ids.size
 
-    # ---- get UA_port for this BR index ----
+    # ---- decide which UA port to use ----
     ua_port = None
-    if not meta_csv.exists():
-        print(f"[WARN] metadata CSV not found at {meta_csv}")
-    else:
-        with meta_csv.open("r", newline="") as f:
-            rdr = csv.DictReader(f)
-            if not rdr.fieldnames:
-                print(f"[WARN] {meta_csv.name} has no header")
-            elif "BR_File" not in rdr.fieldnames or "UA_port" not in rdr.fieldnames:
-                print(f"[WARN] metadata missing BR_File and/or UA_port columns (have: {rdr.fieldnames})")
-            else:
-                for row in rdr:
-                    try:
-                        if int(row["BR_File"]) == br_idx:
-                            ua_port = row["UA_port"] or None
-                            break
-                    except Exception:
-                        continue
 
-    # If Port B, shift local 1..128 -> NSP 129..256
+    # 1) Explicit override from function arg, if provided
+    if port is not None:
+        ua_port = str(port).strip().upper()
+        print(f"[MAP] UA port override from argument: {ua_port!r}")
+    else:
+        # 2) Otherwise, read from metadata CSV
+        if not meta_csv.exists():
+            print(f"[WARN] metadata CSV not found at {meta_csv}")
+        else:
+            with meta_csv.open("r", newline="") as f:
+                rdr = csv.DictReader(f)
+                if not rdr.fieldnames:
+                    print(f"[WARN] {meta_csv.name} has no header")
+                elif "BR_File" not in rdr.fieldnames or "UA_port" not in rdr.fieldnames:
+                    print(f"[WARN] metadata missing BR_File and/or UA_port columns (have: {rdr.fieldnames})")
+                else:
+                    for row in rdr:
+                        try:
+                            if int(row["BR_File"]) == br_idx:
+                                ua_port = (row["UA_port"] or "").strip().upper() or None
+                                break
+                        except Exception:
+                            continue
+        if ua_port is not None:
+            print(f"[MAP] UA port from metadata: {ua_port!r}")
+
+    # 3) Fallback if still unknown
+    if ua_port not in ("A", "B"):
+        print(f"[WARN] UA port unknown or invalid ({ua_port!r}); assuming 'A' (no NSP offset).")
+        ua_port = "A"
+
+    # ---- If Port B, shift local 1..128 -> NSP 129..256 ----
     if ua_port == "B":
         ch_ids = ch_ids + 128
+        print("[MAP] Applying NSP offset for Port B: local 1..128 -> NSP 129..256")
 
     # ---- NSP id -> row index ----
     id_to_row = {ch: i for i, ch in enumerate(ch_ids)}
     mapped_nsp_int = mapped_nsp.astype(int, copy=False)
 
     # electrode -> row index (or -1)
-    idx_rows = np.full(mapped_nsp_int.shape, -1, dtype=int)
+    idx_rows = np.full(mapped_nsp_int.shape, -1)
     for elec_idx, nsp_id in enumerate(mapped_nsp_int):
         idx_rows[elec_idx] = id_to_row.get(int(nsp_id), -1)
 
@@ -248,7 +270,10 @@ def apply_ua_mapping_with_regions(
 
     renamed = recording.rename_channels(new_ids)
     mapped = np.count_nonzero((idx_rows >= 0) & (idx_rows < n_channels))
-    print(f"[MAP] renamed {mapped}/{n_channels} rows with UA mapping ('UAe###_NSP###').")
+    print(
+        f"[MAP] renamed {mapped}/{n_channels} rows with UA mapping "
+        f"('UAe###_NSP###') using port {ua_port!r}."
+    )
 
     renamed.set_annotation("ua_row_index", idx_rows)
 
@@ -273,10 +298,7 @@ def apply_ua_mapping_with_regions(
         dtype=np.int8,
         count=n_channels,
     )
-    ua_region_names = np.array(
-        ["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"],
-        dtype=object,
-    )
+    ua_region_names = np.array(["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"])
 
     return (
         renamed,
@@ -287,13 +309,195 @@ def apply_ua_mapping_with_regions(
         ua_region_names,
     )
 
-def _gauss_kernel_from_sigma_bins(sigma_bins: float, radius_mult: float = 4.0):
+def _dedup_peaks(
+    peaks, fs: float,
+    dedup_ms: float = 0.5,
+    max_cluster_ms: float = 1.0,
+    ch_field="channel_index",
+    samp_field="sample_index",
+    seg_field="segment_index",
+    amp_field="amplitude",
+):
+    """Deduplicate peaks per (segment, channel), keeping strongest within short windows"""
+    # Build keys
+    peak_seg = peaks[seg_field] if seg_field in peaks.dtype.names else np.zeros(peaks.shape[0])
+    peak_ch  = peaks[ch_field].astype(np.int32,  copy=False)
+    peak_t   = peaks[samp_field].astype(np.int64, copy=False)
+    peak_amp = np.abs(peaks[amp_field].astype(np.float32)) if amp_field in peaks.dtype.names else np.zeros(len(peaks))
+    # Use abs because looking for largest peak
+
+    # Sort by (segment, channel, time) to get the correct vectors
+    order = np.lexsort((peak_t, peak_ch, peak_seg))
+    peak_seg_ordered, peak_ch_ordered, peak_t_ordered, peak_amp_ordered = peak_seg[order], peak_ch[order], peak_t[order], peak_amp[order]
+    peaks = peaks[order]
+
+    keep = np.zeros(len(peaks), dtype=bool) # Create mask to remove dup spikes
+
+    dedup_samp = max(1, int(round(dedup_ms * 1e-3 * fs)))
+    max_cluster_samp = int(round(max_cluster_ms * 1e-3 * fs))
+
+    for seg in np.unique(peak_seg_ordered):
+        seg_mask = peak_seg_ordered == seg # Mask peaks in segment
+        for ch in np.unique(peak_ch_ordered[seg_mask]):
+            mask = seg_mask & (peak_ch_ordered == ch)
+            idxs = np.where(mask)[0]
+            if idxs.size == 0:
+                continue
+
+            t_local = peak_t_ordered[idxs]
+            a_local = peak_amp_ordered[idxs]
+
+            cluster_start = 0 # index counter
+            for i in range(1, len(idxs)):
+                isi = t_local[i] - t_local[i - 1]
+                if isi > dedup_samp or (t_local[i] - t_local[cluster_start]) > max_cluster_samp: # If isi violation or cluster too big has to be between 0.5ms (ISI violation) or max threshold: 1 ms (could be another MUA)
+                    cluster_slice = slice(cluster_start, i) # Get spikes
+                    best = idxs[cluster_slice.start + np.argmax(a_local[cluster_slice])] # Find max and give index
+                    keep[best] = True # Keep this spike
+                    cluster_start = i
+
+            # finalize last cluster
+            cluster_slice = slice(cluster_start, len(idxs))
+            best = idxs[cluster_slice.start + np.argmax(a_local[cluster_slice])]
+            keep[best] = True
+
+    return peaks[keep]
+
+def _compute_peak_times_per_seg(
+    peaks, recording, fs: float,
+    n_seg: int,
+    samp_field="sample_index",
+    seg_field="segment_index",
+):
+    seg_n_samps = np.array([int(recording.get_num_frames(s)) for s in range(n_seg)], int)
+    seg_offsets_samp = np.cumsum([0] + seg_n_samps[:-1].tolist()).astype(np.int64)
+
+    if seg_field in peaks.dtype.names:
+        seg_idx = peaks[seg_field].astype(np.int32, copy=False)
+    else:
+        if n_seg != 1:
+            raise RuntimeError("No segment field in peaks for multi-segment recording.")
+        seg_idx = np.zeros(peaks.shape[0], int)
+
+    peak_samp_global = peaks[samp_field].astype(np.int32, copy=False) + seg_offsets_samp[seg_idx]
+    peak_t_ms = peak_samp_global.astype(np.float32) * (1000.0 / fs)
+    return seg_n_samps, peak_t_ms
+
+def _bin_counts_and_masks_artrmv(
+    peaks, seg_n_samps, n_ch, n_seg,
+    fs, bin_ms, blank_windows_samples,
+    ch_field="channel_index",
+    samp_field="sample_index",
+    seg_field="segment_index",
+):
+    bin_samps = int(round(bin_ms * 1e-3 * fs))
+    counts_all, t_all, blank_masks = [], [], []
+    bin_offset = 0
+
+    for seg in range(n_seg):
+        n_samps = seg_n_samps[seg]
+        seg_bins = int(np.ceil(n_samps / bin_samps))
+        counts = np.zeros((n_ch, seg_bins))
+
+        if seg_field in peaks.dtype.names:
+            seg_peaks = peaks[peaks[seg_field] == seg]
+        else:
+            seg_peaks = peaks if n_seg == 1 else None
+            if seg_peaks is None:
+                raise RuntimeError("No segment field in peaks for multi-segment recording.")
+
+        if seg_peaks.size > 0:
+            bins = np.clip(seg_peaks[samp_field] // bin_samps, 0, seg_bins - 1)
+            np.add.at(counts, (seg_peaks[ch_field], bins), 1)
+
+        counts_all.append(counts)
+
+        blank_mask_seg = np.zeros(seg_bins, dtype=bool)
+        if blank_windows_samples is not None and seg in blank_windows_samples:
+            win = np.asarray(blank_windows_samples[seg], dtype=np.int32)
+            win = win[(win[:, 1] > win[:, 0]) & (win[:, 0] < n_samps) & (win[:, 1] > 0)]
+            if win.size:
+                b0 = np.clip(win[:, 0] // bin_samps, 0, seg_bins)
+                b1 = np.clip((win[:, 1] + bin_samps) // bin_samps, 0, seg_bins)
+                for i0, i1 in zip(b0, b1):
+                    blank_mask_seg[i0:i1] = True
+        blank_masks.append(blank_mask_seg)
+
+        t_ms = (np.arange(seg_bins, dtype=np.float32) + 0.5 + bin_offset) * bin_ms
+        t_all.append(t_ms)
+        bin_offset += seg_bins
+
+    counts_cat = np.concatenate(counts_all, axis=1)
+    t_cat_ms   = np.concatenate(t_all)
+    blank_mask = np.concatenate(blank_masks) if blank_masks else np.zeros(counts_cat.shape[1], bool)
+
+    return counts_cat, t_cat_ms, blank_mask
+
+def _gauss_kernel_normalized(sigma_bins: float, radius_mult: float = 4.0):
     sigma_bins = max(1e-9, float(sigma_bins))
     r = int(np.ceil(radius_mult * sigma_bins))
     x = np.arange(-r, r+1, dtype=float)
     k = np.exp(-(x**2) / (2.0 * sigma_bins**2))
     k /= k.sum()
     return k
+
+def _smooth_counts_with_blanks(counts_cat, blank_mask, sigma_ms, bin_ms):
+    fs_bins = 1000.0 / float(bin_ms)
+
+    if counts_cat.shape[1] < 4:
+        counts_smooth = counts_cat.astype(float, copy=False)
+        if blank_mask.any():
+            counts_smooth[:, blank_mask] = np.nan
+        return counts_smooth * fs_bins
+
+    sigma_bins = float(sigma_ms) / float(bin_ms)
+    k = _gauss_kernel_normalized(max(1e-9, sigma_bins), radius_mult=4.0)
+    r = (k.size - 1) // 2
+
+    X = counts_cat.astype(float, copy=False)
+    valid0 = np.isfinite(X)
+
+    if blank_mask.any():
+        pad = np.zeros(r)
+        dil = np.convolve(np.r_[pad, blank_mask.astype(int), pad],
+                          np.ones(2 * r + 1, dtype=int), mode="same") > 0
+        blank_dil = dil[r:-r]
+    else:
+        blank_dil = np.zeros(X.shape[1], dtype=bool)
+
+    valid = valid0 & (~blank_dil)
+
+    def _interp_short_gaps(y: np.ndarray, max_gap: int) -> np.ndarray:
+        out = y.copy()
+        isn = ~np.isfinite(out)
+        if not isn.any():
+            return out
+        starts = np.where(isn & ~np.r_[False, isn[:-1]])[0]
+        ends   = np.where(isn & ~np.r_[isn[1:],  False])[0]
+        for s, e in zip(starts, ends):
+            gap = e - s + 1
+            L, R = s - 1, e + 1
+            if gap <= max_gap and L >= 0 and R < out.size and np.isfinite(out[L]) and np.isfinite(out[R]):
+                out[s:e+1] = np.interp(np.arange(s, e+1), [L, R], [out[L], out[R]])
+        return out
+
+    X_filled = X.copy()
+    hard_nan = ~valid0
+    for i in range(X.shape[0]):
+        xi = X_filled[i]
+        xi[blank_dil] = np.nan
+        X_filled[i] = _interp_short_gaps(xi, r)
+
+    Xp = np.pad(np.where(valid, X_filled, 0.0), ((0, 0), (r, r)), mode="reflect")
+    Wp = np.pad(valid.astype(float),          ((0, 0), (r, r)), mode="reflect")
+
+    num = fftconvolve(Xp, k[None, :], mode="same")[:, r:-r]
+    den = fftconvolve(Wp, k[None, :], mode="same")[:, r:-r]
+
+    counts_smooth = num / np.clip(den, 1e-12, None)
+    counts_smooth[:, blank_mask] = np.nan
+
+    return counts_smooth * fs_bins
 
 ## This function is used by Intan too
 def threshold_mua_rates(
@@ -328,7 +532,7 @@ def threshold_mua_rates(
     # Detect peaks
     noise_levels = si.get_noise_levels(recording, method="mad", return_in_uV=False) # They didn't write return_in_uV in their documentation
     
-    print(f"[INFO] Spike bin size: {bin_samps}, Average noise level: {np.nanmean(noise_levels)}")
+    print(f"[INFO] Spike bin size: {bin_samps / 30}ms, Average noise level: {np.nanmean(noise_levels)}")
     peaks = detect_peaks(
         recording,
         method="by_channel_torch",
@@ -336,190 +540,26 @@ def threshold_mua_rates(
         peak_sign=peak_sign,
         noise_levels=noise_levels,
         n_jobs=n_jobs,
-    )
+    ) #TODO return tensor?
 
     # Build keys
-    ch_field, samp_field, seg_field, amp_field = ("channel_index", "sample_index", "segment_index", "amplitude")
-    seg_key = (peaks[ch_field] if ch_field in peaks.dtype.names else np.zeros(peaks.shape[0], dtype=np.int64))
-    # if there are multiple segments
+    ch_field, samp_field, seg_field, amp_field = ("channel_index", "sample_index", "segment_index", "amplitude")    
+    peaks = _dedup_peaks(peaks, fs, ch_field=ch_field, samp_field=samp_field,
+                     seg_field=seg_field, amp_field=amp_field)
     
-    ch_key  = peaks[ch_field].astype(np.int32, copy=False) # which channel
-    t_key   = peaks[samp_field].astype(np.int64, copy=False) # what time
-    amp_val = np.abs(peaks[amp_field].astype(np.float32)) if amp_field in peaks.dtype.names else np.ones(len(peaks)) # amplitude
+    # This is just in case there are multiple segments in the future, calculate absolute peak times
+    seg_n_samps, peak_t_ms = _compute_peak_times_per_seg(peaks, recording, fs, n_seg, samp_field, seg_field)
 
-    # Sort by (segment, channel, time)
-    order = np.lexsort((t_key, ch_key, seg_key))
-    peaks = peaks[order]
-    seg_key, ch_key, t_key, amp_val = seg_key[order], ch_key[order], t_key[order], amp_val[order]
-
-    keep = np.zeros(len(peaks), dtype=bool)
-
-    # Deduplicate MUA that are too close to each other. Cluster + keep strongest
-    dedup_ms = 0.5
-    dedup_samp = max(1, int(round(dedup_ms * 1e-3 * fs)))
+    # 
+    counts_cat, t_cat_ms, blank_mask = _bin_counts_and_masks_artrmv(
+        peaks, seg_n_samps, n_ch, n_seg, fs, bin_ms, blank_windows_samples,
+        ch_field, samp_field, seg_field,
+    )
     
-    # Iterate per segment–channel group
-    for seg in np.unique(seg_key):
-        for ch in np.unique(ch_key[seg_key == seg]):
-            mask = (seg_key == seg) & (ch_key == ch)
-            idxs = np.where(mask)[0]
-            if idxs.size == 0:
-                continue
-
-            # Walk through sorted times → cluster overlapping spikes
-            t_local = t_key[idxs]
-            a_local = amp_val[idxs]
-
-            max_cluster_ms = 1.0     # maximum total cluster length in ms
-            max_cluster_samp = int(round(max_cluster_ms * 1e-3 * fs))
-
-            cluster_start = 0
-            for i in range(1, len(idxs)):
-                # gap between consecutive spikes
-                gap = t_local[i] - t_local[i - 1]
-                # check both: gap too large OR cluster too long overall
-                if gap > dedup_samp or (t_local[i] - t_local[cluster_start]) > max_cluster_samp:
-                    # finalize current cluster
-                    cluster_slice = slice(cluster_start, i)
-                    best = idxs[cluster_slice.start + np.argmax(a_local[cluster_slice])]
-                    keep[best] = True
-                    cluster_start = i
-
-            # finalize last cluster
-            cluster_slice = slice(cluster_start, len(idxs))
-            best = idxs[cluster_slice.start + np.argmax(a_local[cluster_slice])]
-            keep[best] = True
-    peaks = peaks[keep]
-
-    # Build global peak time array in ms, this is just in case there are multiple segments in each recording
-    # Compute cumulative sample offsets per segment: [0, n0, n0+n1, ...]
-    seg_n_samps = [int(recording.get_num_frames(s)) for s in range(n_seg)]
-    seg_offsets_samp = np.cumsum([0] + seg_n_samps[:-1]).astype(np.int64)
-
-    if seg_field in peaks.dtype.names:
-        seg_idx = peaks[seg_field].astype(np.int32, copy=False)
-    else:
-        if n_seg != 1:
-            raise RuntimeError("No segment field in peaks for multi-segment recording.")
-        seg_idx = np.zeros(peaks.shape[0], dtype=np.int32)
-
-    peak_samp_global = peaks[samp_field].astype(np.int32, copy=False) + seg_offsets_samp[seg_idx]
-    peak_t_ms = peak_samp_global.astype(np.float32) * (1000.0 / fs)
-
-    # Bin counts per segment
-    bin_offset = 0
-    counts_all, t_all, blank_masks = [], [], []
-    sigma_bins = max(1e-9, sigma_ms / bin_ms)
-
-    for seg in range(n_seg):
-        n_samps = seg_n_samps[seg]
-        seg_bins = int(np.ceil(n_samps / bin_samps))
-        counts = np.zeros((n_ch, seg_bins), dtype=np.int32)
-
-        # select peaks for this segment
-        if seg_field is not None and seg_field in peaks.dtype.names:
-            seg_peaks = peaks[peaks[seg_field] == seg]
-        else:
-            seg_peaks = peaks if n_seg == 1 else None
-            if seg_peaks is None:
-                raise RuntimeError("No segment field in peaks for multi-segment recording.")
-        if seg_peaks.size > 0:
-            ch_idx = seg_peaks[ch_field].astype(np.int64, copy=False)
-            samp   = seg_peaks[samp_field].astype(np.int64, copy=False)
-            bins   = np.clip(samp // bin_samps, 0, seg_bins - 1)
-            np.add.at(counts, (ch_idx, bins), 1)
-
-        counts_all.append(counts)
-
-        # ---- build a bin-level blank mask from sample windows ----
-        blank_mask_seg = np.zeros(seg_bins, dtype=bool)
-        if blank_windows_samples is not None and seg in blank_windows_samples:
-            win = np.asarray(blank_windows_samples[seg], dtype=np.int32)
-            win = win[(win[:,1] > win[:,0]) & (win[:,0] < n_samps) & (win[:,1] > 0)]
-            if win.size:
-                # convert sample windows -> bin-range [b0,b1)
-                b0 = np.clip(win[:,0] // bin_samps, 0, seg_bins)
-                # inclusive end in samples -> exclusive end in bins
-                b1 = np.clip((win[:,1] + bin_samps) // bin_samps, 0, seg_bins)
-                for i0, i1 in zip(b0, b1):
-                    blank_mask_seg[i0:i1] = True
-        blank_masks.append(blank_mask_seg)
-
-        # times
-        t_ms = (np.arange(seg_bins, dtype=np.float32) + 0.5 + bin_offset) * bin_ms
-        t_all.append(t_ms)
-        bin_offset += seg_bins
-
-    counts_cat = np.concatenate(counts_all, axis=1)
-    t_cat_ms   = np.concatenate(t_all)
-    blank_mask = np.concatenate(blank_masks) if blank_masks else np.zeros(counts_cat.shape[1], bool)
-    fs_bins = 1000.0 / float(bin_ms)
-
-    if counts_cat.shape[1] < 4:
-        counts_smooth = counts_cat.astype(float, copy=False)
-        if blank_mask.any():
-            counts_smooth[:, blank_mask] = np.nan
-    else:
-        sigma_bins = float(sigma_ms) / float(bin_ms)
-        k = _gauss_kernel_from_sigma_bins(max(1e-9, sigma_bins), radius_mult=4.0)
-        r = (k.size - 1) // 2  # kernel radius in bins
-
-        X = counts_cat.astype(float, copy=False)
-        valid0 = np.isfinite(X)
-
-        # ---- (avoid half-kernels) ----
-        if blank_mask.any():
-            pad = np.zeros(r, dtype=int)
-            dil = np.convolve(np.r_[pad, blank_mask.astype(int), pad],
-                            np.ones(2 * r + 1, dtype=int), mode="same") > 0
-            blank_dil = dil[r:-r]
-        else:
-            blank_dil = np.zeros(X.shape[1], dtype=bool)
-
-        # base validity for smoothing
-        valid = valid0 & (~blank_dil)
-
-        # ---- inpainting: fill only short NaN runs (≤ r) per channel ----
-        def _interp_short_gaps(y: np.ndarray, max_gap: int) -> np.ndarray:
-            out = y.copy()
-            isn = ~np.isfinite(out)
-            if not isn.any():
-                return out
-            starts = np.where(isn & ~np.r_[False, isn[:-1]])[0]
-            ends   = np.where(isn & ~np.r_[isn[1:],  False])[0]
-            for s, e in zip(starts, ends):
-                gap = e - s + 1
-                L, R = s - 1, e + 1
-                if gap <= max_gap and L >= 0 and R < out.size and np.isfinite(out[L]) and np.isfinite(out[R]):
-                    out[s:e+1] = np.interp(np.arange(s, e+1), [L, R], [out[L], out[R]])
-            return out
-
-        X_filled = X.copy()
-        # don’t inpaint original hard blank bins; only regular NaNs from data
-        hard_nan = ~valid0
-        for i in range(X.shape[0]):
-            xi = X_filled[i]
-            # protect true blanks
-            xi[blank_dil] = np.nan
-            X_filled[i] = _interp_short_gaps(xi, r)
-
-        # ---- normalized single-pass convolution with reflect padding ----
-        Xp = np.pad(np.where(valid, X_filled, 0.0), ((0, 0), (r, r)), mode="reflect")
-        Wp = np.pad(valid.astype(float),          ((0, 0), (r, r)), mode="reflect")
-
-        num = fftconvolve(Xp, k[None, :], mode="same")[:, r:-r]
-        den = fftconvolve(Wp, k[None, :], mode="same")[:, r:-r]
-
-        counts_smooth = num / np.clip(den, 1e-12, None)
-
-        # keep hard blanks strictly NaN in the output (use original blank_mask, not dilated)
-        counts_smooth[:, blank_mask] = np.nan
-
-    # Finally convert counts→Hz
-    rate_hz = counts_smooth * fs_bins
+    rate_hz = _smooth_counts_with_blanks(counts_cat, blank_mask, sigma_ms, bin_ms)
     return rate_hz.astype(np.float32), t_cat_ms, counts_cat.astype(np.uint32), peaks, peak_t_ms
 
 __all__ = [
     "list_br_sessions", "ua_excel_path", "load_UA_mapping_from_excel",
-    "extract_br_aux_streams_npz", "apply_ua_mapping_by_renaming", "ua_region_from_elec", "threshold_mua_rates"
+    "extract_br_aux_streams_npz", "apply_ua_mapping_with_regions", "ua_region_from_elec", "threshold_mua_rates"
 ]

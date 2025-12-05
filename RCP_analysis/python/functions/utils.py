@@ -401,8 +401,8 @@ def load_rate_npz(npz_path: Path | str) -> Tuple[
 def load_combined_npz(p: Path):
     d = np.load(p, allow_pickle=True)
     # Intan
-    i_rate = d["intan_rate_hz"]
-    i_t    = d["intan_t_ms_aligned"] if "intan_t_ms_aligned" in d.files else d["intan_t_ms"]
+    i_rate = d["nprw_rate_hz"]
+    i_t    = d["nprw_t_ms_aligned"] if "nprw_t_ms_aligned" in d.files else d["nprw_t_ms"]
     # UA
     u_rate = d["ua_rate_hz"]
     u_t    = d["ua_t_ms_aligned"] if "ua_t_ms_aligned" in d.files else d["ua_t_ms"]
@@ -410,7 +410,7 @@ def load_combined_npz(p: Path):
     stim_ms = d["stim_ms"] if "stim_ms" in d.files else np.array([], dtype=float)
     # alignment meta (JSON)
     meta = json.loads(d["align_meta"].item()) if "align_meta" in d.files else {}
-    return i_rate, i_t.astype(float), u_rate, u_t.astype(float), stim_ms.astype(float), meta
+    return i_rate, i_t, u_rate, u_t, stim_ms, meta
 
 def load_intan_aux(npz_path: Path) -> tuple[np.ndarray, np.ndarray, float]:
     aux_file = np.load(npz_path, allow_pickle=True, mmap_mode="r")
@@ -583,11 +583,11 @@ def stim_npz_path_from_br_idx(
     # Map BR_File to Intan_File using metadata
     if not mapping_csv.exists():
         print(f"[WARN] mapping CSV not found: {mapping_csv}")
-        return None
+        return None, None
     br_to_intan = get_metadata_mapping(mapping_csv, "BR_File", "Intan_File")
     if br_idx not in br_to_intan:
         print(f"[WARN] BR {br_idx:03d} not in mapping CSV.")
-        return None
+        return None, None
     intan_idx = br_to_intan[br_idx]
 
     # Get session name from Intan_streams folders
@@ -596,7 +596,7 @@ def stim_npz_path_from_br_idx(
     )
     if not stream_dirs:
         print(f"[WARN] No *_Intan_streams dirs under {nprw_aux_root}")
-        return None
+        return None, None
 
     # Strip the suffix to get session names
     suffix = "_Intan_streams"
@@ -609,13 +609,12 @@ def stim_npz_path_from_br_idx(
     # Intan_File is 1-based
     if not (1 <= intan_idx <= len(sessions)):
         print(f"[WARN] Intan_File {intan_idx} out of range for {len(sessions)} sessions.")
-        return None
+        return None, None
 
     session = sessions[intan_idx - 1]
 
     stim_npz_path = nprw_aux_root / f"{session}_Intan_streams" / "stim_stream.npz"
     return stim_npz_path, session
-
 
 def detect_stim_channels_from_npz(
     stim_npz_path: Path,

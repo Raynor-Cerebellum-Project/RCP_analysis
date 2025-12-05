@@ -12,10 +12,10 @@ matplotlib.use("Agg")
 matplotlib.rcParams['svg.fonttype'] = 'none'
 
 # ---- CONFIG ----
-BR_IDX = 3
+BR_IDX = 2
 TRIAL_INDICES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]  # one folder per trial
 ADJUST_SAMPLES = 3
-WINDOW_MS = (125.0, 325.0)
+WINDOW_MS = (10.0, 15.0)
 CHANNELS_TO_SHOW = list(range(0, 128))           # will be replaced by Elec#-sorted order
 IR_STREAM = "USB board digital input channel"
 YLIM_UV = (-50, 50)                               # tighten or set to None for autoscale
