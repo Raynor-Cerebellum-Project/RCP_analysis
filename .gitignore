@@ -4,3 +4,4 @@ data
 results/*
 *.egg-info
 RCP_analysis/__pycache__
+.DS_Store
