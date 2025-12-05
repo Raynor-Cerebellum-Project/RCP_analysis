@@ -1,5 +1,5 @@
 .ruff_cache
-.vscode
+.vscode/
 data
 results/*
 *.egg-info
