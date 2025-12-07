@@ -1,5 +1,7 @@
-*.egg-info
+.ruff_cache
+.vscode/
 data
-.vscode
 results/*
-old_results_from_ms5/*
+*.egg-info
+RCP_analysis/__pycache__
+.DS_Store
