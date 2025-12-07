@@ -38,7 +38,6 @@ INTAN_STREAM = NPRW_CFG.get("neural_data_stream")
 STIM_STREAM = NPRW_CFG.get("stim_data_stream") # "Stim channel"
 AUX_STREAM = NPRW_CFG.get("aux_stream")
 
-
 ARTRMV_MS_BEFORE = 20.0
 ARTCORR_TAIL_MS = 20.0
 
@@ -95,7 +94,7 @@ def main():
     # Build ProbeInterface Probe
     nprw_probe = Probe(ndim=2)
     nprw_probe.set_contacts(positions=np.c_[intan_geom["x"], intan_geom["y"]], shapes="square", shape_params={"width": 12.0})
-    nprw_probe.set_device_channel_indices(intan_probe_mapping)# Apply mapping
+    nprw_probe.set_device_channel_indices(intan_probe_mapping) # Apply mapping
     
     # 2) Find sessions and load data from each Intan folder
     sess_folders = rcp.list_intan_sessions(INTAN_ROOT)

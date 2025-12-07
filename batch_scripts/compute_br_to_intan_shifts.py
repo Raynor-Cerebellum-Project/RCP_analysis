@@ -297,6 +297,7 @@ def main():
             locs_csv=str(locs_csv),
         ))
         print(f"[shift] Intan {intan_idx:03d} ↔ BR {br_idx:03d} : shift={adjusted_shift_sample:+d} samp ({shift_sec:+.6f} s)")
+        print(f"[rec time] Intan {dur_intan_sec:05f} ↔ BR {dur_br_sec:05f}")
 
     # ---------- write alignment summary CSV ----------
     if summary_rows:

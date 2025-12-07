@@ -32,7 +32,7 @@ METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
 SHIFTS_CSV   = METADATA_ROOT / "br_to_intan_shifts.csv"
 
 ALIGNED_CKPT_ROOT = OUT_BASE / "checkpoints" / "Aligned"
-PATH_UA_SI   = OUT_BASE / "checkpoints" / "UA" / f"pp_global__{SESSION}_{BR_IDX:03d}__NS6"
+PATH_UA_SI   = OUT_BASE / "checkpoints" / "UA" / f"pp_global__{PARAMS.session}_{BR_IDX:03d}__NS6"
 
 # --- UA mapping (needed to infer UA port) ---
 XLS = rcp.ua_excel_path(REPO_ROOT, getattr(PARAMS, "probes", {}))
@@ -51,7 +51,7 @@ IMP_FILES = {
 # ---- Filenames ----
 amp_tag = ("auto" if YLIM_UV is None else (f"pm_{abs(YLIM_UV[1]):g}uV" if YLIM_UV[0] == -YLIM_UV[1] else f"{YLIM_UV[0]:g}to{YLIM_UV[1]:g}uV"))
 win_tag = f"{WINDOW_MS[0]:g}to{WINDOW_MS[1]:g}ms"
-OUT_DIR_BASE = (OUT_BASE / "figures" / "debug_8ch_aligned_ir_baseline_hpf" / "UA" / f"{SESSION}__BR_{BR_IDX:03d}" / f"{amp_tag}_{win_tag}")
+OUT_DIR_BASE = (OUT_BASE / "figures" / "debug_8ch_aligned_ir_baseline_hpf" / "UA" / f"{PARAMS.session}__BR_{BR_IDX:03d}" / f"{amp_tag}_{win_tag}")
 OUT_DIR_BASE.mkdir(parents=True, exist_ok=True)
 
 # ---- Helpers ----
@@ -341,7 +341,7 @@ def main():
     pairs.sort(key=lambda t: t[1])                          # sort by Elec#
     CHANNELS_TO_SHOW = [i for i, _ in pairs] + [i for i, _ in tail]
 
-    print(f"[info] {SESSION} / BR {BR_IDX:03d} / Intan session={intan_session} / anchor_ms={anchor_ms:g}")
+    print(f"[info] {PARAMS.session} / BR {BR_IDX:03d} / Intan session={intan_session} / anchor_ms={anchor_ms:g}")
     print(f"[info] UA fs={fs_ua:.2f} Hz, frames={rec_len}")
     print(f"[info] IR events detected: {evt_idx.size}, valid windows in {WINDOW_MS} ms: {centers_ms_all.size}")
 
@@ -410,7 +410,7 @@ def main():
             axes[-1].set_xlabel("Time (ms) rel. IR onset")
 
             fig.suptitle(
-                f"{SESSION} / BR {BR_IDX:03d} / {PATH_UA_SI.name} / IR-aligned "
+                f"{PARAMS.session} / BR {BR_IDX:03d} / {PATH_UA_SI.name} / IR-aligned "
                 f"{int(WINDOW_MS[0])}–{int(WINDOW_MS[1])} ms / trial {trial_idx} / group {fig_idx}\n"
                 "imp: ≥1000 kΩ = red • 500–<1000 kΩ = orange • <500 kΩ = blue",
                 y=0.995
@@ -419,7 +419,7 @@ def main():
             fig.tight_layout(rect=[0, 0.02, 1, 0.97])
             group_tag = _group_tag_from_elecs(rec, ch_group)
             out_png = out_dir / (
-                f"{SESSION}__BR_{BR_IDX:03d}__trial_{trial_idx:03d}"
+                f"{PARAMS.session}__BR_{BR_IDX:03d}__trial_{trial_idx:03d}"
                 f"__{group_tag}__IR__win_{int(WINDOW_MS[0])}-{int(WINDOW_MS[1])}ms.png"
             )
             fig.savefig(out_png, dpi=300, bbox_inches="tight")

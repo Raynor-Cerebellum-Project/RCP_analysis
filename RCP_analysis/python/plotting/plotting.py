@@ -17,14 +17,14 @@ BEH_RATIO = 0.6
 CH_RATIO_PER_ROW = 0.015
 MIN_HEATMAP_RATIO = 0.6
 UA_COMPACT_FACTOR = 0.95
-INTAN_SCALE      = 0.6   # < 1.0 shrinks Intan height (e.g., 0.6 = 60% of previous)
+NPRW_SCALE      = 0.6   # < 1.0 shrinks NPRW height (e.g., 0.6 = 60% of previous)
 FIG_WIDTH_IN        = 16.0
 HEIGHT_PER_RATIO_IN = 4.0
 
 # ---- knobs: UA vmin/vmax per group/label ----
 UA_VRANGE_BY_LABEL = {
     "M1i+M1s": (-30, 125),
-    "PMd":     (-20, 80),
+    "PMd":     (-30, 150),
     "SMA":     (-10, 40),
     "UA (other)": (-50, 150),
 }
@@ -78,13 +78,13 @@ def add_ua_region_bar(
 
 # ---- Plotting FR for both ----
 def stacked_heatmaps_plus_behv(
-    intan_med, ua_med, t_intan, t_ua, out_svg,
+    nprw_med, ua_med, t_nprw, t_ua, out_svg,
     title_kinematics, title_NA,
     *, cmap="jet",
-    vmin_intan=None, vmax_intan=None,
+    vmin_nprw=None, vmax_nprw=None,
     vmin_ua=None, vmax_ua=None,
     probe=None, probe_locs=None, stim_idx=None,
-    probe_title="Probe (Intan)", probe_width_ratio=0.15, probe_marker_size=28,
+    probe_title="Probe (NPRW)", probe_width_ratio=0.15, probe_marker_size=28,
     probe_gap_ratio=0.04,
     ua_ids_1based=None, ua_sort="region_then_elec",
     beh_rel_time=None, beh_cam0_lines=None, beh_cam1_lines=None,
@@ -94,7 +94,7 @@ def stacked_heatmaps_plus_behv(
 ):
 
     # ---------------- Sanitize presence ----------------
-    has_intan = isinstance(intan_med, np.ndarray) and intan_med.ndim == 2 and intan_med.size > 0 and (t_intan is not None)
+    has_nprw = isinstance(nprw_med, np.ndarray) and nprw_med.ndim == 2 and nprw_med.size > 0 and (t_nprw is not None)
     has_ua    = isinstance(ua_med,    np.ndarray) and ua_med.ndim    == 2 and ua_med.size    > 0 and (t_ua    is not None)
 
     # ---------- Behavior prep (make rows + flags) ----------
@@ -124,7 +124,7 @@ def stacked_heatmaps_plus_behv(
     if have_cam1_vel: beh_rows.append(("beh", "cam1_vel"))
 
     rowspec = list(beh_rows)  # [("beh","cam0_pos"), ("beh","cam1_pos"), ...]
-    if GAP_AFTER_BEHAVIOR and (has_intan or has_ua) and len(beh_rows):
+    if GAP_AFTER_BEHAVIOR and (has_nprw or has_ua) and len(beh_rows):
         rowspec.append(("gap", None))   # <-- spacer row comes after behavior
 
     # ---------- UA grouping by regions (handle None safely) ----------
@@ -201,13 +201,13 @@ def stacked_heatmaps_plus_behv(
 
 
     # ---------- Figure sizing ----------
-    n_intan_rows = 1 if has_intan else 0
+    n_nprw_rows = 1 if has_nprw else 0
     n_ua_rows    = len(ua_groups) if has_ua else 0
     has_any_beh  = len(beh_rows) > 0
 
     # If literally nothing to draw, exit early
-    if (not has_any_beh) and (n_intan_rows == 0) and (n_ua_rows == 0):
-        print(f"[warn] {sess or ''}: nothing to render (no behavior, no Intan, no UA).")
+    if (not has_any_beh) and (n_nprw_rows == 0) and (n_ua_rows == 0):
+        print(f"[warn] {sess or ''}: nothing to render (no behavior, no NPRW, no UA).")
         return
 
     height_ratios = []
@@ -220,18 +220,18 @@ def stacked_heatmaps_plus_behv(
     if ("gap", None) in rowspec:
         height_ratios.append(GAP_HEIGHT)
 
-    # intan row
-    if has_intan:
-        intan_rows = intan_med.shape[0]
-        intan_ratio = max(MIN_HEATMAP_RATIO, CH_RATIO_PER_ROW * intan_rows) * float(INTAN_SCALE)
-        height_ratios.append(intan_ratio)
+    # nprw row
+    if has_nprw:
+        nprw_rows = nprw_med.shape[0]
+        nprw_ratio = max(MIN_HEATMAP_RATIO, CH_RATIO_PER_ROW * nprw_rows) * float(NPRW_SCALE)
+        height_ratios.append(nprw_ratio)
 
     # UA rows
     if has_ua:
-        for g in ua_groups:
-            rows = g["mat"].shape[0] if g["mat"] is not None else 0
+        for group in ua_groups:
+            rows = group["mat"].shape[0] if group["mat"] is not None else 0
             base = max(MIN_HEATMAP_RATIO, CH_RATIO_PER_ROW * rows)
-            scale = 0.5 if any(k in g["label"].lower() for k in ("pmd", "sma")) else 1.0
+            scale = 0.5 if any(k in group["label"].lower() for k in ("pmd", "sma")) else 1.0
             height_ratios.append(base * scale * UA_COMPACT_FACTOR)
 
     have_probe = (probe is not None) or (
@@ -357,34 +357,34 @@ def stacked_heatmaps_plus_behv(
             continue
 
 
-    # ---------- Intan heatmap (optional) ----------
-    if has_intan:
-        ax_i     = fig.add_subplot(gs[row, 0])
-        ax_i_cax = fig.add_subplot(gs[row, 1])
+    # ---------- NPRW heatmap (optional) ----------
+    if has_nprw:
+        ax_nprw     = fig.add_subplot(gs[row, 0])
+        ax_nprw_cax = fig.add_subplot(gs[row, 1])
         # Mask NaNs
-        intan_masked = ma.masked_invalid(intan_med)
+        nprw_masked = ma.masked_invalid(nprw_med)
 
         # Make a copy of the cmap and set NaN color to gray
-        cmap_local_intan = cm.get_cmap(cmap).copy()
-        cmap_local_intan.set_bad(color="gray")
+        cmap_local_nprw = cm.get_cmap(cmap).copy()
+        cmap_local_nprw.set_bad(color="gray")
 
-        im0 = ax_i.imshow(
-            intan_masked,
+        im0 = ax_nprw.imshow(
+            nprw_masked,
             aspect="auto",
-            cmap=cmap_local_intan,
+            cmap=cmap_local_nprw,
             origin="lower",
-            extent=[t_intan[0], t_intan[-1], 0, intan_med.shape[0]],
-            vmin=vmin_intan,
-            vmax=vmax_intan,
+            extent=[t_nprw[0], t_nprw[-1], 0, nprw_med.shape[0]],
+            vmin=vmin_nprw,
+            vmax=vmax_nprw,
         )
-        ax_i.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
+        ax_nprw.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
         # ax_i.axvspan(-20.0, 120.0, color="gray", alpha=1)
-        ax_i.set_title(title_NA); _ylabel_horizontal(ax_i, f"IP {intan_med.shape[0]} chs")
-        ax_i_cax.cla(); [sp.set_visible(False) for sp in ax_i_cax.spines.values()]
-        ax_i_cax.set_xticks([]); ax_i_cax.set_yticks([])
-        ax_i.tick_params(axis="x", labelbottom=False)
-        ax_i._is_time_axis = True
-        cb0 = fig.colorbar(im0, cax=ax_i_cax)
+        ax_nprw.set_title(title_NA); _ylabel_horizontal(ax_nprw, f"IP {nprw_med.shape[0]} chs")
+        ax_nprw_cax.cla(); [sp.set_visible(False) for sp in ax_nprw_cax.spines.values()]
+        ax_nprw_cax.set_xticks([]); ax_nprw_cax.set_yticks([])
+        ax_nprw.tick_params(axis="x", labelbottom=False)
+        ax_nprw._is_time_axis = True
+        cb0 = fig.colorbar(im0, cax=ax_nprw_cax)
         try: cb0.solids.set_edgecolor('face')
         except: pass
         cb0.ax.tick_params(width=1.2, labelsize=9)
@@ -394,12 +394,12 @@ def stacked_heatmaps_plus_behv(
 
     # ---------- UA heatmaps (optional) ----------
     if has_ua:
-        for gi, g in enumerate(ua_groups):
-            mat_g   = g["mat"]
-            label_g = g.get("label", "")
+        for group_idx, group in enumerate(ua_groups):
+            mat_group   = group["mat"]
+            label_group = group.get("label", "")
 
             # 1) start from your existing per-label default
-            vmin_g, vmax_g = UA_VRANGE_BY_LABEL.get(label_g, UA_VRANGE_DEFAULT)
+            vmin_ua_group, vmax_ua_group = UA_VRANGE_BY_LABEL.get(label_group, UA_VRANGE_DEFAULT)
 
             # 2) apply call-time overrides (scalar or dict). Call-time wins.
             def _pick(override, current, label):
@@ -414,47 +414,46 @@ def stacked_heatmaps_plus_behv(
                     if isinstance(val, (tuple, list)) and len(val) == 2:
                         # when dict maps label -> (min,max)
                         # caller would set only vmin_ua OR vmax_ua, so guard:
-                        return val[0] if current is vmin_g else val[1]
+                        return val[0] if current is vmin_ua_group else val[1]
                     return float(val)
                 # scalar
                 return float(override)
 
-            vmin_g = _pick(vmin_ua, vmin_g, label_g)
-            vmax_g = _pick(vmax_ua, vmax_g, label_g)
+            vmin_ua_group = _pick(vmin_ua, vmin_ua_group, label_group)
+            vmax_ua_group = _pick(vmax_ua, vmax_ua_group, label_group)
 
-            ax_u     = fig.add_subplot(gs[row, 0])
-            ax_u_cax = fig.add_subplot(gs[row, 1])
-
+            ax_ua     = fig.add_subplot(gs[row, 0])
+            ax_ua_cax = fig.add_subplot(gs[row, 1])
 
             # Mask NaNs
-            mat_masked = ma.masked_invalid(mat_g)
+            mat_masked = ma.masked_invalid(mat_group)
 
             # Make a copy of the cmap and set NaN color
             cmap_local = cm.get_cmap(cmap).copy()
             cmap_local.set_bad(color="gray")   # <- NaN = grey
             
-            im1 = ax_u.imshow(
+            im1 = ax_ua.imshow(
                 mat_masked, aspect="auto", cmap=cmap_local, origin="lower",
-                extent=[t_ua[0], t_ua[-1], 0, mat_g.shape[0]],
-                vmin=vmin_g, vmax=vmax_g
+                extent=[t_ua[0], t_ua[-1], 0, mat_group.shape[0]],
+                vmin=vmin_ua_group, vmax=vmax_ua_group
             )
             
-            ax_u.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
+            ax_ua.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
             # ax_u.axvspan(-5.0, 105.0, color="gray", alpha=1)
-            _ylabel_horizontal(ax_u, f"{label_g} {mat_g.shape[0]} chs")
-            ax_u.set_yticks([]); ax_u.tick_params(left=False, labelleft=False)
-            ax_u._is_time_axis = True
+            _ylabel_horizontal(ax_ua, f"{label_group} {mat_group.shape[0]} chs")
+            ax_ua.set_yticks([]); ax_ua.tick_params(left=False, labelleft=False)
+            ax_ua._is_time_axis = True
 
-            is_last = (gi == len(ua_groups) - 1)
+            is_last = (group_idx == len(ua_groups) - 1)
             if is_last:
-                ax_u.set_xlabel("Time (ms) rel. stim")
+                ax_ua.set_xlabel("Time (ms) rel. stim")
             else:
-                ax_u.set_xlabel("")
-                ax_u.tick_params(axis="x", labelbottom=False)
+                ax_ua.set_xlabel("")
+                ax_ua.tick_params(axis="x", labelbottom=False)
 
-            ax_u_cax.cla(); [sp.set_visible(False) for sp in ax_u_cax.spines.values()]
-            ax_u_cax.set_xticks([]); ax_u_cax.set_yticks([])
-            cb1 = fig.colorbar(im1, cax=ax_u_cax)
+            ax_ua_cax.cla(); [sp.set_visible(False) for sp in ax_ua_cax.spines.values()]
+            ax_ua_cax.set_xticks([]); ax_ua_cax.set_yticks([])
+            cb1 = fig.colorbar(im1, cax=ax_ua_cax)
             cb1.ax.tick_params(width=1.2, labelsize=9)
             cb1.outline.set_linewidth(1.0)
             row += 1
@@ -518,7 +517,7 @@ def stacked_heatmaps_plus_behv(
 
     # ---------- Sync x-lims ----------
     x_ranges = []
-    if has_intan: x_ranges.append((t_intan[0], t_intan[-1]))
+    if has_nprw: x_ranges.append((t_nprw[0], t_nprw[-1]))
     if has_ua:    x_ranges.append((t_ua[0],    t_ua[-1]))
     if beh_rel_time is not None and (have_cam0_pos or have_cam1_pos or have_cam0_vel or have_cam1_vel):
         x_ranges.append((beh_rel_time[0], beh_rel_time[-1]))

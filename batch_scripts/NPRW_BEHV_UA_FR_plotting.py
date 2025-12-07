@@ -21,11 +21,11 @@ WIN_MS            = (-600.0, 600.0)
 NORMALIZE_FIRST_MS = 150.0
 MIN_TRIALS        = 1
 
-VMIN_INTAN_BASELINE, VMAX_INTAN_BASELINE = -25, 100
+VMIN_NPRW_BASELINE, VMAX_NPRW_BASELINE = -25, 100
 VMIN_UA_BASELINE, VMAX_UA_BASELINE = -25, 100
 VMIN_SMA_BASELINE, VMAX_SMA_BASELINE = -10, 35
 
-VMIN_INTAN, VMAX_INTAN = -50, 300
+VMIN_NPRW, VMAX_NPRW = -25, 200
 VMIN_UA, VMAX_UA = -50, 150
 COLORMAP = "jet"
 
@@ -43,8 +43,8 @@ BEH_RATIO = 0.6               # height ratio for behavior rows (position/velocit
 CH_RATIO_PER_ROW = 0.015      # height ratio per neural channel row (heatmaps)
 MIN_HEATMAP_RATIO = 0.6       # minimum ratio so tiny arrays don't vanish
 UA_COMPACT_FACTOR = 0.95   # < 1.0 shrinks UA panel heights
-INTAN_SCALE      = 0.6   # < 1.0 shrinks Intan height (e.g., 0.6 = 60% of previous)
-GAP_BEH_INTAN    = 0.25  # height "ratio" for a spacer row between behavior and Intan
+NPRW_SCALE      = 0.6   # < 1.0 shrinks Intan height (e.g., 0.6 = 60% of previous)
+GAP_BEH_NPRW    = 0.25  # height "ratio" for a spacer row between behavior and Intan
 FIG_WIDTH_IN         = 16.0        # ← overall width (inches)
 HEIGHT_PER_RATIO_IN  = 4.0         # ← height per unit of `ratios` sum
 
@@ -62,8 +62,8 @@ EXCLUDE_UA_HIGH_Z = True       # set False to disable masking quickly
 # Where the files live; mirror the other script:
 IMP_BASE = OUT_BASE.parents[0]  # same as your script (one level above OUT_BASE)
 IMP_FILES = {
-    "A": IMP_BASE / "Impedances" / "Utah_imp_Bank_A_start",
-    "B": IMP_BASE / "Impedances" / "Utah_imp_Bank_B_start",
+    "A": IMP_BASE / "Impedances" / "Utah_imp_Port_A",
+    "B": IMP_BASE / "Impedances" / "Utah_imp_Port_B",
 }
 
 # ---------- figures ----------
@@ -658,9 +658,9 @@ def main_baselines():
         return
 
     with np.load(RATES_ALL_PATH, allow_pickle=True) as z:
-        intan_win = z["intan_rate_win"].astype(float) if "intan_rate_win" in z.files else np.zeros((0,0,0), float)
+        nprw_win = z["nprw_rate_win"].astype(float) if "nprw_rate_win" in z.files else np.zeros((0,0,0), float)
         ua_win    = z["ua_rate_win"].astype(float)    if "ua_rate_win"    in z.files else np.zeros((0,0,0), float)
-        intan_t     = z["intan_t_rel_ms"].astype(float)  if "intan_t_rel_ms"  in z.files else np.arange(0.0)
+        nprw_t     = z["nprw_t_rel_ms"].astype(float)  if "nprw_t_rel_ms"  in z.files else np.arange(0.0)
         ua_t     = z["ua_t_rel_ms"].astype(float)  if "ua_t_rel_ms"  in z.files else np.arange(0.0)
         # keep for later lookups
         all_dir   = RATES_ALL_PATH.parent
@@ -679,28 +679,28 @@ def main_baselines():
             solo = _load_baseline_cam(legacy)
             cam0 = solo
         
-    n_ev_i = intan_win.shape[0] if intan_win.ndim == 3 else 0
+    n_ev_i = nprw_win.shape[0] if nprw_win.ndim == 3 else 0
     n_ev_u = ua_win.shape[0]    if ua_win.ndim    == 3 else 0
     if n_ev_i == 0 and n_ev_u == 0:
         print("[baseline] No events in ALL rates file — nothing to plot.")
         return
 
     # ---- baseline-zero per event/channel; then median across events → (n_ch, T) ----
-    intan_med = None; ua_med = None
+    nprw_med = None; ua_med = None
     # ---- baseline-zero per event/channel; then median across events ----
     if n_ev_i:
-        i_zero = rcp.baseline_zero_each_trial(intan_win, intan_t, normalize_first_ms=NORMALIZE_FIRST_MS)
-        intan_med = np.nanmedian(i_zero, axis=0)
+        nprw_zero = rcp.baseline_zero_each_trial(nprw_win, nprw_t, normalize_first_ms=NORMALIZE_FIRST_MS)
+        nprw_med = np.nanmedian(nprw_zero, axis=0)
     if n_ev_u:
-        u_zero = rcp.baseline_zero_each_trial(ua_win,    ua_t, normalize_first_ms=NORMALIZE_FIRST_MS)
-        ua_med = np.nanmedian(u_zero, axis=0)
+        ua_zero = rcp.baseline_zero_each_trial(ua_win,    ua_t, normalize_first_ms=NORMALIZE_FIRST_MS)
+        ua_med = np.nanmedian(ua_zero, axis=0)
         
-    intan_var = None; ua_var = None
+    nprw_var = None; ua_var = None
     if n_ev_i:
         # you already have i_zero above
-        intan_var = np.nanvar(i_zero, axis=0)
+        nprw_var = np.nanvar(nprw_zero, axis=0)
     if n_ev_u:
-        ua_var = np.nanvar(u_zero, axis=0)
+        ua_var = np.nanvar(ua_zero, axis=0)
             
     # ---- load curated kinematics windows (median lines) ----
     beh_labels: list[str] = []
@@ -901,12 +901,12 @@ def main_baselines():
         title_beh1=None,
         beh_labels: list[str] = None,
         ua_groups: list[dict] = None,
-        intan_mat=None,
-        intan_title:str="",
-        intan_cb_label:str="Δ FR (Hz)",
+        nprw_mat=None,
+        nprw_title:str="",
+        nprw_cb_label:str="Δ FR (Hz)",
         ua_vrange_override:dict|None=None,  # optional per-group vrange
-        intan_vmin: float | None = None,
-        intan_vmax: float | None = None,
+        nprw_vmin: float | None = None,
+        nprw_vmax: float | None = None,
         suffix:str=""                   # filename suffix
     ):
         import matplotlib.gridspec as gridspec
@@ -930,25 +930,25 @@ def main_baselines():
         if have_vel1: _append_beh("cam1_vel")
 
         # Spacer before Intan if any behavior rows exist
-        has_intan = (intan_mat is not None)
-        if has_intan and any(k[0] == "beh" for k in row_kinds):
-            ratios.append(GAP_BEH_INTAN); row_kinds.append(("gap", None))
+        has_nprw = (nprw_mat is not None)
+        if has_nprw and any(k[0] == "beh" for k in row_kinds):
+            ratios.append(GAP_BEH_NPRW); row_kinds.append(("gap", None))
 
         # Intan
-        if has_intan:
-            intan_ratio = max(MIN_HEATMAP_RATIO, CH_RATIO_PER_ROW * intan_mat.shape[0]) * float(INTAN_SCALE)
-            ratios.append(intan_ratio); row_kinds.append(("intan", None))
+        if has_nprw:
+            nprw_ratio = max(MIN_HEATMAP_RATIO, CH_RATIO_PER_ROW * nprw_mat.shape[0]) * float(NPRW_SCALE)
+            ratios.append(nprw_ratio); row_kinds.append(("nprw", None))
 
         # UA groups
         if ua_groups:
-            for g in ua_groups:
-                mat_g = g["mat"]
-                label_g = g.get("label", "")
-                rows = (mat_g.shape[0] if mat_g is not None else 0)
+            for group in ua_groups:
+                mat_group = group["mat"]
+                label_group = group.get("label", "")
+                rows = (mat_group.shape[0] if mat_group is not None else 0)
                 base = max(MIN_HEATMAP_RATIO, CH_RATIO_PER_ROW * rows)
-                scale = 0.5 if (("pmd" in label_g.lower()) or ("sma" in label_g.lower())) else 1.0
+                scale = 0.5 if (("pmd" in label_group.lower()) or ("sma" in label_group.lower())) else 1.0
                 ratios.append(base * scale * UA_COMPACT_FACTOR)
-                row_kinds.append(("ua", label_g))
+                row_kinds.append(("ua", label_group))
 
         nrows = len(ratios)
         if nrows == 0:
@@ -1039,74 +1039,74 @@ def main_baselines():
                 row += 1
                 continue
 
-            if kind == "intan":
-                # Intan row
-                ax_i     = fig.add_subplot(gs[row, 0])
-                ax_i_cax = fig.add_subplot(gs[row, 1])
+            if kind == "nprw":
+                # NPRW row
+                ax_nprw     = fig.add_subplot(gs[row, 0])
+                ax_nprw_cax = fig.add_subplot(gs[row, 1])
 
-                vmin_i = VMIN_INTAN_BASELINE if intan_vmin is None else float(intan_vmin)
-                vmax_i = VMAX_INTAN_BASELINE if intan_vmax is None else float(intan_vmax)
-                im0 = ax_i.imshow(
-                    intan_mat, aspect="auto", cmap=COLORMAP, origin="lower",
-                    extent=[intan_t[0], intan_t[-1], 0, intan_mat.shape[0]],
-                    vmin=vmin_i, vmax=vmax_i
+                vmin_nprw = VMIN_NPRW_BASELINE if nprw_vmin is None else float(nprw_vmin)
+                vmax_nprw = VMAX_NPRW_BASELINE if nprw_vmax is None else float(nprw_vmax)
+                im0 = ax_nprw.imshow(
+                    nprw_mat, aspect="auto", cmap=COLORMAP, origin="lower",
+                    extent=[nprw_t[0], nprw_t[-1], 0, nprw_mat.shape[0]],
+                    vmin=vmin_nprw, vmax=vmax_nprw
                 )
                 
-                ax_i.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
-                title_txt = (intan_title or
+                ax_nprw.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
+                title_txt = (nprw_title or
                         f"No stim. Neural Activity (median Δ across {n_ev_i} {events_label})")
-                ax_i.set_title(title_txt)
-                ax_i.set_xlabel(""); ax_i.tick_params(axis="x", labelbottom=False)
-                _ylabel_horizontal(ax_i, f"IP {intan_mat.shape[0]} chs")
+                ax_nprw.set_title(title_txt)
+                ax_nprw.set_xlabel(""); ax_nprw.tick_params(axis="x", labelbottom=False)
+                _ylabel_horizontal(ax_nprw, f"IP {nprw_mat.shape[0]} chs")
 
-                ax_i_cax.set_xticks([]); ax_i_cax.set_yticks([])
-                ax_i._is_time_axis = True
+                ax_nprw_cax.set_xticks([]); ax_nprw_cax.set_yticks([])
+                ax_nprw._is_time_axis = True
 
                 # create the colorbar in the dedicated cax
-                cb0 = fig.colorbar(im0, cax=ax_i_cax)
+                cb0 = fig.colorbar(im0, cax=ax_nprw_cax)
                 # cb0 = fig.colorbar(im0, cax=ax_i_cax, ticks = ticker.MultipleLocator(20))
                 cb0.solids.set_edgecolor('face')
                 cb0.ax.tick_params(width=1.2, labelsize=9)
-                cb0.set_label(intan_cb_label)
+                cb0.set_label(nprw_cb_label)
         
                 row += 1
                 continue
 
             if kind == "ua":
-                label_g = subkind
-                g = ua_groups[len(ua_axes)]
-                mat_g = g["mat"]
-                ax_u     = fig.add_subplot(gs[row, 0])
-                ax_u_cax = fig.add_subplot(gs[row, 1])
+                label_group = subkind
+                group = ua_groups[len(ua_axes)]
+                mat_group = group["mat"]
+                ax_ua     = fig.add_subplot(gs[row, 0])
+                ax_ua_cax = fig.add_subplot(gs[row, 1])
                 # pick vrange per group
-                vmin_g, vmax_g = VMIN_UA_BASELINE, VMAX_UA_BASELINE
-                if ua_vrange_override and label_g in ua_vrange_override:
-                    vmin_g, vmax_g = ua_vrange_override[label_g]
+                vmin_ua_group, vmax_ua_group = VMIN_UA_BASELINE, VMAX_UA_BASELINE
+                if ua_vrange_override and label_group in ua_vrange_override:
+                    vmin_ua_group, vmax_ua_group = ua_vrange_override[label_group]
 
-                im1 = ax_u.imshow(
-                    mat_g, aspect="auto", cmap=COLORMAP, origin="lower",
-                    extent=[ua_t[0], ua_t[-1], 0, mat_g.shape[0]],
-                    vmin=vmin_g, vmax=vmax_g
+                im1 = ax_ua.imshow(
+                    mat_group, aspect="auto", cmap=COLORMAP, origin="lower",
+                    extent=[ua_t[0], ua_t[-1], 0, mat_group.shape[0]],
+                    vmin=vmin_ua_group, vmax=vmax_ua_group
                 )
 
-                ax_u.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
-                _ylabel_horizontal(ax_u, f"{label_g} {mat_g.shape[0]} chs")
-                ax_u.set_yticks([]); ax_u.tick_params(left=False, labelleft=False)
-                ax_u._is_time_axis = True
+                ax_ua.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
+                _ylabel_horizontal(ax_ua, f"{label_group} {mat_group.shape[0]} chs")
+                ax_ua.set_yticks([]); ax_ua.tick_params(left=False, labelleft=False)
+                ax_ua._is_time_axis = True
                 
                 if (len(ua_axes) == len(ua_groups) - 1):
-                    ax_u.set_xlabel("Time (ms) rel. stim")
+                    ax_ua.set_xlabel("Time (ms) rel. stim")
                 else:
-                    ax_u.set_xlabel(""); ax_u.tick_params(axis="x", labelbottom=False)
+                    ax_ua.set_xlabel(""); ax_ua.tick_params(axis="x", labelbottom=False)
 
-                cb1 = fig.colorbar(im1, cax=ax_u_cax)
+                cb1 = fig.colorbar(im1, cax=ax_ua_cax)
                 try: cb1.solids.set_edgecolor('face')
                 except: pass
                 cb1.ax.tick_params(width=1.2, labelsize=9)
                 cb1.outline.set_linewidth(1.0)
                 # cb1.set_label("Δ FR (Hz)")
 
-                ua_axes.append(ax_u)
+                ua_axes.append(ax_ua)
                 row += 1
                 continue
 
@@ -1150,9 +1150,9 @@ def main_baselines():
             beh_time1=(cam1["t"] if cam1 else None),
             beh_pos1=pos1, beh_vel1=vel1,
             title_beh1=(f""),
-            intan_mat=intan_med,
+            nprw_mat=nprw_med,
             ua_vrange_override={"M1i+M1s": (VMIN_UA_BASELINE, VMAX_UA_BASELINE), "PMd": (VMIN_UA_BASELINE, VMAX_UA_BASELINE), "SMA": (VMIN_SMA_BASELINE, VMAX_SMA_BASELINE)},
-            intan_vmin=VMIN_INTAN_BASELINE, intan_vmax=VMAX_INTAN_BASELINE,
+            nprw_vmin=VMIN_NPRW_BASELINE, nprw_vmax=VMAX_NPRW_BASELINE,
             beh_labels=beh_labels,
             ua_groups=ua_groups_baseline
         )
@@ -1162,7 +1162,7 @@ def main_baselines():
             out_dir=FIG.peri_posvel,
             beh_labels=[], ua_groups=ua_groups_baseline
     )
-    if (pos0 is not None) or (pos1 is not None) or (intan_var is not None) or (ua_groups_baseline_var):
+    if (pos0 is not None) or (pos1 is not None) or (nprw_var is not None) or (ua_groups_baseline_var):
         _render_and_save_baseline(
             cam0["t"] if cam0 else (cam1["t"] if cam1 else None),
             pos0, vel0,
@@ -1174,11 +1174,11 @@ def main_baselines():
             title_beh1="",
             beh_labels=beh_labels,
             ua_groups=ua_groups_baseline_var,
-            intan_mat=intan_var,
-            intan_title=f"No stim. Neural Activity VAR (across {n_ev_i} {_rates_selection_tag.lower()} events)",
-            intan_cb_label="Var(Δ FR) (Hz²)",
+            nprw_mat=nprw_var,
+            nprw_title=f"No stim. Neural Activity VAR (across {n_ev_i} {_rates_selection_tag.lower()} events)",
+            nprw_cb_label="Var(Δ FR) (Hz²)",
             ua_vrange_override={"M1i+M1s": (0.0, 10000.0), "PMd": (0.0, 10000.0), "SMA": (0.0, 5000.0)},
-            intan_vmin=0.0, intan_vmax=20000.0,
+            nprw_vmin=0.0, nprw_vmax=20000.0,
             suffix="__VAR",
         )
 
@@ -1529,28 +1529,30 @@ def build_title_from_csv(
 
 def main():
     mat_probe = loadmat(Path(GEOM_PATH))
-    intan_geom = {}
-    intan_geom["x"] = mat_probe["xcoords"].ravel()
-    intan_geom["y"] = mat_probe["ycoords"].ravel()
-    assert intan_geom["x"].size == intan_geom["y"].size, "x/y must have same length"
+    nprw_geom = {}
+    nprw_geom["x"] = mat_probe["xcoords"].ravel()
+    nprw_geom["y"] = mat_probe["ycoords"].ravel()
+    assert nprw_geom["x"].size == nprw_geom["y"].size, "x/y must have same length"
     if "chanMap0ind" in mat_probe: # 0-based device mapping if present
-        intan_probe_mapping = intan_geom["device_index_0based"] = mat_probe["chanMap0ind"].ravel()
+        nprw_probe_mapping = nprw_geom["device_index_0based"] = mat_probe["chanMap0ind"].ravel()
     else:
         raise ValueError("No 0-based chanmap in .mat geometry file.")
-    if intan_probe_mapping.size != intan_geom["x"].size:
+    if nprw_probe_mapping.size != nprw_geom["x"].size:
         raise ValueError("device_index_0based length != #contacts")
     
     # Build ProbeInterface Probe
     nprw_probe = Probe(ndim=2)
-    nprw_probe.set_contacts(positions=np.c_[intan_geom["x"], intan_geom["y"]], shapes="square", shape_params={"width": 12.0})
-    nprw_probe.set_device_channel_indices(intan_probe_mapping )# Apply mapping
+    nprw_probe.set_contacts(positions=np.c_[nprw_geom["x"], nprw_geom["y"]], shapes="square", shape_params={"width": 12.0})
+    nprw_probe.set_device_channel_indices(nprw_probe_mapping )# Apply mapping
     locs  = nprw_probe.contact_positions.astype(float)    
     
     files = sorted(ALIGNED_ROOT.glob("aligned__*.npz"))
     if not files:
         raise SystemExit(f"[error] No combined aligned NPZs found at {ALIGNED_ROOT}")
 
-    for file in files:
+    for k, file in enumerate(files):
+        if k <= 7:
+            continue
         NPRW_rate, NPRW_t, UA_rate, UA_t, stim_ms_abs, meta = rcp.load_combined_npz(file)
         # Try to get per-row UA electrode IDs (1..256), + NSP mapping (1..128/256)
         ua_ids_1based = None
@@ -1658,20 +1660,20 @@ def main():
             NPRW_rate, NPRW_t, stim_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS
         )
         if NPRW_med is None:
-            print(f"[warn] Condition {br_idx}: 0 NPRW peri-stim segments after in-range filtering.")
+            print(f"[warn] Condition {br_idx}: 0 NPRW peri-stim segments")
 
         # --- UA ---
         UA_med, ua_rel_time_ms, n_ua = _safe_extract_segments(
             UA_rate, UA_t, stim_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS
         )
-        NPRW_var, rel_time_ms_i_var, n_nprw_var = _safe_extract_segments_stat(
+        NPRW_var, nprw_rel_time_ms_var, n_nprw_var = _safe_extract_segments_stat(
             NPRW_rate, NPRW_t, stim_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS, stat="var"
         )
         UA_var, ua_rel_time_ms_var, n_ua_var = _safe_extract_segments_stat(
             UA_rate, UA_t, stim_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS, stat="var"
         )
         if UA_med is None:
-            print(f"[warn] Condition {br_idx}: 0 UA peri-stim segments after in-range filtering.")
+            print(f"[warn] Condition {br_idx}: 0 UA peri-stim segments")
                 
         # ---- Impedance-based exclusion for PERI-STIM UA panel ----
         ua_keep_mask = None
@@ -1776,15 +1778,15 @@ def main():
             continue
 
         # choose time vectors only if the corresponding matrix exists
-        t_intan_for_plot = rel_time_ms_i if NPRW_med is not None else None
+        t_nprw_for_plot = rel_time_ms_i if NPRW_med is not None else None
         t_ua_for_plot    = ua_rel_time_ms if UA_med is not None else None
 
         rcp.stacked_heatmaps_plus_behv(
             NPRW_med, UA_med,
-            t_intan_for_plot, t_ua_for_plot,
+            t_nprw_for_plot, t_ua_for_plot,
             out_svg_posvel, title_kinematics, title_NA,
             cmap=COLORMAP,
-            vmin_intan=VMIN_INTAN, vmax_intan=VMAX_INTAN,
+            vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
             probe=nprw_probe, probe_locs=locs, stim_idx=stim_locs,
             probe_title="NPRW probe (stim sites highlighted)",
             ua_ids_1based=ua_ids_1based,
@@ -1802,18 +1804,18 @@ def main():
             overall_title=overall_title,
         )
         # --- Variance fig ---
-        t_intan_for_plot = rel_time_ms_i_var if NPRW_var is not None else None
+        t_nprw_for_plot = nprw_rel_time_ms_var if NPRW_var is not None else None
         t_ua_for_plot    = ua_rel_time_ms_var if UA_var is not None else None
         
         out_svg_posvel_var = FIG.peri_posvel / f"Cond_{br_idx}__peri_stim__posvel_VAR.png"
         title_NA_var = f"Neural Activity VAR (variance of Δ across {n_nprw_var} events)"
         rcp.stacked_heatmaps_plus_behv(
             NPRW_var, UA_var,
-            (rel_time_ms_i_var if NPRW_var is not None else None),
+            (nprw_rel_time_ms_var if NPRW_var is not None else None),
             (ua_rel_time_ms_var if UA_var is not None else None),
             out_svg_posvel_var, title_kinematics, title_NA_var,
             cmap=COLORMAP,
-            vmin_intan=0.0, vmax_intan=40000.0,
+            vmin_nprw=0.0, vmax_nprw=40000.0,
             vmin_ua={"M1i+M1s": 0.0, "PMd": 0.0, "SMA": 0.0},
             vmax_ua={"M1i+M1s": 10000.0, "PMd": 10000.0, "SMA": 10000.0},
             probe=nprw_probe, probe_locs=locs, stim_idx=stim_locs,

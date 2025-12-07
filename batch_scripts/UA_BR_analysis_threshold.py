@@ -98,7 +98,7 @@ def main():
     sess_folders = BR_SESSION_FOLDERS
     
     print("Found session folders:", len(sess_folders))
-    for sess in sess_folders[:]: # Can tweak here to isolate sessions
+    for sess in (sess_folders[:16] + sess_folders[17:]): # Can tweak here to isolate sessions
         print(f"=== Session: {sess.name} ===")
         rcp.extract_br_aux_streams_npz(sess, UA_AUX_DATA, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH) # Extract sync pulses and stuff
         rec_ns6 = se.read_blackrock(sess, stream_name = 'nsx6', all_annotations=True) # Load neural data
