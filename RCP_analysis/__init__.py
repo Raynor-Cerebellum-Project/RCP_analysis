@@ -18,6 +18,8 @@ from .python.functions.utils import (
     save_recording,
     stim_npz_path_from_br_idx,
     load_shift_row_by_br_idx,
+    butter_lowpass_pos_and_vel,
+    butter_lowpass_pos_and_vel_3d,
     
     build_session_index_map,
     find_ns5_by_br_index, 
@@ -105,6 +107,9 @@ __all__ = [
     "build_session_index_map",
     "find_ns5_by_br_index", 
     "find_ns2_by_br_index", 
+    
+    "butter_lowpass_pos_and_vel",
+    "butter_lowpass_pos_and_vel_3d",
     
     # BR/UA
     "threshold_mua_rates",

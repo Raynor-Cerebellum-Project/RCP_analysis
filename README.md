@@ -160,7 +160,7 @@ Preprocessing and spike sorting are handled in Python using [SpikeInterface](htt
 2. Output `.npz` and `.mat` files in `~/results/checkpoints/Aligned`
 
 ## 6. Create aligned baseline
-`batch_scripts/create_aligned_combined_baseline.py`
+`batch_scripts/concat_and_extract_peri_IR_baseline.py`
 
 **Steps:**
 1. Concatenate baseline files by port and by depth

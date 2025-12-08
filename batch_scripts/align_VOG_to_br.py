@@ -101,22 +101,33 @@ def main():
         # Attach ns2_sample if we have a BR pairing + ns2 file
         if ns2_path is not None:
             try:
-                frames_corrected = len(df)  # use number of rows as frame count
-                ns2_samples = rcp.frame2sample_br_ns2_sync(
-                    frames_corrected,
+                # one row per VOG frame
+                frames_expected = len(df)
+
+                # returns ALL detected rising edges on the ns2 sync channel
+                ns2_edges = rcp.frame2sample_br_ns2_sync(
+                    frames_expected,   # used only as a sanity check
                     ns2_path,
                     sync_chan=str(VOG_SYNC),
                 )
-                if len(ns2_samples) != frames_corrected:
-                    print(f"[warn] ns2_samples length ({len(ns2_samples)}) "
-                          f"!= frames ({frames_corrected}); clipping to min.")
-                    m = min(len(ns2_samples), frames_corrected)
-                    ns2_samples = ns2_samples[:m]
+
+                n_edges = len(ns2_edges)
+                if n_edges != frames_expected:
+                    print(
+                        f"[warn] ns2 rising edges ({n_edges}) != VOG frames ({frames_expected}); "
+                        "clipping to the minimum."
+                    )
+                    m = min(n_edges, frames_expected)
+                    ns2_samples = ns2_edges[:m]
                     df = df.iloc[:m].reset_index(drop=True)
+                else:
+                    ns2_samples = ns2_edges
 
                 # insert ns2_sample as first column
-                df.insert(0, "ns2_sample", ns2_samples)
-                print(f"[map] Attached NS2 time from {ns2_path.name}")
+                df.insert(0, "ns2_sample", ns2_samples.astype("int32"))
+                print(f"[map] Attached NS2 time from {ns2_path.name} "
+                      f"({len(ns2_samples)} samples)")
+
             except Exception as e:
                 print(f"[warn] Could not attach NS2 time for {cond}: {e}")
         else:

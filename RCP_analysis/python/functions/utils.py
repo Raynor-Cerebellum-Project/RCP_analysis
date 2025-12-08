@@ -4,6 +4,7 @@ import json, csv, re
 import spikeinterface as si
 import spikeinterface.extractors as se
 from typing import Dict, Any, Optional, Tuple
+from scipy.signal import butter, filtfilt
 
 # --- Building OCR and DLC dictionary for mapping ---
 def _parse_condition_cam(path: Path):
@@ -280,6 +281,7 @@ def frame2sample_br_ns2_sync(
 
     samples = edges[:n_corrected]
     return samples
+
 _CAM_IN_NAME_RE = re.compile(r"Cam[-_]?([01])", re.IGNORECASE)
 
 def _is_ns5_col(name: str) -> bool:
@@ -803,3 +805,101 @@ def find_ns2_by_br_index(br_root: Path, br_idx: int) -> Optional[Path]:
 
     hits.sort(key=lambda p: (p.stat().st_mtime, p.stat().st_size), reverse=True)
     return hits[0]
+
+# 
+def _butter_lowpass_ba(cutoff_hz: float, fs_hz: float, order: int = 3):
+    nyq = 0.5 * fs_hz
+    Wn = min(max(cutoff_hz / nyq, 1e-6), 0.999999)  # clamp into (0,1)
+    return butter(order, Wn=Wn, btype="low")
+
+def _filtfilt_nanaware(x: np.ndarray, b, a) -> np.ndarray:
+    """
+    Filter 1D array with NaNs:
+    - keep a mask of NaN samples
+    - fill with column median
+    - filtfilt
+    - put NaNs back
+    """
+    out = x.astype(float, copy=True)
+    mask = ~np.isfinite(out)
+    if mask.all():
+        return out  # all NaNs → return as is
+    fill_val = np.nanmedian(out)
+    out[mask] = fill_val
+    out = filtfilt(b, a, out, method="gust")
+    out[mask] = np.nan
+    return out
+
+def _central_diff_ms(x: np.ndarray, dt_ms: float) -> np.ndarray:
+    """
+    Central difference derivative along time for 1D array.
+    Respects NaNs: any side that is NaN → derivative set to NaN there.
+    """
+    T = x.size
+    if T < 2:
+        return np.full_like(x, np.nan, dtype=float)
+    v = np.full_like(x, np.nan, dtype=float)
+    # interior
+    valid_mid = np.isfinite(x[2:]) & np.isfinite(x[:-2])
+    v[1:-1][valid_mid] = (x[2:][valid_mid] - x[:-2][valid_mid]) / (2.0 * dt_ms)
+    # edges (1-sided)
+    if np.isfinite(x[1]) and np.isfinite(x[0]):
+        v[0] = (x[1] - x[0]) / dt_ms
+    if np.isfinite(x[-1]) and np.isfinite(x[-2]):
+        v[-1] = (x[-1] - x[-2]) / dt_ms
+    return v
+
+def butter_lowpass_pos_and_vel(TxD, t_ms, cutoff_hz=10.0, order=3):
+    if TxD is None or TxD.size == 0 or t_ms.size < 3:
+        Z = np.zeros_like(TxD) if isinstance(TxD, np.ndarray) else np.zeros((0,0), float)
+        return Z, Z, t_ms
+    TxD = np.asarray(TxD, float); t_ms = np.asarray(t_ms, float)
+    dt_ms = float(np.nanmedian(np.diff(t_ms)))
+    if not np.isfinite(dt_ms) or dt_ms <= 0:
+        return TxD.astype(float), np.full_like(TxD, np.nan, float), t_ms
+    fs_hz = 1000.0 / dt_ms
+    b, a = _butter_lowpass_ba(cutoff_hz, fs_hz, order)
+
+    pos_filt = np.empty_like(TxD, float)
+    for d in range(TxD.shape[1] if TxD.ndim == 2 else 1):
+        col = TxD[:, d] if TxD.ndim == 2 else TxD
+        # filtfilt needs enough samples; if too few, skip filtering
+        if col.size < max(3*max(len(a), len(b)), 9):
+            xf = col.astype(float)
+        else:
+            xf = _filtfilt_nanaware(col, b, a)
+        if TxD.ndim == 2:
+            pos_filt[:, d] = xf
+        else:
+            pos_filt = xf
+    vel = np.empty_like(pos_filt, float)
+    for d in range(pos_filt.shape[1] if pos_filt.ndim == 2 else 1):
+        col = pos_filt[:, d] if pos_filt.ndim == 2 else pos_filt
+        vcol = _central_diff_ms(col, dt_ms)
+        if pos_filt.ndim == 2:
+            vel[:, d] = vcol
+        else:
+            vel = vcol
+    return pos_filt, vel, t_ms
+
+def butter_lowpass_pos_and_vel_3d(NKT, t_ms, cutoff_hz=10.0, order=3):
+    if NKT is None or NKT.size == 0 or t_ms.size < 3:
+        Z = np.asarray(NKT, float) if isinstance(NKT, np.ndarray) else np.zeros((0,0,0), float)
+        return Z, Z, t_ms
+    NKT = np.asarray(NKT, float)
+    dt_ms = float(np.nanmedian(np.diff(t_ms)))
+    if not np.isfinite(dt_ms) or dt_ms <= 0:
+        return NKT.astype(float), np.full_like(NKT, np.nan, float), t_ms
+    fs_hz = 1000.0 / dt_ms
+    b, a = _butter_lowpass_ba(cutoff_hz, fs_hz, order)
+    N, K, T = NKT.shape
+    pos_f = np.empty_like(NKT, float)
+    vel   = np.empty_like(NKT, float)
+    min_len = max(3*max(len(a), len(b)), 9)
+    for i in range(N):
+        for k in range(K):
+            x = NKT[i, k, :]
+            xf = x.astype(float) if x.size < min_len else _filtfilt_nanaware(x, b, a)
+            pos_f[i, k, :] = xf
+            vel[i, k, :]   = _central_diff_ms(xf, dt_ms)
+    return pos_f, vel, t_ms

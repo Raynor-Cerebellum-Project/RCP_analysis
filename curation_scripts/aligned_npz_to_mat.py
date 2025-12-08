@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Convert aligned__*.npz (from your alignment pipeline) -> .mat
 
@@ -11,7 +10,6 @@ Requires: numpy, scipy (for savemat). Optional: h5py if you enable the v7.3 fall
 Usage:
   python npz_to_mat_aligned.py /path/to/Aligned   # folder containing aligned__*.npz
 """
-from __future__ import annotations
 from pathlib import Path
 import json
 import sys
