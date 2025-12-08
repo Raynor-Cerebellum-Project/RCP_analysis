@@ -23,8 +23,8 @@ SHIFTS_CSV    = METADATA_ROOT / "br_to_intan_shifts.csv"
 # ---------- checkpoints / aux_data ----------
 NPRW_CKPT_ROOT  = OUT_BASE / "checkpoints" / "NPRW"
 UA_CKPT_ROOT    = OUT_BASE / "checkpoints" / "UA"
-BEHV_CKPT_ROOT  = OUT_BASE / "checkpoints" / "behavior"
-BASELINE_ROOT   = OUT_BASE / "checkpoints" / "behavior" / "baseline_concat"
+BEHV_CKPT_ROOT  = OUT_BASE / "checkpoints" / "Behavior"
+BASELINE_ROOT   = OUT_BASE / "checkpoints" / "Behavior" / "baseline_concat"
 ALIGNED_OUT     = BASELINE_ROOT / "rates_from_curated"
 ALIGNED_OUT.mkdir(parents=True, exist_ok=True)
 

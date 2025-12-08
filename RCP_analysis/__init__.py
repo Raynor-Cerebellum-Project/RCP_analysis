@@ -11,6 +11,7 @@ from .python.functions.utils import (
     load_dlc, 
     align_dlc_to_corrected,
     frame2sample_br_ns5_sync,
+    frame2sample_br_ns2_sync,
     
     list_intan_sessions,
     load_stim_detection, 
@@ -20,6 +21,7 @@ from .python.functions.utils import (
     
     build_session_index_map,
     find_ns5_by_br_index, 
+    find_ns2_by_br_index, 
     load_rate_npz,
     
     
@@ -76,6 +78,7 @@ __all__ = [
     "load_dlc", 
     "align_dlc_to_corrected",
     "frame2sample_br_ns5_sync",
+    "frame2sample_br_ns2_sync",
     
     "list_intan_sessions",
     "load_stim_detection", 
@@ -101,6 +104,7 @@ __all__ = [
     "parse_intan_session_dtkey", 
     "build_session_index_map",
     "find_ns5_by_br_index", 
+    "find_ns2_by_br_index", 
     
     # BR/UA
     "threshold_mua_rates",

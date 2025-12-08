@@ -68,12 +68,11 @@ IMP_FILES = {
 
 # ---------- figures ----------
 FIG_ROOT   = OUT_BASE / "figures"
-PERI_FIG   = FIG_ROOT / "peri_stim"
-FIG = SimpleNamespace(peri_posvel=PERI_FIG / "posvel_traces")
+FIG = SimpleNamespace(peri_posvel_median=FIG_ROOT / "median_fr_plots", peri_posvel_var=FIG_ROOT / "var_fr_plots")
 
 # ---------- checkpoints / inputs ----------
 ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
-BEHAV_ROOT   = OUT_BASE / "checkpoints" / "behavior" / "baseline_concat"
+BEHAV_ROOT   = OUT_BASE / "checkpoints" / "Behavior" / "baseline_concat"
 NPRW_AUX_DATA   = OUT_BASE / "aux_data" / "NPRW"
 METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
 METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
@@ -1146,7 +1145,7 @@ def main_baselines():
             pos0, vel0,
             title_beh0=(f"Kinematics / Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
                         + (f" • Gaussian (filtfilt) σ={GAUSS_SMOOTH_MS:g} ms" if GAUSS_SMOOTH_MS > 0 else "")) if cam0 else "",
-            out_dir=FIG.peri_posvel,
+            out_dir=FIG.peri_posvel_median,
             beh_time1=(cam1["t"] if cam1 else None),
             beh_pos1=pos1, beh_vel1=vel1,
             title_beh1=(f""),
@@ -1159,7 +1158,7 @@ def main_baselines():
     else:
         _render_and_save_baseline(
             None, None, None, title_beh0="",
-            out_dir=FIG.peri_posvel,
+            out_dir=FIG.peri_posvel_median,
             beh_labels=[], ua_groups=ua_groups_baseline
     )
     if (pos0 is not None) or (pos1 is not None) or (nprw_var is not None) or (ua_groups_baseline_var):
@@ -1168,7 +1167,7 @@ def main_baselines():
             pos0, vel0,
             title_beh0=(f"Kinematics / Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
                         + (f" • Gaussian (filtfilt) σ={GAUSS_SMOOTH_MS:g} ms" if GAUSS_SMOOTH_MS > 0 else "")) if cam0 else "",
-            out_dir=FIG.peri_posvel,
+            out_dir=FIG.peri_posvel_var,
             beh_time1=(cam1["t"] if cam1 else None),
             beh_pos1=pos1, beh_vel1=vel1,
             title_beh1="",
@@ -1551,7 +1550,7 @@ def main():
         raise SystemExit(f"[error] No combined aligned NPZs found at {ALIGNED_ROOT}")
 
     for k, file in enumerate(files):
-        if k <= 7:
+        if k == 6:
             continue
         NPRW_rate, NPRW_t, UA_rate, UA_t, stim_ms_abs, meta = rcp.load_combined_npz(file)
         # Try to get per-row UA electrode IDs (1..256), + NSP mapping (1..128/256)
@@ -1767,7 +1766,7 @@ def main():
                 print(f"[warn] stim-site detection failed for {sess}, Condition {br_idx}: {e}")
                 
         # ---------------- POSITION plot ----------------
-        out_svg_posvel = FIG.peri_posvel / f"Cond_{br_idx}__peri_stim__posvel.png"
+        out_dir_median = FIG.peri_posvel_median / f"Cond_{br_idx}__peri_stim__posvel.png"
 
         title_NA = (f"Neural Activity (median Δ across {n_nprw} events)")
         beh_time_for_both = beh_rel_t 
@@ -1784,7 +1783,7 @@ def main():
         rcp.stacked_heatmaps_plus_behv(
             NPRW_med, UA_med,
             t_nprw_for_plot, t_ua_for_plot,
-            out_svg_posvel, title_kinematics, title_NA,
+            out_dir_median, title_kinematics, title_NA,
             cmap=COLORMAP,
             vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
             probe=nprw_probe, probe_locs=locs, stim_idx=stim_locs,
@@ -1807,13 +1806,13 @@ def main():
         t_nprw_for_plot = nprw_rel_time_ms_var if NPRW_var is not None else None
         t_ua_for_plot    = ua_rel_time_ms_var if UA_var is not None else None
         
-        out_svg_posvel_var = FIG.peri_posvel / f"Cond_{br_idx}__peri_stim__posvel_VAR.png"
+        out_dir_var = FIG.peri_posvel_var / f"Cond_{br_idx}__peri_stim__posvel_VAR.png"
         title_NA_var = f"Neural Activity VAR (variance of Δ across {n_nprw_var} events)"
         rcp.stacked_heatmaps_plus_behv(
             NPRW_var, UA_var,
             (nprw_rel_time_ms_var if NPRW_var is not None else None),
             (ua_rel_time_ms_var if UA_var is not None else None),
-            out_svg_posvel_var, title_kinematics, title_NA_var,
+            out_dir_var, title_kinematics, title_NA_var,
             cmap=COLORMAP,
             vmin_nprw=0.0, vmax_nprw=40000.0,
             vmin_ua={"M1i+M1s": 0.0, "PMd": 0.0, "SMA": 0.0},

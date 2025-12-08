@@ -73,7 +73,7 @@ FIG = SimpleNamespace(peri_posvel=PERI_FIG / "posvel_traces")
 
 # ---------- checkpoints / inputs ----------
 ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
-BEHAV_ROOT   = OUT_BASE / "checkpoints" / "behavior" / "baseline_concat"
+BEHAV_ROOT   = OUT_BASE / "checkpoints" / "Behavior" / "baseline_concat"
 NPRW_AUX_DATA   = OUT_BASE / "aux_data" / "NPRW"
 EVENTS_DIR      = OUT_BASE / "events"
 METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)

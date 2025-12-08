@@ -90,7 +90,7 @@ def load_UA_mapping_from_excel(
 
     return mapped_nsp
 
-def extract_br_aux_streams_npz(sess, aux_dir, camera_sync_ch, triangle_sync_ch) -> dict:
+def extract_br_aux_streams_npz(sess, aux_dir, camera_sync_ch, triangle_sync_ch, touchscreen_ch) -> dict:
     """
     Build and save BR aux streams in a unified format into ONE NPZ file:
 
@@ -121,7 +121,7 @@ def extract_br_aux_streams_npz(sess, aux_dir, camera_sync_ch, triangle_sync_ch) 
     try:
         rec_ns5 = se.read_blackrock(sess, stream_name="nsx5", all_annotations=True)
         
-        wanted = [camera_sync_ch, triangle_sync_ch]
+        wanted = [camera_sync_ch, triangle_sync_ch, 139]
         chan_ids_ns5 = rec_ns5.get_channel_ids().astype(int)
         traces_ns5 = []
         labels_ns5 = []
@@ -155,7 +155,17 @@ def extract_br_aux_streams_npz(sess, aux_dir, camera_sync_ch, triangle_sync_ch) 
     try:
         rec_ns2 = se.read_blackrock(str(sess), stream_name="nsx2", all_annotations=True)
         aux_traces_ns2 = rec_ns2.get_traces(return_scaled=True).T  # (n_channels, n_samples)
+        ns2_chs = np.asarray(rec_ns2.get_channel_ids())
         
+        # --- extract touchscreen signal from ns2 ---
+        if str(touchscreen_ch) in ns2_chs:
+            idx = int(np.where(ns2_chs == str(touchscreen_ch))[0][0])
+            touchscreen_sig = aux_traces_ns2[idx]
+            print(f"[AUX] touchscreen_ch={touchscreen_ch} found in ns2 at index {idx}")
+        else:
+            print(f"[AUX] touchscreen_ch={touchscreen_ch} not found in ns2")
+            touchscreen_sig = None
+            
         meta.update(
             ns2_aux_traces=aux_traces_ns2,
             ns2_session=sess.name,
@@ -176,7 +186,7 @@ def extract_br_aux_streams_npz(sess, aux_dir, camera_sync_ch, triangle_sync_ch) 
     else:
         print("[AUX] No aux streams found; nothing saved.")
 
-    return out_npz
+    return out_npz, touchscreen_sig
 
 # Mapping
 def apply_ua_mapping_with_regions(

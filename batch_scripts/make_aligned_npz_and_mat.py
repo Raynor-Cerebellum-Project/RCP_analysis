@@ -1,5 +1,6 @@
 from pathlib import Path
 import numpy as np
+import pandas as pd
 import json, csv
 from typing import Tuple, Optional
 import RCP_analysis as rcp
@@ -14,8 +15,11 @@ NPRW_AUX_DATA   = OUT_BASE / "aux_data" / "NPRW"
 NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
 UA_CKPT_ROOT   = OUT_BASE / "checkpoints" / "UA"
 ALIGNED_CKPT_ROOT   = OUT_BASE / "checkpoints" / "Aligned"; ALIGNED_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
-BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "behavior"; BEHV_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
+BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "Behavior"; BEHV_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
+VOG_CKPT_ROOT = OUT_BASE / "checkpoints" / "VOG"; VOG_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
 
+FS_NS2 = 1000.0
+                        
 NUM_CAM = PARAMS.kinematics.get("num_camera", 1)
 
 METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
@@ -70,6 +74,7 @@ def main():
         rows = list(rdr)
 
     br2video = rcp.get_metadata_mapping(METADATA_CSV, "BR_File", "Video_File")
+    br2vog = rcp.get_metadata_mapping(METADATA_CSV, "BR_File", "VOG_File")
 
     if not rows:
         raise SystemExit("[error] shifts CSV has no rows")
@@ -100,15 +105,27 @@ def main():
             if not cands: print(f"[warn] No UA rates for session {session}"); continue
             ua_rates_npz = cands[0]
             
-            # get array index from UA
-            ua_elec = ua_region = ua_region_names = ua_nsp = ua_idx_rows = None
+            # get array index from UA + touchscreen state
+            ua_elec = ua_region = ua_region_names = ua_nsp = ua_idx_rows = ts_state_num = ts_state_char = None
+
             with np.load(ua_rates_npz, allow_pickle=True) as npz:
                 ua_elec = npz["ua_elec"].astype(np.int16) if "ua_elec" in npz else np.array([], dtype=np.int16)
                 ua_nsp = npz["ua_nsp"].astype(np.int16) if "ua_nsp" in npz else np.array([], dtype=np.int16)
-                ua_idx_rows =  npz["ua_index"].astype(np.int16) if "ua_index" in npz else np.array([], dtype=np.int16)
+                ua_idx_rows = npz["ua_index"].astype(np.int16) if "ua_index" in npz else np.array([], dtype=np.int16)
                 ua_region = npz["ua_region"].astype(np.int8) if "ua_region" in npz else np.array([], dtype=np.int8)
                 ua_region_names = npz["ua_region_names"] if "ua_region_names" in npz else np.array([], dtype=object)
                 fs_br = npz["meta"].item()["fs"]
+
+                # touchscreen states (optional, for backward compatibility)
+                if "ts_state_num" in npz:
+                    ts_state_num = npz["ts_state_num"].astype(np.int8)
+                else:
+                    ts_state_num = np.array([], dtype=np.int8)
+
+                if "ts_state_char" in npz:
+                    ts_state_char = npz["ts_state_char"]
+                else:
+                    ts_state_char = np.full(0, 'N', dtype='U1')
 
             nprw_rate_hz, nprw_t_ms, nprw_meta, nprw_pcs, nprw_peaks, nprw_peaks_t_ms, nprw_peaks_t_sample, nprw_expl = rcp.load_rate_npz(nprw_rates_npz)
             ua_rate_hz, ua_t_ms, ua_meta, ua_pcs, ua_peaks, ua_peaks_t_ms, ua_peaks_t_sample, ua_expl = rcp.load_rate_npz(ua_rates_npz)
@@ -227,6 +244,61 @@ def main():
             else:
                 print(f"[warn] no behavior CSV (both or single-cam) found for BR {br_idx:03d} in {BEHV_CKPT_ROOT}")
 
+            # ---- VOG alignment ----
+            vog_ns2_samp = np.array([], dtype=np.int64)
+            vog_t_ms      = np.array([], dtype=np.float32)
+            vog_cols      = np.zeros((0, 0), dtype=np.float32)
+            vog_col_names = np.array([], dtype=object)
+
+            vog_csv = None
+            vog_file_idx = br2vog.get(br_idx) if br2vog is not None else None
+
+            if vog_file_idx is not None:
+                # e.g. NRR_RW011_002_VOG_aligned.csv
+                cands_vog = sorted(
+                    VOG_CKPT_ROOT.glob(f"*_{vog_file_idx:03d}_VOG_aligned.csv")
+                )
+                if cands_vog:
+                    vog_csv = cands_vog[0]
+
+            if vog_csv is not None:
+                try:
+                    df_vog = pd.read_csv(vog_csv)
+
+                    # ns2_sample → time (ms); assume 1 kHz for ns2
+                    if "ns2_sample" in df_vog.columns:
+                        vog_ns2_samp = pd.to_numeric(df_vog["ns2_sample"],
+                                                errors="coerce").to_numpy(dtype=np.int64)
+                        vog_t_ms = vog_ns2_samp * (1000.0 / FS_NS2)
+                    else:
+                        vog_ns2_samp = np.array([], dtype=np.int64)
+
+                    # pack the four VOG columns into a single matrix
+                    wanted = ["HPos_pix", "VPos_pix", "H_volt", "V_volt"]
+                    present = [c for c in wanted if c in df_vog.columns]
+
+                    if present:
+                        vog_cols = df_vog[present].apply(
+                            pd.to_numeric, errors="coerce"
+                        ).to_numpy(dtype=np.float32)
+                        vog_col_names = np.array(present, dtype=object)
+
+                    if vog_t_ms.size:
+                        print(
+                            "[ranges] VOG: indices 0-{end}  ms {t0:.3f}-{t1:.3f}".format(
+                                end=vog_t_ms.size - 1,
+                                t0=float(vog_t_ms[0]),
+                                t1=float(vog_t_ms[-1]),
+                            )
+                        )
+
+                    print(f"[VOG] attached from {vog_csv.name} (N={vog_t_ms.size})")
+
+                except Exception as e:
+                    print(f"[warn] could not load VOG for BR {br_idx:03d}: {e}")
+            else:
+                print(f"[warn] no VOG CSV found for BR {br_idx:03d} in {VOG_CKPT_ROOT}")
+    
             combined_meta = dict(
                 session=session,
                 intan_idx=intan_idx,
@@ -297,6 +369,14 @@ def main():
                 beh_cam0_cols=np.array(beh_cam0_cols, dtype=object),
                 beh_cam1_cols=np.array(beh_cam1_cols, dtype=object),
                 beh_t_ms=beh_t_ms,
+                # ---- VOG arrays ----
+                vog_ns2_samp=vog_ns2_samp,
+                vog_t_ms=vog_t_ms,
+                vog_cols=vog_cols,
+                vog_col_names=vog_col_names,
+                
+                ts_state_num=ts_state_num,
+                ts_state_char=ts_state_char,
             )
 
             print(f"[write] combined aligned: {out_npz}")
@@ -369,6 +449,15 @@ def main():
                 beh_cam0_cols=np.array(beh_cam0_cols, dtype=object),
                 beh_cam1_cols=np.array(beh_cam1_cols, dtype=object),
                 beh_t_ms=beh_t_ms,
+                
+                
+                vog_ns2_samp=vog_ns2_samp,
+                vog_t_ms=vog_t_ms,
+                vog_cols=vog_cols,
+                vog_col_names=vog_col_names,
+                
+                ts_state_num=ts_state_num,
+                ts_state_char=ts_state_char,
             )
 
             savemat(out_mat, mat_dict, do_compression=True)

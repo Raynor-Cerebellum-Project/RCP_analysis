@@ -218,6 +218,68 @@ def frame2sample_br_ns5_sync(
     samples = edges[:n_corrected]
     return samples
 
+def frame2sample_br_ns2_sync(
+    n_corrected: int,
+    ns_path: Path,
+    sync_chan: int,
+):
+    """
+    Read Blackrock NS2, detect rising edges on `sync_chan`,
+    and return sample indices corresponding to the frames.
+
+    Parameters
+    ----------
+    n_corrected : int
+        Number of corrected frames (length of the desired mapping).
+    ns_path : Path
+        Path to the .ns2 file.
+    sync_chan : int
+        Channel id in the NS2 file carrying the VOG sync signal.
+
+    Returns
+    -------
+    samples : (n_corrected,) int32
+        Sample indices of the rising edges, one per corrected frame.
+    """
+    # Load sync channel from NS2 (LFP) stream
+    rec = se.read_blackrock(str(ns_path), stream_name="nsx2", all_annotations=True)
+
+    ch_ids = list(rec.get_channel_ids())  # typically ints
+    if sync_chan not in ch_ids:
+        raise KeyError(
+            f"Channel id {sync_chan} not found in {ns_path.name}. "
+            f"First few: {ch_ids[:8]}"
+        )
+
+    sig = rec.get_traces(channel_ids=[sync_chan]).astype(np.float32).squeeze()
+
+    # --- rising-edge detection with hysteresis (same logic as ns5 version) ---
+    if sig.size == 0:
+        raise RuntimeError("Empty sync signal.")
+
+    # downsampled stats for thresholds
+    step = max(1, sig.size // 20000)
+    ds = sig[::step]
+    lo = 0.5 * (ds.min() + ds.max())
+    hi = 0.5 * (lo + ds.max())
+
+    edges = []
+    high = False
+    for i, v in enumerate(sig):
+        if not high and v >= hi:
+            edges.append(i)
+            high = True
+        elif high and v <= lo:
+            high = False
+
+    edges = np.asarray(edges, dtype=np.int32)
+    if edges.size < n_corrected:
+        raise RuntimeError(
+            f"NS2 rising edges ({edges.size}) fewer than corrected frames ({n_corrected})."
+        )
+
+    samples = edges[:n_corrected]
+    return samples
 _CAM_IN_NAME_RE = re.compile(r"Cam[-_]?([01])", re.IGNORECASE)
 
 def _is_ns5_col(name: str) -> bool:
@@ -717,6 +779,26 @@ def find_ns5_by_br_index(br_root: Path, br_idx: int) -> Optional[Path]:
     hits = [p for p in br_root.rglob("*.ns5") if p.stem.endswith(token)]
     if not hits:
         print(f"[warn] No NS5 file ending with {token}.ns5 under {br_root}")
+        return None
+
+    hits.sort(key=lambda p: (p.stat().st_mtime, p.stat().st_size), reverse=True)
+    return hits[0]
+
+def find_ns2_by_br_index(br_root: Path, br_idx: int) -> Optional[Path]:
+    """
+    Locate an .ns2 file whose *stem* ends with the 3-digit BR index, e.g.:
+
+        br_idx = 1   -> token '001' -> matches '*001.ns2'
+
+    If multiple matches exist, prefer:
+      1. Newest modification time
+      2. Largest size
+    """
+    token = f"{br_idx:03d}"
+    # Only files like '...001.ns2'
+    hits = [p for p in br_root.rglob("*.ns2") if p.stem.endswith(token)]
+    if not hits:
+        print(f"[warn] No NS2 file ending with {token}.ns2 under {br_root}")
         return None
 
     hits.sort(key=lambda p: (p.stat().st_mtime, p.stat().st_size), reverse=True)

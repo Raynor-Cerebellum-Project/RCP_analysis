@@ -32,7 +32,6 @@ class experimentParams:
     # kinematics
     kinematics: Dict[str, Any] = field(default_factory=dict)
 
-
 def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams:
     cfg = yaml.safe_load(yaml_path.read_text())
 

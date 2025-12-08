@@ -7,7 +7,7 @@ import RCP_analysis as rcp
 
 # ---- MODE SELECTION ----
 # Options: "TOUCHSCREEN" or "KINEMATIC"
-MODE = "KINEMATIC" 
+MODE = "TOUCHSCREEN" 
 
 # ---- CONFIG ----
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +25,7 @@ V_THRESH_A_LOW, V_THRESH_A_HIGH = 2.0, 3.5
 V_THRESH_B_LOW, V_THRESH_B_HIGH = 4.0, 6.0
 
 # KINEMATIC CONFIG
-BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "behavior"
+BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "Behavior"
 CAM_IDX = 1
 X_THRESH_REACH = 250.0
 Y_THRESH_A_MIN = 230.0

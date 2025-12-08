@@ -8,7 +8,6 @@ import spikeinterface.preprocessing as spre
 import spikeinterface.extractors as se
 import RCP_analysis as rcp
 
-
 """ 
     This script preprocesses the Blackrock data.
     Input:
@@ -36,6 +35,8 @@ SIGMA_MS   = float(RATES.get("sigma_ms", 50.0))
 THRESH     = float(RATES.get("detect_threshold", 3))
 PEAK_SIGN  = str(RATES.get("peak_sign", "both"))
 
+FS_NS2 = 1000.0
+
 ARTRMV_MS_BEFORE = 5.0
 ARTCORR_TAIL_MS   = 5.0
     
@@ -48,6 +49,10 @@ if UA_MAP is None:
 UA_CFG = PARAMS.probes.get("UA")
 CAMERA_SYNC_CH = int(UA_CFG.get("camera_sync_ch", 134))
 TRIANGLE_SYNC_CH = int(UA_CFG.get("triangle_sync_ch", 138))
+TOUCHSCREEN_CH = int(UA_CFG.get("touchscreen_ch", 139))
+
+TOUCHSCREEN_THRES_A = 1.0e6
+TOUCHSCREEN_THRES_B = 3.0e6
 
 UA_AUX_DATA = OUT_BASE / "aux_data" / "UA"
 NPRW_AUX_DATA = OUT_BASE / "aux_data" / "NPRW"
@@ -100,8 +105,26 @@ def main():
     print("Found session folders:", len(sess_folders))
     for sess in (sess_folders[:16] + sess_folders[17:]): # Can tweak here to isolate sessions
         print(f"=== Session: {sess.name} ===")
-        rcp.extract_br_aux_streams_npz(sess, UA_AUX_DATA, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH) # Extract sync pulses and stuff
+        _, touchscreen_sig = rcp.extract_br_aux_streams_npz(sess, UA_AUX_DATA, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH, TOUCHSCREEN_CH) # Extract sync pulses and stuff
         rec_ns6 = se.read_blackrock(sess, stream_name = 'nsx6', all_annotations=True) # Load neural data
+        
+        # Threshold to get touchscreen state
+        ts_state_num = np.zeros(0, dtype=np.int8)
+        ts_state_char = np.full(0, 'N', dtype='U1')
+
+        if touchscreen_sig is not None:
+            touchscreen_sig = np.asarray(touchscreen_sig, float)
+            ts_state_num = np.zeros_like(touchscreen_sig, dtype=np.int8)
+            ts_state_char = np.full(touchscreen_sig.shape, 'N', dtype='U1')
+
+            ts_state_num[touchscreen_sig >= TOUCHSCREEN_THRES_A] = 1
+            ts_state_num[touchscreen_sig >= TOUCHSCREEN_THRES_B] = 2
+
+            ts_state_char[ts_state_num == 1] = 'A'
+            ts_state_char[ts_state_num == 2] = 'B'
+            print("Unique touchscreen states:", np.unique(ts_state_num))
+        else:
+            print("[touchscreen] No touchscreen signal; leaving ts_state_* empty.")
         
         br_idx = int(sess.name.split('_')[-1]) # resolve br index
         n_channels = rec_ns6.get_num_channels()
@@ -198,6 +221,29 @@ def main():
             blank_windows_samples=blank_windows,
         )
         
+        ts_state_num_binned = np.zeros(t_cat_ms.shape, dtype=np.int8)
+        ts_state_char_binned = np.full(t_cat_ms.shape, 'N', dtype='U1')
+
+        if ts_state_num.size > 0:
+            # t_cat_ms is in milliseconds since start of BR recording
+            # ts_state_num is per touchscreen sample at ts_fs_hz
+            # Map each bin center to nearest touchscreen sample index
+            ts_idx = np.round((t_cat_ms / 1000.0) * FS_NS2).astype(np.int64)
+
+            # Clip to valid range
+            ts_idx = np.clip(ts_idx, 0, ts_state_num.size - 1)
+
+            ts_state_num_binned = ts_state_num[ts_idx]
+            ts_state_char_binned = ts_state_char[ts_idx]
+
+            print(
+                f"[touchscreen] Binned states: shape={ts_state_num_binned.shape}, "
+                f"unique={np.unique(ts_state_num_binned)}"
+            )
+        else:
+            print("[touchscreen] No touchscreen states to bin; using all 'N'.")
+
+        
         X = rate_hz.T  # (n_bins, n_channels)
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -236,14 +282,16 @@ def main():
             peaks=peaks,
             peak_t_ms=peaks_t_ms.astype(np.float32),
             pcs=pcs_T,
-            explained_var=explained_var.astype(np.float32),
+            explained_var=explained_var.astype(np.float32),            
+            ts_state_num=ts_state_num_binned,
+            ts_state_char=ts_state_char_binned,
 
             # UA indices
-            ua_index = idx_rows.astype(np.int16),
-            ua_elec  = ua_elec.astype(np.int16),
-            ua_nsp   = ua_nsp.astype(np.int16),
-            ua_region = ua_region,
-            ua_region_names  = ua_region_names,
+            ua_index=idx_rows.astype(np.int16),
+            ua_elec=ua_elec.astype(np.int16),
+            ua_nsp=ua_nsp.astype(np.int16),
+            ua_region=ua_region,
+            ua_region_names=ua_region_names,
 
             meta=dict(
                 detect_threshold=THRESH,

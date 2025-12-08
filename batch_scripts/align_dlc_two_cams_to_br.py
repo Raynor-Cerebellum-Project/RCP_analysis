@@ -18,8 +18,8 @@ SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
 OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
 BR_ROOT = SESSION_LOC / "Blackrock"; BR_ROOT.mkdir(parents=True, exist_ok=True)
 VIDEO_ROOT = SESSION_LOC / "Video"; VIDEO_ROOT.mkdir(parents=True, exist_ok=True)
-BEHV_AUX_DATA   = OUT_BASE / "aux_data" / "behavior"
-BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "behavior"; BEHV_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
+BEHV_AUX_DATA   = OUT_BASE / "aux_data" / "Behavior"
+BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "Behavior"; BEHV_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
 METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
 METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
 UA_CFG = PARAMS.probes.get("UA")

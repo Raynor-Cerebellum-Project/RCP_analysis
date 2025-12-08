@@ -104,12 +104,12 @@ def main():
         # 3) Extract stim sessions and aux channels
         print(f"[RUN] session {sess.name}")
 
+        # aux streams (sync channels etc.)
+        rcp.extract_intan_aux_streams_npz(sess=sess, out_dir=NPRW_AUX_DATA, aux_streams=AUX_STREAM)
+        
         # stim streams TODO anyway to leverage that this is sparse?
         _, stim_ext_arrays = rcp.extract_stim_npz(sess=sess, out_dir=NPRW_AUX_DATA, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
         # stim_ext_arrays = rcp.load_stim_detection(NPRW_AUX_DATA / f"{sess.name}_Intan_streams" / "stim_stream.npz") - skip to speed up when debugging
-        
-        # aux streams (sync channels etc.)
-        rcp.extract_intan_aux_streams_npz(sess=sess, out_dir=NPRW_AUX_DATA, aux_streams=AUX_STREAM)
 
         # Load Intan neural stream and reorder
         rec = se.read_split_intan_files(sess, mode="concatenate", stream_name=INTAN_STREAM, use_names_as_ids=True)
