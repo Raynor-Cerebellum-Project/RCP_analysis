@@ -10,16 +10,6 @@ from probeinterface.plotting import plot_probe
 from probeinterface import Probe
 
 # ---- knobs ----
-GAP_AFTER_BEHAVIOR = True
-GAP_HEIGHT = 0.22   # relative height of the spacer row (tune to taste)
-
-BEH_RATIO = 0.6
-CH_RATIO_PER_ROW = 0.015
-MIN_HEATMAP_RATIO = 0.6
-UA_COMPACT_FACTOR = 0.95
-NPRW_SCALE      = 0.6   # < 1.0 shrinks NPRW height (e.g., 0.6 = 60% of previous)
-FIG_WIDTH_IN        = 16.0
-HEIGHT_PER_RATIO_IN = 4.0
 
 # ---- knobs: UA vmin/vmax per group/label ----
 UA_VRANGE_BY_LABEL = {
@@ -89,10 +79,25 @@ def stacked_heatmaps_plus_behv(
     ua_ids_1based=None, ua_sort="region_then_elec",
     beh_rel_time=None, beh_cam0_lines=None, beh_cam1_lines=None,
     beh_labels=None, beh_cam0_vel_lines=None, beh_cam1_vel_lines=None,
+    # Optional per-timepoint SEM arrays for shaded plotting of position traces
+    beh_cam0_pos_sems=None, beh_cam1_pos_sems=None,
     title_cam1=None, title_cam0_vel=None, title_cam1_vel=None,
-    sess=None, overall_title=None,
+    sess="",
+    overall_title="",
+    beh_ylim=None,
+    # New Layout Knobs (defaults match original constants)
+    beh_ratio: float = 0.6,
+    ch_ratio_per_row: float = 0.015,
+    min_heatmap_ratio: float = 0.6,
+    ua_compact_factor: float = 0.95,
+    nprw_scale: float = 0.6,
+    gap_beh_nprw: float = 0.22, # originally GAP_HEIGHT
+    fig_width_in: float = 16.0,
+    height_per_ratio_in: float = 4.0,
 ):
-
+    """
+    s: session ID
+    """
     # ---------------- Sanitize presence ----------------
     has_nprw = isinstance(nprw_med, np.ndarray) and nprw_med.ndim == 2 and nprw_med.size > 0 and (t_nprw is not None)
     has_ua    = isinstance(ua_med,    np.ndarray) and ua_med.ndim    == 2 and ua_med.size    > 0 and (t_ua    is not None)
@@ -124,7 +129,7 @@ def stacked_heatmaps_plus_behv(
     if have_cam1_vel: beh_rows.append(("beh", "cam1_vel"))
 
     rowspec = list(beh_rows)  # [("beh","cam0_pos"), ("beh","cam1_pos"), ...]
-    if GAP_AFTER_BEHAVIOR and (has_nprw or has_ua) and len(beh_rows):
+    if (gap_beh_nprw > 0.0) and (has_nprw or has_ua) and len(beh_rows):
         rowspec.append(("gap", None))   # <-- spacer row comes after behavior
 
     # ---------- UA grouping by regions (handle None safely) ----------
@@ -214,37 +219,37 @@ def stacked_heatmaps_plus_behv(
 
     # behavior rows
     for _ in beh_rows:
-        height_ratios.append(BEH_RATIO)
+        height_ratios.append(beh_ratio)
 
     # optional gap row
     if ("gap", None) in rowspec:
-        height_ratios.append(GAP_HEIGHT)
+        height_ratios.append(gap_beh_nprw)
 
     # nprw row
     if has_nprw:
         nprw_rows = nprw_med.shape[0]
-        nprw_ratio = max(MIN_HEATMAP_RATIO, CH_RATIO_PER_ROW * nprw_rows) * float(NPRW_SCALE)
+        nprw_ratio = max(min_heatmap_ratio, ch_ratio_per_row * nprw_rows) * float(nprw_scale)
         height_ratios.append(nprw_ratio)
 
     # UA rows
     if has_ua:
         for group in ua_groups:
             rows = group["mat"].shape[0] if group["mat"] is not None else 0
-            base = max(MIN_HEATMAP_RATIO, CH_RATIO_PER_ROW * rows)
+            base = max(min_heatmap_ratio, ch_ratio_per_row * rows)
             scale = 0.5 if any(k in group["label"].lower() for k in ("pmd", "sma")) else 1.0
-            height_ratios.append(base * scale * UA_COMPACT_FACTOR)
+            height_ratios.append(base * scale * ua_compact_factor)
 
     have_probe = (probe is not None) or (
         probe_locs is not None and np.asarray(probe_locs).ndim == 2 and len(probe_locs) > 0
     )
 
     total_ratio = sum(height_ratios)
-    fig_height  = HEIGHT_PER_RATIO_IN * total_ratio
+    fig_height  = height_per_ratio_in * total_ratio
 
     if have_probe:
-        fig_width = FIG_WIDTH_IN * (1.0 + probe_gap_ratio + probe_width_ratio)
+        fig_width = fig_width_in * (1.0 + probe_gap_ratio + probe_width_ratio)
     else:
-        fig_width = FIG_WIDTH_IN
+        fig_width = fig_width_in
 
     fig = plt.figure(figsize=(fig_width, fig_height), constrained_layout=False)
 
@@ -289,16 +294,36 @@ def stacked_heatmaps_plus_behv(
         t.set_verticalalignment("center")
         return t
 
-    def _plot_lines(ax, rel_t, lines, title, ylabel, sub, place_legend: bool):
+    def _plot_lines(ax, rel_t, lines, title, ylabel, sub, place_legend: bool, sems=None, ylim=None):
+        """
+        Plot lines (D x T). If `sems` is provided and has same shape as `lines`,
+        draw a filled band ±sem behind each mean line.
+        """
         if lines is None:
             ax.axis("off")
             return
         D = lines.shape[0]
+        if ylim is not None:
+            ax.set_ylim(ylim)
+
         for i in range(D):
             y = lines[i]
-            if np.isfinite(y).any():
-                lab = labs[i] if i < len(labs) else f"trace_{i+1}"
-                ax.plot(rel_t, y, lw=1.25, alpha=0.95, label=lab)
+            if not np.isfinite(y).any():
+                continue
+            lab = labs[i] if i < len(labs) else f"trace_{i+1}"
+            # plot mean line first to capture color from matplotlib cycle
+            ln, = ax.plot(rel_t, y, lw=1.25, alpha=0.95, label=lab)
+            # if sems available and matching shape, draw shaded band
+            if sems is not None:
+                try:
+                    s = sems[i]
+                    if np.shape(s) == np.shape(y):
+                        col = ln.get_color()
+                        lo = y - s
+                        hi = y + s
+                        ax.fill_between(rel_t, lo, hi, color=col, alpha=0.22, linewidth=0.0)
+                except Exception:
+                    pass
 
         ax.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
         ax.axvspan(0.0, 100.0, color="0.7", alpha=0.15, zorder=0)  # light, behind data
@@ -330,16 +355,16 @@ def stacked_heatmaps_plus_behv(
 
             if sub == "cam0_pos":
                 _plot_lines(ax, beh_rel_time, beh_cam0_pos, title_kinematics or "",
-                            "Cam-0\nPosition Δ (z)", sub, place_legend_now)
+                            "Cam-0\nPosition Δ (z)", sub, place_legend_now, sems=beh_cam0_pos_sems, ylim=beh_ylim)
             elif sub == "cam1_pos":
                 _plot_lines(ax, beh_rel_time, beh_cam1_pos, title_cam1 or "",
-                            "Cam-1\nPosition Δ (z)", sub, place_legend_now)
+                            "Cam-1\nPosition Δ (z)", sub, place_legend_now, sems=beh_cam1_pos_sems, ylim=beh_ylim)
             elif sub == "cam0_vel":
                 _plot_lines(ax, beh_rel_time, beh_cam0_vel, title_cam0_vel or "",
-                            "Cam-0\nVelocity (z/ms)", sub, place_legend_now)
+                            "Cam-0\nVelocity (z/ms)", sub, place_legend_now, ylim=beh_ylim)
             elif sub == "cam1_vel":
                 _plot_lines(ax, beh_rel_time, beh_cam1_vel, title_cam1_vel or "",
-                            "Cam-1\nVelocity (z/ms)", sub, place_legend_now)
+                            "Cam-1\nVelocity (z/ms)", sub, place_legend_now, ylim=beh_ylim)
 
             if place_legend_now:
                 legend_placed = True
@@ -510,7 +535,7 @@ def stacked_heatmaps_plus_behv(
         # Fill the full gridspec cell (avoid letterboxing)
         ax_probe.set_aspect("auto")
         ax_probe.set_box_aspect(None)      # let the grid cell dictate height
-        ax_probe.margins(x=0.05, y=0.05)   # small padding
+        ax_probe.margins(x=0.05,y=0.05)   # small padding
 
         # ax_probe.set_xticks([])
         # ax_probe.set_yticks([])
