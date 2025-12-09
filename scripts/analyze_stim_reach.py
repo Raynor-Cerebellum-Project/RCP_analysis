@@ -142,7 +142,7 @@ def _safe_extract_segments(rate_hz, t_ms, stim_ms_in, win_ms, min_trials, normal
         rel_t = np.arange(win_ms[0], win_ms[1] + 1e-9, dt, dtype=float)
         return None, rel_t, 0
     try:
-        segs, rel_t = rcp.extract_peristim_segments(
+        segs, rel_t, _ = rcp.extract_peristim_segments(
             rate_hz=rate_hz, t_ms=t_ms, stim_ms=st, win_ms=win_ms, min_trials=min_trials
         )
     except RuntimeError as e:
@@ -177,7 +177,7 @@ def _safe_extract_segments_stat(rate_hz, t_ms, stim_ms_in, win_ms, min_trials, n
         return None, rel_t, 0
 
     try:
-        segs, rel_t = rcp.extract_peristim_segments(
+        segs, rel_t, _ = rcp.extract_peristim_segments(
             rate_hz=rate_hz, t_ms=t_ms, stim_ms=st, win_ms=win_ms, min_trials=min_trials
         )
     except RuntimeError as e:
@@ -1198,7 +1198,7 @@ def _median_behavior_line(series_on_common: np.ndarray,
     s = np.asarray(series_on_common, float)
 
     try:
-        segs, rel_t = rcp.extract_peristim_segments(
+        segs, rel_t, _ = rcp.extract_peristim_segments(
             s[None, :], t_common_ms, stim_ms, win_ms=win_ms, min_trials=min_trials
         )
     except RuntimeError as e:

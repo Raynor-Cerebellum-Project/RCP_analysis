@@ -12,23 +12,10 @@ PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", rep
 SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
 OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
 
-# ---------- Impedance loading ----------
-UA_IMP_MAX_KOHM = 1000.0        # threshold for excluding UA rows; adjust as needed
-EXCLUDE_UA_HIGH_Z = True       # set False to disable masking quickly
-
 KEYPOINTS_ORDER = tuple(PARAMS.kinematics.get("keypoints", []))  # [] if missing
-
-# Where the files live; mirror the other script:
-IMP_BASE = OUT_BASE.parents[0]  # same as your script (one level above OUT_BASE)
-IMP_FILES = {
-    "A": IMP_BASE / "Impedances" / "Utah_imp_Port_A",
-    "B": IMP_BASE / "Impedances" / "Utah_imp_Port_B",
-}
 
 # ---------- checkpoints / inputs ----------
 ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
-BEHAV_ROOT   = OUT_BASE / "checkpoints" / "Behavior" / "baseline_concat"
-NPRW_AUX_DATA   = OUT_BASE / "aux_data" / "NPRW"
 METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
 METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
 PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStim"; PERI_ROOT.mkdir(parents=True, exist_ok=True)
@@ -38,14 +25,22 @@ WIN_MS            = (-600.0, 600.0)
 NORMALIZE_FIRST_MS = 150.0
 MIN_TRIALS        = 1
 
+
+def _stims_mask_for_stream(stim_ms: np.ndarray, t_ms: np.ndarray,
+                           win_ms: tuple[float, float]) -> np.ndarray:
+    """Boolean mask over stim_ms for which [stim+win0, stim+win1] lies in t_ms."""
+    if stim_ms is None or t_ms is None or np.size(stim_ms) == 0 or np.size(t_ms) < 2:
+        return np.zeros(stim_ms.size if stim_ms is not None else 0, dtype=bool)
+    t0, t1 = float(t_ms[0]), float(t_ms[-1])
+    w0, w1 = float(win_ms[0]), float(win_ms[1])
+    return (stim_ms + w0 >= t0) & (stim_ms + w1 <= t1)
+
 def _filter_stims_for_stream(stim_ms: np.ndarray, t_ms: np.ndarray,
                              win_ms: tuple[float, float]) -> np.ndarray:
     """Keep only stims whose [stim+win0, stim+win1] lies fully within t_ms range."""
     if stim_ms is None or t_ms is None or np.size(stim_ms) == 0 or np.size(t_ms) < 2:
         return np.array([], dtype=float)
-    t0, t1 = float(t_ms[0]), float(t_ms[-1])
-    w0, w1 = float(win_ms[0]), float(win_ms[1])
-    mask = (stim_ms + w0 >= t0) & (stim_ms + w1 <= t1)
+    mask = _stims_mask_for_stream(stim_ms, t_ms, win_ms)
     return np.asarray(stim_ms, float)[mask]
 
 def _safe_extract_segments(rate_hz, t_ms, stim_ms_in, win_ms, min_trials, normalize_first_ms):
@@ -54,18 +49,18 @@ def _safe_extract_segments(rate_hz, t_ms, stim_ms_in, win_ms, min_trials, normal
     if st.size == 0:
         dt = float(np.nanmedian(np.diff(t_ms))) if np.size(t_ms) > 1 else 1.0
         rel_t = np.arange(win_ms[0], win_ms[1] + 1e-9, dt, dtype=float)
-        # med=None, n_trials=0, zeroed=None
-        return None, rel_t, 0, None
+        # med=None, var=None, n_trials=0, zeroed=None
+        return None, None, rel_t, 0, None
 
     try:
-        segs, rel_t = rcp.extract_peristim_segments(
+        segs, rel_t, _ = rcp.extract_peristim_segments(
             rate_hz=rate_hz, t_ms=t_ms, stim_ms=st, win_ms=win_ms, min_trials=min_trials
         )
     except RuntimeError as e:
         if "Only 0 peri-stim segments" in str(e):
             dt = float(np.nanmedian(np.diff(t_ms))) if np.size(t_ms) > 1 else 1.0
             rel_t = np.arange(win_ms[0], win_ms[1] + 1e-9, dt, dtype=float)
-            return None, rel_t, 0, None
+            return None, None, rel_t, 0, None
         raise
     
     zeroed = rcp.baseline_zero_each_trial(segs, rel_t, normalize_first_ms=normalize_first_ms)
@@ -79,46 +74,10 @@ def _safe_extract_segments(rate_hz, t_ms, stim_ms_in, win_ms, min_trials, normal
     min_bin_trials = min(min_bin_trials, n_events)
 
     med = rcp.median_across_trials(zeroed)              # (n_channels, T)
+    var = rcp.variance_across_trials(zeroed)
     med[valid_counts < min_bin_trials] = np.nan
-    return med, rel_t, int(segs.shape[0]), zeroed
-
-def _safe_extract_segments_stat(rate_hz, t_ms, stim_ms_in, win_ms, min_trials, normalize_first_ms, stat: str):
-    """
-    Like _safe_extract_segments, but returns an across-events statistic ("median" or "var")
-    over baseline-zeroed segments (axis=0). Returns (stat_mat, rel_t, n_trials_kept).
-    """
-    st = _filter_stims_for_stream(stim_ms_in, t_ms, win_ms)
-    if st.size == 0:
-        dt = float(np.nanmedian(np.diff(t_ms))) if np.size(t_ms) > 1 else 1.0
-        rel_t = np.arange(win_ms[0], win_ms[1] + 1e-9, dt, dtype=float)
-        return None, rel_t, 0
-
-    try:
-        segs, rel_t = rcp.extract_peristim_segments(
-            rate_hz=rate_hz, t_ms=t_ms, stim_ms=st, win_ms=win_ms, min_trials=min_trials
-        )
-    except RuntimeError as e:
-        if "Only 0 peri-stim segments" in str(e):
-            dt = float(np.nanmedian(np.diff(t_ms))) if np.size(t_ms) > 1 else 1.0
-            rel_t = np.arange(win_ms[0], win_ms[1] + 1e-9, dt, dtype=float)
-            return None, rel_t, 0
-        raise
-
-    zeroed = rcp.baseline_zero_each_trial(segs, rel_t, normalize_first_ms=normalize_first_ms)
-    # bin coverage
-    valid_counts = np.isfinite(zeroed).sum(axis=0)      # (n_channels, T)
-    n_events = zeroed.shape[0]
-    min_bin_trials = max(1, int(0.3 * n_events))
-    if stat == "median":
-        X = rcp.median_across_trials(zeroed)
-    elif stat == "var":
-        X = rcp.variance_across_trials(zeroed)
-    else:
-        raise ValueError("stat must be 'median' or 'var'")
-    # mask low-coverage bins
-    X[valid_counts < min_bin_trials] = np.nan
-    return X, rel_t, int(segs.shape[0])
-
+    var[valid_counts < min_bin_trials] = np.nan
+    return med, var, rel_t, int(segs.shape[0]), zeroed
 
 def _as_list(x):
     if x is None:
@@ -144,7 +103,7 @@ def _median_behavior_line(series_on_common: np.ndarray,
     s = np.asarray(series_on_common, float)
 
     try:
-        segs, rel_t = rcp.extract_peristim_segments(
+        segs, rel_t, _ = rcp.extract_peristim_segments(
             s[None, :], t_common_ms, stim_ms, win_ms=win_ms, min_trials=min_trials
         )
     except RuntimeError as e:
@@ -177,6 +136,7 @@ def _median_behavior_line(series_on_common: np.ndarray,
     segs = segs - np.nanmedian(segs[:, bl_mask], axis=1, keepdims=True)
     line = np.nanmedian(segs, axis=0)
     return line, rel_t, n_kept, segs
+
 
 def _median_lines_for_columns(series_on_common: np.ndarray,
                               t_common_ms: np.ndarray,
@@ -496,6 +456,214 @@ def build_title_from_csv(
 
     return ", ".join(parts), video_file
 
+def _compute_trial_labels_from_ts_state(
+    stim_ms: np.ndarray,
+    UA_t: np.ndarray,
+    ts_state_num_full: np.ndarray,
+    ts_state_char_arr: Optional[np.ndarray],
+    win_ms: tuple[float, float] = WIN_MS,
+) -> np.ndarray:
+    """
+    For each stim, look at ts_state in [stim+win0, stim+win1] on UA timebase
+    and assign majority label 'A', 'B', or 'N' (other/none).
+    Returns: labels : (n_stims,) array of 'A'/'B'/'N'.
+    """
+    stim_ms = np.asarray(stim_ms, float).ravel()
+    UA_t = np.asarray(UA_t, float).ravel()
+    ts_state_num_full = np.asarray(ts_state_num_full, int).ravel()
+
+    if stim_ms.size == 0 or UA_t.size == 0 or ts_state_num_full.size == 0:
+        return np.full(stim_ms.shape, "N", dtype="U1")
+
+    # mapping from state number -> char
+    mapping: dict[int, str] = {}
+    if ts_state_char_arr is not None:
+        arr = np.asarray(ts_state_char_arr)
+        if arr.ndim > 1:
+            arr = arr.reshape(-1)
+        n_min = min(arr.size, ts_state_num_full.size)
+        for n, c in zip(ts_state_num_full[:n_min], arr[:n_min]):
+            mapping[int(n)] = str(c)[0]
+    mapping_default = " "
+
+    labels = np.full(stim_ms.shape, "N", dtype="U1")
+    w0, w1 = float(win_ms[0]), float(win_ms[1])
+
+    for i, s in enumerate(stim_ms):
+        lo = s + w0
+        hi = s + w1
+        mask = (UA_t >= lo) & (UA_t <= hi)
+        if not mask.any():
+            continue
+        nums = ts_state_num_full[mask]
+        if nums.size == 0:
+            continue
+        chars = np.array([mapping.get(int(n), mapping_default) for n in nums], dtype="U1")
+        chars = chars[chars != " "]
+        if chars.size == 0:
+            continue
+        vals, counts = np.unique(chars, return_counts=True)
+        majority = vals[np.argmax(counts)]
+        if majority in ("A", "B"):
+            labels[i] = majority
+        else:
+            labels[i] = "N"
+    return labels
+
+def _subset_neural_from_zeroed(
+    zeroed: Optional[np.ndarray],
+    labels_stream: Optional[np.ndarray],
+    target_label: str,
+) -> tuple[np.ndarray, np.ndarray, int, np.ndarray]:
+    """
+    Given baseline-zeroed segments (n_events, n_channels, T) and per-event labels,
+    compute median+var for events with label == target_label.
+    Returns (med, var, n_events_label, zeroed_subset).
+    """
+    if zeroed is None or zeroed.size == 0 or labels_stream is None:
+        return (np.zeros((0, 0), float),
+                np.zeros((0, 0), float),
+                0,
+                np.zeros((0, 0, 0), float))
+    zeroed = np.asarray(zeroed, float)
+    labels_stream = np.asarray(labels_stream)
+    if zeroed.shape[0] != labels_stream.size:
+        # shape mismatch; bail gracefully
+        return (np.zeros((0, 0), float),
+                np.zeros((0, 0), float),
+                0,
+                np.zeros((0, 0, 0), float))
+
+    idx = np.where(labels_stream == target_label)[0]
+    if idx.size == 0:
+        return (np.zeros((zeroed.shape[1], zeroed.shape[2]), float),
+                np.zeros((zeroed.shape[1], zeroed.shape[2]), float),
+                0,
+                np.zeros((0, zeroed.shape[1], zeroed.shape[2]), float))
+
+    sub = zeroed[idx]  # (n_label, n_ch, T)
+
+    # coverage mask
+    valid_counts = np.isfinite(sub).sum(axis=0)  # (n_ch, T)
+    n_events = sub.shape[0]
+    min_bin_trials = max(1, int(0.3 * n_events))
+    min_bin_trials = min(min_bin_trials, n_events)
+
+    med = np.nanmedian(sub, axis=0)
+    var = np.nanvar(sub, axis=0)
+
+    med[valid_counts < min_bin_trials] = np.nan
+    var[valid_counts < min_bin_trials] = np.nan
+
+    return med, var, int(n_events), sub
+
+def _behavior_medians_for_label(
+    cam_z: np.ndarray,
+    behv_t: np.ndarray,
+    stim_ms: np.ndarray,
+    labels: np.ndarray,
+    target_label: str,
+) -> tuple[np.ndarray, np.ndarray, int, np.ndarray]:
+    """
+    Recompute behavior medians using only stims with labels==target_label.
+    """
+    if cam_z is None or cam_z.size == 0 or stim_ms.size == 0:
+        return (np.zeros((0, 0), float),
+                np.zeros(0, float),
+                0,
+                np.zeros((0, 0, 0), float))
+    mask = (labels == target_label)
+    if not mask.any():
+        return (np.zeros((cam_z.shape[1] if cam_z.ndim == 2 else 0, 0), float),
+                np.zeros(0, float),
+                0,
+                np.zeros((0, 0, 0), float))
+
+    stim_label = stim_ms[mask]
+    lines, rel_t, n_trials, segs = _median_lines_for_columns(cam_z, behv_t, stim_label)
+    return lines, rel_t, n_trials, segs
+
+def _behavior_valid_mask_from_cam0(
+    cam0_z: np.ndarray,
+    behv_t: np.ndarray,
+    stim_ms: np.ndarray,
+    win_ms: Tuple[float, float] = WIN_MS,
+    baseline_ms: float = NORMALIZE_FIRST_MS,
+    min_trials: int = MIN_TRIALS,
+) -> np.ndarray:
+    """
+    Decide which stim events have 'good' behavior traces based on cam0_z.
+
+    Steps:
+      1. Use RCP_analysis.extract_peristim_segments to find the subset of stims
+         that produce valid, full-length windows on the behavior timebase.
+      2. Among those, keep only events whose baseline window has at least one finite value.
+      3. Map that decision back to a boolean mask over the original stim_ms array.
+
+    Returns:
+      mask : (n_stims,) bool, True where behavior is usable.
+    """
+    stim_all = np.asarray(stim_ms, float).ravel()
+    if stim_all.size == 0:
+        return np.zeros(0, dtype=bool)
+
+    if cam0_z is None or cam0_z.size == 0 or behv_t.size < 2:
+        # no behavior info to gate with → keep all stims
+        return np.ones(stim_all.shape, dtype=bool)
+
+    cam0_z = np.asarray(cam0_z, float)
+    if cam0_z.ndim == 2:
+        series = cam0_z[:, 0]  # first column as proxy
+    elif cam0_z.ndim == 1:
+        series = cam0_z
+    else:
+        return np.ones(stim_all.shape, dtype=bool)
+
+    try:
+        segs, rel_t, stim_valid = rcp.extract_peristim_segments(
+            series[None, :],   # (1, T)
+            behv_t,
+            stim_all,
+            win_ms=win_ms,
+            min_trials=min_trials,
+        )
+    except RuntimeError as e:
+        if "Only 0 peri-stim segments" in str(e):
+            # nothing extractable on behavior → consider all bad
+            return np.zeros(stim_all.shape, dtype=bool)
+        raise
+
+    if segs.size == 0 or stim_valid.size == 0:
+        return np.zeros(stim_all.shape, dtype=bool)
+
+    # segs: (n_events_valid, 1, T) → (n_events_valid, T)
+    segs = segs[:, 0, :]
+
+    # baseline window on the relative time axis
+    bl_mask = (rel_t >= rel_t[0]) & (rel_t <= baseline_ms)
+    if not bl_mask.any():
+        step = max(
+            1,
+            int(round(baseline_ms / (np.nanmedian(np.diff(rel_t)) if rel_t.size > 1 else 1.0))),
+        )
+        bl_mask = np.zeros_like(rel_t, bool)
+        bl_mask[:step] = True
+
+    # For each valid stim, require at least one finite baseline sample
+    keep_valid = np.isfinite(segs[:, bl_mask]).any(axis=1)
+
+    # Now map back to a mask over the original stim_ms
+    mask_beh = np.zeros(stim_all.shape, dtype=bool)
+    stim_kept = stim_valid[keep_valid]
+
+    for s in np.asarray(stim_kept, float):
+        idx = np.where(np.isclose(stim_all, s, rtol=0.0, atol=1e-6))[0]
+        if idx.size:
+            # If duplicates ever existed, this marks the first occurrence.
+            mask_beh[idx[0]] = True
+
+    return mask_beh
+
 def extract_one_file(aligned_path: Path) -> None:
     """
     Load aligned__*.npz, compute peri-stim med/var for NPRW+UA,
@@ -510,6 +678,7 @@ def extract_one_file(aligned_path: Path) -> None:
     stim_ms = rcp.aligned_stim_ms(stim_ms_abs, meta)
 
     # ---- load aligned file for behavior / VOG / ts_state ----
+        # ---- load aligned file for behavior / VOG / ts_state ----
     with np.load(aligned_path, allow_pickle=True) as z:
         # behavior
         cam0      = z.get("beh_cam0", np.zeros((0, 0), np.float32)).astype(float)
@@ -520,13 +689,13 @@ def extract_one_file(aligned_path: Path) -> None:
         cam1_cols = [str(x) for x in _as_list(raw1)]
         behv_t    = z["beh_t_ms"].astype(float) if "beh_t_ms" in z.files else np.arange(0.0)
 
-        # VOG (already on a ms grid)
+        # VOG
         vog_cols      = z.get("vog_cols", np.zeros((0, 0), np.float32)).astype(float)
         vog_t_ms      = z.get("vog_t_ms", np.zeros(0, np.float32)).astype(float)
         vog_raw_names = z.get("vog_col_names", None)
         vog_col_names = [str(x) for x in _as_list(vog_raw_names)]
 
-        # ts_state on UA timebase (same length as ua_t_ms / ua_t_ms_aligned)
+        # ts_state on UA timebase
         ts_state_num  = z.get("ts_state_num", None)
         ts_state_char = z.get("ts_state_char", None)
 
@@ -534,6 +703,16 @@ def extract_one_file(aligned_path: Path) -> None:
         ua_ids_1based = z.get("ua_elec", None)
         if ua_ids_1based is not None:
             ua_ids_1based = np.asarray(ua_ids_1based, dtype=int).ravel()
+
+        # prepare ts_state arrays but delay label computation until after stim gating
+        ts_state_num_full = None
+        ts_state_char_arr = None
+        if ts_state_num is not None and np.size(ts_state_num):
+            ts_state_num_full = np.asarray(ts_state_num).astype(int).ravel()
+        if ts_state_char is not None:
+            ts_state_char_arr = np.asarray(ts_state_char)
+            if ts_state_char_arr.ndim > 1:
+                ts_state_char_arr = ts_state_char_arr.reshape(-1)
 
 
     # ---- quick alignment debug prints ----
@@ -548,7 +727,6 @@ def extract_one_file(aligned_path: Path) -> None:
         f"NPRW_t_end={_end_or_nan(NPRW_t):.3f} ms, "
         f"UA_t_end={_end_or_nan(UA_t):.3f} ms"
     )
-
 
     # ---- basic behavior checks ----
     if behv_t.size == 0:
@@ -565,27 +743,70 @@ def extract_one_file(aligned_path: Path) -> None:
     cam0_z = _z_per_column(cam0_M) if cam0_M.size else cam0_M
     cam1_z = _z_per_column(cam1_M) if cam1_M.size else cam1_M
 
+    # ---- behavior-based stim gating: drop bad behavior trials everywhere ----
+    stim_ms     = np.asarray(stim_ms, float).ravel()
+    stim_ms_abs = np.asarray(stim_ms_abs, float).ravel()
+
+    if stim_ms.size and behv_t.size and cam0_z.size:
+        beh_mask = _behavior_valid_mask_from_cam0(
+            cam0_z,
+            behv_t,
+            stim_ms,
+            win_ms=WIN_MS,
+            baseline_ms=NORMALIZE_FIRST_MS,
+            min_trials=MIN_TRIALS,
+        )
+        n_keep = int(beh_mask.sum())
+        if n_keep == 0:
+            print(
+                f"[extract] {aligned_path.name}: behavior gating would remove all stims; "
+                "keeping original stim list."
+            )
+        elif n_keep < stim_ms.size:
+            print(
+                f"[extract] {aligned_path.name}: behavior gating kept "
+                f"{n_keep}/{stim_ms.size} stims."
+            )
+            stim_ms = stim_ms[beh_mask]
+            if stim_ms_abs.size == beh_mask.size:
+                stim_ms_abs = stim_ms_abs[beh_mask]
+            else:
+                print(
+                    f"[extract] {aligned_path.name}: warning stim_ms_abs length mismatch; "
+                    "not gating stim_ms_abs."
+                )
+        # if n_keep == stim_ms.size: nothing to change
+    
+    cam0_pos_filt, cam0_vel, _ = rcp.butter_lowpass_pos_and_vel(cam0_z, behv_t, cutoff_hz=10.0, order=3)
+    cam1_pos_filt, cam1_vel, _ = rcp.butter_lowpass_pos_and_vel(cam1_z, behv_t, cutoff_hz=10.0, order=3)
+
     # ---- behavior median lines (pos+vel) + segments ----
-    beh_cam0_pos_med, beh_rel_t, _, beh_cam0_segs = _median_lines_for_columns(
-        cam0_z, behv_t, stim_ms
-    )
-    beh_cam1_pos_med, _, _, beh_cam1_segs = _median_lines_for_columns(
-        cam1_z, behv_t, stim_ms
-    )
 
-    cam0_pos_filt, cam0_vel, _ = rcp.butter_lowpass_pos_and_vel(
-        cam0_z, behv_t, cutoff_hz=10.0, order=3
-    )
-    cam1_pos_filt, cam1_vel, _ = rcp.butter_lowpass_pos_and_vel(
-        cam1_z, behv_t, cutoff_hz=10.0, order=3
-    )
+    # ---- compute labels A/B/N per stim from ts_state on UA timebase (after gating) ----
+    if ts_state_num_full is not None and np.size(UA_t) and stim_ms.size:
+        trial_labels = _compute_trial_labels_from_ts_state(
+            stim_ms=stim_ms,
+            UA_t=UA_t,
+            ts_state_num_full=ts_state_num_full,
+            ts_state_char_arr=ts_state_char_arr,
+            win_ms=WIN_MS,
+        )
+    else:
+        trial_labels = np.full(stim_ms.shape, "N", dtype="U1")
 
-    beh_cam0_vel_med, _, _, _ = _median_lines_for_columns(
-        cam0_vel, behv_t, stim_ms
-    )
-    beh_cam1_vel_med, _, _, _ = _median_lines_for_columns(
-        cam1_vel, behv_t, stim_ms
-    )
+    # ---- A/B behavior medians (position) ----
+    beh_cam0_pos_med_A, beh_rel_t_A, n_beh_A, beh_cam0_segs_A = _behavior_medians_for_label(cam0_z, behv_t, stim_ms, trial_labels, "A")
+    beh_cam0_pos_med_B, beh_rel_t_B, n_beh_B, beh_cam0_segs_B = _behavior_medians_for_label(cam0_z, behv_t, stim_ms, trial_labels, "B")
+
+    beh_cam1_pos_med_A, _, _, beh_cam1_segs_A = _behavior_medians_for_label(cam1_z, behv_t, stim_ms, trial_labels, "A")
+    beh_cam1_pos_med_B, _, _, beh_cam1_segs_B = _behavior_medians_for_label(cam1_z, behv_t, stim_ms, trial_labels, "B")
+
+    # ---- A/B behavior medians (velocity) ----
+    beh_cam0_vel_med_A, _, _, _ = _behavior_medians_for_label(cam0_vel, behv_t, stim_ms, trial_labels, "A")
+    beh_cam0_vel_med_B, _, _, _ = _behavior_medians_for_label(cam0_vel, behv_t, stim_ms, trial_labels, "B")
+
+    beh_cam1_vel_med_A, _, _, _ = _behavior_medians_for_label(cam1_vel, behv_t, stim_ms, trial_labels, "A")
+    beh_cam1_vel_med_B, _, _, _ = _behavior_medians_for_label(cam1_vel, behv_t, stim_ms, trial_labels, "B")
 
     # ---- VOG peri-stim (median lines + segments) ----
     if vog_cols.size and vog_t_ms.size:
@@ -595,9 +816,7 @@ def extract_one_file(aligned_path: Path) -> None:
         # keep only stims whose [stim+WIN0, stim+WIN1] lies fully within VOG range
         stim_vog = _filter_stims_for_stream(stim_ms_abs, vog_t_ms, WIN_MS)
 
-        vog_med, vog_rel_t, n_vog_trials, vog_segs = _median_lines_for_columns(
-            vog_z, vog_t_ms, stim_vog
-        )
+        vog_med, vog_rel_t, n_vog_trials, vog_segs = _median_lines_for_columns(vog_z, vog_t_ms, stim_vog)
     else:
         vog_med       = np.zeros((0, 0), float)
         vog_rel_t     = np.zeros(0, float)
@@ -605,29 +824,16 @@ def extract_one_file(aligned_path: Path) -> None:
         n_vog_trials  = 0
 
 
-        # ---- ts_state peri-stim segments (numeric + char) ----
+    # ---- ts_state peri-stim segments (numeric + char) ----
     ts_state_rel_t      = np.zeros(0, float)
     ts_state_segs       = np.zeros((0, 0), float)
     ts_state_char_segs  = np.zeros((0, 0), dtype="U1")
     n_ts_state_trls     = 0
-    ts_state_num_full   = None
 
-    if ts_state_num is not None and np.size(ts_state_num) and np.size(UA_t):
-        # full 1D arrays
-        ts_state_num_full = np.asarray(ts_state_num).astype(int).ravel()
-
-        ts_state_char_full = ts_state_char
-        if ts_state_char_full is not None:
-            ts_state_char_arr = np.asarray(ts_state_char_full)
-            # flatten to 1D of per-sample chars if needed
-            if ts_state_char_arr.ndim > 1:
-                ts_state_char_arr = ts_state_char_arr.reshape(-1)
-        else:
-            ts_state_char_arr = None
-
+    if ts_state_num_full is not None and np.size(UA_t):
         # peri-stim numeric segments on UA timebase
         try:
-            segs_ts, ts_state_rel_t = rcp.extract_peristim_segments(
+            segs_ts, ts_state_rel_t, _ = rcp.extract_peristim_segments(
                 ts_state_num_full.reshape(1, -1),  # (1, T)
                 UA_t,
                 stim_ms,
@@ -644,15 +850,13 @@ def extract_one_file(aligned_path: Path) -> None:
 
         # build char segments if we have a char time series
         if ts_state_segs.size and ts_state_char_arr is not None:
-            # mapping: state number -> representative char
             mapping: dict[int, str] = {}
             if ts_state_char_arr.size == ts_state_num_full.size:
                 for n, c in zip(ts_state_num_full, ts_state_char_arr):
                     n_int = int(n)
-                    ch = str(c)[0]  # first character
+                    ch = str(c)[0]
                     if n_int not in mapping:
                         mapping[n_int] = ch
-            # default for unknown states
             mapping_default = " "
 
             n_events, T = ts_state_segs.shape
@@ -661,59 +865,115 @@ def extract_one_file(aligned_path: Path) -> None:
                 for j in range(T):
                     n_ij = int(ts_state_segs[i, j])
                     ts_state_char_segs[i, j] = mapping.get(n_ij, mapping_default)
+                    
+    # ---- ts_state A/B subsets ----
+    ts_state_segs_A      = np.zeros_like(ts_state_segs[:0, :])  # (0, T) if T known, else (0, 0)
+    ts_state_segs_B      = np.zeros_like(ts_state_segs[:0, :])
+    ts_state_char_segs_A = np.zeros_like(ts_state_char_segs[:0, :])
+    ts_state_char_segs_B = np.zeros_like(ts_state_char_segs[:0, :])
+    n_ts_state_trls_A    = 0
+    n_ts_state_trls_B    = 0
+
+    if ts_state_segs.size and stim_ms.size and np.size(UA_t):
+        # map trial_labels (per-stim) onto ts_state event axis via the same mask used for UA
+        mask_ts = _stims_mask_for_stream(stim_ms, UA_t, WIN_MS)
+        if mask_ts.size == trial_labels.size and mask_ts.sum() == ts_state_segs.shape[0]:
+            labels_ts = trial_labels[mask_ts]
+
+            # A subset
+            idx_A = np.where(labels_ts == "A")[0]
+            if idx_A.size:
+                ts_state_segs_A = ts_state_segs[idx_A]
+                if ts_state_char_segs.size and ts_state_char_segs.shape == ts_state_segs.shape:
+                    ts_state_char_segs_A = ts_state_char_segs[idx_A]
+                n_ts_state_trls_A = int(idx_A.size)
+
+            # B subset
+            idx_B = np.where(labels_ts == "B")[0]
+            if idx_B.size:
+                ts_state_segs_B = ts_state_segs[idx_B]
+                if ts_state_char_segs.size and ts_state_char_segs.shape == ts_state_segs.shape:
+                    ts_state_char_segs_B = ts_state_char_segs[idx_B]
+                n_ts_state_trls_B = int(idx_B.size)
+        else:
+            # shape mismatch; keep A/B as empty
+            print(
+                f"[warn] ts_state label mapping mismatch for {aligned_path.name}: "
+                f"mask_ts.sum()={mask_ts.sum()}, ts_state_segs.shape[0]={ts_state_segs.shape[0]}, "
+                f"trial_labels.size={trial_labels.size}"
+            )
 
     # ---- NPRW/UA peri-stim med + var ----
-    NPRW_med, nprw_rel_t, n_nprw, nprw_zeroed = _safe_extract_segments(
+    _, _, nprw_rel_t, _, nprw_zeroed = _safe_extract_segments(
         NPRW_rate, NPRW_t, stim_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS
     )
-    UA_med, ua_rel_t, n_ua, ua_zeroed = _safe_extract_segments(
+    _, _, ua_rel_t, _, ua_zeroed = _safe_extract_segments(
         UA_rate, UA_t, stim_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS
     )
 
-    NPRW_var, nprw_rel_t_var, n_nprw_var = _safe_extract_segments_stat(
-        NPRW_rate, NPRW_t, stim_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS, stat="var"
-    )
-    UA_var, ua_rel_t_var, n_ua_var = _safe_extract_segments_stat(
-        UA_rate, UA_t, stim_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS, stat="var"
-    )
+    # labels on NPRW event axis
+    mask_nprw = _stims_mask_for_stream(stim_ms, NPRW_t, WIN_MS)
+    labels_nprw = trial_labels[mask_nprw] if trial_labels is not None else None
+
+    # labels on UA event axis
+    mask_ua = _stims_mask_for_stream(stim_ms, UA_t, WIN_MS)
+    labels_ua = trial_labels[mask_ua] if trial_labels is not None else None
+
+    # A/B subsets for NPRW
+    NPRW_med_A, NPRW_var_A, n_nprw_A, NPRW_zeroed_A = _subset_neural_from_zeroed(nprw_zeroed, labels_nprw, "A")
+    NPRW_med_B, NPRW_var_B, n_nprw_B, NPRW_zeroed_B = _subset_neural_from_zeroed(nprw_zeroed, labels_nprw, "B")
+
+    # A/B subsets for UA
+    UA_med_A, UA_var_A, n_ua_A, UA_zeroed_A = _subset_neural_from_zeroed(ua_zeroed, labels_ua, "A")
+    UA_med_B, UA_var_B, n_ua_B, UA_zeroed_B = _subset_neural_from_zeroed(ua_zeroed, labels_ua, "B")
 
     # ---- metadata for titles ----
     try:
-        overall_title, video_file = build_title_from_csv(
+        overall_title, _ = build_title_from_csv(
             METADATA_CSV, br_file=meta.get("br_idx")
         )
     except Exception as e:
         print(f"[warn] metadata parse failed for BR {br_idx}: {e}")
-        overall_title, video_file = (
+        overall_title, _ = (
             "Condition: n/a, n/a Hz, n/a µA, n/a mm, n/a ms, Delay: 0 ms",
             None,
         )
 
-    # ---- package and save ----
-    peribase = f"peristim__{sess}__BR_{int(br_idx):03d}"
-    out_npz  = PERI_ROOT / f"{peribase}.npz"
-    out_mat  = PERI_ROOT / f"{peribase}.mat"
+    
+    # ------------------------------------------------------------------
+    # Per-target files: Target A and Target B
+    # ------------------------------------------------------------------
+    targetA_dir = PERI_ROOT / "Target A"
+    targetB_dir = PERI_ROOT / "Target B"
+    targetA_dir.mkdir(parents=True, exist_ok=True)
+    targetB_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---------- Target A ----------
+    peribase_A = f"peristim__{sess}__BR_{int(br_idx):03d}_target_A"
+    out_npz_A  = targetA_dir / f"{peribase_A}.npz"
+    out_mat_A  = targetA_dir / f"{peribase_A}.mat"
 
     np.savez_compressed(
-        out_npz,
+        out_npz_A,
         sess=sess,
         br_idx=int(br_idx),
         overall_title=overall_title,
         stim_ms=stim_ms,
         meta=meta,
 
-        # behavior
-        beh_rel_t=beh_rel_t,
-        beh_cam0_pos_med=beh_cam0_pos_med,
-        beh_cam1_pos_med=beh_cam1_pos_med,
-        beh_cam0_vel_med=beh_cam0_vel_med,
-        beh_cam1_vel_med=beh_cam1_vel_med,
-        beh_cam0_segs=beh_cam0_segs,
-        beh_cam1_segs=beh_cam1_segs,
+        # behavior (A only, mapped to generic field names)
+        n_beh=n_beh_A,
+        beh_rel_t=beh_rel_t_A,
+        beh_cam0_pos_med=beh_cam0_pos_med_A,
+        beh_cam1_pos_med=beh_cam1_pos_med_A,
+        beh_cam0_vel_med=beh_cam0_vel_med_A,
+        beh_cam1_vel_med=beh_cam1_vel_med_A,
+        beh_cam0_segs=beh_cam0_segs_A,
+        beh_cam1_segs=beh_cam1_segs_A,
         beh_cam0_names=np.array(cam0_names, dtype=object),
         beh_cam1_names=np.array(cam1_names, dtype=object),
 
-        # VOG
+        # VOG and ts_state (shared)
         vog_rel_t=vog_rel_t,
         vog_med=vog_med,
         vog_segs=vog_segs,
@@ -721,49 +981,47 @@ def extract_one_file(aligned_path: Path) -> None:
         vog_col_names=np.array(vog_col_names, dtype=object),
         n_vog_trials=int(n_vog_trials),
 
-        # ts_state
         ts_state_rel_t=ts_state_rel_t,
-        ts_state_segs=ts_state_segs,
-        ts_state_char_segs=ts_state_char_segs,
-        ts_state_char=ts_state_char,  # full series, for reference
+        ts_state_segs=ts_state_segs_A,
+        ts_state_char_segs=ts_state_char_segs_A,
+        ts_state_char=ts_state_char,
         ts_state_num=ts_state_num_full if ts_state_num is not None else np.array([], int),
-        n_ts_state_trials=int(n_ts_state_trls),
+        n_ts_state_trials=int(n_ts_state_trls_A),
+        trial_labels=np.array(trial_labels, dtype="U1"),  # still full stim labels
 
-        # NPRW / UA summary
-        NPRW_med=NPRW_med if NPRW_med is not None else np.zeros((0, 0), float),
-        NPRW_var=NPRW_var if NPRW_var is not None else np.zeros((0, 0), float),
-        NPRW_zeroed=nprw_zeroed if nprw_zeroed is not None else np.zeros((0, 0, 0), float),
+        # NPRW / UA (A only)
+        NPRW_med=NPRW_med_A,
+        NPRW_var=NPRW_var_A,
+        NPRW_zeroed=NPRW_zeroed_A,
         NPRW_rel_t=nprw_rel_t,
-        n_nprw=int(n_nprw),
-        
-        UA_med=UA_med if UA_med is not None else np.zeros((0, 0), float),
-        UA_var=UA_var if UA_var is not None else np.zeros((0, 0), float),
-        UA_zeroed=ua_zeroed if ua_zeroed is not None else np.zeros((0, 0, 0), float),
+        n_nprw=int(n_nprw_A),
+
+        UA_med=UA_med_A,
+        UA_var=UA_var_A,
+        UA_zeroed=UA_zeroed_A,
         UA_rel_t=ua_rel_t,
-        n_ua=int(n_ua),
+        n_ua=int(n_ua_A),
         ua_ids_1based=ua_ids_1based if ua_ids_1based is not None else np.array([], int),
     )
-    print(f"[extract] wrote {out_npz}")
+    print(f"[extract] wrote {out_npz_A}")
 
-    # MATLAB version
-    mat_dict = {
+    mat_A = {
         "sess":          np.array(sess, dtype=object),
         "br_idx":        int(br_idx),
         "overall_title": np.array(overall_title, dtype=object),
         "stim_ms":       stim_ms,
-
-        # behavior
-        "beh_rel_t":     beh_rel_t,
-        "beh_cam0_pos_med": beh_cam0_pos_med,
-        "beh_cam1_pos_med": beh_cam1_pos_med,
-        "beh_cam0_vel_med": beh_cam0_vel_med,
-        "beh_cam1_vel_med": beh_cam1_vel_med,
-        "beh_cam0_segs": beh_cam0_segs,
-        "beh_cam1_segs": beh_cam1_segs,
+        
+        "n_beh":       n_beh_A,
+        "beh_rel_t":     beh_rel_t_A,
+        "beh_cam0_pos_med": beh_cam0_pos_med_A,
+        "beh_cam1_pos_med": beh_cam1_pos_med_A,
+        "beh_cam0_vel_med": beh_cam0_vel_med_A,
+        "beh_cam1_vel_med": beh_cam1_vel_med_A,
+        "beh_cam0_segs": beh_cam0_segs_A,
+        "beh_cam1_segs": beh_cam1_segs_A,
         "beh_cam0_names": np.array(cam0_names, dtype=object),
         "beh_cam1_names": np.array(cam1_names, dtype=object),
 
-        # VOG
         "vog_rel_t":     vog_rel_t,
         "vog_med":       vog_med,
         "vog_segs":      vog_segs,
@@ -771,31 +1029,132 @@ def extract_one_file(aligned_path: Path) -> None:
         "vog_col_names": np.array(vog_col_names, dtype=object),
         "n_vog_trials":  int(n_vog_trials),
 
-        # ts_state
         "ts_state_rel_t":      ts_state_rel_t,
-        "ts_state_segs":       ts_state_segs,
-        "ts_state_char_segs":  ts_state_char_segs,
+        "ts_state_segs":       ts_state_segs_A,
+        "ts_state_char_segs":  ts_state_char_segs_A,
         "ts_state_char":       ts_state_char,
         "ts_state_num":        ts_state_num_full if ts_state_num is not None else np.array([], int),
-        "n_ts_state_trials":   int(n_ts_state_trls),
+        "n_ts_state_trials":   int(n_ts_state_trls_A),
+        "trial_labels":        trial_labels,
 
-        # NPRW/UA
-        "NPRW_med":      NPRW_med if NPRW_med is not None else np.zeros((0, 0), float),
-        "NPRW_var":      NPRW_var if NPRW_var is not None else np.zeros((0, 0), float),
-        "NPRW_zeroed":   nprw_zeroed if nprw_zeroed is not None else np.zeros((0, 0, 0), float),
+        "NPRW_med":      NPRW_med_A,
+        "NPRW_var":      NPRW_var_A,
+        "NPRW_zeroed":   NPRW_zeroed_A,
         "NPRW_rel_t":    nprw_rel_t,
-        "n_nprw":        int(n_nprw),
-        
-        "UA_med":        UA_med if UA_med is not None else np.zeros((0, 0), float),
-        "UA_var":        UA_var if UA_var is not None else np.zeros((0, 0), float),
-        "UA_zeroed":     ua_zeroed if ua_zeroed is not None else np.zeros((0, 0, 0), float),
+        "n_nprw":        int(n_nprw_A),
+
+        "UA_med":        UA_med_A,
+        "UA_var":        UA_var_A,
+        "UA_zeroed":     UA_zeroed_A,
         "UA_rel_t":      ua_rel_t,
-        "n_ua":          int(n_ua),
+        "n_ua":          int(n_ua_A),
         "ua_ids_1based": ua_ids_1based if ua_ids_1based is not None else np.array([], int),
     }
-    savemat(out_mat, mat_dict, do_compression=True)
-    print(f"[extract] wrote {out_mat}")
+    savemat(out_mat_A, mat_A, do_compression=True)
+    print(f"[extract] wrote {out_mat_A}")
 
+    # ---------- Target B ----------
+    peribase_B = f"peristim__{sess}__BR_{int(br_idx):03d}_target_B"
+    out_npz_B  = targetB_dir / f"{peribase_B}.npz"
+    out_mat_B  = targetB_dir / f"{peribase_B}.mat"
+
+    np.savez_compressed(
+        out_npz_B,
+        sess=sess,
+        br_idx=int(br_idx),
+        overall_title=overall_title,
+        stim_ms=stim_ms,
+        meta=meta,
+
+        n_beh=n_beh_B,
+        beh_rel_t=beh_rel_t_B,
+        beh_cam0_pos_med=beh_cam0_pos_med_B,
+        beh_cam1_pos_med=beh_cam1_pos_med_B,
+        beh_cam0_vel_med=beh_cam0_vel_med_B,
+        beh_cam1_vel_med=beh_cam1_vel_med_B,
+        beh_cam0_segs=beh_cam0_segs_B,
+        beh_cam1_segs=beh_cam1_segs_B,
+        beh_cam0_names=np.array(cam0_names, dtype=object),
+        beh_cam1_names=np.array(cam1_names, dtype=object),
+
+        vog_rel_t=vog_rel_t,
+        vog_med=vog_med,
+        vog_segs=vog_segs,
+        vog_cols=vog_cols,
+        vog_col_names=np.array(vog_col_names, dtype=object),
+        n_vog_trials=int(n_vog_trials),
+
+        ts_state_rel_t=ts_state_rel_t,
+        ts_state_segs=ts_state_segs_B,
+        ts_state_char_segs=ts_state_char_segs_B,
+        ts_state_char=ts_state_char,
+        ts_state_num=ts_state_num_full if ts_state_num is not None else np.array([], int),
+        n_ts_state_trials=int(n_ts_state_trls_B),
+        trial_labels=np.array(trial_labels, dtype="U1"),
+
+        NPRW_med=NPRW_med_B,
+        NPRW_var=NPRW_var_B,
+        NPRW_zeroed=NPRW_zeroed_B,
+        NPRW_rel_t=nprw_rel_t,
+        n_nprw=int(n_nprw_B),
+
+        UA_med=UA_med_B,
+        UA_var=UA_var_B,
+        UA_zeroed=UA_zeroed_B,
+        UA_rel_t=ua_rel_t,
+        n_ua=int(n_ua_B),
+        ua_ids_1based=ua_ids_1based if ua_ids_1based is not None else np.array([], int),
+    )
+    print(f"[extract] wrote {out_npz_B}")
+
+    mat_B = {
+        "sess":          np.array(sess, dtype=object),
+        "br_idx":        int(br_idx),
+        "overall_title": np.array(overall_title, dtype=object),
+        "stim_ms":       stim_ms,
+
+        "n_beh":         n_beh_B,
+        "beh_rel_t":     beh_rel_t_B,
+        "beh_cam0_pos_med": beh_cam0_pos_med_B,
+        "beh_cam1_pos_med": beh_cam1_pos_med_B,
+        "beh_cam0_vel_med": beh_cam0_vel_med_B,
+        "beh_cam1_vel_med": beh_cam1_vel_med_B,
+        "beh_cam0_segs": beh_cam0_segs_B,
+        "beh_cam1_segs": beh_cam1_segs_B,
+        "beh_cam0_names": np.array(cam0_names, dtype=object),
+        "beh_cam1_names": np.array(cam1_names, dtype=object),
+
+        "vog_rel_t":     vog_rel_t,
+        "vog_med":       vog_med,
+        "vog_segs":      vog_segs,
+        "vog_cols":      vog_cols,
+        "vog_col_names": np.array(vog_col_names, dtype=object),
+        "n_vog_trials":  int(n_vog_trials),
+
+        "ts_state_rel_t":      ts_state_rel_t,
+        "ts_state_segs":       ts_state_segs_B,
+        "ts_state_char_segs":  ts_state_char_segs_B,
+        "ts_state_char":       ts_state_char,
+        "ts_state_num":        ts_state_num_full if ts_state_num is not None else np.array([], int),
+        "n_ts_state_trials":   int(n_ts_state_trls_B),
+        "trial_labels":        trial_labels,
+
+        "NPRW_med":      NPRW_med_B,
+        "NPRW_var":      NPRW_var_B,
+        "NPRW_zeroed":   NPRW_zeroed_B,
+        "NPRW_rel_t":    nprw_rel_t,
+        "n_nprw":        int(n_nprw_B),
+
+        "UA_med":        UA_med_B,
+        "UA_var":        UA_var_B,
+        "UA_zeroed":     UA_zeroed_B,
+        "UA_rel_t":      ua_rel_t,
+        "n_ua":          int(n_ua_B),
+        "ua_ids_1based": ua_ids_1based if ua_ids_1based is not None else np.array([], int),
+    }
+    savemat(out_mat_B, mat_B, do_compression=True)
+    print(f"[extract] wrote {out_mat_B}")
+    
 def main():
     files = sorted(ALIGNED_ROOT.glob("aligned__*.npz"))
     if not files:

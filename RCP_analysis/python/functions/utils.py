@@ -525,45 +525,50 @@ def extract_peristim_segments(
     min_trials: int = 1,
 ):
     """
-    Return segments shape (n_trials, n_ch, n_twin) and rel_time_ms shape (n_twin,).
-    Skips triggers whose window falls outside t_ms.
+    Return:
+      segments      : (n_trials, n_ch, n_twin)
+      rel_time_ms   : (n_twin,)
+      stim_ms_valid : (n_trials,) subset of stim_ms that produced valid segments
+
+    Skips triggers whose window falls outside t_ms or whose slice length
+    doesn't match the expected window length.
     """
     t_min, t_max = float(t_ms[0]), float(t_ms[-1])
     seg_len_ms = win_ms[1] - win_ms[0]
 
-    # Relative timebase for a *perfectly* aligned segment (used only for plotting/logic)
-    # We will slice on t_ms for each trial, so segment lengths are equal if t_ms is uniform.
     # Assume uniform binning for rates:
     dt = float(np.nanmedian(np.diff(t_ms)))  # ms per bin
     n_twin = int(round(seg_len_ms / dt))
     rel_time_ms = np.arange(n_twin) * dt + win_ms[0]
 
     segments = []
-    kept = 0
+    stim_valid = []
     for s in np.asarray(stim_ms, dtype=float):
         start_ms = s + win_ms[0]
         end_ms   = s + win_ms[1]
         if start_ms < t_min or end_ms > t_max:
-            continue  # skip partial windows
-        
-        ## Stim alignment is wrong?
+            # skip partial windows
+            continue
 
         # slice indices on t_ms
         i0 = int(np.searchsorted(t_ms, start_ms, side="left"))
         i1 = int(np.searchsorted(t_ms, end_ms,   side="left"))
-        seg = rate_hz[:, i0:i1]  # (n_ch, n_twin)
+        seg = rate_hz[:, i0:i1]  # (n_ch, maybe n_twin)
+
         # Safety: ensure equal length (can happen if boundary falls between bins)
         if seg.shape[1] != n_twin:
             continue
 
         segments.append(seg)
-        kept += 1
+        stim_valid.append(s)
 
+    kept = len(segments)
     if kept < min_trials:
         raise RuntimeError(f"Only {kept} peri-stim segments available (min_trials={min_trials}).")
 
     segments = np.stack(segments, axis=0)  # (n_trials, n_ch, n_twin)
-    return segments, rel_time_ms
+    stim_ms_valid = np.asarray(stim_valid, dtype=float)  # (n_trials,)
+    return segments, rel_time_ms, stim_ms_valid
 
 def baseline_zero_each_trial(
     segments: np.ndarray,
