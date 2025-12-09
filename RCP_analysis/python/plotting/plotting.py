@@ -537,4 +537,3 @@ def stacked_heatmaps_plus_behv(
     fig.subplots_adjust(top=0.96)           # pull axes up toward the top
     fig.savefig(out_svg, dpi=300, bbox_inches="tight", pad_inches=0.25)
     plt.close(fig)
-    print(f"[PLOT] POSVEL saved → {out_svg}")

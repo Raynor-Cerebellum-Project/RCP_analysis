@@ -103,32 +103,51 @@ def main():
             # load UA npz
             cands = sorted(UA_CKPT_ROOT.glob(f"rates__NRR_RW*_{br_idx:03d}__*.npz"))
             if not cands: print(f"[warn] No UA rates for session {session}"); continue
-            ua_rates_npz = cands[0]
+            ua_rates_npz_loc = cands[0]
             
+    
             # get array index from UA + touchscreen state
-            ua_elec = ua_region = ua_region_names = ua_nsp = ua_idx_rows = ts_state_num = ts_state_char = None
+            ua_elec = ua_region = ua_region_names = ua_nsp = ua_idx_rows = ua_port = ts_state_num = ts_state_char = None
+            
+            ua_npz = np.load(ua_rates_npz_loc, allow_pickle=True)
+            ua_rate_hz = ua_npz["rate_hz"]
+            ua_t_ms    = ua_npz["t_ms"]
+            ua_pcs   = ua_npz["pcs"]
+            ua_peaks = ua_npz["peaks"]
+            ua_peaks_t_ms     = ua_npz["peaks_t_ms"]
+            ua_peaks_t_sample = ua_npz["peaks_t_sample"]
+            ua_expl = ua_npz["explained_var"]
+            ua_meta = ua_npz["meta"]
+            fs_br = ua_npz["meta"].item()["fs"]
+            
+            ua_elec = ua_npz["ua_elec"]
+            ua_nsp = ua_npz["ua_nsp"]
+            ua_idx_rows = ua_npz["ua_index"]
+            ua_region = ua_npz["ua_region"]
+            ua_region_names = ua_npz["ua_region_names"]
+            ua_port = ua_npz["ua_port"]
 
-            with np.load(ua_rates_npz, allow_pickle=True) as npz:
-                ua_elec = npz["ua_elec"].astype(np.int16) if "ua_elec" in npz else np.array([], dtype=np.int16)
-                ua_nsp = npz["ua_nsp"].astype(np.int16) if "ua_nsp" in npz else np.array([], dtype=np.int16)
-                ua_idx_rows = npz["ua_index"].astype(np.int16) if "ua_index" in npz else np.array([], dtype=np.int16)
-                ua_region = npz["ua_region"].astype(np.int8) if "ua_region" in npz else np.array([], dtype=np.int8)
-                ua_region_names = npz["ua_region_names"] if "ua_region_names" in npz else np.array([], dtype=object)
-                fs_br = npz["meta"].item()["fs"]
+            # touchscreen states
+            if "ts_state_num" in ua_npz:
+                ts_state_num = ua_npz["ts_state_num"].astype(np.int8)
+            else:
+                ts_state_num = np.array([], dtype=np.int8)
 
-                # touchscreen states (optional, for backward compatibility)
-                if "ts_state_num" in npz:
-                    ts_state_num = npz["ts_state_num"].astype(np.int8)
-                else:
-                    ts_state_num = np.array([], dtype=np.int8)
+            if "ts_state_char" in ua_npz:
+                ts_state_char = ua_npz["ts_state_char"]
+            else:
+                ts_state_char = np.full(0, 'N', dtype='U1')
 
-                if "ts_state_char" in npz:
-                    ts_state_char = npz["ts_state_char"]
-                else:
-                    ts_state_char = np.full(0, 'N', dtype='U1')
-
-            nprw_rate_hz, nprw_t_ms, nprw_meta, nprw_pcs, nprw_peaks, nprw_peaks_t_ms, nprw_peaks_t_sample, nprw_expl = rcp.load_rate_npz(nprw_rates_npz)
-            ua_rate_hz, ua_t_ms, ua_meta, ua_pcs, ua_peaks, ua_peaks_t_ms, ua_peaks_t_sample, ua_expl = rcp.load_rate_npz(ua_rates_npz)
+            # NPRW
+            nprw_npz = np.load(nprw_rates_npz, allow_pickle=True)
+            nprw_rate_hz = nprw_npz["rate_hz"]
+            nprw_t_ms    = nprw_npz["t_ms"]
+            nprw_pcs   = nprw_npz["pcs"]
+            nprw_peaks = nprw_npz["peaks"]
+            nprw_peaks_t_ms     = nprw_npz["peaks_t_ms"]
+            nprw_peaks_t_sample = nprw_npz["peaks_t_sample"]
+            nprw_expl = nprw_npz["explained_var"]
+            nprw_meta = nprw_npz["meta"]
 
             # Stim times (absolute Intan ms)
             stim_npz_path, _ = rcp.stim_npz_path_from_br_idx(br_idx, METADATA_CSV, NPRW_AUX_DATA)
@@ -299,12 +318,12 @@ def main():
             else:
                 print(f"[warn] no VOG CSV found for BR {br_idx:03d} in {VOG_CKPT_ROOT}")
     
-            combined_meta = dict(
+            aligned_meta = dict(
                 session=session,
                 intan_idx=intan_idx,
                 br_idx=br_idx,
                 nprw_rates=str(nprw_rates_npz),
-                ua_rates=str(ua_rates_npz),
+                ua_rates=str(ua_rates_npz_loc),
                 fs_nprw=fs_nprw,
                 anchor_ms=float(anchor_ms),
 
@@ -349,6 +368,7 @@ def main():
                 ua_elec=ua_elec,
                 ua_region=ua_region,
                 ua_region_names=ua_region_names,
+                ua_port=ua_port,
                 ua_nsp=ua_nsp,
                 ua_idx_rows=ua_idx_rows,
 
@@ -360,7 +380,7 @@ def main():
                 stim_ms=(stim_ms_abs.astype(np.float32) if stim_ms_abs is not None else np.array([], dtype=np.float32)),
 
                 # Alignment meta (as JSON)
-                align_meta=json.dumps(combined_meta),
+                align_meta=json.dumps(aligned_meta),
                 
                 # behavior (ns5 samples; no anchor shift applied)
                 beh_ns5_sample=beh_ns5_sample,
@@ -426,6 +446,7 @@ def main():
                 ua_elec=ua_elec,
                 ua_region=ua_region,
                 ua_region_names=np.array(ua_region_names, dtype=object),
+                ua_port=ua_port,
                 ua_nsp=ua_nsp,
                 ua_idx_rows=ua_idx_rows,
 
@@ -441,7 +462,7 @@ def main():
                          else np.array([], dtype=np.float32)),
 
                 # alignment meta as a struct-like dict for MATLAB
-                align_meta=_change_none_for_mat(combined_meta),
+                align_meta=_change_none_for_mat(aligned_meta),
 
                 beh_ns5_sample=beh_ns5_sample,
                 beh_cam0=beh_cam0,

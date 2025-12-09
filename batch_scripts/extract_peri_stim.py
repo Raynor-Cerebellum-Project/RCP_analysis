@@ -1,6 +1,5 @@
-
 from pathlib import Path
-import numpy as np, pandas as pd, re
+import numpy as np, pandas as pd, re, json
 from scipy.io import savemat
 from typing import List, Tuple, Optional
 import RCP_analysis as rcp
@@ -25,6 +24,7 @@ WIN_MS            = (-600.0, 600.0)
 NORMALIZE_FIRST_MS = 150.0
 MIN_TRIALS        = 1
 
+MIN_BIN_COVERAGE_FRAC = 0.9  # require at least 50% of trials finite per bin
 
 def _stims_mask_for_stream(stim_ms: np.ndarray, t_ms: np.ndarray,
                            win_ms: tuple[float, float]) -> np.ndarray:
@@ -65,19 +65,34 @@ def _safe_extract_segments(rate_hz, t_ms, stim_ms_in, win_ms, min_trials, normal
     
     zeroed = rcp.baseline_zero_each_trial(segs, rel_t, normalize_first_ms=normalize_first_ms)
     
-    # drop bins with too few valid trials per channel
+    # drop / down-weight bins with too few valid trials per channel
     # zeroed: (n_events, n_channels, T)
     valid_counts = np.isfinite(zeroed).sum(axis=0)      # (n_channels, T)
     n_events = zeroed.shape[0]
-    # require at least 30% of events, but never more than n_events
-    min_bin_trials = max(1, int(0.3 * n_events))
+
+    # require at least MIN_BIN_COVERAGE_FRAC of events, but never more than n_events
+    min_bin_trials = max(1, int(np.ceil(MIN_BIN_COVERAGE_FRAC * n_events)))
     min_bin_trials = min(min_bin_trials, n_events)
 
     med = rcp.median_across_trials(zeroed)              # (n_channels, T)
-    var = rcp.variance_across_trials(zeroed)
-    med[valid_counts < min_bin_trials] = np.nan
-    var[valid_counts < min_bin_trials] = np.nan
+    var = rcp.variance_across_trials(zeroed)            # (n_channels, T)
+
+    bad_mask = valid_counts < min_bin_trials           # (n_channels, T)
+
+    if bad_mask.any():
+        # mask med/var
+        med[bad_mask] = np.nan
+        var[bad_mask] = np.nan
+
+        # also NaN-out poorly covered bins in the trial stack itself,
+        # so later label-specific subsets don't try to use them
+        for ch in range(zeroed.shape[1]):
+            bad_t = bad_mask[ch]                       # (T,)
+            if bad_t.any():
+                zeroed[:, ch, bad_t] = np.nan
+
     return med, var, rel_t, int(segs.shape[0]), zeroed
+
 
 def _as_list(x):
     if x is None:
@@ -543,19 +558,28 @@ def _subset_neural_from_zeroed(
 
     sub = zeroed[idx]  # (n_label, n_ch, T)
 
-    # coverage mask
+    # coverage mask within this label
     valid_counts = np.isfinite(sub).sum(axis=0)  # (n_ch, T)
     n_events = sub.shape[0]
-    min_bin_trials = max(1, int(0.3 * n_events))
+    min_bin_trials = max(1, int(np.ceil(MIN_BIN_COVERAGE_FRAC * n_events)))
     min_bin_trials = min(min_bin_trials, n_events)
 
-    med = np.nanmedian(sub, axis=0)
+    med = np.nanmedian(sub, axis=0)  # (n_ch, T)
     var = np.nanvar(sub, axis=0)
 
-    med[valid_counts < min_bin_trials] = np.nan
-    var[valid_counts < min_bin_trials] = np.nan
+    bad_mask = valid_counts < min_bin_trials  # (n_ch, T)
+
+    if bad_mask.any():
+        med[bad_mask] = np.nan
+        var[bad_mask] = np.nan
+        # propagate to the per-trial stack as well
+        for ch in range(sub.shape[1]):
+            bad_t = bad_mask[ch]
+            if bad_t.any():
+                sub[:, ch, bad_t] = np.nan
 
     return med, var, int(n_events), sub
+
 
 def _behavior_medians_for_label(
     cam_z: np.ndarray,
@@ -670,7 +694,16 @@ def extract_one_file(aligned_path: Path) -> None:
     + behavior/VOG/ts_state peri-stim summaries, and save to PERI_ROOT.
     """
     # ---- load combined npz (for NPRW/UA + stim) ----
-    NPRW_rate, NPRW_t, UA_rate, UA_t, stim_ms_abs, meta = rcp.load_combined_npz(aligned_path)
+    aligned_npz = np.load(aligned_path, allow_pickle=True)
+    NPRW_rate = aligned_npz["nprw_rate_hz"]
+    NPRW_t    = aligned_npz["nprw_t_ms_aligned"]
+    UA_rate = aligned_npz["ua_rate_hz"]
+    UA_t    = aligned_npz["ua_t_ms_aligned"]
+    # stim (absolute Intan ms)
+    stim_ms_abs = aligned_npz["stim_ms"]
+        # alignment meta (JSON)
+    meta = json.loads(aligned_npz["align_meta"].item()) if "align_meta" in aligned_npz.files else {}
+
     sess   = meta.get("session", aligned_path.stem)
     br_idx = int(meta.get("br_idx", -1))
 
@@ -678,41 +711,47 @@ def extract_one_file(aligned_path: Path) -> None:
     stim_ms = rcp.aligned_stim_ms(stim_ms_abs, meta)
 
     # ---- load aligned file for behavior / VOG / ts_state ----
-        # ---- load aligned file for behavior / VOG / ts_state ----
-    with np.load(aligned_path, allow_pickle=True) as z:
-        # behavior
-        cam0      = z.get("beh_cam0", np.zeros((0, 0), np.float32)).astype(float)
-        cam1      = z.get("beh_cam1", np.zeros((0, 0), np.float32)).astype(float)
-        raw0      = z.get("beh_cam0_cols", None)
-        raw1      = z.get("beh_cam1_cols", None)
-        cam0_cols = [str(x) for x in _as_list(raw0)]
-        cam1_cols = [str(x) for x in _as_list(raw1)]
-        behv_t    = z["beh_t_ms"].astype(float) if "beh_t_ms" in z.files else np.arange(0.0)
+    aligned_npz = np.load(aligned_path, allow_pickle=True)
+    beh_cam0      = aligned_npz["beh_cam0"]
+    beh_cam1      = aligned_npz["beh_cam1"]
+    raw0      = aligned_npz["beh_cam0_cols"]
+    raw1      = aligned_npz["beh_cam1_cols"]
+    beh_cam0_cols = [str(x) for x in _as_list(raw0)]
+    beh_cam1_cols = [str(x) for x in _as_list(raw1)]
+    behv_t    = aligned_npz["beh_t_ms"].astype(float) if "beh_t_ms" in aligned_npz.files else np.arange(0.0)
 
-        # VOG
-        vog_cols      = z.get("vog_cols", np.zeros((0, 0), np.float32)).astype(float)
-        vog_t_ms      = z.get("vog_t_ms", np.zeros(0, np.float32)).astype(float)
-        vog_raw_names = z.get("vog_col_names", None)
-        vog_col_names = [str(x) for x in _as_list(vog_raw_names)]
+    # VOG
+    vog_cols      = aligned_npz["vog_cols"]
+    vog_t_ms      = aligned_npz["vog_t_ms"]
+    vog_raw_names = aligned_npz["vog_col_names"]
+    vog_col_names = [str(x) for x in _as_list(vog_raw_names)]
 
-        # ts_state on UA timebase
-        ts_state_num  = z.get("ts_state_num", None)
-        ts_state_char = z.get("ts_state_char", None)
-
+    # ts_state on UA timebase
+    ts_state_num  = aligned_npz["ts_state_num"]
+    ts_state_char = aligned_npz["ts_state_char"]
+ 
+    # UA ids
         # UA ids
-        ua_ids_1based = z.get("ua_elec", None)
-        if ua_ids_1based is not None:
-            ua_ids_1based = np.asarray(ua_ids_1based, dtype=int).ravel()
+    ua_ids_1based = aligned_npz["ua_elec"]
+    if ua_ids_1based is not None:
+        ua_ids_1based = np.asarray(ua_ids_1based, dtype=int).ravel()
 
-        # prepare ts_state arrays but delay label computation until after stim gating
-        ts_state_num_full = None
-        ts_state_char_arr = None
-        if ts_state_num is not None and np.size(ts_state_num):
-            ts_state_num_full = np.asarray(ts_state_num).astype(int).ravel()
-        if ts_state_char is not None:
-            ts_state_char_arr = np.asarray(ts_state_char)
-            if ts_state_char_arr.ndim > 1:
-                ts_state_char_arr = ts_state_char_arr.reshape(-1)
+    # ---- UA meta
+    ua_region = aligned_npz["ua_region"]
+    ua_region_names = aligned_npz["ua_region_names"]
+    ua_port = aligned_npz["ua_port"]
+    ua_nsp = aligned_npz["ua_nsp"]
+    ua_idx_rows = aligned_npz["ua_idx_rows"]
+    
+    # prepare ts_state arrays but delay label computation until after stim gating
+    ts_state_num_full = None
+    ts_state_char_arr = None
+    if ts_state_num is not None and np.size(ts_state_num):
+        ts_state_num_full = np.asarray(ts_state_num).astype(int).ravel()
+    if ts_state_char is not None:
+        ts_state_char_arr = np.asarray(ts_state_char)
+        if ts_state_char_arr.ndim > 1:
+            ts_state_char_arr = ts_state_char_arr.reshape(-1)
 
 
     # ---- quick alignment debug prints ----
@@ -732,13 +771,13 @@ def extract_one_file(aligned_path: Path) -> None:
     if behv_t.size == 0:
         print(f"[extract] {aligned_path.name}: no behavior time axis; skipping behavior.")
     # interpolate small NaN gaps
-    if cam0.size:
-        cam0 = _interp_nans_2d_by_col(cam0, max_gap=4)
-    if cam1.size:
-        cam1 = _interp_nans_2d_by_col(cam1, max_gap=4)
+    if beh_cam0.size:
+        beh_cam0 = _interp_nans_2d_by_col(beh_cam0, max_gap=4)
+    if beh_cam1.size:
+        beh_cam1 = _interp_nans_2d_by_col(beh_cam1, max_gap=4)
 
-    cam0_M, cam0_names = _select_matrix(cam0, cam0_cols)
-    cam1_M, cam1_names = _select_matrix(cam1, cam1_cols)
+    cam0_M, cam0_names = _select_matrix(beh_cam0, beh_cam0_cols)
+    cam1_M, cam1_names = _select_matrix(beh_cam1, beh_cam1_cols)
 
     cam0_z = _z_per_column(cam0_M) if cam0_M.size else cam0_M
     cam1_z = _z_per_column(cam1_M) if cam1_M.size else cam1_M
@@ -943,8 +982,8 @@ def extract_one_file(aligned_path: Path) -> None:
     # ------------------------------------------------------------------
     # Per-target files: Target A and Target B
     # ------------------------------------------------------------------
-    targetA_dir = PERI_ROOT / "Target A"
-    targetB_dir = PERI_ROOT / "Target B"
+    targetA_dir = PERI_ROOT / "Target_A"
+    targetB_dir = PERI_ROOT / "Target_B"
     targetA_dir.mkdir(parents=True, exist_ok=True)
     targetB_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1002,8 +1041,14 @@ def extract_one_file(aligned_path: Path) -> None:
         UA_rel_t=ua_rel_t,
         n_ua=int(n_ua_A),
         ua_ids_1based=ua_ids_1based if ua_ids_1based is not None else np.array([], int),
+        
+        # UA meta (per aligned file)
+        ua_region=ua_region,
+        ua_region_names=ua_region_names,
+        ua_port=ua_port,
+        ua_nsp=ua_nsp,
+        ua_idx_rows=ua_idx_rows,
     )
-    print(f"[extract] wrote {out_npz_A}")
 
     mat_A = {
         "sess":          np.array(sess, dtype=object),
@@ -1049,9 +1094,15 @@ def extract_one_file(aligned_path: Path) -> None:
         "UA_rel_t":      ua_rel_t,
         "n_ua":          int(n_ua_A),
         "ua_ids_1based": ua_ids_1based if ua_ids_1based is not None else np.array([], int),
+        
+        # UA meta
+        "ua_region":      ua_region,
+        "ua_region_names": ua_region_names,
+        "ua_port":        ua_port,
+        "ua_nsp":         ua_nsp,
+        "ua_idx_rows":    ua_idx_rows,
     }
     savemat(out_mat_A, mat_A, do_compression=True)
-    print(f"[extract] wrote {out_mat_A}")
 
     # ---------- Target B ----------
     peribase_B = f"peristim__{sess}__BR_{int(br_idx):03d}_target_B"
@@ -1104,8 +1155,15 @@ def extract_one_file(aligned_path: Path) -> None:
         UA_rel_t=ua_rel_t,
         n_ua=int(n_ua_B),
         ua_ids_1based=ua_ids_1based if ua_ids_1based is not None else np.array([], int),
+
+        # UA meta (per aligned file)
+        ua_region=ua_region,
+        ua_region_names=ua_region_names,
+        ua_port=ua_port,
+        ua_nsp=ua_nsp,
+        ua_idx_rows=ua_idx_rows,
+
     )
-    print(f"[extract] wrote {out_npz_B}")
 
     mat_B = {
         "sess":          np.array(sess, dtype=object),
@@ -1151,9 +1209,17 @@ def extract_one_file(aligned_path: Path) -> None:
         "UA_rel_t":      ua_rel_t,
         "n_ua":          int(n_ua_B),
         "ua_ids_1based": ua_ids_1based if ua_ids_1based is not None else np.array([], int),
+
+        # UA meta
+        "ua_region":      ua_region,
+        "ua_region_names": ua_region_names,
+        "ua_port":        ua_port,
+        "ua_nsp":         ua_nsp,
+        "ua_idx_rows":    ua_idx_rows,
+
     }
     savemat(out_mat_B, mat_B, do_compression=True)
-    print(f"[extract] wrote {out_mat_B}")
+    print(f"[extract] wrote peristim__{sess}__BR_{int(br_idx)}")
     
 def main():
     files = sorted(ALIGNED_ROOT.glob("aligned__*.npz"))

@@ -425,57 +425,6 @@ def save_recording(rec: si.BaseRecording, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     rec.save(folder=out_dir, overwrite=True)
 
-# NPZ loaders
-def load_rate_npz(npz_path: Path | str) -> Tuple[
-    np.ndarray,          # rate_hz       (n_ch, n_bins)
-    np.ndarray,          # t_ms          (n_bins,)
-    Optional[Any],       # meta          (dict-like) or None
-    Optional[np.ndarray],# pcs           or None
-    Optional[np.ndarray],# peaks         or None
-    Optional[np.ndarray],# peaks_t_ms    or None
-    Optional[np.ndarray],# peaks_t_sample or None
-    Optional[np.ndarray] # explained_var or None
-]:
-    """
-    Load a rate NPZ produced by the pipeline.
-    Returns an 8-tuple; optional fields are None if not present.
-
-    Always returns:
-      (rate_hz, t_ms, meta, pcs, peaks, peaks_t_ms, peaks_t_sample, explained_var)
-    """
-    z = np.load(npz_path, allow_pickle=True)
-
-    rate_hz = z["rate_hz"]
-    t_ms    = z["t_ms"]
-    pcs   = z.get("pcs", None)
-    peaks = z.get("peaks", None)
-    peaks_t_ms     = z.get("peaks_t_ms", z.get("peak_t_ms", None))
-    peaks_t_sample = z.get("peaks_t_sample", z.get("peak_sample", None))
-    explained_var = z.get("explained_var", None)
-    meta = z.get("meta", None)
-    # some npz files store dicts as 0-d object arrays
-    if hasattr(meta, "item"):
-        try:
-            meta = meta.item()
-        except Exception:
-            pass
-
-    return rate_hz, t_ms, meta, pcs, peaks, peaks_t_ms, peaks_t_sample, explained_var
-
-def load_combined_npz(p: Path):
-    d = np.load(p, allow_pickle=True)
-    # Intan
-    i_rate = d["nprw_rate_hz"]
-    i_t    = d["nprw_t_ms_aligned"] if "nprw_t_ms_aligned" in d.files else d["nprw_t_ms"]
-    # UA
-    u_rate = d["ua_rate_hz"]
-    u_t    = d["ua_t_ms_aligned"] if "ua_t_ms_aligned" in d.files else d["ua_t_ms"]
-    # stim (absolute Intan ms); we’ll align it below
-    stim_ms = d["stim_ms"] if "stim_ms" in d.files else np.array([], dtype=float)
-    # alignment meta (JSON)
-    meta = json.loads(d["align_meta"].item()) if "align_meta" in d.files else {}
-    return i_rate, i_t, u_rate, u_t, stim_ms, meta
-
 def load_intan_aux(npz_path: Path) -> tuple[np.ndarray, np.ndarray, float]:
     aux_file = np.load(npz_path, allow_pickle=True, mmap_mode="r")
 
