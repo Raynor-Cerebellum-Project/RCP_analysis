@@ -129,7 +129,7 @@ def main():
         br_idx = int(sess.name.split('_')[-1]) # resolve br index
         n_channels = rec_ns6.get_num_channels()
         
-        rec_ns6, idx_rows, ua_elec, ua_nsp, ua_region, ua_region_names = rcp.apply_ua_mapping_with_regions(rec_ns6, UA_MAP, br_idx, METADATA_CSV)
+        rec_ns6, idx_rows, ua_elec, ua_nsp, ua_region, ua_region_names, ua_port = rcp.apply_ua_mapping_with_regions(rec_ns6, UA_MAP, br_idx, METADATA_CSV)
         UA_probe = ua_region.copy()
 
         rec_hp  = spre.highpass_filter(rec_ns6, freq_min=float(PARAMS.highpass_hz))
@@ -292,6 +292,7 @@ def main():
             ua_nsp=ua_nsp.astype(np.int16),
             ua_region=ua_region,
             ua_region_names=ua_region_names,
+            ua_port=ua_port,
 
             meta=dict(
                 detect_threshold=THRESH,

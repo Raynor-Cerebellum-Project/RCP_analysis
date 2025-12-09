@@ -219,6 +219,7 @@ def apply_ua_mapping_with_regions(
     ua_nsp  : np.ndarray (n_channels,), row -> NSP id (or -1)
     ua_region : np.ndarray (n_channels,), row -> region index {-1,0,1,2,3}
     ua_region_names   : np.ndarray (4,), ["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"]
+    ua_port:
     """
     ch_ids = np.asarray(recording.get_channel_ids(), int)
     n_channels = ch_ids.size
@@ -317,6 +318,7 @@ def apply_ua_mapping_with_regions(
         ua_nsp,
         ua_region,
         ua_region_names,
+        ua_port,
     )
 
 def _dedup_peaks(

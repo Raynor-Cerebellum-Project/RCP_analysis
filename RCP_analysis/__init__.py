@@ -24,7 +24,6 @@ from .python.functions.utils import (
     build_session_index_map,
     find_ns5_by_br_index, 
     find_ns2_by_br_index, 
-    load_rate_npz,
     
     
     median_across_trials,
@@ -32,7 +31,6 @@ from .python.functions.utils import (
     extract_peristim_segments,
     detect_stim_channels_from_npz,
     baseline_zero_each_trial,
-    load_combined_npz, 
     aligned_stim_ms, 
     ua_title_from_meta,
     load_intan_aux,
@@ -86,9 +84,6 @@ __all__ = [
     "load_stim_detection", 
     "save_recording",
     
-    
-    "load_rate_npz",
-    "load_combined_npz", 
     "load_intan_aux", 
     "load_br_intan_sync_ns5", 
     "load_behavior_npz",

@@ -27,7 +27,6 @@ PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", rep
 SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
 OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
 INTAN_ROOT = SESSION_LOC / "Intan"; INTAN_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_LOC  = SESSION_LOC / "Metadata"; METADATA_LOC.parent.mkdir(parents=True, exist_ok=True)
 GEOM_PATH = rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT)
 NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
 NPRW_AUX_DATA   = OUT_BASE / "aux_data" / "NPRW"; NPRW_AUX_DATA.mkdir(parents=True, exist_ok=True)

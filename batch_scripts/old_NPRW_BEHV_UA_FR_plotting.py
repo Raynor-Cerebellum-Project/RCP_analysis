@@ -3,7 +3,7 @@ from typing import Tuple, Optional
 from scipy.signal import filtfilt
 from types import SimpleNamespace
 import numpy as np
-import re
+import re, json
 from probeinterface import Probe
 from scipy.io import loadmat
 
@@ -1042,7 +1042,12 @@ def main():
         raise SystemExit(f"[error] No combined aligned NPZs found at {ALIGNED_ROOT}")
 
     for k, file in enumerate(files):
-        _, _, _, _, _, meta = rcp.load_combined_npz(file)
+        # ---- load combined npz (for NPRW/UA + stim) ----
+        aligned_npz = np.load(file, allow_pickle=True)
+        stim_ms_abs = aligned_npz["stim_ms"]
+        # alignment meta (JSON)
+        meta = json.loads(aligned_npz["align_meta"].item()) if "align_meta" in aligned_npz.files else {}
+        
         sess   = meta.get("session", file.stem)
         br_idx = int(meta.get("br_idx", -1))
 

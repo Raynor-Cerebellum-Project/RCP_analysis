@@ -11,9 +11,9 @@ BATCH_SCRIPTS = [
     # "compute_br_to_intan_shifts.py",
     "UA_BR_analysis_threshold.py",
     "make_aligned_npz_and_mat.py",
-    "concat_and_extract_peri_IR_baseline.py",
+    "extract_peri_IR_and_concat_baseline.py",
     "extract_peri_stim.py",
-    "NPRW_BEHV_UA_FR_plotting.py",
+    "plot_fr_per_target.py",
 ]
 
 def run_scripts(base_dir: Path):

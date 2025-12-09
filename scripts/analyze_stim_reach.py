@@ -4,7 +4,7 @@ from scipy.signal import butter, filtfilt
 from types import SimpleNamespace
 import numpy as np
 import pandas as pd
-import re
+import json, re
 from probeinterface import Probe
 from scipy.io import loadmat
 
@@ -1600,7 +1600,16 @@ def main():
         raise SystemExit(f"[error] No combined aligned NPZs found at {ALIGNED_ROOT}")
 
     for file in files:
-        NPRW_rate, NPRW_t, UA_rate, UA_t, stim_ms_abs, meta = rcp.load_combined_npz(file)
+        aligned_npz = np.load(file, allow_pickle=True)
+        # NPRW
+        NPRW_rate = aligned_npz["nprw_rate_hz"]
+        NPRW_t    = aligned_npz["nprw_t_ms_aligned"]
+        # UA
+        UA_rate = aligned_npz["ua_rate_hz"]
+        UA_t    = aligned_npz["ua_t_ms_aligned"]
+        # alignment meta (JSON)
+        meta = json.loads(aligned_npz["align_meta"].item()) if "align_meta" in aligned_npz.files else {}
+    
         # Try to get per-row UA electrode IDs (1..256), + NSP mapping (1..128/256)
         ua_ids_1based = None
 
