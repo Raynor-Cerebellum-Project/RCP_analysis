@@ -89,6 +89,8 @@ def stacked_heatmaps_plus_behv(
     ua_ids_1based=None, ua_sort="region_then_elec",
     beh_rel_time=None, beh_cam0_lines=None, beh_cam1_lines=None,
     beh_labels=None, beh_cam0_vel_lines=None, beh_cam1_vel_lines=None,
+    # Optional per-timepoint SEM arrays for shaded plotting of position traces
+    beh_cam0_pos_sems=None, beh_cam1_pos_sems=None,
     title_cam1=None, title_cam0_vel=None, title_cam1_vel=None,
     sess=None, overall_title=None,
 ):
@@ -289,16 +291,33 @@ def stacked_heatmaps_plus_behv(
         t.set_verticalalignment("center")
         return t
 
-    def _plot_lines(ax, rel_t, lines, title, ylabel, sub, place_legend: bool):
+    def _plot_lines(ax, rel_t, lines, title, ylabel, sub, place_legend: bool, sems=None):
+        """
+        Plot lines (D x T). If `sems` is provided and has same shape as `lines`,
+        draw a filled band ±sem behind each mean line.
+        """
         if lines is None:
             ax.axis("off")
             return
         D = lines.shape[0]
         for i in range(D):
             y = lines[i]
-            if np.isfinite(y).any():
-                lab = labs[i] if i < len(labs) else f"trace_{i+1}"
-                ax.plot(rel_t, y, lw=1.25, alpha=0.95, label=lab)
+            if not np.isfinite(y).any():
+                continue
+            lab = labs[i] if i < len(labs) else f"trace_{i+1}"
+            # plot mean line first to capture color from matplotlib cycle
+            ln, = ax.plot(rel_t, y, lw=1.25, alpha=0.95, label=lab)
+            # if sems available and matching shape, draw shaded band
+            if sems is not None:
+                try:
+                    s = sems[i]
+                    if np.shape(s) == np.shape(y):
+                        col = ln.get_color()
+                        lo = y - s
+                        hi = y + s
+                        ax.fill_between(rel_t, lo, hi, color=col, alpha=0.22, linewidth=0.0)
+                except Exception:
+                    pass
 
         ax.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
         ax.axvspan(0.0, 100.0, color="0.7", alpha=0.15, zorder=0)  # light, behind data
@@ -330,10 +349,10 @@ def stacked_heatmaps_plus_behv(
 
             if sub == "cam0_pos":
                 _plot_lines(ax, beh_rel_time, beh_cam0_pos, title_kinematics or "",
-                            "Cam-0\nPosition Δ (z)", sub, place_legend_now)
+                            "Cam-0\nPosition Δ (z)", sub, place_legend_now, sems=beh_cam0_pos_sems)
             elif sub == "cam1_pos":
                 _plot_lines(ax, beh_rel_time, beh_cam1_pos, title_cam1 or "",
-                            "Cam-1\nPosition Δ (z)", sub, place_legend_now)
+                            "Cam-1\nPosition Δ (z)", sub, place_legend_now, sems=beh_cam1_pos_sems)
             elif sub == "cam0_vel":
                 _plot_lines(ax, beh_rel_time, beh_cam0_vel, title_cam0_vel or "",
                             "Cam-0\nVelocity (z/ms)", sub, place_legend_now)
