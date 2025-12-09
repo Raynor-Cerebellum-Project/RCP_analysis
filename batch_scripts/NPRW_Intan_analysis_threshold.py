@@ -217,15 +217,7 @@ def main():
                 n_channels=rec_artif_removed.get_num_channels(),
                 session=str(sess.name),
             ))
-
-        # TODO is this necessary?
-        peak_sample = peaks["sample_index"]
-        peak_ch     = peaks["channel_index"]
-        peak_amp    = peaks["amplitude"]
-        if peak_sample is not None: save["peak_sample"] = peak_sample
-        if peak_ch is not None:     save["peak_ch"] = peak_ch
-        if peak_amp is not None:    save["peak_amp"] = peak_amp
-
+        
         np.savez_compressed(out_npz, **save)
         print(f"[{sess.name}] saved rate matrix + PCA -> {out_npz}")
 

@@ -133,41 +133,49 @@ def _filter_stims_for_stream(stim_ms: np.ndarray, t_ms: np.ndarray,
     mask = _stims_mask_for_stream(stim_ms, t_ms, win_ms)
     return np.asarray(stim_ms, float)[mask]
 
-def _safe_extract_segments(rate_hz, t_ms, stim_ms_in, win_ms, min_trials, normalize_first_ms):
+def _safe_extract_segments(rate_hz, counts, t_ms, stim_ms_in, win_ms,
+                           min_trials, normalize_first_ms):
     """Filter to in-range stims, then extract without crashing if 0-kept."""
     st = _filter_stims_for_stream(stim_ms_in, t_ms, win_ms)
     if st.size == 0:
         dt = float(np.nanmedian(np.diff(t_ms))) if np.size(t_ms) > 1 else 1.0
         rel_t = np.arange(win_ms[0], win_ms[1] + 1e-9, dt, dtype=float)
         # med=None, var=None, n_trials=0, zeroed=None
-        return None, None, rel_t, 0, None
+        return None, None, rel_t, 0, None, None
 
     try:
-        segs, rel_t, _ = rcp.extract_peristim_segments(
-            rate_hz=rate_hz, t_ms=t_ms, stim_ms=st, win_ms=win_ms, min_trials=min_trials
+        rate_segs, count_segs, rel_t, _ = rcp.extract_peristim_segments(
+            rate_hz=rate_hz,
+            counts=counts,
+            t_ms=t_ms,
+            stim_ms=st,
+            win_ms=win_ms,
+            min_trials=min_trials,
         )
     except RuntimeError as e:
         if "Only 0 peri-stim segments" in str(e):
             dt = float(np.nanmedian(np.diff(t_ms))) if np.size(t_ms) > 1 else 1.0
             rel_t = np.arange(win_ms[0], win_ms[1] + 1e-9, dt, dtype=float)
-            return None, None, rel_t, 0, None
+            return None, None, rel_t, 0, None, None
         raise
-    
-    zeroed = rcp.baseline_zero_each_trial(segs, rel_t, normalize_first_ms=normalize_first_ms)
-    
+
+    zeroed_rates = rcp.baseline_zero_each_trial(
+        rate_segs, rel_t, normalize_first_ms=normalize_first_ms
+    )
+
     # drop bins with too few valid trials per channel
-    # zeroed: (n_events, n_channels, T)
-    valid_counts = np.isfinite(zeroed).sum(axis=0)      # (n_channels, T)
-    n_events = zeroed.shape[0]
+    valid_counts = np.isfinite(zeroed_rates).sum(axis=0)      # (n_channels, T)
+    n_events = zeroed_rates.shape[0]
     # require at least 30% of events, but never more than n_events
     min_bin_trials = max(1, int(0.3 * n_events))
     min_bin_trials = min(min_bin_trials, n_events)
 
-    med = rcp.median_across_trials(zeroed)              # (n_channels, T)
-    var = rcp.variance_across_trials(zeroed)
-    med[valid_counts < min_bin_trials] = np.nan
-    var[valid_counts < min_bin_trials] = np.nan
-    return med, var, rel_t, int(segs.shape[0]), zeroed
+    med_rates = rcp.median_across_trials(zeroed_rates)              # (n_channels, T)
+    var_rates = rcp.variance_across_trials(zeroed_rates)
+    med_rates[valid_counts < min_bin_trials] = np.nan
+    var_rates[valid_counts < min_bin_trials] = np.nan
+
+    return med_rates, var_rates, rel_t, int(n_events), zeroed_rates, count_segs
 
 def _as_list(x):
     if x is None:
@@ -193,8 +201,13 @@ def _median_behavior_line(series_on_common: np.ndarray,
     s = np.asarray(series_on_common, float)
 
     try:
-        segs, rel_t, _ = rcp.extract_peristim_segments(
-            s[None, :], t_common_ms, stim_ms, win_ms=win_ms, min_trials=min_trials
+        rate_segs, _, rel_t, _ = rcp.extract_peristim_segments(
+            rate_hz=s[None, :],
+            counts=None,
+            t_ms=t_common_ms,
+            stim_ms=stim_ms,
+            win_ms=win_ms,
+            min_trials=min_trials,
         )
     except RuntimeError as e:
         if "Only 0 peri-stim segments" in str(e):
@@ -204,12 +217,12 @@ def _median_behavior_line(series_on_common: np.ndarray,
         else:
             raise
 
-    if segs.size == 0:
+    if rate_segs.size == 0:
         dt = np.nanmedian(np.diff(t_common_ms)) if t_common_ms.size > 1 else 1.0
         rel_t = np.arange(win_ms[0], win_ms[1] + 1e-9, dt, dtype=float)
         return np.full(rel_t.size, np.nan, float), rel_t, 0, np.zeros((0, rel_t.size), float)
 
-    segs = segs[:, 0, :]  # (n_trials, T)
+    segs = rate_segs[:, 0, :]  # (n_trials, T)
 
     bl_mask = (rel_t >= rel_t[0]) & (rel_t <= baseline_ms)
     if not bl_mask.any():
@@ -601,38 +614,62 @@ def _compute_trial_labels_from_ts_state(
 
 def _subset_neural_from_zeroed(
     zeroed: Optional[np.ndarray],
+    counts: Optional[np.ndarray],
     labels_stream: Optional[np.ndarray],
     target_label: str,
-) -> tuple[np.ndarray, np.ndarray, int, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, int, np.ndarray, np.ndarray]:
     """
-    Given baseline-zeroed segments (n_events, n_channels, T) and per-event labels,
-    compute median+var for events with label == target_label.
-    Returns (med, var, n_events_label, zeroed_subset).
+    Given baseline-zeroed rate segments (n_events, n_channels, T),
+    optional baseline-zeroed count segments with the same shape,
+    and per-event labels on this stream, compute median+var for
+    events with label == target_label.
+
+    Returns:
+        med          : (n_channels, T) median across selected events
+        var          : (n_channels, T) variance across selected events
+        n_events_lbl : int, number of selected events
+        zeroed_sub   : (n_events_lbl, n_channels, T) subset of `zeroed`
+        counts_sub   : (n_events_lbl, n_channels, T) subset of `counts`
+                       (empty if counts is None or shape-mismatched)
     """
+    empty_med = np.zeros((0, 0), float)
+    empty_zeroed = np.zeros((0, 0, 0), float)
+
     if zeroed is None or zeroed.size == 0 or labels_stream is None:
-        return (np.zeros((0, 0), float),
-                np.zeros((0, 0), float),
-                0,
-                np.zeros((0, 0, 0), float))
+        return empty_med, empty_med, 0, empty_zeroed, empty_zeroed
+
     zeroed = np.asarray(zeroed, float)
     labels_stream = np.asarray(labels_stream)
+
     if zeroed.shape[0] != labels_stream.size:
         # shape mismatch; bail gracefully
-        return (np.zeros((0, 0), float),
-                np.zeros((0, 0), float),
-                0,
-                np.zeros((0, 0, 0), float))
+        return empty_med, empty_med, 0, empty_zeroed, empty_zeroed
+
+    # Prepare counts (optional, must match zeroed shape)
+    if counts is not None and np.size(counts) != 0:
+        counts_arr = np.asarray(counts)
+        if counts_arr.shape != zeroed.shape:
+            counts_arr = None
+    else:
+        counts_arr = None
 
     idx = np.where(labels_stream == target_label)[0]
     if idx.size == 0:
-        return (np.zeros((zeroed.shape[1], zeroed.shape[2]), float),
-                np.zeros((zeroed.shape[1], zeroed.shape[2]), float),
-                0,
-                np.zeros((0, zeroed.shape[1], zeroed.shape[2]), float))
+        # med/var shapes follow zeroed's channel/time dims
+        med = np.zeros((zeroed.shape[1], zeroed.shape[2]), float)
+        var = np.zeros((zeroed.shape[1], zeroed.shape[2]), float)
+        zeroed_sub = np.zeros((0, zeroed.shape[1], zeroed.shape[2]), float)
+        counts_sub = np.zeros_like(zeroed_sub)
+        return med, var, 0, zeroed_sub, counts_sub
 
     sub = zeroed[idx]  # (n_label, n_ch, T)
 
-    # coverage mask
+    if counts_arr is not None:
+        counts_sub = counts_arr[idx]
+    else:
+        counts_sub = np.zeros_like(sub)
+
+    # coverage mask from rates
     valid_counts = np.isfinite(sub).sum(axis=0)  # (n_ch, T)
     n_events = sub.shape[0]
     min_bin_trials = max(1, int(0.3 * n_events))
@@ -644,7 +681,7 @@ def _subset_neural_from_zeroed(
     med[valid_counts < min_bin_trials] = np.nan
     var[valid_counts < min_bin_trials] = np.nan
 
-    return med, var, int(n_events), sub
+    return med, var, int(n_events), sub, counts_sub
 
 def _behavior_medians_for_label(
     cam_z: np.ndarray,
@@ -709,10 +746,11 @@ def _behavior_valid_mask_from_cam0(
         return np.ones(stim_all.shape, dtype=bool)
 
     try:
-        segs, rel_t, stim_valid = rcp.extract_peristim_segments(
-            series[None, :],   # (1, T)
-            behv_t,
-            stim_all,
+        rate_segs, _, rel_t, stim_valid = rcp.extract_peristim_segments(
+            rate_hz=series[None, :],   # (1, T)
+            counts=None,
+            t_ms=behv_t,
+            stim_ms=stim_all,
             win_ms=win_ms,
             min_trials=min_trials,
         )
@@ -722,11 +760,11 @@ def _behavior_valid_mask_from_cam0(
             return np.zeros(stim_all.shape, dtype=bool)
         raise
 
-    if segs.size == 0 or stim_valid.size == 0:
+    if rate_segs.size == 0 or stim_valid.size == 0:
         return np.zeros(stim_all.shape, dtype=bool)
 
-    # segs: (n_events_valid, 1, T) → (n_events_valid, T)
-    segs = segs[:, 0, :]
+    # rate_segs: (n_events_valid, 1, T) → (n_events_valid, T)
+    segs = rate_segs[:, 0, :]
 
     # baseline window on the relative time axis
     bl_mask = (rel_t >= rel_t[0]) & (rel_t <= baseline_ms)
@@ -864,7 +902,6 @@ def _load_ir_ms_from_aligned(aligned_path: Path, meta: Dict[str, Any]) -> np.nda
 def extract_baseline_from_file(
     aligned_path: Path,
     ir_ms: np.ndarray,
-    df_meta_norm: pd.DataFrame,
 ) -> Dict[str, Any]:
     """
     Return a dictionary with all per-file data needed for later concatenation.
@@ -875,8 +912,10 @@ def extract_baseline_from_file(
     # ---- load combined (NPRW/UA + stim + meta) ----
     aligned_npz = np.load(aligned_path, allow_pickle=True)
     NPRW_rate = aligned_npz["nprw_rate_hz"]
+    NPRW_counts = aligned_npz["nprw_counts"]
     NPRW_t    = aligned_npz["nprw_t_ms_aligned"] if "nprw_t_ms_aligned" in aligned_npz.files else aligned_npz["nprw_t_ms"]
     UA_rate = aligned_npz["ua_rate_hz"]
+    UA_counts = aligned_npz["ua_counts"]
     UA_t    = aligned_npz["ua_t_ms_aligned"] if "ua_t_ms_aligned" in aligned_npz.files else aligned_npz["ua_t_ms"]
     # UA ids
     ua_elec_1based = aligned_npz["ua_elec"]
@@ -1059,15 +1098,16 @@ def extract_baseline_from_file(
 
     if ts_state_num_full is not None and np.size(UA_t):
         try:
-            segs_ts, ts_state_rel_t, _ = rcp.extract_peristim_segments(
-                ts_state_num_full.reshape(1, -1),
-                UA_t,
-                ir_ms,
+            ts_rate_segs, _, ts_state_rel_t, _ = rcp.extract_peristim_segments(
+                rate_hz=ts_state_num_full.reshape(1, -1),
+                counts=None,
+                t_ms=UA_t,
+                stim_ms=ir_ms,
                 win_ms=WIN_MS,
                 min_trials=MIN_TRIALS,
             )
-            if segs_ts.size:
-                ts_state_segs = segs_ts[:, 0, :]
+            if ts_rate_segs.size:
+                ts_state_segs = ts_rate_segs[:, 0, :]
                 n_ts_state_trls = int(ts_state_segs.shape[0])
         except RuntimeError as e:
             if "Only 0 peri-stim segments" not in str(e):
@@ -1128,11 +1168,11 @@ def extract_baseline_from_file(
             )
 
     # ---- NPRW / UA peri-event segments (baseline-zeroed) ----
-    _, _, nprw_rel_t, _, nprw_zeroed = _safe_extract_segments(
-        NPRW_rate, NPRW_t, ir_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS
+    _, _, NPRW_rel_t, _, NPRW_rates_zeroed, NPRW_counts_segs = _safe_extract_segments(
+        NPRW_rate, NPRW_counts, NPRW_t, ir_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS
     )
-    _, _, ua_rel_t, _, ua_zeroed = _safe_extract_segments(
-        UA_rate, UA_t, ir_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS
+    _, _, UA_rel_t, _, UA_rates_zeroed, UA_counts_segs = _safe_extract_segments(
+        UA_rate, UA_counts, UA_t, ir_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS
     )
 
     # labels on NPRW event axis
@@ -1144,19 +1184,19 @@ def extract_baseline_from_file(
     labels_ua = trial_labels[mask_ua] if trial_labels is not None else None
 
     # A/B subsets for NPRW
-    NPRW_med_A, NPRW_var_A, n_nprw_A, NPRW_zeroed_A = _subset_neural_from_zeroed(
-        nprw_zeroed, labels_nprw, "A"
+    NPRW_med_A, NPRW_var_A, n_nprw_A, NPRW_rates_zeroed_A, NPRW_counts_segs_A = _subset_neural_from_zeroed(
+        NPRW_rates_zeroed, NPRW_counts_segs, labels_nprw, "A"
     )
-    NPRW_med_B, NPRW_var_B, n_nprw_B, NPRW_zeroed_B = _subset_neural_from_zeroed(
-        nprw_zeroed, labels_nprw, "B"
+    NPRW_med_B, NPRW_var_B, n_nprw_B, NPRW_rates_zeroed_B, NPRW_counts_segs_B = _subset_neural_from_zeroed(
+        NPRW_rates_zeroed, NPRW_counts_segs, labels_nprw, "B"
     )
 
     # A/B subsets for UA
-    UA_med_A, UA_var_A, n_ua_A, UA_zeroed_A = _subset_neural_from_zeroed(
-        ua_zeroed, labels_ua, "A"
+    UA_med_A, UA_var_A, n_ua_A, UA_rates_zeroed_A, UA_counts_segs_A = _subset_neural_from_zeroed(
+        UA_rates_zeroed, UA_counts_segs, labels_ua, "A"
     )
-    UA_med_B, UA_var_B, n_ua_B, UA_zeroed_B = _subset_neural_from_zeroed(
-        ua_zeroed, labels_ua, "B"
+    UA_med_B, UA_var_B, n_ua_B, UA_rates_zeroed_B, UA_counts_segs_B = _subset_neural_from_zeroed(
+        UA_rates_zeroed, UA_counts_segs, labels_ua, "B"
     )
 
     # ---- metadata title (still useful; we’ll later override for grouped baseline) ----
@@ -1221,22 +1261,27 @@ def extract_baseline_from_file(
         "neural": {
             "NPRW_med_A": NPRW_med_A,
             "NPRW_var_A": NPRW_var_A,
-            "NPRW_zeroed_A": NPRW_zeroed_A,
+            "NPRW_rates_zeroed_A": NPRW_rates_zeroed_A,
+            "NPRW_counts_A": NPRW_counts_segs_A,
             "n_nprw_A": int(n_nprw_A),
             "NPRW_med_B": NPRW_med_B,
             "NPRW_var_B": NPRW_var_B,
-            "NPRW_zeroed_B": NPRW_zeroed_B,
+            "NPRW_rates_zeroed_B": NPRW_rates_zeroed_B,
+            "NPRW_counts_B": NPRW_counts_segs_B,
             "n_nprw_B": int(n_nprw_B),
-            "NPRW_rel_t": nprw_rel_t,
+            "NPRW_rel_t": NPRW_rel_t,
+
             "UA_med_A": UA_med_A,
             "UA_var_A": UA_var_A,
-            "UA_zeroed_A": UA_zeroed_A,
+            "UA_rates_zeroed_A": UA_rates_zeroed_A,
+            "UA_counts_A": UA_counts_segs_A,
             "n_ua_A": int(n_ua_A),
             "UA_med_B": UA_med_B,
             "UA_var_B": UA_var_B,
-            "UA_zeroed_B": UA_zeroed_B,
+            "UA_rates_zeroed_B": UA_rates_zeroed_B,
+            "UA_counts_B": UA_counts_segs_B,
             "n_ua_B": int(n_ua_B),
-            "UA_rel_t": ua_rel_t,
+            "UA_rel_t": UA_rel_t,
         },
         "ua_ids_1based": ua_elec_1based if ua_elec_1based is not None else np.array([], int),
         "ua_region": ua_region,
@@ -1349,7 +1394,7 @@ def main():
             print(f"[baseline] {aligned_path.name}: no IR events found; skipping.")
             continue
 
-        res = extract_baseline_from_file(aligned_path, ir_ms, df_meta)
+        res = extract_baseline_from_file(aligned_path, ir_ms)
         if not res.get("has_data", False):
             continue
         ua_meta = {
@@ -1373,8 +1418,10 @@ def main():
                     "n_beh": 0,
                     "trial_labels": [],
                     "ir_ms": [],
-                    "NPRW_zeroed": [],
-                    "UA_zeroed": [],
+                    "NPRW_rates_zeroed": [],
+                    "NPRW_counts": [],
+                    "UA_rates_zeroed": [],
+                    "UA_counts": [],
                     "NPRW_rel_t": None,
                     "UA_rel_t": None,
                     "ts_state_segs": [],
@@ -1391,8 +1438,10 @@ def main():
                     "n_beh": 0,
                     "trial_labels": [],
                     "ir_ms": [],
-                    "NPRW_zeroed": [],
-                    "UA_zeroed": [],
+                    "NPRW_rates_zeroed": [],
+                    "NPRW_counts": [],
+                    "UA_rates_zeroed": [],
+                    "UA_counts": [],
                     "NPRW_rel_t": None,
                     "UA_rel_t": None,
                     "ts_state_segs": [],
@@ -1436,15 +1485,24 @@ def main():
             gA["ir_ms"].append(res["ir_ms"])  # raw IR centers
             gA["trial_labels"].append(res["trial_labels"])
 
-            # neural
-            if neu["NPRW_zeroed_A"].size:
-                gA["NPRW_zeroed"].append(neu["NPRW_zeroed_A"])
+            if gA["beh_rel_t"] is None:
+                gA["beh_rel_t"] = beh_A["rel_t_A"]
+
+            # NPRW neural (A)
+            if neu["NPRW_rates_zeroed_A"].size:
+                gA["NPRW_rates_zeroed"].append(neu["NPRW_rates_zeroed_A"])
                 if gA["NPRW_rel_t"] is None:
                     gA["NPRW_rel_t"] = neu["NPRW_rel_t"]
-            if neu["UA_zeroed_A"].size:
-                gA["UA_zeroed"].append(neu["UA_zeroed_A"])
+                if "NPRW_counts_A" in neu and neu["NPRW_counts_A"].size:
+                    gA["NPRW_counts"].append(neu["NPRW_counts_A"])
+
+            # UA neural (A)
+            if neu["UA_rates_zeroed_A"].size:
+                gA["UA_rates_zeroed"].append(neu["UA_rates_zeroed_A"])
                 if gA["UA_rel_t"] is None:
                     gA["UA_rel_t"] = neu["UA_rel_t"]
+                if "UA_counts_A" in neu and neu["UA_counts_A"].size:
+                    gA["UA_counts"].append(neu["UA_counts_A"])
 
             # ts_state
             if ts["ts_state_segs_A"].size:
@@ -1464,15 +1522,23 @@ def main():
             gB["n_beh"] += beh_A["n_beh_B"]
             gB["ir_ms"].append(res["ir_ms"])
             gB["trial_labels"].append(res["trial_labels"])
+            
+            if gB["beh_rel_t"] is None:
+                gB["beh_rel_t"] = beh_A["rel_t_B"]
 
-            if neu["NPRW_zeroed_B"].size:
-                gB["NPRW_zeroed"].append(neu["NPRW_zeroed_B"])
+            if neu["NPRW_rates_zeroed_B"].size:
+                gB["NPRW_rates_zeroed"].append(neu["NPRW_rates_zeroed_B"])
                 if gB["NPRW_rel_t"] is None:
                     gB["NPRW_rel_t"] = neu["NPRW_rel_t"]
-            if neu["UA_zeroed_B"].size:
-                gB["UA_zeroed"].append(neu["UA_zeroed_B"])
+                if "NPRW_counts_B" in neu and neu["NPRW_counts_B"].size:
+                    gB["NPRW_counts"].append(neu["NPRW_counts_B"])
+                    
+            if neu["UA_rates_zeroed_B"].size:
+                gB["UA_rates_zeroed"].append(neu["UA_rates_zeroed_B"])
                 if gB["UA_rel_t"] is None:
                     gB["UA_rel_t"] = neu["UA_rel_t"]
+                if "UA_counts_B" in neu and neu["UA_counts_B"].size:
+                    gB["UA_counts"].append(neu["UA_counts_B"])
 
             if ts["ts_state_segs_B"].size:
                 gB["ts_state_segs"].append(ts["ts_state_segs_B"])
@@ -1502,7 +1568,7 @@ def main():
     for (port, depth), g in acc.items():
         for target_label, tag_name in [("A", "Target A"), ("B", "Target B")]:
             G = g[target_label]
-            if not G["beh_cam0_segs"] and not G["NPRW_zeroed"]:
+            if not G["beh_cam0_segs"] and not G["NPRW_rates_zeroed"]:
                 print(
                     f"[baseline] UA_port={port}, Depth={depth}, target {target_label}: no data; skipping."
                 )
@@ -1521,9 +1587,8 @@ def main():
             )
             n_beh = int(beh_cam0_segs.shape[0])
             beh_rel_t = G["beh_rel_t"]
-            if beh_rel_t is None and G["beh_cam0_segs"]:
-                # take from first seg
-                beh_rel_t = res["beh"]["rel_t_A"]
+            if beh_rel_t is None:
+                beh_rel_t = np.zeros(0, float)
 
             # aggregated behavior medians (pos)
             if beh_cam0_segs.size:
@@ -1550,29 +1615,40 @@ def main():
                 beh_cam1_vel_med = np.zeros_like(beh_cam1_pos_med)
 
             # concat neural segments
-            NPRW_zeroed = (
-                np.concatenate(G["NPRW_zeroed"], axis=0)
-                if G["NPRW_zeroed"]
+            NPRW_rates_zeroed = (
+                np.concatenate(G["NPRW_rates_zeroed"], axis=0)
+                if G["NPRW_rates_zeroed"]
                 else np.zeros((0, 0, 0), float)
             )
-            UA_zeroed = (
-                np.concatenate(G["UA_zeroed"], axis=0)
-                if G["UA_zeroed"]
+            UA_rates_zeroed = (
+                np.concatenate(G["UA_rates_zeroed"], axis=0)
+                if G["UA_rates_zeroed"]
                 else np.zeros((0, 0, 0), float)
             )
-            n_nprw = int(NPRW_zeroed.shape[0])
-            n_ua = int(UA_zeroed.shape[0])
+            NPRW_counts = (
+                np.concatenate(G["NPRW_counts"], axis=0)
+                if G["NPRW_counts"]
+                else np.zeros((0, 0, 0), float)
+            )
+            UA_counts = (
+                np.concatenate(G["UA_counts"], axis=0)
+                if G["UA_counts"]
+                else np.zeros((0, 0, 0), float)
+            )
 
-            if NPRW_zeroed.size:
-                NPRW_med = np.nanmedian(NPRW_zeroed, axis=0)
-                NPRW_var = np.nanvar(NPRW_zeroed, axis=0)
+            n_nprw = int(NPRW_rates_zeroed.shape[0])
+            n_ua = int(UA_rates_zeroed.shape[0])
+
+            if NPRW_rates_zeroed.size:
+                NPRW_med = np.nanmedian(NPRW_rates_zeroed, axis=0)
+                NPRW_var = np.nanvar(NPRW_rates_zeroed, axis=0)
             else:
                 NPRW_med = np.zeros((0, 0), float)
                 NPRW_var = np.zeros((0, 0), float)
 
-            if UA_zeroed.size:
-                UA_med = np.nanmedian(UA_zeroed, axis=0)
-                UA_var = np.nanvar(UA_zeroed, axis=0)
+            if UA_rates_zeroed.size:
+                UA_med = np.nanmedian(UA_rates_zeroed, axis=0)
+                UA_var = np.nanvar(UA_rates_zeroed, axis=0)
             else:
                 UA_med = np.zeros((0, 0), float)
                 UA_var = np.zeros((0, 0), float)
@@ -1697,12 +1773,14 @@ def main():
                 trial_labels=labels_all,
                 NPRW_med=NPRW_med,
                 NPRW_var=NPRW_var,
-                NPRW_zeroed=NPRW_zeroed,
+                NPRW_rates_zeroed=NPRW_rates_zeroed,
+                NPRW_counts=NPRW_counts,
                 NPRW_rel_t=NPRW_rel_t,
                 n_nprw=int(n_nprw),
                 UA_med=UA_med,
                 UA_var=UA_var,
-                UA_zeroed=UA_zeroed,
+                UA_rates_zeroed=UA_rates_zeroed,
+                UA_counts=UA_counts,
                 UA_rel_t=UA_rel_t,
                 n_ua=int(n_ua),
                 ua_ids_1based=ua_ids_1based,
@@ -1747,12 +1825,14 @@ def main():
                 "trial_labels": labels_all,
                 "NPRW_med": NPRW_med,
                 "NPRW_var": NPRW_var,
-                "NPRW_zeroed": NPRW_zeroed,
+                "NPRW_rates_zeroed": NPRW_rates_zeroed,
+                "NPRW_counts": NPRW_counts,
                 "NPRW_rel_t": NPRW_rel_t,
                 "n_nprw": int(n_nprw),
                 "UA_med": UA_med,
                 "UA_var": UA_var,
-                "UA_zeroed": UA_zeroed,
+                "UA_rates_zeroed": UA_rates_zeroed,
+                "UA_counts": UA_counts,
                 "UA_rel_t": UA_rel_t,
                 "n_ua": int(n_ua),
                 "ua_ids_1based": ua_ids_1based,

@@ -211,7 +211,7 @@ def main():
         print(f"[{sess.name}] (ns6) saved preprocessed -> {out_npz_loc}")
 
         # compute rates
-        rate_hz, t_cat_ms, counts_cat, peaks, peaks_t_ms = rcp.threshold_mua_rates(
+        rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms = rcp.threshold_mua_rates(
             rec_artif_removed,
             detect_threshold=THRESH,
             peak_sign=PEAK_SIGN,
@@ -264,23 +264,12 @@ def main():
 
         out_npz = UA_CKPT_OUT / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
         
-        # infer common field names across SI versions
-        names = getattr(peaks, "dtype", None)
-        names = names.names if names is not None else ()
-        samp_f = "sample_index" if "sample_index" in names else ("sample_ind" if "sample_ind" in names else None) #TODO shorten
-        chan_f = "channel_index" if "channel_index" in names else ("channel_ind" if "channel_ind" in names else None)
-        amp_f  = "amplitude" if "amplitude" in names else None
-
-        peak_sample = peaks[samp_f].astype(np.int64)   if (samp_f and peaks.size) else None #TODO shorten
-        peak_ch     = peaks[chan_f].astype(np.int16)   if (chan_f and peaks.size) else None
-        peak_amp    = peaks[amp_f].astype(np.float32)  if (amp_f  and peaks.size) else None
-        
         save = dict(
             rate_hz=rate_hz.astype(np.float32),
             t_ms=t_cat_ms.astype(np.float32),
             counts=counts_cat.astype(np.uint16),
             peaks=peaks,
-            peak_t_ms=peaks_t_ms.astype(np.float32),
+            peak_t_ms=peak_t_ms.astype(np.float32),
             pcs=pcs_T,
             explained_var=explained_var.astype(np.float32),            
             ts_state_num=ts_state_num_binned,
@@ -300,14 +289,10 @@ def main():
                 bin_ms=BIN_MS,
                 sigma_ms=SIGMA_MS,
                 fs=fs_ua,
-                n_channels=int(n_channels),
+                n_channels=rec_artif_removed.get_num_channels(),
                 session=str(sess.name),
             ),
         )
-
-        if peak_sample is not None: save["peak_sample"] = peak_sample
-        if peak_ch is not None:     save["peak_ch"] = peak_ch
-        if peak_amp is not None:    save["peak_amp"] = peak_amp
         
         np.savez_compressed(out_npz, **save)
         print(f"[{sess.name}] saved rate matrix + PCA -> {out_npz}")
