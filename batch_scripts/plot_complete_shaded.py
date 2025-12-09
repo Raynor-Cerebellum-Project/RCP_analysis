@@ -42,6 +42,7 @@ ARTCORR_TAIL_MS   = 5.0
 # --- Velocity setting ---
 VEL_THRESH = 5.0          # absolute velocity threshold (a.u./ms) for despiking
 VEL_MAX_GAP = 5           # interpolate NaN runs up to this many samples
+
 # --- Visualization settings ---
 GAUSS_SMOOTH_MS = 0   # 0 → disable smoothing
 
@@ -52,8 +53,9 @@ MIN_HEATMAP_RATIO = 0.6       # minimum ratio so tiny arrays don't vanish
 UA_COMPACT_FACTOR = 0.95   # < 1.0 shrinks UA panel heights
 NPRW_SCALE      = 0.6   # < 1.0 shrinks Intan height (e.g., 0.6 = 60% of previous)
 GAP_BEH_NPRW    = 0.25  # height "ratio" for a spacer row between behavior and Intan
-FIG_WIDTH_IN         = 16.0        # ← overall width (inches)
-HEIGHT_PER_RATIO_IN  = 4.0         # ← height per unit of `ratios` sum
+FIG_WIDTH_IN         = 8.0     # ← overall width (inches)
+PROBE_GAP_RATIO      = 0.3     # ← horizontal spacer before probe inset (0.04 was default)
+HEIGHT_PER_RATIO_IN  = 4.0        # ← height per unit of `ratios` sum
 
 # ---- PLOTTING CONFIG ----
 PLOT_METRIC = "mean"   # "mean" or "median"
@@ -1293,6 +1295,16 @@ def main():
             sess=sess,
             overall_title=overall_title,
             beh_ylim=KINEMATICS_YLIM,
+            # Explicit Layout Control
+            beh_ratio=BEH_RATIO,
+            ch_ratio_per_row=CH_RATIO_PER_ROW,
+            min_heatmap_ratio=MIN_HEATMAP_RATIO,
+            ua_compact_factor=UA_COMPACT_FACTOR,
+            nprw_scale=NPRW_SCALE,
+            gap_beh_nprw=GAP_BEH_NPRW,
+            fig_width_in=FIG_WIDTH_IN,
+            height_per_ratio_in=HEIGHT_PER_RATIO_IN,
+            probe_gap_ratio=PROBE_GAP_RATIO,
         )
 
         # ---- variance figure ----
@@ -1338,6 +1350,16 @@ def main():
             sess=sess,
             overall_title=overall_title,
             beh_ylim=KINEMATICS_YLIM,
+            # Explicit Layout Control
+            beh_ratio=BEH_RATIO,
+            ch_ratio_per_row=CH_RATIO_PER_ROW,
+            min_heatmap_ratio=MIN_HEATMAP_RATIO,
+            ua_compact_factor=UA_COMPACT_FACTOR,
+            nprw_scale=NPRW_SCALE,
+            gap_beh_nprw=GAP_BEH_NPRW,
+            fig_width_in=FIG_WIDTH_IN,
+            height_per_ratio_in=HEIGHT_PER_RATIO_IN,
+            probe_gap_ratio=PROBE_GAP_RATIO,
         )
 
 
