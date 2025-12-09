@@ -25,6 +25,15 @@ VMIN_SMA_BASELINE, VMAX_SMA_BASELINE = -10, 35
 
 VMIN_NPRW, VMAX_NPRW = -25, 200
 VMIN_UA, VMAX_UA = -50, 150
+
+# Variance ranges (used for both baseline + peri-stim)
+VMIN_NPRW_VAR, VMAX_NPRW_VAR = 0.0, 40000.0
+VMIN_UA_VAR,   VMAX_UA_VAR   = 0.0, 10000.0
+VMAX_SMA_VAR                  = 5000.0
+
+# Peri-stim med ranges (a bit wider than baseline)
+VMIN_NPRW_STIM, VMAX_NPRW_STIM = -25, 200
+VMIN_UA_STIM,   VMAX_UA_STIM   = -50, 150
 COLORMAP = "jet"
 
 ARTRMV_MS_BEFORE = 5.0
@@ -45,6 +54,13 @@ NPRW_SCALE      = 0.6   # < 1.0 shrinks Intan height (e.g., 0.6 = 60% of previou
 GAP_BEH_NPRW    = 0.25  # height "ratio" for a spacer row between behavior and Intan
 FIG_WIDTH_IN         = 16.0        # ← overall width (inches)
 HEIGHT_PER_RATIO_IN  = 4.0         # ← height per unit of `ratios` sum
+
+# ---- PLOTTING CONFIG ----
+PLOT_METRIC = "mean"   # "mean" or "median"
+SUBSETS     = "ALL"  # "MWT" (Middle,Wrist,Target) or "ALL"
+KINEMATICS_YLIM = (-4, 4) # z-scores
+
+
 
 # ---------- params / roots ----------
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -118,6 +134,26 @@ def _pick_rates_all_path(rates_dir: Path, ua_port_choice: str = "A") -> tuple[Pa
     return rates_dir / "rates_from_curated__UA_X__DepthY__ALL.npz", "ALL"
 
 RATES_ALL_PATH, _rates_selection_tag = _pick_rates_all_path(RATES_DIR, "A")
+
+
+def _get_first_array(z, names, *, default=None, as_float=True):
+    """Try a list of possible field names; return first present."""
+    for nm in names:
+        if nm in z.files:
+            arr = z[nm]
+            if as_float:
+                return arr.astype(float)
+            return arr
+    if default is None:
+        return np.zeros((0, 0), float) if as_float else None
+    return np.array(default, float) if as_float else default
+
+def _get_int(z, names, default: int = 0) -> int:
+    for nm in names:
+        if nm in z.files:
+            v = z[nm]
+            return int(v.item() if getattr(v, "shape", ()) == () else v)
+    return int(default)
 
 _imp_pat_elecnum = re.compile(
     r"\belec\s*\d+\s*-\s*(\d{1,3})\s+([0-9]+(?:\.[0-9]+)?)\s*(k?ohms?|kΩ|ohms?|Ω)\b",
@@ -1090,14 +1126,48 @@ def main():
             # But duplicate_with_bands previously expected "nprw_rel_t_var"? 
             # Looking at extract_peri_stim.py line 1044: "NPRW_rel_t": nprw_rel_t
             # It seems it uses the SAME time axis for med and var.
-            nprw_rel_time_ms_var = rel_time_ms_i
-            ua_rel_time_ms_var   = ua_rel_time_ms
+            n_nprw     = _get_int(peri_stim_npz, ["n_nprw"], default=NPRW_med.shape[0])
+            n_nprw_v   = _get_int(peri_stim_npz, ["n_nprw_var", "n_nprw"], default=NPRW_var.shape[0])
+            n_nprw_var = n_nprw_v
 
-            ua_ids_1based      = peri_stim_npz["ua_ids_1based"]
+            ua_ids_1based = peri_stim_npz["ua_ids_1based"] if "ua_ids_1based" in peri_stim_npz.files else None
+
+            # Load segments for mean/SD calculation if needed
+            cam0_pos_segs = _get_first_array(peri_stim_npz, ["beh_cam0_segs", "cam0_pos_segs"], default=None)
+            cam1_pos_segs = _get_first_array(peri_stim_npz, ["beh_cam1_segs", "cam1_pos_segs"], default=None)
+            cam0_vel_segs = _get_first_array(peri_stim_npz, ["beh_cam0_vel_segs", "cam0_vel_segs"], default=None)
+            cam1_vel_segs = _get_first_array(peri_stim_npz, ["beh_cam1_vel_segs", "cam1_vel_segs"], default=None)
+
+        # Helper to compute metric from segs
+        def _compute_metric(segs, metric):
+            if segs is None or segs.size == 0:
+                return None
+            if metric == "mean":
+                return np.nanmean(segs, axis=0)
+            elif metric == "median":
+                return np.nanmedian(segs, axis=0)
+            return None
+
+        # Override loaded medians if metric is different and segs are available
+        beh_cam0_pos_med = cam0_pos_med
+        beh_cam1_pos_med = cam1_pos_med
+        beh_cam0_vel_med = cam0_vel_med
+        beh_cam1_vel_med = cam1_vel_med
+
+        if PLOT_METRIC == "mean":
+            c0_p = _compute_metric(cam0_pos_segs, "mean")
+            if c0_p is not None: beh_cam0_pos_med = c0_p
             
-            n_nprw             = int(peri_stim_npz["n_nprw"])
-            # n_nprw_var was used in title, let's assume same N
-            n_nprw_var         = n_nprw 
+            c1_p = _compute_metric(cam1_pos_segs, "mean")
+            if c1_p is not None: beh_cam1_pos_med = c1_p
+            
+            c0_v = _compute_metric(cam0_vel_segs, "mean")
+            if c0_v is not None: beh_cam0_vel_med = c0_v
+            
+            c1_v = _compute_metric(cam1_vel_segs, "mean")
+            if c1_v is not None: beh_cam1_vel_med = c1_v
+        
+        # Figure out which port this BR file used 
 
         # build behavior labels like before
         if len(cam0_names) > 0:
@@ -1131,15 +1201,78 @@ def main():
         out_subdir_var = FIG.peri_posvel_var / parent_name
         out_subdir_var.mkdir(parents=True, exist_ok=True)
 
-        # ---- median figure ----
-        out_dir_median = out_subdir_med / f"{peri_stim_npz_loc.stem}__posvel.png"
-        title_NA = f"Neural Activity (median Δ across {n_nprw} events)"
+        # ---- Unified Kinematics Figure ----
+        out_name = f"{peri_stim_npz_loc.stem}__posvel_{PLOT_METRIC}_{SUBSETS}.png"
+        out_dir_kin = out_subdir_med / out_name
+        
+        title_NA = f"Neural Activity ({PLOT_METRIC} Δ across {n_nprw} events)"
 
+        # 1. Filter indices based on SUBSETS config
+        def _get_subset_indices(labels: list[str], mode: str) -> list[int]:
+            if mode == "ALL":
+                return list(range(len(labels)))
+            # "MWT" default
+            keys = ("middle", "wrist", "target")
+            return [i for i, lab in enumerate(labels) if any(k in lab.lower() for k in keys)]
+
+        cam0_sel_idx = _get_subset_indices(beh_labels, SUBSETS) if beh_labels else []
+        cam1_sel_idx = _get_subset_indices(beh_labels, SUBSETS) if beh_labels else []
+
+        # 2. Compute Lines & Bands based on PLOT_METRIC
+        def _compute_kinematics(segs, sel_idx, metric):
+            if segs is None or segs.size == 0 or not sel_idx:
+                return np.zeros((0,0), float), None, []
+            
+            # Filter columns
+            segs = np.asarray(segs, float)
+            D = segs.shape[1]
+            valid_sel = [i for i in sel_idx if 0 <= i < D]
+            if not valid_sel:
+                return np.zeros((0,0), float), None, []
+            
+            sel_segs = segs[:, valid_sel, :] # (Trials, K, T)
+            sel_labels = [beh_labels[i] for i in valid_sel]
+
+            # Compute Metric
+            lines = None
+            bands = None
+            
+            if metric == "mean":
+                lines = np.nanmean(sel_segs, axis=0)
+                sd    = np.nanstd(sel_segs,  axis=0)
+                # mask indices with 0 counts
+                cnt   = np.sum(np.isfinite(sel_segs), axis=0)
+                lines[cnt==0] = np.nan
+                sd[cnt==0]    = np.nan
+                bands = sd
+                
+            elif metric == "median":
+                lines = np.nanmedian(sel_segs, axis=0)
+                bands = None # No shading for median
+            
+            else: # fallback
+                lines = np.nanmean(sel_segs, axis=0)
+                bands = None
+
+            return lines, bands, sel_labels
+
+        # Compute Position Data (lines + bands)
+        c0_pos, c0_pos_err, c0_names_final = _compute_kinematics(cam0_pos_segs, cam0_sel_idx, PLOT_METRIC)
+        c1_pos, c1_pos_err, c1_names_final = _compute_kinematics(cam1_pos_segs, cam1_sel_idx, PLOT_METRIC)
+        
+        # Compute Velocity Data (lines only, usually no bands for velocity in this script)
+        c0_vel, _, _ = _compute_kinematics(cam0_vel_segs, cam0_sel_idx, PLOT_METRIC)
+        c1_vel, _, _ = _compute_kinematics(cam1_vel_segs, cam1_sel_idx, PLOT_METRIC)
+
+        # Labels for legend (prefer cam0, else cam1)
+        final_labels = c0_names_final if c0_names_final else c1_names_final
+
+        # 3. Plot
         rcp.stacked_heatmaps_plus_behv(
             NPRW_med, UA_med,
             rel_time_ms_i if (NPRW_med.size and rel_time_ms_i.size) else None,
             ua_rel_time_ms if (UA_med.size and ua_rel_time_ms.size) else None,
-            out_dir_median, title_kinematics, title_NA,
+            out_dir_kin, title_kinematics, title_NA,
             cmap=COLORMAP,
             vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
             probe=nprw_probe, probe_locs=locs, stim_idx=stim_locs,
@@ -1147,117 +1280,68 @@ def main():
             ua_ids_1based=ua_ids_1based,
             ua_sort="region_then_elec",
             beh_rel_time=beh_time_for_both,
-            beh_cam0_lines=cam0_pos_med,
-            beh_cam1_lines=cam1_pos_med,
-            beh_cam0_vel_lines=cam0_vel_med,
-            beh_cam1_vel_lines=cam1_vel_med,
-            beh_labels=beh_labels,
+            beh_cam0_lines=c0_pos,
+            beh_cam1_lines=c1_pos,
+            beh_cam0_vel_lines=c0_vel,
+            beh_cam1_vel_lines=c1_vel,
+            beh_cam0_pos_sems=c0_pos_err,
+            beh_cam1_pos_sems=c1_pos_err,
+            beh_labels=final_labels,
             title_cam1="",
             title_cam0_vel="",
             title_cam1_vel="",
             sess=sess,
             overall_title=overall_title,
+            beh_ylim=KINEMATICS_YLIM,
         )
-
-        # ---- shaded mean±SD figure (kinematics limited to middle-finger & wrist x/y) ----
-        def _select_middle_wrist_indices(labels: list[str]) -> list[int]:
-            keys = ("middle", "wrist")
-            return [i for i, lab in enumerate(labels) if any(k in lab for k in keys)]
-
-        # compute per-camera mean and SD for selected keypoints if per-trial segs exist
-        cam0_sel_idx = _select_middle_wrist_indices(beh_labels) if beh_labels else []
-        cam1_sel_idx = _select_middle_wrist_indices(beh_labels) if beh_labels else []
-
-        def _mean_and_sd_from_segs(segs, sel_idx):
-            # segs: (n_trials, D, T)
-            if segs is None or segs.size == 0 or not sel_idx:
-                return None, None, []
-            segs = np.asarray(segs, float)
-            sel = np.asarray(sel_idx, int)
-            # guard indices
-            D = segs.shape[1]
-            sel = [int(i) for i in sel if 0 <= int(i) < D]
-            if not sel:
-                return None, None, []
-            sel_segs = segs[:, sel, :]
-            # mean across trials (axis=0) -> (D_sel, T)
-            mean = np.nanmean(sel_segs, axis=0)
-            sd = np.nanstd(sel_segs, axis=0)
-            counts = np.sum(np.isfinite(sel_segs), axis=0)
-            # where counts==0 set mean/sd to nan
-            mean[counts == 0] = np.nan
-            sd[counts == 0] = np.nan
-            # labels for selected indices
-            sel_names = [beh_labels[i] for i in sel]
-            return mean, sd, sel_names
-
-        cam0_mean_sel, cam0_sd_sel, cam0_sel_names = _mean_and_sd_from_segs(cam0_pos_segs, cam0_sel_idx)
-        cam1_mean_sel, cam1_sd_sel, cam1_sel_names = _mean_and_sd_from_segs(cam1_pos_segs, cam1_sel_idx)
-
-        # If we have at least one camera's selected mean, produce shaded figure
-        if (cam0_mean_sel is not None and cam0_mean_sel.size) or (cam1_mean_sel is not None and cam1_mean_sel.size):
-            out_dir_shaded = out_subdir_med / f"{peri_stim_npz_loc.stem}__posvel_shaded.png"
-            # prefer selected names from cam0 then cam1 for legend ordering
-            shaded_labels = cam0_sel_names if cam0_sel_names else cam1_sel_names
-
-            rcp.stacked_heatmaps_plus_behv(
-                NPRW_med, UA_med,
-                rel_time_ms_i if (NPRW_med.size and rel_time_ms_i.size) else None,
-                ua_rel_time_ms if (UA_med.size and ua_rel_time_ms.size) else None,
-                out_dir_shaded, title_kinematics, title_NA,
-                cmap=COLORMAP,
-                vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
-                probe=nprw_probe, probe_locs=locs, stim_idx=stim_locs,
-                probe_title="NPRW probe (stim sites highlighted)",
-                ua_ids_1based=ua_ids_1based,
-                ua_sort="region_then_elec",
-                beh_rel_time=beh_time_for_both,
-                beh_cam0_lines=cam0_mean_sel if cam0_mean_sel is not None else np.zeros((0,0), float),
-                beh_cam1_lines=cam1_mean_sel if cam1_mean_sel is not None else np.zeros((0,0), float),
-                beh_cam0_pos_sems=cam0_sd_sel,
-                beh_cam1_pos_sems=cam1_sd_sel,
-                beh_labels=shaded_labels,
-                title_cam1="",
-                title_cam0_vel="",
-                title_cam1_vel="",
-                sess=sess,
-                overall_title=overall_title,
-            )
 
         # ---- variance figure ----
         out_dir_var = out_subdir_var / f"{peri_stim_npz_loc.stem}__posvel_VAR.png"
         title_NA_var = f"Neural Activity VAR (variance of Δ across {n_nprw_var} events)"
 
         rcp.stacked_heatmaps_plus_behv(
-            NPRW_var, UA_var,
-            nprw_rel_time_ms_var if (NPRW_var.size and nprw_rel_time_ms_var.size) else None,
-            ua_rel_time_ms_var   if (UA_var.size and ua_rel_time_ms_var.size)   else None,
-            out_dir_var, title_kinematics, title_NA_var,
+            NPRW_var,
+            UA_var,
+            rel_time_ms_i if NPRW_var.size else None,
+            ua_rel_time_ms   if UA_var.size   else None,
+            out_dir_var,
+            title_kinematics,
+            title_NA_var,
             cmap=COLORMAP,
-            vmin_nprw=0.0, vmax_nprw=40000.0,
-            vmin_ua={"M1i+M1s": 0.0, "PMd": 0.0, "SMA": 0.0},
-            vmax_ua={"M1i+M1s": 10000.0, "PMd": 10000.0, "SMA": 10000.0},
-            probe=nprw_probe, probe_locs=locs, stim_idx=stim_locs,
-            probe_title="NPRW probe (stim sites highlighted)",
+            vmin_nprw=VMIN_NPRW_VAR,
+            vmax_nprw=VMAX_NPRW_VAR,
+            vmin_ua={
+                "M1i+M1s": VMIN_UA_VAR,
+                "PMd":     VMIN_UA_VAR,
+                "SMA":     0.0,
+            },
+            vmax_ua={
+                "M1i+M1s": VMAX_UA_VAR,
+                "PMd":     VMAX_UA_VAR,
+                "SMA":     VMAX_SMA_VAR,
+            },
+            probe=None,
+            probe_locs=None,
+            stim_idx=None,
+            probe_title="",
             ua_ids_1based=ua_ids_1based,
             ua_sort="none",
             beh_rel_time=beh_time_for_both,
-            beh_cam0_lines=cam0_pos_med,
-            beh_cam1_lines=cam1_pos_med,
-            beh_cam0_vel_lines=cam0_vel_med,
-            beh_cam1_vel_lines=cam1_vel_med,
+            beh_cam0_lines=beh_cam0_pos_med,
+            beh_cam1_lines=beh_cam1_pos_med,
+            beh_cam0_vel_lines=beh_cam0_vel_med,
+            beh_cam1_vel_lines=beh_cam1_vel_med,
             beh_labels=beh_labels,
             title_cam1="",
             title_cam0_vel="",
             title_cam1_vel="",
             sess=sess,
             overall_title=overall_title,
+            beh_ylim=KINEMATICS_YLIM,
         )
 
 
+
 if __name__ == "__main__":
-    # plot the aligned baseline traces
-    # main_baselines()
-    
-    # plot stim trials
+    # plot
     main()

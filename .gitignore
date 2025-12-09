@@ -1,9 +1,9 @@
 .ruff_cache
-.vscode/
+.vscode/*
 data
 results/*
 *.egg-info
-RCP_analysis/__pycache__
-RCP_analysis/python/functions/__pycache__
-RCP_analysis/python/plotting/__pycache__
+RCP_analysis/__pycache__/*
+RCP_analysis/python/functions/__pycache__/*
+RCP_analysis/python/plotting/__pycache__/*
 .DS_Store

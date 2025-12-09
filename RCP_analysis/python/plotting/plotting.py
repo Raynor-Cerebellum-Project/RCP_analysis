@@ -92,9 +92,13 @@ def stacked_heatmaps_plus_behv(
     # Optional per-timepoint SEM arrays for shaded plotting of position traces
     beh_cam0_pos_sems=None, beh_cam1_pos_sems=None,
     title_cam1=None, title_cam0_vel=None, title_cam1_vel=None,
-    sess=None, overall_title=None,
+    sess="",
+    overall_title="",
+    beh_ylim=None,
 ):
-
+    """
+    s: session ID
+    """
     # ---------------- Sanitize presence ----------------
     has_nprw = isinstance(nprw_med, np.ndarray) and nprw_med.ndim == 2 and nprw_med.size > 0 and (t_nprw is not None)
     has_ua    = isinstance(ua_med,    np.ndarray) and ua_med.ndim    == 2 and ua_med.size    > 0 and (t_ua    is not None)
@@ -291,7 +295,7 @@ def stacked_heatmaps_plus_behv(
         t.set_verticalalignment("center")
         return t
 
-    def _plot_lines(ax, rel_t, lines, title, ylabel, sub, place_legend: bool, sems=None):
+    def _plot_lines(ax, rel_t, lines, title, ylabel, sub, place_legend: bool, sems=None, ylim=None):
         """
         Plot lines (D x T). If `sems` is provided and has same shape as `lines`,
         draw a filled band ±sem behind each mean line.
@@ -300,6 +304,9 @@ def stacked_heatmaps_plus_behv(
             ax.axis("off")
             return
         D = lines.shape[0]
+        if ylim is not None:
+            ax.set_ylim(ylim)
+
         for i in range(D):
             y = lines[i]
             if not np.isfinite(y).any():
@@ -349,16 +356,16 @@ def stacked_heatmaps_plus_behv(
 
             if sub == "cam0_pos":
                 _plot_lines(ax, beh_rel_time, beh_cam0_pos, title_kinematics or "",
-                            "Cam-0\nPosition Δ (z)", sub, place_legend_now, sems=beh_cam0_pos_sems)
+                            "Cam-0\nPosition Δ (z)", sub, place_legend_now, sems=beh_cam0_pos_sems, ylim=beh_ylim)
             elif sub == "cam1_pos":
                 _plot_lines(ax, beh_rel_time, beh_cam1_pos, title_cam1 or "",
-                            "Cam-1\nPosition Δ (z)", sub, place_legend_now, sems=beh_cam1_pos_sems)
+                            "Cam-1\nPosition Δ (z)", sub, place_legend_now, sems=beh_cam1_pos_sems, ylim=beh_ylim)
             elif sub == "cam0_vel":
                 _plot_lines(ax, beh_rel_time, beh_cam0_vel, title_cam0_vel or "",
-                            "Cam-0\nVelocity (z/ms)", sub, place_legend_now)
+                            "Cam-0\nVelocity (z/ms)", sub, place_legend_now, ylim=beh_ylim)
             elif sub == "cam1_vel":
                 _plot_lines(ax, beh_rel_time, beh_cam1_vel, title_cam1_vel or "",
-                            "Cam-1\nVelocity (z/ms)", sub, place_legend_now)
+                            "Cam-1\nVelocity (z/ms)", sub, place_legend_now, ylim=beh_ylim)
 
             if place_legend_now:
                 legend_placed = True
