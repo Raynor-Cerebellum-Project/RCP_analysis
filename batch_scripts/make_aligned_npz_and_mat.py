@@ -64,6 +64,16 @@ def _find_aligned_DLC_for_br_idx(behv_root: Path, br_idx: int) -> Tuple[Optional
         return cam1, "cam1"
     return None, "none"
 
+def _parse_SI_peaks(peaks) -> dict:
+    peak_times = {}
+    peak_amp = {}
+    for i in np.unique(peaks['channel_index']):
+        peak_ch_times = peaks['sample_index'][peaks['channel_index'] == i]
+        peak_ch_amp = peaks['amplitude'][peaks['channel_index'] == i]
+        peak_times[i] = peak_ch_times
+        peak_amp[i] = peak_ch_amp
+    return peak_times, peak_amp
+
 def main():
     if not SHIFTS_CSV.exists():
         raise SystemExit(f"[error] shifts CSV not found: {SHIFTS_CSV}")
@@ -115,10 +125,14 @@ def main():
             ua_t_ms    = ua_npz["t_ms"]
             ua_pcs   = ua_npz["pcs"]
             ua_peaks = ua_npz["peaks"]
-            ua_peak_t_ms     = ua_npz["peak_t_ms"]
+            ua_peak_samps, ua_peak_amps = _parse_SI_peaks(ua_peaks)
+            ua_peak_ms = {}
             ua_expl = ua_npz["explained_var"]
             ua_meta = ua_npz["meta"]
             fs_br = ua_npz["meta"].item()["fs"]
+            
+            for ch in ua_peak_samps:
+                ua_peak_ms[ch] = ua_peak_samps[ch] / fs_br * 1000
             
             ua_elec = ua_npz["ua_elec"]
             ua_nsp = ua_npz["ua_nsp"]
@@ -126,6 +140,7 @@ def main():
             ua_region = ua_npz["ua_region"]
             ua_region_names = ua_npz["ua_region_names"]
             ua_port = ua_npz["ua_port"]
+            hr_sig = ua_npz["hr_sig"]
 
             # touchscreen states
             if "ts_state_num" in ua_npz:
@@ -138,30 +153,31 @@ def main():
             else:
                 ts_state_char = np.full(0, 'N', dtype='U1')
 
-            # NPRW
+            # NPRnW
             nprw_npz = np.load(nprw_rates_npz, allow_pickle=True)
             nprw_rate_hz = nprw_npz["rate_hz"]
             nprw_counts = nprw_npz["counts"]
             nprw_t_ms    = nprw_npz["t_ms"]
             nprw_pcs   = nprw_npz["pcs"]
             nprw_peaks = nprw_npz["peaks"]
-            nprw_peak_t_ms     = nprw_npz["peak_t_ms"]
+            
+            nprw_peak_ms = {}
+            nprw_peak_samps, nprw_peak_amps = _parse_SI_peaks(nprw_peaks)
+            for ch in nprw_peak_samps:
+                nprw_peak_ms[ch] = nprw_peak_samps[ch] / fs_nprw * 1000 - anchor_ms
+            
             nprw_expl = nprw_npz["explained_var"]
             nprw_meta = nprw_npz["meta"]
 
             # Stim times (absolute Intan ms)
             stim_npz_path, _ = rcp.stim_npz_path_from_br_idx(br_idx, METADATA_CSV, NPRW_AUX_DATA)
             stim = rcp.load_stim_detection(stim_npz_path)
-            stim_ms_abs = stim["block_bounds_samples"][:, 0] * 1000 / fs_nprw
+            stim_ms = stim["block_bounds_samples"][:, 0] * 1000 / fs_nprw - anchor_ms
             
             # apply Intan anchor shift to timebase
             nprw_t_ms_aligned = nprw_t_ms - anchor_ms
-            ua_t_ms_aligned    = ua_t_ms  # no shift yet
-
-            # Aligned (Intan timebase is shifted by anchor_ms in your pipeline)
-            nprw_peak_t_ms_aligned = (nprw_peak_t_ms - float(anchor_ms)) if nprw_peak_t_ms is not None else np.array([], dtype=np.float32)
-            ua_peak_t_ms_aligned    = ua_peak_t_ms if ua_peak_t_ms is not None else np.array([], dtype=np.float32)
-
+            ua_t_ms_aligned    = ua_t_ms  # no shifts
+            
             # Keep native binning; no resampling, no trimming
             num_bins_nprw = nprw_t_ms_aligned.size
             num_bins_ua = ua_t_ms_aligned.size
@@ -338,11 +354,8 @@ def main():
                 nprw_meta=(nprw_meta.item() if hasattr(nprw_meta, "item") else nprw_meta),
                 nprw_pcs=nprw_pcs if nprw_pcs is not None else np.array([], dtype=np.float32),
                 nprw_explained_var=nprw_expl if nprw_expl is not None else np.array([], dtype=np.float32),
-
-                # NPRW peaks (raw + aligned)
-                nprw_peaks=(nprw_peaks if nprw_peaks is not None else np.array([], dtype=np.float32)),
-                nprw_peak_t_ms=(nprw_peak_t_ms if nprw_peak_t_ms is not None else np.array([], dtype=np.float32)),
-                nprw_peak_t_ms_aligned=(nprw_peak_t_ms_aligned.astype(np.float32) if nprw_peak_t_ms_aligned is not None else np.array([], dtype=np.float32)),
+                nprw_peak_ms=nprw_peak_ms,
+                nprw_peak_amps=nprw_peak_amps,
                 
                 ua_rate_hz=ua_rate_hz.astype(np.float32),
                 ua_counts=ua_counts.astype(np.uint16),
@@ -351,6 +364,8 @@ def main():
                 ua_meta=(ua_meta.item() if hasattr(ua_meta, "item") else ua_meta),
                 ua_pcs=ua_pcs if ua_pcs is not None else np.array([], dtype=np.float32),
                 ua_explained_var=ua_expl if ua_expl is not None else np.array([], dtype=np.float32),
+                ua_peak_ms=ua_peak_ms,
+                ua_peak_amps=ua_peak_amps,
 
                 ua_elec=ua_elec,
                 ua_region=ua_region,
@@ -358,12 +373,10 @@ def main():
                 ua_port=ua_port,
                 ua_nsp=ua_nsp,
                 ua_idx_rows=ua_idx_rows,
-
-                ua_peaks=(ua_peaks if ua_peaks is not None else np.array([], dtype=np.float32)),
-                ua_peak_t_ms=(ua_peak_t_ms if ua_peak_t_ms is not None else np.array([], dtype=np.float32)),
-                ua_peak_t_ms_aligned=(ua_peak_t_ms_aligned.astype(np.float32) if ua_peak_t_ms_aligned is not None else np.array([], dtype=np.float32)),
-
-                stim_ms=(stim_ms_abs.astype(np.float32) if stim_ms_abs is not None else np.array([], dtype=np.float32)),
+                
+                hr_sig=hr_sig,
+                
+                stim_ms=(stim_ms.astype(np.float32) if stim_ms is not None else np.array([], dtype=np.float32)),
 
                 # Alignment meta (as JSON)
                 align_meta=json.dumps(aligned_meta),
@@ -404,7 +417,6 @@ def main():
                         out[k] = v
                 return out
 
-                
             # Use mostly the same contents; for meta we store the dict instead of JSON.
             mat_dict = dict(
                 nprw_rate_hz=nprw_rate_hz.astype(np.float32),
@@ -426,9 +438,11 @@ def main():
                 ua_nsp=ua_nsp,
                 ua_idx_rows=ua_idx_rows,
 
-                stim_ms=(stim_ms_abs.astype(np.float32)
-                         if stim_ms_abs is not None
+                stim_ms=(stim_ms.astype(np.float32)
+                         if stim_ms is not None
                          else np.array([], dtype=np.float32)),
+
+                hr_sig=hr_sig,
 
                 # alignment meta as a struct-like dict for MATLAB
                 align_meta=_change_none_for_mat(aligned_meta),

@@ -426,59 +426,59 @@ def _plot_one_peristim_npz(npz_path: Path, target_label: str, ua_imp_a: dict[int
     
     # Figure out which port this BR file used
     ua_imp: dict[int, float] = {}
-    # if EXCLUDE_UA_HIGH_Z:
-    #     try:
-    #         br2port = rcp.get_metadata_mapping(METADATA_CSV, "BR_File", "UA_port") #TODO this doesn't work
-    #         # handle int vs str keys
-    #         port_raw = br2port.get(br_idx)
-    #         if port_raw is None:
-    #             port_raw = br2port.get(str(br_idx))
-    #         if port_raw is not None:
-    #             port = str(port_raw).strip().upper()
-    #             if port.startswith("A"):
-    #                 ua_imp = ua_imp_a
-    #             elif port.startswith("B"):
-    #                 ua_imp = ua_imp_b
-    #             else:
-    #                 print(f"[warn] Unknown UA_Port value '{port_raw}' for BR {br_idx}")
-    #         else:
-    #             print(f"[warn] No UA_Port mapping found for BR {br_idx}")
-    #     except Exception as e:
-    #         print(f"[warn] Could not load BR→UA_Port mapping from {METADATA_CSV}: {e}")
-    #         ua_imp = {}
+    if EXCLUDE_UA_HIGH_Z:
+        try:
+            br2port = rcp.get_metadata_mapping(METADATA_CSV, "BR_File", "UA_port")
+            # handle int vs str keys
+            port_raw = br2port.get(br_idx)
+            if port_raw is None:
+                port_raw = br2port.get(str(br_idx))
+            if port_raw is not None:
+                port = str(port_raw).strip().upper()
+                if port.startswith("A"):
+                    ua_imp = ua_imp_a
+                elif port.startswith("B"):
+                    ua_imp = ua_imp_b
+                else:
+                    print(f"[warn] Unknown UA_Port value '{port_raw}' for BR {br_idx}")
+            else:
+                print(f"[warn] No UA_Port mapping found for BR {br_idx}")
+        except Exception as e:
+            print(f"[warn] Could not load BR→UA_Port mapping from {METADATA_CSV}: {e}")
+            ua_imp = {}
             
     # ---- UA impedance masking (peri-stim) ----
     ua_plot_med = UA_med
     ua_plot_var = UA_var
 
-    # if EXCLUDE_UA_HIGH_Z and ua_plot_med.size and ua_ids_1based is not None and ua_imp:
-    #     try:
-    #         ids_arr = np.asarray(ua_ids_1based)
-    #         keep = np.ones(ids_arr.size, dtype=bool)
-    #         any_imp = False
-    #         for r, eid in enumerate(ids_arr):
-    #             if eid is None or not np.isfinite(eid):
-    #                 continue
-    #             z_imp = ua_imp.get(int(eid))
-    #             if z_imp is not None and np.isfinite(z_imp):
-    #                 any_imp = True
-    #                 if z_imp > UA_IMP_MAX_KOHM:
-    #                     keep[r] = False
+    if EXCLUDE_UA_HIGH_Z and ua_plot_med.size and ua_ids_1based is not None and ua_imp:
+        try:
+            ids_arr = np.asarray(ua_ids_1based)
+            keep = np.ones(ids_arr.size, dtype=bool)
+            any_imp = False
+            for r, eid in enumerate(ids_arr):
+                if eid is None or not np.isfinite(eid):
+                    continue
+                z_imp = ua_imp.get(int(eid))
+                if z_imp is not None and np.isfinite(z_imp):
+                    any_imp = True
+                    if z_imp > UA_IMP_MAX_KOHM:
+                        keep[r] = False
 
-    #         if any_imp:
-    #             if keep.any():
-    #                 ua_plot_med = ua_plot_med[keep, :]
-    #                 if ua_plot_var.size:
-    #                     ua_plot_var = ua_plot_var[keep, :]
-    #                 ua_ids_1based = ids_arr[keep]
-    #                 print(
-    #                     f"[info] Peri-stim UA (BR {br_idx}): kept {keep.sum()}/{keep.size} rows "
-    #                     f"(≤ {UA_IMP_MAX_KOHM:g} kΩ)."
-    #                 )
-    #             else:
-    #                 print("[warn] Peri-stim UA: impedance mask would remove all rows; skipping mask.")
-    #     except Exception as e:
-    #         print(f"[warn] Peri-stim UA impedance mask failed: {e}")
+            if any_imp:
+                if keep.any():
+                    ua_plot_med = ua_plot_med[keep, :]
+                    if ua_plot_var.size:
+                        ua_plot_var = ua_plot_var[keep, :]
+                    ua_ids_1based = ids_arr[keep]
+                    print(
+                        f"[info] Peri-stim UA (BR {br_idx}): kept {keep.sum()}/{keep.size} rows "
+                        f"(≤ {UA_IMP_MAX_KOHM:g} kΩ)."
+                    )
+                else:
+                    print("[warn] Peri-stim UA: impedance mask would remove all rows; skipping mask.")
+        except Exception as e:
+            print(f"[warn] Peri-stim UA impedance mask failed: {e}")
 
     # --- geometry / probe as you already have ---
     mat_probe = loadmat(Path(GEOM_PATH))
@@ -539,6 +539,7 @@ def _plot_one_peristim_npz(npz_path: Path, target_label: str, ua_imp_a: dict[int
         ua_plot_med,
         NPRW_rel_t if NPRW_med.size else None,
         UA_rel_t   if UA_med.size   else None,
+        
         out_svg_median,
         title_kinematics,
         title_NA,

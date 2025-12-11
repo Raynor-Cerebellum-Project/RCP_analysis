@@ -1116,6 +1116,7 @@ def main():
             probe=nprw_probe, probe_locs=locs, stim_idx=stim_locs,
             probe_title="NPRW probe (stim sites highlighted)",
             ua_ids_1based=ua_ids_1based,
+            ua_groups=ua_groups,
             ua_sort="region_then_elec",
             beh_rel_time=beh_time_for_both,
             beh_cam0_lines=cam0_pos_med,

@@ -30,16 +30,15 @@ SHIFT_CSV = METADATA_ROOT / "br_to_intan_shifts.csv"
 BR_SESSION_FOLDERS = rcp.list_br_sessions(BR_ROOT)
 
 RATES = PARAMS.UA_rate_est
-BIN_MS     = float(RATES.get("bin_ms", 1.0))
-SIGMA_MS   = float(RATES.get("sigma_ms", 50.0))
-THRESH     = float(RATES.get("detect_threshold", 3))
-PEAK_SIGN  = str(RATES.get("peak_sign", "both"))
+BIN_MS     = RATES.get("bin_ms")
+SIGMA_MS   = RATES.get("sigma_ms")
+THRESH     = RATES.get("detect_threshold")
+PEAK_SIGN  = RATES.get("peak_sign")
+ARTRMV_MS_BEFORE = float(RATES.get("remove_ms_before", 5.0))
+ARTRMV_TAIL_MS   = float(RATES.get("remove_tail_ms_after", 5.0))
 
 FS_NS2 = 1000.0
 
-ARTRMV_MS_BEFORE = 5.0
-ARTCORR_TAIL_MS   = 5.0
-    
 XLS = rcp.ua_excel_path(REPO_ROOT, PARAMS.probes)
 UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS else None
 if UA_MAP is None:
@@ -48,6 +47,7 @@ if UA_MAP is None:
 # Sync channels
 UA_CFG = PARAMS.probes.get("UA")
 CAMERA_SYNC_CH = int(UA_CFG.get("camera_sync_ch", 134))
+HR_CH = int(UA_CFG.get("HR_ch", 136))
 TRIANGLE_SYNC_CH = int(UA_CFG.get("triangle_sync_ch", 138))
 TOUCHSCREEN_CH = int(UA_CFG.get("touchscreen_ch", 139))
 
@@ -103,9 +103,9 @@ def main():
     sess_folders = BR_SESSION_FOLDERS
     
     print("Found session folders:", len(sess_folders))
-    for sess in (sess_folders[14:16] + sess_folders[17:]): # Can tweak here to isolate sessions 
+    for sess in (sess_folders[:]): # Can tweak here to isolate sessions 
         print(f"=== Session: {sess.name} ===")
-        _, touchscreen_sig = rcp.extract_br_aux_streams_npz(sess, UA_AUX_DATA, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH, TOUCHSCREEN_CH) # Extract sync pulses and stuff
+        _, touchscreen_sig, hr_sig = rcp.extract_br_aux_streams_npz(sess, UA_AUX_DATA, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH, TOUCHSCREEN_CH, HR_CH) # Extract sync pulses and stuff
         rec_ns6 = se.read_blackrock(sess, stream_name = 'nsx6', all_annotations=True) # Load neural data
         
         # Threshold to get touchscreen state
@@ -182,7 +182,7 @@ def main():
             
             if starts_ua.size:
                 dur_ms    = (ends_ua - starts_ua) * 1000.0 / fs_ua
-                ms_after  = float(dur_ms.max() + ARTCORR_TAIL_MS)
+                ms_after  = float(dur_ms.max() + ARTRMV_TAIL_MS)
 
                 rec_artif_removed = spre.remove_artifacts(
                     rec_hp,
@@ -192,7 +192,7 @@ def main():
                     mode="zeros",          # or "linear"
                 )
                 pad_before_samp = int(round(ARTRMV_MS_BEFORE * fs_ua / 1000.0))
-                pad_after_samp  = int(round(ARTCORR_TAIL_MS  * fs_ua / 1000.0))
+                pad_after_samp  = int(round(ARTRMV_TAIL_MS  * fs_ua / 1000.0))
 
                 starts_exp = np.clip(starts_ua - pad_before_samp, 0, None)
                 ends_exp   = np.clip(ends_ua   + pad_after_samp,  0, n_total)
@@ -211,7 +211,7 @@ def main():
         print(f"[{sess.name}] (ns6) saved preprocessed -> {out_npz_loc}")
 
         # compute rates
-        rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms = rcp.threshold_mua_rates(
+        rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms = rcp.threshold_mua_rates( #TODO This needs to be reduced to detect peaks only, because fr estimation should be done later
             rec_artif_removed,
             detect_threshold=THRESH,
             peak_sign=PEAK_SIGN,
@@ -282,6 +282,7 @@ def main():
             ua_region=ua_region,
             ua_region_names=ua_region_names,
             ua_port=ua_port,
+            hr_sig=hr_sig,
 
             meta=dict(
                 detect_threshold=THRESH,

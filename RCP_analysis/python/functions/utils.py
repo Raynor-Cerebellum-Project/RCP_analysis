@@ -69,7 +69,9 @@ def get_metadata_mapping(meta_csv: Path, field1: str, field2: str) -> Dict[int, 
         for row in rdr:
             try:
                 k = int((row[field1] or "").strip())
-                v = int((row[field2] or "").strip())
+                v = (row[field2] or "").strip()
+                if field2 not in {"UA_port", "Movement_Trigger", "Notes"}:
+                    v = int(v)
             except (KeyError, TypeError, ValueError):
                 # missing field, None, non-int, '-', etc.
                 continue

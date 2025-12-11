@@ -43,7 +43,7 @@ threads_per_worker: 1
 chunk: "4s"
 
 # ---- Intan firing rate (threshold MUA) ----
-intan_rate_est:
+NPRW_rate_est:
   bin_ms: 10.0          # bin width for counts
   sigma_ms: 10.0       # Gaussian kernel std
   detect_threshold: 3

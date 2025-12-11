@@ -3,8 +3,8 @@
 % VOG_data = readmatrix('NRR_RW006_003_2025_1029_145324.csv'); %baseline reaches
 % load('NRR_RW006_003_Cal.mat') %baseline reaches
 
-VOG_data = readmatrix('NRR_RW006_009_2025_1029_152200.csv'); %32ch stim
-load('NRR_RW006_008_Cal.mat') %32ch stim
+VOG_data = readmatrix('NRR_RW006_0019.csv'); %32ch stim
+load('NRR_RW006_008_Cal.mat') %baseline reaches
 
 % Extract each column as a separate vector
 TimeStamp = VOG_data(:, 1); 
@@ -97,5 +97,3 @@ ylabel('Heart Rate (BPM)');
 title('Interpolated Smoothed Heart Rate');
 legend;
 
-mean(interpolated_smoothed_hr)
-std(interpolated_smoothed_hr)
