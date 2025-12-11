@@ -68,7 +68,7 @@ def add_ua_region_bar(
 
 # ---- Plotting FR for both ----
 def stacked_heatmaps_plus_behv(
-    nprw_med, ua_med, t_nprw, t_ua, out_svg,
+    nprw_med, ua_med, t_nprw, t_ua, nprw_edges_ms, ua_edges_ms, out_svg,
     title_kinematics, title_NA,
     *, cmap="jet",
     vmin_nprw=None, vmax_nprw=None,
@@ -77,10 +77,13 @@ def stacked_heatmaps_plus_behv(
     probe_title="Probe (NPRW)", probe_width_ratio=0.15, probe_marker_size=28,
     probe_gap_ratio=0.04,
     ua_ids_1based=None, ua_sort="region_then_elec",
-    beh_rel_time=None, beh_cam0_lines=None, beh_cam1_lines=None,
-    beh_labels=None, beh_cam0_vel_lines=None, beh_cam1_vel_lines=None,
-    # Optional per-timepoint SEM arrays for shaded plotting of position traces
-    beh_cam0_pos_sems=None, beh_cam1_pos_sems=None,
+    beh_rel_time=None, beh_cam0_pos=None, beh_cam1_pos=None,
+    beh_labels=None, beh_cam0_vel=None, beh_cam1_vel=None,
+    # Optional per-timepoint STD arrays for shaded plotting of position traces
+    beh_cam0_pos_stds=None, beh_cam1_pos_stds=None,
+    beh_cam0_vel_stds=None, beh_cam1_vel_stds=None,
+    target_pos_cam0=None, 
+    target_pos_cam1=None, 
     title_cam1=None, title_cam0_vel=None, title_cam1_vel=None,
     sess="",
     overall_title="",
@@ -117,10 +120,10 @@ def stacked_heatmaps_plus_behv(
 
     labs = (beh_labels or [])
 
-    beh_cam0_pos, have_cam0_pos = _prepare_cam(beh_cam0_lines, beh_rel_time)
-    beh_cam1_pos, have_cam1_pos = _prepare_cam(beh_cam1_lines, beh_rel_time)
-    beh_cam0_vel, have_cam0_vel = _prepare_cam(beh_cam0_vel_lines, beh_rel_time)
-    beh_cam1_vel, have_cam1_vel = _prepare_cam(beh_cam1_vel_lines, beh_rel_time)
+    beh_cam0_pos, have_cam0_pos = _prepare_cam(beh_cam0_pos, beh_rel_time)
+    beh_cam1_pos, have_cam1_pos = _prepare_cam(beh_cam1_pos, beh_rel_time)
+    beh_cam0_vel, have_cam0_vel = _prepare_cam(beh_cam0_vel, beh_rel_time)
+    beh_cam1_vel, have_cam1_vel = _prepare_cam(beh_cam1_vel, beh_rel_time)
 
     beh_rows = []
     if have_cam0_pos: beh_rows.append(("beh", "cam0_pos"))
@@ -294,10 +297,10 @@ def stacked_heatmaps_plus_behv(
         t.set_verticalalignment("center")
         return t
 
-    def _plot_lines(ax, rel_t, lines, title, ylabel, sub, place_legend: bool, sems=None, ylim=None):
+    def _plot_lines(ax, rel_t, lines, title, ylabel, sub, place_legend: bool, stds=None, ylim=None, target=None):
         """
-        Plot lines (D x T). If `sems` is provided and has same shape as `lines`,
-        draw a filled band ±sem behind each mean line.
+        Plot lines (D x T). If `stds` is provided and has same shape as `lines`,
+        draw a filled band ±std behind each mean line.
         """
         if lines is None:
             ax.axis("off")
@@ -313,10 +316,10 @@ def stacked_heatmaps_plus_behv(
             lab = labs[i] if i < len(labs) else f"trace_{i+1}"
             # plot mean line first to capture color from matplotlib cycle
             ln, = ax.plot(rel_t, y, lw=1.25, alpha=0.95, label=lab)
-            # if sems available and matching shape, draw shaded band
-            if sems is not None:
+            # if stds available and matching shape, draw shaded band
+            if stds is not None:
                 try:
-                    s = sems[i]
+                    s = stds[i]
                     if np.shape(s) == np.shape(y):
                         col = ln.get_color()
                         lo = y - s
@@ -324,7 +327,10 @@ def stacked_heatmaps_plus_behv(
                         ax.fill_between(rel_t, lo, hi, color=col, alpha=0.22, linewidth=0.0)
                 except Exception:
                     pass
-
+        # if target is not None:
+            # ax.axhline(target[0], color="red", alpha=0.8, linewidth=1.2, ls="--")
+            # ax.axhline(target[1], color="red", alpha=0.8, linewidth=1.2, ls="--")
+            
         ax.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
         ax.axvspan(0.0, 100.0, color="0.7", alpha=0.15, zorder=0)  # light, behind data
         ax._is_time_axis = True
@@ -335,7 +341,7 @@ def stacked_heatmaps_plus_behv(
             ax.legend(loc="center left",
                     bbox_to_anchor=(1.02, 0.5),  # was 1.02
                     frameon=False, fontsize=8, ncols=1, borderaxespad=0.0)
-        ax.grid(alpha=0.15, linestyle=":")
+        # ax.grid(alpha=0.15, linestyle=":")
 
     row = 0
     # before the loop
@@ -355,16 +361,16 @@ def stacked_heatmaps_plus_behv(
 
             if sub == "cam0_pos":
                 _plot_lines(ax, beh_rel_time, beh_cam0_pos, title_kinematics or "",
-                            "Cam-0\nPosition Δ (z)", sub, place_legend_now, sems=beh_cam0_pos_sems, ylim=beh_ylim)
+                            "Cam-0\nPosition Δ (z)", sub, place_legend_now, stds=beh_cam0_pos_stds, ylim=beh_ylim, target=target_pos_cam0)
             elif sub == "cam1_pos":
                 _plot_lines(ax, beh_rel_time, beh_cam1_pos, title_cam1 or "",
-                            "Cam-1\nPosition Δ (z)", sub, place_legend_now, sems=beh_cam1_pos_sems, ylim=beh_ylim)
+                            "Cam-1\nPosition Δ (z)", sub, place_legend_now, stds=beh_cam1_pos_stds, ylim=beh_ylim, target=target_pos_cam1)
             elif sub == "cam0_vel":
                 _plot_lines(ax, beh_rel_time, beh_cam0_vel, title_cam0_vel or "",
-                            "Cam-0\nVelocity (z/ms)", sub, place_legend_now, ylim=beh_ylim)
+                            "Cam-0\nVelocity (z/ms)", sub, place_legend_now, stds=beh_cam0_vel_stds, ylim = tuple(np.array(beh_ylim) / 200.0))
             elif sub == "cam1_vel":
                 _plot_lines(ax, beh_rel_time, beh_cam1_vel, title_cam1_vel or "",
-                            "Cam-1\nVelocity (z/ms)", sub, place_legend_now, ylim=beh_ylim)
+                            "Cam-1\nVelocity (z/ms)", sub, place_legend_now, stds=beh_cam1_vel_stds, ylim = tuple(np.array(beh_ylim) / 200.0))
 
             if place_legend_now:
                 legend_placed = True
@@ -392,18 +398,40 @@ def stacked_heatmaps_plus_behv(
         # Make a copy of the cmap and set NaN color to gray
         cmap_local_nprw = cm.get_cmap(cmap).copy()
         cmap_local_nprw.set_bad(color="gray")
+        
+        # nprw_masked: (n_ch, T)
+        n_ch, T = nprw_masked.shape
 
-        im0 = ax_nprw.imshow(
-            nprw_masked,
-            aspect="auto",
+        if nprw_edges_ms.size > T + 1:
+            i = int(np.searchsorted(nprw_edges_ms, 0.0, side="right") - 1)
+            i = np.clip(i, 0, T - 1)
+
+            if not (nprw_edges_ms[i] <= 0.0 <= nprw_edges_ms[i + 1]):
+                print(
+                    f"[warn] 0 ms not within edges range "
+                    f"[{nprw_edges_ms[0]:.3f}, {nprw_edges_ms[-1]:.3f}] – inserting anyway at bin {i}"
+                )
+                
+            # 2) Insert a zero column in the data at column index i+1
+            #    (this new column will live *between* bins i and i+1)
+            nprw_masked = np.insert(nprw_masked, i, np.nan, axis=1)  # (n_ch, T+1)
+
+        # 4) Build channel edges (0..n_ch)
+        y_edges = np.arange(n_ch + 1)
+
+        # 5) Replace imshow with pcolormesh
+        im0 = ax_nprw.pcolormesh(
+            nprw_edges_ms,          # x edges
+            y_edges,               # y edges
+            nprw_masked,           # C: (n_ch, T+1)
             cmap=cmap_local_nprw,
-            origin="lower",
-            extent=[t_nprw[0], t_nprw[-1], 0, nprw_med.shape[0]],
             vmin=vmin_nprw,
             vmax=vmax_nprw,
+            shading="auto",
         )
+
         ax_nprw.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
-        # ax_i.axvspan(-20.0, 120.0, color="gray", alpha=1)
+        # ax_nprw.axvspan(-20.0, 120.0, color="gray", alpha=1)
         ax_nprw.set_title(title_NA); _ylabel_horizontal(ax_nprw, f"IP {nprw_med.shape[0]} chs")
         ax_nprw_cax.cla(); [sp.set_visible(False) for sp in ax_nprw_cax.spines.values()]
         ax_nprw_cax.set_xticks([]); ax_nprw_cax.set_yticks([])
@@ -451,16 +479,40 @@ def stacked_heatmaps_plus_behv(
             ax_ua_cax = fig.add_subplot(gs[row, 1])
 
             # Mask NaNs
-            mat_masked = ma.masked_invalid(mat_group)
+            ua_masked = ma.masked_invalid(mat_group)
 
-            # Make a copy of the cmap and set NaN color
-            cmap_local = cm.get_cmap(cmap).copy()
-            cmap_local.set_bad(color="gray")   # <- NaN = grey
+            # Make a copy of the cmap and set NaN color to gray
+            cmap_local_ua = cm.get_cmap(cmap).copy()
+            cmap_local_ua.set_bad(color="gray")
             
-            im1 = ax_ua.imshow(
-                mat_masked, aspect="auto", cmap=cmap_local, origin="lower",
-                extent=[t_ua[0], t_ua[-1], 0, mat_group.shape[0]],
-                vmin=vmin_ua_group, vmax=vmax_ua_group
+            # ua_masked: (n_ch, T)
+            n_ch, T = ua_masked.shape
+
+            if ua_edges_ms.size > T + 1:
+                i = int(np.searchsorted(ua_edges_ms, 0.0, side="right") - 1)
+                i = np.clip(i, 0, T - 1)
+
+                if not (ua_edges_ms[i] <= 0.0 <= ua_edges_ms[i + 1]):
+                    print(
+                        f"[warn] 0 ms not within edges range "
+                        f"[{ua_edges_ms[0]:.3f}, {ua_edges_ms[-1]:.3f}] – inserting anyway at bin {i}"
+                    )
+                    
+                # 2) Insert a zero column in the data at column index i+1
+                #    (this new column will live *between* bins i and i+1)
+                ua_masked = np.insert(ua_masked, i, np.nan, axis=1)  # (n_ch, T+1)
+            # 4) Build channel edges (0..n_ch)
+            y_edges = np.arange(n_ch + 1)
+
+            # 5) Replace imshow with pcolormesh
+            im1 = ax_ua.pcolormesh(
+                ua_edges_ms,          # x edges
+                y_edges,               # y edges
+                ua_masked,           # C: (n_ch, T+1)
+                cmap=cmap_local_ua,
+                vmin=vmin_ua_group,
+                vmax=vmax_ua_group,
+                shading="auto",
             )
             
             ax_ua.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")

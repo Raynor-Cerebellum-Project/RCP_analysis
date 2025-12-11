@@ -90,7 +90,7 @@ def load_UA_mapping_from_excel(
 
     return mapped_nsp
 
-def extract_br_aux_streams_npz(sess, aux_dir, camera_sync_ch, triangle_sync_ch, touchscreen_ch) -> dict:
+def extract_br_aux_streams_npz(sess, aux_dir, camera_sync_ch, triangle_sync_ch, touchscreen_ch, hr_ch) -> dict:
     """
     Build and save BR aux streams in a unified format into ONE NPZ file:
 
@@ -166,6 +166,14 @@ def extract_br_aux_streams_npz(sess, aux_dir, camera_sync_ch, triangle_sync_ch, 
             print(f"[AUX] touchscreen_ch={touchscreen_ch} not found in ns2")
             touchscreen_sig = None
             
+        if str(hr_ch) in ns2_chs:
+            idx = int(np.where(ns2_chs == str(hr_ch))[0][0])
+            hr_sig = aux_traces_ns2[idx]
+            print(f"[AUX] hr_ch={hr_ch} found in ns2 at index {idx}")
+        else:
+            print(f"[AUX] hr_ch={hr_ch} not found in ns2")
+            hr_sig = None
+            
         meta.update(
             ns2_aux_traces=aux_traces_ns2,
             ns2_session=sess.name,
@@ -186,7 +194,7 @@ def extract_br_aux_streams_npz(sess, aux_dir, camera_sync_ch, triangle_sync_ch, 
     else:
         print("[AUX] No aux streams found; nothing saved.")
 
-    return out_npz, touchscreen_sig
+    return out_npz, touchscreen_sig, hr_sig
 
 # Mapping
 def apply_ua_mapping_with_regions(

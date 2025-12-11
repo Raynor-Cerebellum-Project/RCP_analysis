@@ -69,7 +69,9 @@ def get_metadata_mapping(meta_csv: Path, field1: str, field2: str) -> Dict[int, 
         for row in rdr:
             try:
                 k = int((row[field1] or "").strip())
-                v = int((row[field2] or "").strip())
+                v = (row[field2] or "").strip()
+                if field2 not in {"UA_port", "Movement_Trigger", "Notes"}:
+                    v = int(v)
             except (KeyError, TypeError, ValueError):
                 # missing field, None, non-int, '-', etc.
                 continue
@@ -468,56 +470,93 @@ def load_shift_row_by_br_idx(metadata_path: Path, br_idx: int) -> Optional[dict]
 
 def extract_peristim_segments(
     rate_hz: np.ndarray,
+    counts: Optional[np.ndarray],
     t_ms: np.ndarray,
     stim_ms: np.ndarray,
-    win_ms=(-800.0, 1200.0),
+    win_ms: tuple[float, float] = (-800.0, 1200.0),
     min_trials: int = 1,
 ):
     """
     Return:
-      segments      : (n_trials, n_ch, n_twin)
-      rel_time_ms   : (n_twin,)
-      stim_ms_valid : (n_trials,) subset of stim_ms that produced valid segments
+      rate_segments   : (n_trials, n_ch, n_twin)
+      count_segments  : (n_trials, n_ch, n_twin) or None if counts is None
+      rel_time_ms     : (n_twin,)
+      stim_ms_valid   : (n_trials,) subset of stim_ms that produced valid segments
 
     Skips triggers whose window falls outside t_ms or whose slice length
     doesn't match the expected window length.
     """
+    rate_hz = np.asarray(rate_hz, float)
+    if rate_hz.ndim != 2:
+        raise ValueError(f"rate_hz must be (n_ch, T); got shape {rate_hz.shape}")
+
+    if counts is not None:
+        counts = np.asarray(counts)
+        if counts.shape != rate_hz.shape:
+            raise ValueError(
+                f"counts must have same shape as rate_hz; "
+                f"got rate_hz {rate_hz.shape}, counts {counts.shape}"
+            )
+
+    t_ms = np.asarray(t_ms, float).ravel()
+    stim_ms = np.asarray(stim_ms, float).ravel()
+    if t_ms.size < 2:
+        raise ValueError("t_ms must have length >= 2")
+
     t_min, t_max = float(t_ms[0]), float(t_ms[-1])
     seg_len_ms = win_ms[1] - win_ms[0]
 
     # Assume uniform binning for rates:
     dt = float(np.nanmedian(np.diff(t_ms)))  # ms per bin
     n_twin = int(round(seg_len_ms / dt))
-    rel_time_ms = np.arange(n_twin) * dt + win_ms[0]
+    rel_time_ms = np.arange(n_twin, dtype=float) * dt + win_ms[0]
 
-    segments = []
-    stim_valid = []
-    for s in np.asarray(stim_ms, dtype=float):
+    rate_segments: list[np.ndarray] = []
+    count_segments: list[np.ndarray] = [] if counts is not None else []
+    stim_valid: list[float] = []
+
+    for s in stim_ms:
         start_ms = s + win_ms[0]
         end_ms   = s + win_ms[1]
+
+        # skip partial windows
         if start_ms < t_min or end_ms > t_max:
-            # skip partial windows
             continue
 
         # slice indices on t_ms
         i0 = int(np.searchsorted(t_ms, start_ms, side="left"))
         i1 = int(np.searchsorted(t_ms, end_ms,   side="left"))
-        seg = rate_hz[:, i0:i1]  # (n_ch, maybe n_twin)
 
-        # Safety: ensure equal length (can happen if boundary falls between bins)
-        if seg.shape[1] != n_twin:
+        seg_rate = rate_hz[:, i0:i1]  # (n_ch, maybe n_twin)
+
+        # Safety: ensure equal length
+        if seg_rate.shape[1] != n_twin:
             continue
 
-        segments.append(seg)
+        if counts is not None:
+            seg_counts = counts[:, i0:i1]
+            # paranoid check
+            if seg_counts.shape[1] != n_twin:
+                continue
+            count_segments.append(seg_counts)
+
+        rate_segments.append(seg_rate)
         stim_valid.append(s)
 
-    kept = len(segments)
+    kept = len(rate_segments)
     if kept < min_trials:
-        raise RuntimeError(f"Only {kept} peri-stim segments available (min_trials={min_trials}).")
+        raise RuntimeError(
+            f"Only {kept} peri-stim segments available (min_trials={min_trials})."
+        )
 
-    segments = np.stack(segments, axis=0)  # (n_trials, n_ch, n_twin)
+    rate_segments_arr = np.stack(rate_segments, axis=0)  # (n_trials, n_ch, n_twin)
+    if counts is not None:
+        count_segments_arr = np.stack(count_segments, axis=0)
+    else:
+        count_segments_arr = None
+
     stim_ms_valid = np.asarray(stim_valid, dtype=float)  # (n_trials,)
-    return segments, rel_time_ms, stim_ms_valid
+    return rate_segments_arr, count_segments_arr, rel_time_ms, stim_ms_valid
 
 def baseline_zero_each_trial(
     segments: np.ndarray,

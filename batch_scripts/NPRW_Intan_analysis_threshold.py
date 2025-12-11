@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Optional
 import gc
 import numpy as np
 from scipy.io import loadmat
@@ -37,16 +36,16 @@ INTAN_STREAM = NPRW_CFG.get("neural_data_stream")
 STIM_STREAM = NPRW_CFG.get("stim_data_stream") # "Stim channel"
 AUX_STREAM = NPRW_CFG.get("aux_stream")
 
-ARTRMV_MS_BEFORE = 20.0
-ARTCORR_TAIL_MS = 20.0
 
 # Local reference params, both floats
 RADII = (PARAMS.probes.get("NPRW").get("local_radius_inner"), PARAMS.probes.get("NPRW").get("local_radius_outer"))
-RATES = PARAMS.intan_rate_est
+RATES = PARAMS.NPRW_rate_est
 BIN_MS     = RATES.get("bin_ms")
 SIGMA_MS   = RATES.get("sigma_ms")
 THRESH     = RATES.get("detect_threshold")
 PEAK_SIGN  = RATES.get("peak_sign")
+ARTRMV_MS_BEFORE = float(RATES.get("remove_ms_before", 20.0))
+ARTRMV_TAIL_MS   = float(RATES.get("remove_tail_ms_after", 20.0))
 
 # Artifact correction parameters
 params = rcp.PCAArtifactParams(
@@ -140,7 +139,7 @@ def main():
 
             if starts_samp.size:
                 dur_ms    = (ends_samp - starts_samp) * 1000.0 / fs_nprw
-                ms_after  = float(dur_ms.max() + ARTCORR_TAIL_MS)
+                ms_after  = float(dur_ms.max() + ARTRMV_TAIL_MS)
                 
                 rec_artif_removed = si.preprocessing.remove_artifacts(
                     rec_ref,
@@ -151,7 +150,7 @@ def main():
                 )
                 
                 pad_before_samp = int(round(ARTRMV_MS_BEFORE * fs_nprw / 1000.0))
-                pad_after_samp  = int(round(ARTCORR_TAIL_MS  * fs_nprw / 1000.0))
+                pad_after_samp  = int(round(ARTRMV_TAIL_MS  * fs_nprw / 1000.0))
 
                 starts_exp = np.clip(starts_samp - pad_before_samp, 0, None)
                 ends_exp   = np.clip(ends_samp   + pad_after_samp,  0, n_total)
@@ -217,15 +216,7 @@ def main():
                 n_channels=rec_artif_removed.get_num_channels(),
                 session=str(sess.name),
             ))
-
-        # TODO is this necessary?
-        peak_sample = peaks["sample_index"]
-        peak_ch     = peaks["channel_index"]
-        peak_amp    = peaks["amplitude"]
-        if peak_sample is not None: save["peak_sample"] = peak_sample
-        if peak_ch is not None:     save["peak_ch"] = peak_ch
-        if peak_amp is not None:    save["peak_amp"] = peak_amp
-
+        
         np.savez_compressed(out_npz, **save)
         print(f"[{sess.name}] saved rate matrix + PCA -> {out_npz}")
 

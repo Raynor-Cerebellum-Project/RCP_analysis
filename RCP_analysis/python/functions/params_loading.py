@@ -25,7 +25,7 @@ class experimentParams:
     chunk: str = "1s"
 
     # rate estimation
-    intan_rate_est: Dict[str, Any] = field(default_factory=dict)
+    NPRW_rate_est: Dict[str, Any] = field(default_factory=dict)
     UA_rate_est: Dict[str, Any] = field(default_factory=dict)
 
     # kinematics
@@ -71,7 +71,7 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
         threads_per_worker=int(cfg.get("threads_per_worker", 1)),
         chunk=str(cfg.get("chunk", "1s")),
 
-        intan_rate_est=cfg.get("intan_rate_est", {}) or {},
+        NPRW_rate_est=cfg.get("NPRW_rate_est", {}) or {},
         UA_rate_est=cfg.get("UA_rate_est", {}) or {},
         kinematics=kin_cfg,
     )
