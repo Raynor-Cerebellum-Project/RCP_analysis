@@ -15,6 +15,7 @@ probes:
   UA: 
     n_channels: 256
     mapping_mat_rel: "config/1106-22, 24, 42, 44 SN 11386-024040.xlsm"
+    VOG_sig_ch: 131
     camera_sync_ch: 134
     triangle_sync_ch: 138
     VOG_sync_ch: 135
@@ -53,6 +54,7 @@ NPRW_rate_est:
   peak_sign: "both"
   remove_ms_before: 20.0
   remove_tail_ms_after: 20.0
+  dedup_ms: 0.25
 
 # ---- BR firing rate (threshold MUA) ----
 UA_rate_est:
@@ -62,6 +64,7 @@ UA_rate_est:
   peak_sign: "both"
   remove_ms_before: 5.0
   remove_tail_ms_after: 5.0
+  dedup_ms: 0.25
 
 # ---- per-session overrides
 sessions:

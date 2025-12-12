@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Dict, Any, Tuple, Optional
 import csv
 import numpy as np
 import pandas as pd
@@ -90,37 +90,33 @@ def load_UA_mapping_from_excel(
 
     return mapped_nsp
 
-def extract_br_aux_streams_npz(sess, aux_dir, camera_sync_ch, triangle_sync_ch, touchscreen_ch, hr_ch) -> dict:
+def extract_br_aux_streams_npz(
+    sess,
+    aux_dir: Path,
+    camera_sync_ch: int,
+    triangle_sync_ch: int,
+    touchscreen_ch: int,
+    hr_ch: int,
+    vog_sig_ch: int,
+) -> Tuple[Optional[Path], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
     """
     Build and save BR aux streams in a unified format into ONE NPZ file:
 
-      - ns5: selected sync channels (camera, triangle) stacked as rows.
-      - ns2: all channels stacked as rows.
-
-    Output file (if anything found):
-      - <session_name>__BR_aux_data.npz
-
-    Contents (subset depending on availability):
-
-      ns5_aux_traces      : (n_ns5_channels, n_samples)
-      ns5_session         : str
-      ns5_stream_name     : "nsx5"
-      ns5_fs_hz           : float
-      ns5_channel_ids     : array of ints
-
-      ns2_aux_traces      : (n_ns2_channels, n_samples)
-      ns2_session         : str
-      ns2_stream_name     : "nsx2"
-      ns2_fs_hz           : float
-      ns2_channel_ids     : array of ints
+      - ns5: selected sync channels (camera, triangle, optional extra) stacked as rows.
+      - ns2: all channels stacked as rows, plus name-based extraction of:
+            hhpos        -> vog_sig
+            vog_sync     -> vog_sync
+            touchscreen_syn -> touchscreen_sig
+            heart_rate   -> hr_sig
     """
     aux_dir.mkdir(parents=True, exist_ok=True)
     meta: Dict[str, Any] = {}
+    out_npz: Optional[Path] = None
 
-    # save ns5, extract camera + triangle sync
+    # ns5
     try:
-        rec_ns5 = se.read_blackrock(sess, stream_name="nsx5", all_annotations=True)
-        
+        rec_ns5 = se.read_blackrock(str(sess), stream_name="nsx5", all_annotations=True)
+
         wanted = [camera_sync_ch, triangle_sync_ch, 139]
         chan_ids_ns5 = rec_ns5.get_channel_ids().astype(int)
         traces_ns5 = []
@@ -136,10 +132,9 @@ def extract_br_aux_streams_npz(sess, aux_dir, camera_sync_ch, triangle_sync_ch, 
 
         if traces_ns5:
             aux_traces_ns5 = np.stack(traces_ns5, axis=0)
-
             meta.update(
                 ns5_aux_traces=aux_traces_ns5,
-                ns5_session=sess.name,
+                ns5_session=getattr(sess, "name", str(sess)),
                 ns5_stream_name="nsx5",
                 ns5_fs_hz=rec_ns5.get_sampling_frequency(),
                 ns5_channel_ids=np.array(labels_ns5, dtype=int),
@@ -151,50 +146,67 @@ def extract_br_aux_streams_npz(sess, aux_dir, camera_sync_ch, triangle_sync_ch, 
     except FileNotFoundError:
         print("[WARN] ns5 not found; syncs unavailable.")
 
-    # save ns2
+    # ns2
+    vog_sig = touchscreen_sig = hr_sig = None
+
     try:
         rec_ns2 = se.read_blackrock(str(sess), stream_name="nsx2", all_annotations=True)
         aux_traces_ns2 = rec_ns2.get_traces(return_scaled=True).T  # (n_channels, n_samples)
         ns2_chs = np.asarray(rec_ns2.get_channel_ids())
-        
-        # --- extract touchscreen signal from ns2 ---
-        if str(touchscreen_ch) in ns2_chs:
-            idx = int(np.where(ns2_chs == str(touchscreen_ch))[0][0])
-            touchscreen_sig = aux_traces_ns2[idx]
-            print(f"[AUX] touchscreen_ch={touchscreen_ch} found in ns2 at index {idx}")
-        else:
-            print(f"[AUX] touchscreen_ch={touchscreen_ch} not found in ns2")
-            touchscreen_sig = None
-            
-        if str(hr_ch) in ns2_chs:
-            idx = int(np.where(ns2_chs == str(hr_ch))[0][0])
-            hr_sig = aux_traces_ns2[idx]
-            print(f"[AUX] hr_ch={hr_ch} found in ns2 at index {idx}")
-        else:
-            print(f"[AUX] hr_ch={hr_ch} not found in ns2")
-            hr_sig = None
-            
+
+        # channel_name per channel (no lowercasing / mangling)
+        chan_names = []
+        for ch_id in ns2_chs:
+            nm = rec_ns2.get_channel_property(ch_id, "channel_name")
+            if isinstance(nm, bytes):
+                nm = nm.decode("utf-8", errors="ignore")
+            chan_names.append(str(nm))
+        chan_names = np.array(chan_names)
+
+        def _grab_by_name(target_name: str, label: str):
+            """Return (signal, description_string)."""
+            idxs = np.where(chan_names == target_name)[0]
+            if idxs.size > 0:
+                idx = int(idxs[0])
+                sig = aux_traces_ns2[idx]
+                desc = f"{label}={target_name}(id {ns2_chs[idx]})"
+                return sig, desc
+            else:
+                return None, f"{label}=None"
+
+        # Name-based extraction
+        vog_sig, desc_vog            = _grab_by_name("hhpos",           "vog_sig")
+        vog_sync, desc_vog_sync      = _grab_by_name("vog_sync",        "vog_sync")
+        touchscreen_sig, desc_touch  = _grab_by_name("touchscreen_syn", "touchscreen_sig")
+        hr_sig, desc_hr              = _grab_by_name("heart_rate",      "hr_sig")
+
+        # store full ns2 as before
         meta.update(
             ns2_aux_traces=aux_traces_ns2,
-            ns2_session=sess.name,
+            ns2_session=getattr(sess, "name", str(sess)),
             ns2_stream_name="nsx2",
             ns2_fs_hz=rec_ns2.get_sampling_frequency(),
-            ns2_channel_ids=rec_ns2.get_channel_ids().astype(int),
+            ns2_channel_ids=ns2_chs.astype(int),
+            ns2_channel_names=chan_names,
         )
+        if vog_sync is not None:
+            meta["ns2_vog_sync_trace"] = vog_sync
+
+        # single summary line
+        print("[AUX] ns2 signals: " + ", ".join([desc_vog, desc_vog_sync, desc_touch, desc_hr]))
         print(f"[AUX] prepared ns2 digi (n_channels={aux_traces_ns2.shape[0]})")
 
     except FileNotFoundError:
         print("[WARN] ns2 not found; no digital channels.")
 
-    # save
     if meta:
-        out_npz = aux_dir / f"{sess.name}__BR_aux_data.npz"
+        out_npz = aux_dir / f"{getattr(sess, 'name', Path(sess).name)}__BR_aux_data.npz"
         np.savez_compressed(out_npz, **meta)
         print(f"[AUX] saved combined BR aux streams to {out_npz}")
     else:
         print("[AUX] No aux streams found; nothing saved.")
 
-    return out_npz, touchscreen_sig, hr_sig
+    return out_npz, touchscreen_sig, hr_sig, vog_sig
 
 # Mapping
 def apply_ua_mapping_with_regions(
@@ -560,8 +572,8 @@ def threshold_mua_rates(
         peak_sign=peak_sign,
         noise_levels=noise_levels,
         n_jobs=n_jobs,
-    ) #TODO return tensor?
-
+    ) # TODO remove subsequent stuff because it happens later
+    
     # Build keys
     ch_field, samp_field, seg_field, amp_field = ("channel_index", "sample_index", "segment_index", "amplitude")    
     peaks = _dedup_peaks(peaks, fs, ch_field=ch_field, samp_field=samp_field,

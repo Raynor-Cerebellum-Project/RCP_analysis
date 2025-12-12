@@ -46,6 +46,7 @@ if UA_MAP is None:
 
 # Sync channels
 UA_CFG = PARAMS.probes.get("UA")
+VOG_CH = int(UA_CFG.get("VOG_CH", 131))
 CAMERA_SYNC_CH = int(UA_CFG.get("camera_sync_ch", 134))
 HR_CH = int(UA_CFG.get("HR_ch", 136))
 TRIANGLE_SYNC_CH = int(UA_CFG.get("triangle_sync_ch", 138))
@@ -105,7 +106,7 @@ def main():
     print("Found session folders:", len(sess_folders))
     for sess in (sess_folders[:]): # Can tweak here to isolate sessions 
         print(f"=== Session: {sess.name} ===")
-        _, touchscreen_sig, hr_sig = rcp.extract_br_aux_streams_npz(sess, UA_AUX_DATA, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH, TOUCHSCREEN_CH, HR_CH) # Extract sync pulses and stuff
+        _, touchscreen_sig, hr_sig, vog_sig = rcp.extract_br_aux_streams_npz(sess, UA_AUX_DATA, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH, TOUCHSCREEN_CH, HR_CH, VOG_CH) # Extract sync pulses and stuff
         rec_ns6 = se.read_blackrock(sess, stream_name = 'nsx6', all_annotations=True) # Load neural data
         
         # Threshold to get touchscreen state
@@ -283,6 +284,7 @@ def main():
             ua_region_names=ua_region_names,
             ua_port=ua_port,
             hr_sig=hr_sig,
+            vog_sig=vog_sig,
 
             meta=dict(
                 detect_threshold=THRESH,

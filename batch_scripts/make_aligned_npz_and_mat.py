@@ -140,7 +140,9 @@ def main():
             ua_region = ua_npz["ua_region"]
             ua_region_names = ua_npz["ua_region_names"]
             ua_port = ua_npz["ua_port"]
+            
             hr_sig = ua_npz["hr_sig"]
+            vog_sig = ua_npz["VOG_sig"] # TODO Change to lower case
 
             # touchscreen states
             if "ts_state_num" in ua_npz:
@@ -375,6 +377,7 @@ def main():
                 ua_idx_rows=ua_idx_rows,
                 
                 hr_sig=hr_sig,
+                vog_sig=vog_sig,
                 
                 stim_ms=(stim_ms.astype(np.float32) if stim_ms is not None else np.array([], dtype=np.float32)),
 
@@ -389,11 +392,11 @@ def main():
                 beh_cam1_cols=np.array(beh_cam1_cols, dtype=object),
                 beh_t_ms=beh_t_ms,
                 
-                # ---- VOG arrays ----
-                vog_ns2_samp=vog_ns2_samp,
-                vog_t_ms=vog_t_ms,
-                vog_cols=vog_cols,
-                vog_col_names=vog_col_names,
+                # # ---- VOG arrays ----
+                # vog_ns2_samp=vog_ns2_samp,
+                # vog_t_ms=vog_t_ms,
+                # vog_cols=vog_cols,
+                # vog_col_names=vog_col_names,
                 
                 ts_state_num=ts_state_num,
                 ts_state_char=ts_state_char,
@@ -443,6 +446,7 @@ def main():
                          else np.array([], dtype=np.float32)),
 
                 hr_sig=hr_sig,
+                vog_sig=vog_sig,
 
                 # alignment meta as a struct-like dict for MATLAB
                 align_meta=_change_none_for_mat(aligned_meta),

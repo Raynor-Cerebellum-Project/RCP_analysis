@@ -26,6 +26,9 @@ UA_BIN_MS     = UA_RATES.get("bin_ms")
 UA_SIGMA_MS   = UA_RATES.get("sigma_ms")
 UA_MS_BEFORE = float(UA_RATES.get("remove_ms_before", 5.0))
 UA_TAIL_MS   = float(UA_RATES.get("remove_tail_ms_after", 5.0))
+DEDUP_MS = 0.25
+MAX_CLUSTER_MS = 0.5
+
 STIM_DUR = 100.0
 
 KEYPOINTS_ORDER = tuple(PARAMS.kinematics.get("keypoints", []))  # [] if missing
@@ -37,10 +40,12 @@ MIN_TRIALS        = 1
 MIN_BIN_COVERAGE_FRAC = 0.9  # require at least x% of trials finite per bin
 
 def _dedup_peaks(
-    peaks, amps: float,
+    peaks: dict[int, np.ndarray],
+    amps: dict[int, np.ndarray],
     dedup_ms: float = 0.5,
     max_cluster_ms: float = 1.0,
-):
+) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray]]:
+
     """Deduplicate peaks per (segment, channel), keeping strongest within short windows"""
     peaks_dedup = {}
     amps_dedup = {}
@@ -48,6 +53,11 @@ def _dedup_peaks(
         t_ch = peaks[ch]
         a_ch = amps[ch]
         num_peaks = len(t_ch)
+        if num_peaks == 0:
+            peaks_dedup[ch] = t_ch
+            amps_dedup[ch]  = a_ch
+            continue
+
         keep = np.zeros(num_peaks, dtype = bool)
         cluster_start = 0 # index counter
         for i in range(1, num_peaks):
@@ -74,30 +84,6 @@ def _bin_counts_around_stim(
 ):
     """
     Bin spike counts around each stimulation event.
-
-    Parameters
-    ----------
-    peaks_ms : dict[int, np.ndarray]
-        Mapping channel_index -> spike times in ms (absolute timebase).
-    bin_ms : float
-        Bin width in ms.
-    stim_times_ms : array-like, shape (n_trials,)
-        Stimulation times in ms (absolute timebase, same as peaks).
-    art_before_ms : float
-        Artifact window BEFORE stim (e.g. 2.0 => gap from -2 to +X).
-    art_after_ms : float
-        Artifact window AFTER stim.
-    win_ms : (float, float)
-        Overall peri-stim window in ms, e.g. (-600.0, 600.0).
-
-    Returns
-    -------
-    counts : (n_trials, n_channels, n_bins) array
-        Binned spike counts aligned to each stim.
-    bin_centers_ms : (n_bins,) array
-        Bin centers in ms (relative to stim).
-    bin_edges_ms : (n_edges,) array
-        Bin edges in ms (relative to stim), left part + right part.
     """
     window_start_ms, window_end_ms = float(win_ms[0]), float(win_ms[1])
 
@@ -141,7 +127,8 @@ def _bin_counts_around_stim(
     n_left_bins = max(left_window_edges_ms.size - 1, 0)
 
     n_trials    = len(stim_times_ms)
-    n_channels  = len(peaks_ms)
+    ch_keys = sorted(peaks_ms.keys())
+    n_channels = len(ch_keys)
 
     # counts[trial_index, channel_index, bin_index]
     counts = np.zeros((n_trials, n_channels, n_bins), float)
@@ -150,8 +137,7 @@ def _bin_counts_around_stim(
     for trial_index, stim_time_ms in enumerate(stim_times_ms):
         trial_window_start_ms = stim_time_ms + window_start_ms
         trial_window_end_ms   = stim_time_ms + window_end_ms
-
-        for ch_id in np.arange(n_channels):
+        for ch_i, ch_id in enumerate(ch_keys):
             spike_times_ms = np.asarray(peaks_ms[ch_id], float).ravel()
             if spike_times_ms.size == 0:
                 continue
@@ -189,11 +175,7 @@ def _bin_counts_around_stim(
                     (left_bin_indices < left_window_edges_ms.size - 1)
                 )
                 if valid_left_bins.any():
-                    np.add.at(
-                        counts[trial_index, ch_id],
-                        left_bin_indices[valid_left_bins],
-                        1.0,
-                    )
+                    np.add.at(counts[trial_index, ch_i], left_bin_indices[valid_left_bins], 1.0)
 
             # ---- RIGHT side binning ----
             if right_window_edges_ms.size > 1 and right_side_mask.any():
@@ -210,22 +192,9 @@ def _bin_counts_around_stim(
                     right_bin_indices_global = (
                         right_bin_indices_local[valid_right_bins] + n_left_bins
                     )
-                    np.add.at(
-                        counts[trial_index, ch_id],
-                        right_bin_indices_global,
-                        1.0,
-                    )
+                    np.add.at(counts[trial_index, ch_i], right_bin_indices_global, 1.0)
+    return counts, bin_centers_ms, bin_edges_ms, n_left_bins
 
-    return counts, bin_centers_ms, bin_edges_ms
-
-
-def _gauss_kernel_normalized(sigma_bins: float, radius_mult: float = 4.0):
-    sigma_bins = max(1e-9, float(sigma_bins))
-    r = int(np.ceil(radius_mult * sigma_bins))
-    x = np.arange(-r, r+1, dtype=float)
-    k = np.exp(-(x**2) / (2.0 * sigma_bins**2))
-    k /= k.sum()
-    return k
 
 def _smooth_segment(seg_counts, seg_edges, seg_centers, sigma_ms):
         """
@@ -267,49 +236,34 @@ def _smooth_counts_gauss(
     edges: np.ndarray,
     bin_centers_ms: np.ndarray,
     sigma_ms: float,
+    left_bins: int,
 ) -> np.ndarray:
     """
-    Smooth spike *counts* over time with a Gaussian in milliseconds (NaN-aware),
-    respecting a 'gap' region (e.g. stim blank) where bin_centers or counts are NaN.
-
-    Parameters
-    ----------
-    counts : array, shape (n_trials, n_ch, T) or (n_ch, T)
-        Spike counts per bin. Last axis is time.
-    edges : (T+2,) float
-        Bin edges in ms (monotonic).
-    bin_centers_ms : (T,) float
-        Bin centers in ms (monotonic, can contain NaN at gap bin).
-    sigma_ms : float
-        Gaussian std in ms. If <= 0, no smoothing is applied.
-
-    Returns
-    -------
-    rates_smooth : array, same shape as counts
-        Smoothed firing rates in Hz.
+    Smooth spike counts -> firing rates (Hz) separately on left and right sides
+    of the stim-blank gap, using a Gaussian in ms (NaN-aware at the per-bin level).
     """
-    n_trials, n_ch, T = counts.shape
-    rates_smooth = np.zeros((counts.shape))
-    dt_ms = np.diff(edges)
-    gap_bin = int(np.searchsorted(edges, 0.0, side="right") - 1)
-    gap_bin = np.clip(gap_bin, 0, T - 1)
-    left_counts = counts[:, :, :gap_bin]
-    right_counts = counts[:, :, gap_bin:]
-    left_bin_centers_ms = bin_centers_ms[:gap_bin]
-    right_bin_centers_ms = bin_centers_ms[gap_bin:]
-    left_edges  = edges[:gap_bin+1]
-    right_edges = edges[gap_bin+1:]
+    if counts is None or np.size(counts) == 0:
+        return np.asarray(counts, float)
 
-    left_sm  = _smooth_segment(left_counts, left_edges, left_bin_centers_ms, sigma_ms)
-    right_sm = _smooth_segment(right_counts, right_edges, right_bin_centers_ms, sigma_ms)
+    gap_bin = int(left_bins)
+    gap_bin = max(0, min(gap_bin, counts.shape[-1]))  # clamp
 
-    # --- reconstruct output shape (insert the gap as NaN) ---
-    rates_smoothed = np.full_like(counts, np.nan)
-    rates_smoothed[:, :, :gap_bin] = left_sm
-    rates_smoothed[:, :, gap_bin:] = right_sm
+    left_counts   = counts[:, :, :gap_bin]
+    right_counts  = counts[:, :, gap_bin:]
+    left_centers  = bin_centers_ms[:gap_bin]
+    right_centers = bin_centers_ms[gap_bin:]
 
-    # if original was (n_ch, T), restore that
-    return rates_smoothed
+    # edges is length (T+2): left edges (L+1) + right edges (R+1)
+    left_edges  = edges[:gap_bin + 1]
+    right_edges = edges[gap_bin + 1:]
+
+    left_sm  = _smooth_segment(left_counts,  left_edges,  left_centers,  sigma_ms)
+    right_sm = _smooth_segment(right_counts, right_edges, right_centers, sigma_ms)
+
+    out = np.full_like(counts, np.nan, dtype=float)
+    out[:, :, :gap_bin] = left_sm
+    out[:, :, gap_bin:] = right_sm
+    return out
 
 def _stims_mask_for_stream(stim_ms: np.ndarray, t_ms: np.ndarray,
                            win_ms: tuple[float, float]) -> np.ndarray:
@@ -320,14 +274,6 @@ def _stims_mask_for_stream(stim_ms: np.ndarray, t_ms: np.ndarray,
     w0, w1 = float(win_ms[0]), float(win_ms[1])
     return (stim_ms + w0 >= t0) & (stim_ms + w1 <= t1)
 
-def _filter_stims_for_stream(stim_ms: np.ndarray, t_ms: np.ndarray,
-                             win_ms: tuple[float, float]) -> np.ndarray:
-    """Keep only stims whose [stim+win0, stim+win1] lies fully within t_ms range."""
-    if stim_ms is None or t_ms is None or np.size(stim_ms) == 0 or np.size(t_ms) < 2:
-        return np.array([], dtype=float)
-    mask = _stims_mask_for_stream(stim_ms, t_ms, win_ms)
-    return np.asarray(stim_ms, float)[mask]
-   
 def _as_list(x):
     if x is None:
         return []
@@ -876,14 +822,10 @@ def extract_one_file(aligned_path: Path) -> None:
     """
     # ---- load combined npz (for NPRW/UA + stim) ----
     aligned_npz = np.load(aligned_path, allow_pickle=True)
-    NPRW_rate = aligned_npz["nprw_rate_hz"]
-    NPRW_counts = aligned_npz["nprw_counts"]
     NPRW_t    = aligned_npz["nprw_t_ms_aligned"]
     nprw_peak_ms = aligned_npz["nprw_peak_ms"].reshape(-1)[0]
     nprw_peak_amps = aligned_npz["nprw_peak_amps"].reshape(-1)[0]
     
-    UA_rate = aligned_npz["ua_rate_hz"]
-    UA_counts = aligned_npz["ua_counts"]
     UA_t    = aligned_npz["ua_t_ms_aligned"]
     ua_peak_ms   = aligned_npz["ua_peak_ms"].reshape(-1)[0]
     ua_peak_amps   = aligned_npz["ua_peak_amps"].reshape(-1)[0]
@@ -902,7 +844,6 @@ def extract_one_file(aligned_path: Path) -> None:
 
 
     # ---- load aligned file for behavior / VOG / ts_state ----
-    aligned_npz = np.load(aligned_path, allow_pickle=True)
     beh_cam0      = aligned_npz["beh_cam0"]
     beh_cam1      = aligned_npz["beh_cam1"]
     raw0      = aligned_npz["beh_cam0_cols"]
@@ -912,10 +853,10 @@ def extract_one_file(aligned_path: Path) -> None:
     behv_t    = aligned_npz["beh_t_ms"].astype(float) if "beh_t_ms" in aligned_npz.files else np.arange(0.0)
 
     # VOG
-    vog_cols      = aligned_npz["vog_cols"]
-    vog_t_ms      = aligned_npz["vog_t_ms"]
-    vog_raw_names = aligned_npz["vog_col_names"]
-    vog_col_names = [str(x) for x in _as_list(vog_raw_names)]
+    # vog_cols      = aligned_npz["vog_cols"]
+    # vog_t_ms      = aligned_npz["vog_t_ms"]
+    # vog_raw_names = aligned_npz["vog_col_names"]
+    # vog_col_names = [str(x) for x in _as_list(vog_raw_names)]
 
     # ts_state on UA timebase
     ts_state_num  = aligned_npz["ts_state_num"]
@@ -934,6 +875,7 @@ def extract_one_file(aligned_path: Path) -> None:
     ua_idx_rows = aligned_npz["ua_idx_rows"]
     
     hr_sig = aligned_npz["hr_sig"]
+    vog_sig = aligned_npz["vog_sig"]
     
     # prepare ts_state arrays but delay label computation until after stim gating
     ts_state_num_full = None
@@ -953,7 +895,7 @@ def extract_one_file(aligned_path: Path) -> None:
 
     print(
         f"[debug] {aligned_path.name}: "
-        f"vog_t_ms_end={_end_or_nan(vog_t_ms):.3f} ms, "
+        # f"vog_t_ms_end={_end_or_nan(vog_t_ms):.3f} ms, "
         f"behv_t_end={_end_or_nan(behv_t):.3f} ms, "
         f"NPRW_t_end={_end_or_nan(NPRW_t):.3f} ms, "
         f"UA_t_end={_end_or_nan(UA_t):.3f} ms"
@@ -996,7 +938,9 @@ def extract_one_file(aligned_path: Path) -> None:
                 f"[extract] {aligned_path.name}: behavior gating kept "
                 f"{n_keep}/{stim_ms.size} stims."
             )
-            stim_ms = stim_ms[beh_mask]
+            # behavior gating
+            if 0 < beh_mask.sum() < stim_ms.size:
+                stim_ms = stim_ms[beh_mask]
         # if n_keep == stim_ms.size: nothing to change
     
     cam0_pos_filt, cam0_vel, _ = rcp.butter_lowpass_pos_and_vel(cam0_z, behv_t, cutoff_hz=10.0, order=3)
@@ -1028,20 +972,20 @@ def extract_one_file(aligned_path: Path) -> None:
     beh_cam1_vel_med_A, _, _, beh_cam1_vel_segs_A = _behavior_medians_for_label(cam1_vel, behv_t, stim_ms, trial_labels, "A")
     beh_cam1_vel_med_B, _, _, beh_cam1_vel_segs_B = _behavior_medians_for_label(cam1_vel, behv_t, stim_ms, trial_labels, "B")
 
-    # ---- VOG peri-stim (median lines + segments) ----
-    if vog_cols.size and vog_t_ms.size:
-        vog_cols = _interp_nans_2d_by_col(vog_cols, max_gap=4)
-        vog_z = _z_per_column(vog_cols)
+    # # ---- VOG peri-stim (median lines + segments) ----
+    # if vog_cols.size and vog_t_ms.size:
+    #     vog_cols = _interp_nans_2d_by_col(vog_cols, max_gap=4)
+    #     vog_z = _z_per_column(vog_cols)
 
-        # keep only stims whose [stim+WIN0, stim+WIN1] lies fully within VOG range
-        stim_vog = _filter_stims_for_stream(stim_ms, vog_t_ms, WIN_MS)
+    #     # keep only stims whose [stim+WIN0, stim+WIN1] lies fully within VOG range
+    #     stim_vog = _filter_stims_for_stream(stim_ms, vog_t_ms, WIN_MS)
 
-        vog_med, vog_rel_t, n_vog_trials, vog_segs = _median_lines_for_columns(vog_z, vog_t_ms, stim_vog)
-    else:
-        vog_med       = np.zeros((0, 0), float)
-        vog_rel_t     = np.zeros(0, float)
-        vog_segs      = np.zeros((0, 0, 0), float)
-        n_vog_trials  = 0
+    #     vog_med, vog_rel_t, n_vog_trials, vog_segs = _median_lines_for_columns(vog_z, vog_t_ms, stim_vog)
+    # else:
+    #     vog_med       = np.zeros((0, 0), float)
+    #     vog_rel_t     = np.zeros(0, float)
+    #     vog_segs      = np.zeros((0, 0, 0), float)
+    #     n_vog_trials  = 0
 
 
     # ---- ts_state peri-stim segments (numeric + char) ----
@@ -1053,7 +997,7 @@ def extract_one_file(aligned_path: Path) -> None:
     if ts_state_num_full is not None and np.size(UA_t):
         # peri-stim numeric segments on UA timebase
         try:
-            segs_ts, _, ts_state_rel_t, _ = rcp.extract_peristim_segments(
+            segs_ts, _, ts_state_rel_t, stim_valid_ts = rcp.extract_peristim_segments(
                 rate_hz=ts_state_num_full.reshape(1, -1),  # (1, T)
                 counts=None,
                 t_ms=UA_t,
@@ -1099,7 +1043,13 @@ def extract_one_file(aligned_path: Path) -> None:
         # map trial_labels (per-stim) onto ts_state event axis via the same mask used for UA
         mask_ts = _stims_mask_for_stream(stim_ms, UA_t, WIN_MS)
         if mask_ts.size == trial_labels.size and mask_ts.sum() == ts_state_segs.shape[0]:
-            labels_ts = trial_labels[mask_ts]
+            # stim_valid_ts is what extract_peristim_segments kept, in order
+            idx_valid = np.array([
+                np.where(np.isclose(stim_ms, s, rtol=0.0, atol=1e-6))[0][0]
+                for s in stim_valid_ts
+            ], dtype=int)
+
+            labels_ts = trial_labels[idx_valid]
 
             # A subset
             idx_A = np.where(labels_ts == "A")[0]
@@ -1123,14 +1073,14 @@ def extract_one_file(aligned_path: Path) -> None:
                 f"trial_labels.size={trial_labels.size}"
             )
 
-    ua_peak_ms_dedup, ua_amps_ms_dedup = _dedup_peaks(ua_peak_ms, ua_peak_amps)
-    nprw_peak_ms_dedup, nprw_amps_ms_dedup = _dedup_peaks(nprw_peak_ms, nprw_peak_amps)
+    ua_peak_ms_dedup, ua_amps_ms_dedup = _dedup_peaks(ua_peak_ms, ua_peak_amps, DEDUP_MS, MAX_CLUSTER_MS)
+    nprw_peak_ms_dedup, nprw_amps_ms_dedup = _dedup_peaks(nprw_peak_ms, nprw_peak_amps, DEDUP_MS, MAX_CLUSTER_MS)
 
-    ua_counts, ua_rel_t, ua_edges_ms = _bin_counts_around_stim(ua_peak_ms_dedup, UA_BIN_MS, stim_ms, UA_MS_BEFORE, (STIM_DUR + UA_TAIL_MS), WIN_MS)
-    nprw_counts, nprw_rel_t, nprw_edges_ms = _bin_counts_around_stim(nprw_peak_ms_dedup, NPRW_BIN_MS, stim_ms, NPRW_MS_BEFORE, (STIM_DUR + NPRW_TAIL_MS), WIN_MS)
+    ua_counts, ua_rel_t, ua_edges_ms, ua_left_bins = _bin_counts_around_stim(ua_peak_ms_dedup, UA_BIN_MS, stim_ms, UA_MS_BEFORE, (STIM_DUR + UA_TAIL_MS), WIN_MS)
+    nprw_counts, nprw_rel_t, nprw_edges_ms, nprw_left_bins = _bin_counts_around_stim(nprw_peak_ms_dedup, NPRW_BIN_MS, stim_ms, NPRW_MS_BEFORE, (STIM_DUR + NPRW_TAIL_MS), WIN_MS)
 
-    ua_rate_hz = _smooth_counts_gauss(ua_counts, ua_edges_ms, ua_rel_t, UA_SIGMA_MS)
-    nprw_rates_hz = _smooth_counts_gauss(nprw_counts, nprw_edges_ms, nprw_rel_t, NPRW_SIGMA_MS)
+    ua_rate_hz = _smooth_counts_gauss(ua_counts, ua_edges_ms, ua_rel_t, UA_SIGMA_MS, ua_left_bins)
+    nprw_rates_hz = _smooth_counts_gauss(nprw_counts, nprw_edges_ms, nprw_rel_t, NPRW_SIGMA_MS, nprw_left_bins)
 
     ua_rate_hz_baselined = rcp.baseline_zero_each_trial(
         ua_rate_hz, ua_rel_t, normalize_first_ms=NORMALIZE_FIRST_MS
@@ -1139,46 +1089,44 @@ def extract_one_file(aligned_path: Path) -> None:
         nprw_rates_hz, nprw_rel_t, normalize_first_ms=NORMALIZE_FIRST_MS
     )
 
-    # labels on NPRW event axis
-    mask_nprw = _stims_mask_for_stream(stim_ms, NPRW_t, WIN_MS)
-    labels_nprw = trial_labels[mask_nprw] if trial_labels is not None else None
+    mask_nprw   = _stims_mask_for_stream(stim_ms, NPRW_t, WIN_MS)
+    mask_ua   = _stims_mask_for_stream(stim_ms, UA_t, WIN_MS)
+    
+    idxA_ua_full = np.where((trial_labels == "A") & mask_ua)[0]
+    idxB_ua_full = np.where((trial_labels == "B") & mask_ua)[0]
 
-    # labels on UA event axis
-    mask_ua = _stims_mask_for_stream(stim_ms, UA_t, WIN_MS)
-    labels_ua = trial_labels[mask_ua] if trial_labels is not None else None
-    
-    a_mask = np.where(labels_nprw == "A")[0]
-    b_mask = np.where(labels_nprw == "A")[0]
+    idxA_nprw_full = np.where((trial_labels == "A") & mask_nprw)[0]
+    idxB_nprw_full = np.where((trial_labels == "B") & mask_nprw)[0]
 
-    n_nprw_A = n_ua_A = len(a_mask)
-    UA_rates_A = ua_rate_hz[a_mask]
-    UA_rates_zeroed_A = ua_rate_hz_baselined[a_mask]
-    UA_counts_A = ua_counts[a_mask]
-    
-    UA_med_A = np.nanmedian(UA_rates_zeroed_A, axis = 0)
-    UA_var_A = np.nanvar(UA_rates_zeroed_A, axis = 0)
-    
-    NPRW_rates_A = nprw_rates_hz[a_mask]
-    NPRW_rates_zeroed_A = nprw_rates_hz_baselined[a_mask]
-    NPRW_counts_A = nprw_counts[a_mask]
-    
-    NPRW_med_A = np.nanmedian(NPRW_rates_zeroed_A, axis = 0)
-    NPRW_var_A = np.nanvar(NPRW_rates_zeroed_A, axis = 0)
-    
-    n_nprw_B = n_ua_B = len(b_mask)
-    UA_rates_B = ua_rate_hz[b_mask]
-    UA_rates_zeroed_B = ua_rate_hz_baselined[b_mask]
-    UA_counts_B = ua_counts[b_mask]
-    
-    UA_med_B = np.nanmedian(UA_rates_zeroed_B, axis = 0)
-    UA_var_B = np.nanvar(UA_rates_zeroed_B, axis = 0)
-    
-    NPRW_rates_B = nprw_rates_hz[b_mask]
-    NPRW_rates_zeroed_B = nprw_rates_hz_baselined[b_mask]
-    NPRW_counts_B = nprw_counts[b_mask]
-    
-    NPRW_med_B = np.nanmedian(NPRW_rates_zeroed_B, axis = 0)
-    NPRW_var_B = np.nanvar(NPRW_rates_zeroed_B, axis = 0)
+    # UA
+    n_ua_A = len(idxA_ua_full)
+    UA_rates_zeroed_A  = ua_rate_hz_baselined[idxA_ua_full]
+    UA_counts_A        = ua_counts[idxA_ua_full]
+    UA_med_counts_A    = np.nanmedian(UA_counts_A, axis=0)
+    UA_med_A           = np.nanmedian(UA_rates_zeroed_A, axis=0)
+    UA_var_A           = np.nanvar(UA_rates_zeroed_A, axis=0)
+
+    n_ua_B = len(idxB_ua_full)
+    UA_rates_zeroed_B  = ua_rate_hz_baselined[idxB_ua_full]
+    UA_counts_B        = ua_counts[idxB_ua_full]
+    UA_med_counts_B    = np.nanmedian(UA_counts_B, axis=0)
+    UA_med_B           = np.nanmedian(UA_rates_zeroed_B, axis=0)
+    UA_var_B           = np.nanvar(UA_rates_zeroed_B, axis=0)
+
+    # NPRW
+    n_nprw_A = len(idxA_nprw_full)
+    NPRW_rates_zeroed_A = nprw_rates_hz_baselined[idxA_nprw_full]
+    NPRW_counts_A       = nprw_counts[idxA_nprw_full]
+    NPRW_med_counts_A   = np.nanmedian(NPRW_counts_A, axis=0)
+    NPRW_med_A          = np.nanmedian(NPRW_rates_zeroed_A, axis=0)
+    NPRW_var_A          = np.nanvar(NPRW_rates_zeroed_A, axis=0)
+
+    n_nprw_B = len(idxB_nprw_full)
+    NPRW_rates_zeroed_B = nprw_rates_hz_baselined[idxB_nprw_full]
+    NPRW_counts_B       = nprw_counts[idxB_nprw_full]
+    NPRW_med_counts_B   = np.nanmedian(NPRW_counts_B, axis=0)
+    NPRW_med_B          = np.nanmedian(NPRW_rates_zeroed_B, axis=0)
+    NPRW_var_B          = np.nanvar(NPRW_rates_zeroed_B, axis=0)
 
     # ---- metadata for titles ----
     try:
@@ -1192,9 +1140,7 @@ def extract_one_file(aligned_path: Path) -> None:
             None,
         )
 
-    # ------------------------------------------------------------------
-    # Per-target files: Target A and Target B
-    # ------------------------------------------------------------------
+    # Per target
     targetA_dir = PERI_ROOT / "Target_A"
     targetB_dir = PERI_ROOT / "Target_B"
     targetA_dir.mkdir(parents=True, exist_ok=True)
@@ -1228,14 +1174,15 @@ def extract_one_file(aligned_path: Path) -> None:
         beh_cam1_names=np.array(beh_cam1_names, dtype=object),
         
         hr_sig=hr_sig,
+        vog_sig=vog_sig,
 
         # VOG and ts_state (shared)
-        vog_rel_t=vog_rel_t,
-        vog_med=vog_med,
-        vog_segs=vog_segs,
-        vog_cols=vog_cols,
-        vog_col_names=np.array(vog_col_names, dtype=object),
-        n_vog_trials=int(n_vog_trials),
+        # vog_rel_t=vog_rel_t,
+        # vog_med=vog_med,
+        # vog_segs=vog_segs,
+        # vog_cols=vog_cols,
+        # vog_col_names=np.array(vog_col_names, dtype=object),
+        # n_vog_trials=int(n_vog_trials),
 
         ts_state_rel_t=ts_state_rel_t,
         ts_state_segs=ts_state_segs_A,
@@ -1248,6 +1195,8 @@ def extract_one_file(aligned_path: Path) -> None:
         # # NPRW / UA (A only)
         NPRW_med=NPRW_med_A,
         NPRW_var=NPRW_var_A,
+        NPRW_med_counts=NPRW_med_counts_A,
+        
         NPRW_rates_zeroed=NPRW_rates_zeroed_A,
         NPRW_counts=NPRW_counts_A,
         NPRW_edges_ms=nprw_edges_ms,
@@ -1257,6 +1206,7 @@ def extract_one_file(aligned_path: Path) -> None:
         n_nprw=int(n_nprw_A),
 
         UA_med=UA_med_A,
+        UA_med_counts=UA_med_counts_A,
         UA_var=UA_var_A,
         UA_rates_zeroed=UA_rates_zeroed_A,
         UA_counts=UA_counts_A,
@@ -1296,13 +1246,14 @@ def extract_one_file(aligned_path: Path) -> None:
         "beh_cam1_names": np.array(beh_cam1_names, dtype=object),
 
         "hr_sig": hr_sig,
+        "vog_sig": vog_sig,
         
-        "vog_rel_t":     vog_rel_t,
-        "vog_med":       vog_med,
-        "vog_segs":      vog_segs,
-        "vog_cols":      vog_cols,
-        "vog_col_names": np.array(vog_col_names, dtype=object),
-        "n_vog_trials":  int(n_vog_trials),
+        # "vog_rel_t":     vog_rel_t,
+        # "vog_med":       vog_med,
+        # "vog_segs":      vog_segs,
+        # "vog_cols":      vog_cols,
+        # "vog_col_names": np.array(vog_col_names, dtype=object),
+        # "n_vog_trials":  int(n_vog_trials),
 
         "ts_state_rel_t":      ts_state_rel_t,
         "ts_state_segs":       ts_state_segs_A,
@@ -1313,6 +1264,7 @@ def extract_one_file(aligned_path: Path) -> None:
         "trial_labels":        trial_labels,
 
         "NPRW_med":      NPRW_med_A,
+        "NPRW_med_counts":      NPRW_med_counts_A,
         "NPRW_var":      NPRW_var_A,
         "NPRW_rates_zeroed":   NPRW_rates_zeroed_A,
         "NPRW_counts":   NPRW_counts_A,
@@ -1321,6 +1273,7 @@ def extract_one_file(aligned_path: Path) -> None:
         "n_nprw":        int(n_nprw_A),
 
         "UA_med":        UA_med_A,
+        "UA_med_counts": UA_med_counts_A,
         "UA_var":        UA_var_A,
         "UA_rates_zeroed":     UA_rates_zeroed_A,
         "UA_counts":     UA_counts_A,
@@ -1364,12 +1317,12 @@ def extract_one_file(aligned_path: Path) -> None:
         beh_cam0_names=np.array(beh_cam0_names, dtype=object),
         beh_cam1_names=np.array(beh_cam1_names, dtype=object),
 
-        vog_rel_t=vog_rel_t,
-        vog_med=vog_med,
-        vog_segs=vog_segs,
-        vog_cols=vog_cols,
-        vog_col_names=np.array(vog_col_names, dtype=object),
-        n_vog_trials=int(n_vog_trials),
+        # vog_rel_t=vog_rel_t,
+        # vog_med=vog_med,
+        # vog_segs=vog_segs,
+        # vog_cols=vog_cols,
+        # vog_col_names=np.array(vog_col_names, dtype=object),
+        # n_vog_trials=int(n_vog_trials),
 
         ts_state_rel_t=ts_state_rel_t,
         ts_state_segs=ts_state_segs_B,
@@ -1381,6 +1334,8 @@ def extract_one_file(aligned_path: Path) -> None:
 
         NPRW_med=NPRW_med_B,
         NPRW_var=NPRW_var_B,
+        NPRW_med_counts=NPRW_med_counts_B,
+        
         NPRW_rates_zeroed=NPRW_rates_zeroed_B,
         NPRW_counts=NPRW_counts_B,
         NPRW_edges_ms=nprw_edges_ms,
@@ -1390,6 +1345,7 @@ def extract_one_file(aligned_path: Path) -> None:
         n_nprw=int(n_nprw_B),
 
         UA_med=UA_med_B,
+        UA_med_counts=UA_med_counts_B,
         UA_var=UA_var_B,
         UA_rates_zeroed=UA_rates_zeroed_B,
         UA_counts=UA_counts_B,
@@ -1428,12 +1384,12 @@ def extract_one_file(aligned_path: Path) -> None:
         "beh_cam0_names": np.array(beh_cam0_names, dtype=object),
         "beh_cam1_names": np.array(beh_cam1_names, dtype=object),
 
-        "vog_rel_t":     vog_rel_t,
-        "vog_med":       vog_med,
-        "vog_segs":      vog_segs,
-        "vog_cols":      vog_cols,
-        "vog_col_names": np.array(vog_col_names, dtype=object),
-        "n_vog_trials":  int(n_vog_trials),
+        # "vog_rel_t":     vog_rel_t,
+        # "vog_med":       vog_med,
+        # "vog_segs":      vog_segs,
+        # "vog_cols":      vog_cols,
+        # "vog_col_names": np.array(vog_col_names, dtype=object),
+        # "n_vog_trials":  int(n_vog_trials),
 
         "ts_state_rel_t":      ts_state_rel_t,
         "ts_state_segs":       ts_state_segs_B,
@@ -1444,6 +1400,7 @@ def extract_one_file(aligned_path: Path) -> None:
         "trial_labels":        trial_labels,
 
         "NPRW_med":      NPRW_med_B,
+        "NPRW_med_counts":      NPRW_med_counts_B,
         "NPRW_var":      NPRW_var_B,
         "NPRW_rates_zeroed":   NPRW_rates_zeroed_B,
         "NPRW_counts":   NPRW_counts_B,
@@ -1452,6 +1409,7 @@ def extract_one_file(aligned_path: Path) -> None:
         "n_nprw":        int(n_nprw_B),
 
         "UA_med":        UA_med_B,
+        "UA_med_counts": UA_med_counts_B,
         "UA_var":        UA_var_B,
         "UA_rates_zeroed":     UA_rates_zeroed_B,
         "UA_counts":     UA_counts_B,

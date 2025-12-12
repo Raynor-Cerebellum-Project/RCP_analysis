@@ -13,7 +13,7 @@ BATCH_SCRIPTS = [
     "make_aligned_npz_and_mat.py",
     "extract_peri_IR_and_concat_baseline.py",
     "extract_peri_stim.py",
-    "plot_complete_shaded.py",
+    "plot_complete_shaded_BT.py",
 ]
 
 def run_scripts(base_dir: Path):

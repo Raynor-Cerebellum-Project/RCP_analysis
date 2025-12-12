@@ -428,7 +428,12 @@ def stacked_heatmaps_plus_behv(
             vmin=vmin_nprw,
             vmax=vmax_nprw,
             shading="auto",
+            antialiased=False,
+            rasterized=True,
         )
+        im0.set_edgecolor('none')
+        # im1.set_rasterized(True)
+        ax_nprw.grid(False)
 
         ax_nprw.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
         # ax_nprw.axvspan(-20.0, 120.0, color="gray", alpha=1)
@@ -513,7 +518,12 @@ def stacked_heatmaps_plus_behv(
                 vmin=vmin_ua_group,
                 vmax=vmax_ua_group,
                 shading="auto",
+                antialiased=False,
+                rasterized=True,
             )
+            im1.set_edgecolor('none')
+            # im1.set_rasterized(True)
+            ax_ua.grid(False)
             
             ax_ua.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
             # ax_u.axvspan(-5.0, 105.0, color="gray", alpha=1)
