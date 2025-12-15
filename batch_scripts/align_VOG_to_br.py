@@ -1,7 +1,5 @@
-from pathlib import Path
-import pandas as pd
-import sys
 import RCP_analysis as rcp
+from RCP_analysis.python.functions.config_loading import *
 
 """
 Attach BR ns2 sample times to VOG CSVs using the VOG_File ↔ BR_File mapping.
@@ -20,22 +18,10 @@ Output:
 """
 
 # ---------- Config ----------
-REPO_ROOT   = Path(__file__).resolve().parents[1]
-PARAMS      = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
+# Base paths from config_loading
 
-OUT_BASE    = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
-BR_ROOT     = SESSION_LOC / "Blackrock"; BR_ROOT.mkdir(parents=True, exist_ok=True)
-VOG_ROOT    = SESSION_LOC / "VOG"; VOG_ROOT.mkdir(parents=True, exist_ok=True)
-
-VOG_CKPT_ROOT = OUT_BASE / "checkpoints" / "VOG"
-VOG_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
-
-METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
-
-UA_CFG   = PARAMS.probes.get("UA")
 VOG_SYNC = int(UA_CFG.get("VOG_sync_ch", 135))  # BR ns2 sync channel for VOG
+
 
 def main():
     print(f"[scan] VOG_ROOT={VOG_ROOT}")

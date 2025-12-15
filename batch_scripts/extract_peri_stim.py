@@ -1,18 +1,14 @@
-from pathlib import Path
-import numpy as np, pandas as pd, re, json
+import re, json
 from scipy.io import savemat
-import RCP_analysis as rcp
+from typing import List, Tuple, Optional
 from scipy.signal import fftconvolve
+import RCP_analysis as rcp
+from RCP_analysis.python.functions.config_loading import *
 
 # Config
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
-OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
-ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
-METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
-PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStim"; PERI_ROOT.mkdir(parents=True, exist_ok=True)
+# Base paths from config_loading
+ALIGNED_ROOT = ALIGNED_CKPT_ROOT
+
 
 NPRW_RATES = PARAMS.NPRW_rate_est
 NPRW_BIN_MS     = NPRW_RATES.get("bin_ms")

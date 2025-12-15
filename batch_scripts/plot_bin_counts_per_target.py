@@ -1,8 +1,8 @@
-from pathlib import Path
+from typing import Tuple
 from types import SimpleNamespace
 import re
-import numpy as np
 
+from matplotlib import pyplot as plt
 from probeinterface import Probe
 from scipy.io import loadmat
 
@@ -11,6 +11,10 @@ matplotlib.use("Agg")
 matplotlib.rcParams["svg.fonttype"] = "none"
 
 import RCP_analysis as rcp
+from RCP_analysis.python.functions.config_loading import *
+
+# Local plotting settings
+matplotlib.rcParams["svg.fonttype"] = "none"
 
 # ---------- CONFIG ----------
 WIN_MS             = (-600.0, 600.0)
@@ -33,17 +37,11 @@ VMIN_UA_STIM,   VMAX_UA_STIM   = -50, 150
 COLORMAP = "jet"
 
 # ---------- params / roots ----------
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS    = rcp.load_experiment_params(
-    REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT
-)
+# Base paths from config_loading
 
-SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
-OUT_BASE    = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
-PERI_ROOT   = OUT_BASE / "checkpoints" / "PeriStimCounts"; PERI_ROOT.mkdir(parents=True, exist_ok=True)
-NPRW_AUX_DATA   = OUT_BASE / "aux_data" / "NPRW"
-METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
+# Override PERI_ROOT for this script
+PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStimCounts"; PERI_ROOT.mkdir(parents=True, exist_ok=True)
+
 
 FIG_ROOT   = OUT_BASE / "figures"; FIG_ROOT.mkdir(parents=True, exist_ok=True)
 FIG = SimpleNamespace(peri_posvel_median=FIG_ROOT / "median_fr_plots", peri_posvel_var=FIG_ROOT / "var_fr_plots")

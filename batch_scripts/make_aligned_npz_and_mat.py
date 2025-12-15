@@ -1,28 +1,16 @@
-from pathlib import Path
-import numpy as np, pandas as pd
 import json, csv
-import RCP_analysis as rcp
+from typing import Tuple, Optional
 from scipy.io import savemat
+import RCP_analysis as rcp
+from RCP_analysis.python.functions.config_loading import *
 
 # ---------- CONFIG ----------
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
-OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
-NPRW_AUX_DATA   = OUT_BASE / "aux_data" / "NPRW"
-NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
-UA_CKPT_ROOT   = OUT_BASE / "checkpoints" / "UA"
-ALIGNED_CKPT_ROOT   = OUT_BASE / "checkpoints" / "Aligned"; ALIGNED_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
-BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "Behavior"; BEHV_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
-VOG_CKPT_ROOT = OUT_BASE / "checkpoints" / "VOG"; VOG_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
+# Base paths loaded from config_loading
 
 FS_NS2 = 1000.0
-                        
 NUM_CAM = PARAMS.kinematics.get("num_camera", 1)
+SHIFTS_CSV = METADATA_ROOT / "br_to_intan_shifts.csv"
 
-METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
-SHIFTS_CSV    = METADATA_ROOT / "br_to_intan_shifts.csv"
 
 def _find_aligned_DLC_for_br_idx(behv_root: Path, br_idx: int) -> tuple[Path | None, str]:
     """

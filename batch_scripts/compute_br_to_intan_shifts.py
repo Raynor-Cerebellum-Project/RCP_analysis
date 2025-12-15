@@ -1,19 +1,11 @@
-from pathlib import Path
 import numpy as np
 import csv
 import spikeinterface.extractors as se
 import RCP_analysis as rcp
+from RCP_analysis.python.functions.config_loading import *
 
 # ---------- Config ----------
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
-OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
-BR_ROOT = SESSION_LOC / "Blackrock"; BR_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
-NPRW_AUX_DATA   = OUT_BASE / "aux_data" / "NPRW"
-NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
+# Base paths from config_loading
 TEMPLATE = REPO_ROOT / "config" / "br_intan_align_template.mat"
 
 # Probe params, sync channels
