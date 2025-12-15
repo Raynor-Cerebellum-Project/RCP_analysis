@@ -60,7 +60,7 @@ def find_locs_via_template(adc_lock: np.ndarray, template: np.ndarray, fs: float
         locs = lags[mid[mask]].astype(int)
     return locs
 
-def refine_anchor_with_loc_and_br0(
+def refine_shift_with_loc_and_br0(
     rec_br,
     br_ch,
     fs_br: float,
@@ -101,7 +101,7 @@ def refine_anchor_with_loc_and_br0(
     t_m = np.arange(N_b, dtype=float) / float(fs_br)      # BR time grid 0..(N_b-1)
     r   = float(fs_intan) / float(fs_br)                  # Intan samp / BR samp
 
-    # ---- Search integer BR shifts around the coarse anchor ----
+    # ---- Search integer BR shifts around the coarse shift ----
     best_rms = np.inf
     best_n   = 0
     for n in range(-int(search_n_br), int(search_n_br) + 1):
@@ -119,7 +119,7 @@ def refine_anchor_with_loc_and_br0(
             best_rms = rms
             best_n   = n
 
-    # ---- Convert best BR shift to Intan samples; final anchor = loc + delta_i ----
+    # ---- Convert best BR shift to Intan samples; final shift = loc + delta_i ----
     delta_i = int(round(best_n * r))
     shift  = int(np.clip(loc + delta_i, 0, N_i - 1))
     dt_ms   = 1000.0 * delta_i / float(fs_intan)
@@ -145,15 +145,16 @@ def main():
     # Load metadata
     if not METADATA_CSV.exists():
         raise SystemExit(f"[error] mapping CSV not found: {METADATA_CSV}")
-    intan_to_br = rcp.get_metadata_mapping(METADATA_CSV, "Intan_File", "BR_File")
-    print(f"[map] Loaded Intan→BR rows: {len(intan_to_br)}")
+    intan2br = rcp.get_metadata_mapping(METADATA_CSV, "Intan_File", "BR_File")
+    print(f"[map] Loaded Intan→BR rows: {len(intan2br)}")
 
     # Load template
     template = load_template(TEMPLATE)
 
     # iterate BR Intan pairs, compute shift, and write shifts to CSV
     summary_rows = []
-    for intan_idx, br_idx in sorted(intan_to_br.items()):
+    for intan_idx, br_str in sorted(intan2br.items()):
+        br_idx = int(br_str)
         intan_sess = intan_idx_to_sess.get(intan_idx)
         if intan_sess is None:
             print(f"[warn] No session name for Intan_File={intan_idx} (skipping)")
@@ -212,7 +213,7 @@ def main():
         for block, loc in enumerate(br_sync_locs): # loc is a candidate for Intan sample where BR recording starts before refinement
             if use_br:
                 search_n_br = int(round(LOC_REFINE_N * fs_br / fs_intan)) # Width of searching through BR samples
-                shift_sample_intan, delta_intan_samples, dt_ms, debug_dict = refine_anchor_with_loc_and_br0(
+                shift_sample_intan, delta_intan_samples, dt_ms, debug_dict = refine_shift_with_loc_and_br0(
                     rec_br=rec_br, br_ch=str(TRIANGLE_SYNC_CH), fs_br=fs_br,
                     adc_triangle_intan=intan_triangle_signal, fs_intan=fs_intan,
                     loc=loc, search_n_br=search_n_br, br_window_sec=20.0, normalize_both=False
@@ -246,7 +247,7 @@ def main():
 
 
         # TODO Just using the first one now
-        # initial/ refined anchor from block 0
+        # initial/ refined shift from block 0
         template_shift_sample    = locs_rows[0][1]
         adjusted_shift_sample     = locs_rows[0][2]
         adjustment_samples  = locs_rows[0][3]
@@ -278,9 +279,9 @@ def main():
             br_ns5=str(br_ns5_file),
             fs_intan=fs_intan,
             fs_br=fs_br,
-            anchor_sample=adjusted_shift_sample,
-            anchor_seconds=shift_sec,
-            anchor_ms=shift_ms,
+            shift_sample=adjusted_shift_sample,
+            shift_seconds=shift_sec,
+            shift_ms=shift_ms,
             dur_intan_sec=dur_intan_sec,
             dur_br_sec=dur_br_sec,
             triangle_refined_from=template_shift_sample,

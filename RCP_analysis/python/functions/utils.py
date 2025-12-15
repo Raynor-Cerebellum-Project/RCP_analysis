@@ -3,7 +3,6 @@ import pandas as pd, numpy as np
 import json, csv, re
 import spikeinterface as si
 import spikeinterface.extractors as se
-from typing import Dict, Any, Optional, Tuple
 from scipy.signal import butter, filtfilt
 
 # --- Building OCR and DLC dictionary for mapping ---
@@ -27,12 +26,12 @@ def _parse_condition_cam(path: Path):
         return None, None
     return cond_id, int(cam_char)
 
-def find_per_cond_inputs(video_root: Path) -> Dict[str, dict]:
+def find_per_cond_inputs(video_root: Path) -> dict[str, dict]:
     """
     Scan VIDEO_ROOT/DLC for OCR/DLC files and keep newest file.
     Return conditions that have both cams for both 'ocr' and 'dlc'
     """
-    per: Dict[str, dict] = {}  # cond -> {'ocr': {cam: Path}, 'dlc': {cam: Path}}
+    per: dict[str, dict] = {}  # cond -> {'ocr': {cam: Path}, 'dlc': {cam: Path}}
     for subdir, csv_type in (("DLC", "dlc"), ("OCR", "ocr")):
         root = video_root / subdir
         if not root.is_dir():
@@ -52,30 +51,29 @@ def find_per_cond_inputs(video_root: Path) -> Dict[str, dict]:
         if set(d["ocr"]) >= required and set(d["dlc"]) >= required
     }
 
-def get_metadata_mapping(meta_csv: Path, field1: str, field2: str) -> Dict[int, int]:
+def get_metadata_mapping(meta_csv: Path, field1: str, field2: str) -> dict[int, str]:
     """
-    Gets field1 → field2 mapping using the metadata.
-
-    Skips rows where:
-    - Either field is missing
-    - Either field can't be converted to int (e.g. empty, '-', 'NA', etc.)
+    field1 -> field2 mapping.
+    - keys are int
+    - values are stripped strings (no casting)
     """
     with meta_csv.open(encoding="utf-8-sig", newline="") as f:
         rdr = csv.DictReader(f)
         if not rdr.fieldnames:
             raise ValueError(f"{meta_csv.name}: missing header row")
 
-        mapping: Dict[int, int] = {}
+        mapping: dict[int, str] = {}
         for row in rdr:
             try:
-                k = int((row[field1] or "").strip())
-                v = (row[field2] or "").strip()
-                if field2 not in {"UA_port", "Movement_Trigger", "Notes"}:
-                    v = int(v)
-            except (KeyError, TypeError, ValueError):
-                # missing field, None, non-int, '-', etc.
+                k_raw = (row.get(field1) or "").strip()
+                v_raw = (row.get(field2) or "").strip()
+                if k_raw == "" or v_raw == "":
+                    continue
+                k = int(k_raw)
+            except Exception:
                 continue
-            mapping[k] = v
+
+            mapping[k] = v_raw
 
         return mapping
 
@@ -450,27 +448,10 @@ def load_intan_aux(npz_path: Path) -> tuple[np.ndarray, np.ndarray, float]:
     return triangle_sync_signal, br_template_signal, float(meta["fs_hz"])
 
 # Analysis / alignment
-def load_shift_row_by_br_idx(metadata_path: Path, br_idx: int) -> Optional[dict]:
-    """
-    Read br_to_intan_shifts.csv and return the row for this br_idx.
-    Expected columns include: session (Intan), br_idx, anchor_ms, fs_intan, (optionally anchor_sample, etc.)
-    """
-    shifts_csv = metadata_path
-    if not shifts_csv.exists():
-        return None
-    with shifts_csv.open("r", newline="") as f:
-        rdr = csv.DictReader(f)
-        for row in rdr:
-            try:
-                if int(row.get("br_idx", "-1")) == int(br_idx):
-                    return row
-            except Exception:
-                continue
-    return None
 
 def extract_peristim_segments(
     rate_hz: np.ndarray,
-    counts: Optional[np.ndarray],
+    counts: np.ndarray | None,
     t_ms: np.ndarray,
     stim_ms: np.ndarray,
     win_ms: tuple[float, float] = (-800.0, 1200.0),
@@ -596,7 +577,7 @@ def variance_across_trials(zeroed_segments: np.ndarray) -> np.ndarray:
     return var
 
 # Stim
-def load_stim_detection(npz_path: Path) -> Dict[str, np.ndarray]:
+def load_stim_detection(npz_path: Path) -> dict[str, np.ndarray]:
     """
     Required fields:
       - trigger_pairs         : (n_pulses, 2) [start, end] in Intan index space
@@ -630,7 +611,7 @@ def stim_npz_path_from_br_idx(
     br_idx: int,
     mapping_csv: Path,        # CSV with Intan_File, BR_File
     nprw_aux_root: Path,
-) -> Optional[Path]:
+) -> Path | None:
     """
     Given a BR_File index (br_idx), return the corresponding
     stim_stream.npz path for the matching Intan session, or None
@@ -645,7 +626,7 @@ def stim_npz_path_from_br_idx(
     if br_idx not in br_to_intan:
         print(f"[WARN] BR {br_idx:03d} not in mapping CSV.")
         return None, None
-    intan_idx = br_to_intan[br_idx]
+    intan_idx = int(br_to_intan[br_idx])
 
     # Get session name from Intan_streams folders
     stream_dirs = sorted(
@@ -728,16 +709,16 @@ def aligned_stim_ms(stim_ms_abs: np.ndarray, meta: dict) -> np.ndarray:
     Convert absolute Intan stim times (ms) into the aligned timebase used in the
     combined file:
       intan_t_ms_aligned = intan_t_ms - t0_intan_ms
-    where t0_intan_ms = anchor_sample * 1000 / fs_intan
+    where t0_intan_ms = shift_sample * 1000 / fs_intan
     """
     if stim_ms_abs.size == 0:
         return stim_ms_abs
-    if "anchor_ms" in meta:
-        return stim_ms_abs - float(meta["anchor_ms"])
-    # fallback if some files only had anchor_sample
-    if "anchor_sample" in meta:
+    if "shift_ms" in meta:
+        return stim_ms_abs - float(meta["shift_ms"])
+    # fallback if some files only had shift_sample
+    if "shift_sample" in meta:
         fs_intan = float(meta.get("fs_intan", 30000.0))
-        return stim_ms_abs - (float(meta["anchor_sample"]) * 1000.0 / fs_intan)
+        return stim_ms_abs - (float(meta["shift_sample"]) * 1000.0 / fs_intan)
     return stim_ms_abs  # nothing to do
 
 def ua_title_from_meta(meta: dict) -> str:
@@ -759,7 +740,7 @@ def build_session_index_map(intan_sessions: list[str]) -> tuple[dict[str,int], d
     return ({sess: i+1 for i, sess in enumerate(ordered)},
             {i+1: s for i, s in enumerate(ordered)})
     
-def find_ns5_by_br_index(br_root: Path, br_idx: int) -> Optional[Path]:
+def find_ns5_by_br_index(br_root: Path, br_idx: int) -> Path | None:
     """
     Locate an .ns5 file whose stem ends with the 3-digit BR index, e.g.:
 
@@ -779,7 +760,7 @@ def find_ns5_by_br_index(br_root: Path, br_idx: int) -> Optional[Path]:
     hits.sort(key=lambda p: (p.stat().st_mtime, p.stat().st_size), reverse=True)
     return hits[0]
 
-def find_ns2_by_br_index(br_root: Path, br_idx: int) -> Optional[Path]:
+def find_ns2_by_br_index(br_root: Path, br_idx: int) -> Path | None:
     """
     Locate an .ns2 file whose *stem* ends with the 3-digit BR index, e.g.:
 

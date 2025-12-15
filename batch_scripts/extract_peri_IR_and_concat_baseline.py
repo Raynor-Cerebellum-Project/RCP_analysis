@@ -20,18 +20,20 @@ Baseline peristim extraction:
 ALIGNED_ROOT = ALIGNED_CKPT_ROOT
 SHIFTS_CSV   = METADATA_ROOT / "br_to_intan_shifts.csv"
 
+
 NPRW_RATES = PARAMS.NPRW_rate_est
 NPRW_BIN_MS     = NPRW_RATES.get("bin_ms")
 NPRW_SIGMA_MS   = NPRW_RATES.get("sigma_ms")
 NPRW_MS_BEFORE = float(NPRW_RATES.get("remove_ms_before", 20.0))
 NPRW_TAIL_MS   = float(NPRW_RATES.get("remove_tail_ms_after", 20.0))
+NPRW_DEDUP_MS = float(NPRW_RATES.get("dedup_ms", 0.5))
 
 UA_RATES = PARAMS.UA_rate_est
 UA_BIN_MS     = UA_RATES.get("bin_ms")
 UA_SIGMA_MS   = UA_RATES.get("sigma_ms")
 UA_MS_BEFORE = float(UA_RATES.get("remove_ms_before", 5.0))
 UA_TAIL_MS   = float(UA_RATES.get("remove_tail_ms_after", 5.0))
-DEDUP_MS = 0.25
+UA_DEDUP_MS = float(UA_RATES.get("dedup_ms", 0.5))
 MAX_CLUSTER_MS = 0.5
 
 STIM_DUR = 100.0
@@ -51,7 +53,7 @@ BLANK_STIM_GAP = False   # True for real stim peri-stim; False for baseline-IR -
 
 def _load_br_to_intan_shifts(shifts_csv: Path) -> dict[int, dict]:
     """
-    Return {BR_idx: {"session": <str>, "anchor_ms": <float or 0.0>}}.
+    Return {BR_idx: {"session": <str>, "shifts_ms": <float or 0.0>}}.
     Accepts header variations.
     """
     if not shifts_csv.exists():
@@ -72,7 +74,7 @@ def _load_br_to_intan_shifts(shifts_csv: Path) -> dict[int, dict]:
 
         c_br    = col("br_idx")
         c_sess  = col("session")
-        c_shift = col("anchor_ms")
+        c_shift = col("shift_ms")
 
         if not c_br or not c_sess:
             raise SystemExit(
@@ -93,7 +95,7 @@ def _load_br_to_intan_shifts(shifts_csv: Path) -> dict[int, dict]:
                 shift_ms = float(str(row.get(c_shift, "0")).strip()) if c_shift else 0.0
             except Exception:
                 shift_ms = 0.0
-            out[br] = {"session": sess, "anchor_ms": shift_ms}
+            out[br] = {"session": sess, "shift_ms": shift_ms}
     return out
 
 BR_TO_INTAN_SHIFTS = _load_br_to_intan_shifts(SHIFTS_CSV)
@@ -344,18 +346,24 @@ def _smooth_counts_gauss_dispatch(
 def _sanitize(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", s)
 
-def _end_or_nan(arr):
-    arr = np.asarray(arr)
-    return float(arr[-1]) if arr.size else float("nan")
+def _last(x):
+    x = np.asarray(x)
+    return float(x.reshape(-1)[-1]) if x.size else float("nan")
 
-def _stims_mask_for_stream(stim_ms: np.ndarray, t_ms: np.ndarray,
-                           win_ms: tuple[float, float]) -> np.ndarray:
-    """Boolean mask over stim_ms for which [stim+win0, stim+win1] lies in t_ms."""
-    if stim_ms is None or t_ms is None or np.size(stim_ms) == 0 or np.size(t_ms) < 2:
-        return np.zeros(stim_ms.size if stim_ms is not None else 0, dtype=bool)
-    t0, t1 = float(t_ms[0]), float(t_ms[-1])
+def _get_valid_events(event_ms: np.ndarray,
+                      rec_time: tuple[float, float],
+                      win_ms: tuple[float, float]) -> np.ndarray:
+    """
+    Return mask over event_ms where [event+win0, event+win1] is in recording time.
+    """
+    event_ms = np.asarray(event_ms, float).ravel()
+    if event_ms.size == 0:
+        return np.zeros(0, dtype=bool)
     w0, w1 = float(win_ms[0]), float(win_ms[1])
-    return (stim_ms + w0 >= t0) & (stim_ms + w1 <= t1)
+    if rec_time is None or len(rec_time) < 2:
+        return np.zeros(event_ms.size, dtype=bool)
+    t0, t1 = float(rec_time[0]), float(rec_time[1])
+    return (event_ms + w0 >= t0) & (event_ms + w1 <= t1)
 
 def _as_list(x):
     if x is None:
@@ -367,10 +375,10 @@ def _as_list(x):
 def _median_behavior_line(series_on_common: np.ndarray,
                           t_common_ms: np.ndarray,
                           stim_ms: np.ndarray,
-                          win_ms: Tuple[float, float],
+                          win_ms: tuple[float, float],
                           baseline_ms: float,
                           min_trials: int
-                          ) -> Tuple[np.ndarray, np.ndarray, int, np.ndarray]:
+                          ) -> tuple[np.ndarray, np.ndarray, int, np.ndarray]:
     """
     Return:
       line : (T,) median peri-stim trace across kept trials
@@ -423,7 +431,7 @@ def _median_behavior_line(series_on_common: np.ndarray,
 def _median_lines_for_columns(series_on_common: np.ndarray,
                               t_common_ms: np.ndarray,
                               stim_ms: np.ndarray
-                              ) -> Tuple[np.ndarray, np.ndarray, int, np.ndarray]:
+                              ) -> tuple[np.ndarray, np.ndarray, int, np.ndarray]:
     """
     Return:
       lines      : (D, T) median line per column
@@ -444,7 +452,7 @@ def _median_lines_for_columns(series_on_common: np.ndarray,
     lines: list[np.ndarray] = []
     kept_counts: list[int] = []
     segs_list: list[np.ndarray] = []
-    rel_t_out: Optional[np.ndarray] = None
+    rel_t_out: np.ndarray | None = None
 
     for d in range(D):
         line, rel_t, n_kept, segs = _median_behavior_line(
@@ -486,11 +494,11 @@ def _median_lines_for_columns(series_on_common: np.ndarray,
     return lines_arr, rel_t_out, n_trials_used, segs_all
 
 # Behavior (already mapped to common grid in the NPZ)
-def _ordered_xy_indices(cam_cols: List[str],
-                        keypoints: Tuple[str, ...] = KEYPOINTS_ORDER
-                        ) -> Tuple[List[int], List[str]]:
-    idx: List[int] = []
-    names: List[str] = []
+def _ordered_xy_indices(cam_cols: list[str],
+                        keypoints: tuple[str, ...] = KEYPOINTS_ORDER
+                        ) -> tuple[list[int], list[str]]:
+    idx: list[int] = []
+    names: list[str] = []
     cols_lc = [c.lower() for c in cam_cols]
 
     def _clean_kp(s: str) -> str:
@@ -498,7 +506,7 @@ def _ordered_xy_indices(cam_cols: List[str],
         s = s.strip("[]").strip("'\"")   # handle "'Wrist'" → Wrist
         return s.lower()
 
-    def _find_xy_for(kp: str) -> Tuple[Optional[int], Optional[int]]:
+    def _find_xy_for(kp: str) -> tuple[int | None, int | None]:
         kp_lc = _clean_kp(kp).lower()
         ix = next((i for i, c in enumerate(cols_lc) if c.endswith("_x") and kp_lc in c), None)
         iy = next((i for i, c in enumerate(cols_lc) if c.endswith("_y") and kp_lc in c), None)
@@ -515,9 +523,9 @@ def _ordered_xy_indices(cam_cols: List[str],
             names.extend([f"{base}_x", f"{base}_y"])
     return idx, names
 
-def _select_matrix(cam: np.ndarray, cols: List[str],
-                   keypoints: Tuple[str, ...] = KEYPOINTS_ORDER
-                   ) -> Tuple[np.ndarray, List[str]]:
+def _select_matrix(cam: np.ndarray, cols: list[str],
+                   keypoints: tuple[str, ...] = KEYPOINTS_ORDER
+                   ) -> tuple[np.ndarray, list[str]]:
     idx, names = _ordered_xy_indices(cols or [], keypoints=keypoints)
 
     if cam is None or cam.size == 0:
@@ -628,8 +636,8 @@ def _read_csv_robust(path: Path) -> pd.DataFrame:
         raise last_err or RuntimeError(f"Could not read CSV: {path}")
 
 def build_title_from_csv(
-    csv_path: Path, *, sess: Optional[str] = None, br_file: Optional[int] = None
-) -> Tuple[str, Optional[int]]:
+    csv_path: Path, *, sess: str | None = None, br_file: int | None = None
+) -> tuple[str, int | None]:
     df_raw = _read_csv_robust(csv_path)
 
     # normalize column names: lower, strip, spaces->underscores
@@ -640,7 +648,7 @@ def build_title_from_csv(
     if df_data.empty:
         return "Condition: n/a, n/a Hz, n/a µA, n/a mm, n/a ms, Delay: 0 ms", None
 
-    def col(name: str) -> Optional[str]:
+    def col(name: str) -> str | None:
         n = name.lower()
         return n if n in df_data.columns else None
 
@@ -720,7 +728,7 @@ def build_title_from_csv(
     # ---- robust video_file extraction ----
     # try multiple candidate columns and parse the first integer
     video_cols = [c for c in ("video_file", "video", "video_index", "video#", "vid", "videoid") if c in df_data.columns]
-    video_file: Optional[int] = None
+    video_file: int | None = None
     for c in video_cols:
         val = row.get(c)
         if pd.isna(val):
@@ -738,58 +746,54 @@ def build_title_from_csv(
 
     return ", ".join(parts), video_file
 
-def _compute_trial_labels_from_ts_state(
-    stim_ms: np.ndarray,
-    UA_t: np.ndarray,
-    ts_state_num_full: np.ndarray,
-    ts_state_char_arr: Optional[np.ndarray],
+def _compute_trial_labels(
+    event_ms: np.ndarray,
+    t_ms: np.ndarray,
+    ts_char: np.ndarray | None,
+    ts_num: np.ndarray,
     win_ms: tuple[float, float] = WIN_MS,
+    *,
+    num_to_label: dict[int, str] | None = None,   # e.g. {1:"A", 2:"B"}
 ) -> np.ndarray:
-    """
-    For each stim, look at ts_state in [stim+win0, stim+win1] on UA timebase
-    and assign majority label 'A', 'B', or 'N' (other/none).
-    Returns: labels : (n_stims,) array of 'A'/'B'/'N'.
-    """
-    stim_ms = np.asarray(stim_ms, float).ravel()
-    UA_t = np.asarray(UA_t, float).ravel()
-    ts_state_num_full = np.asarray(ts_state_num_full, int).ravel()
+    event_ms = np.asarray(event_ms, float).ravel()
+    t_ms     = np.asarray(t_ms, float).ravel()
+    ts_num   = np.asarray(ts_num).ravel()
+    ts_char_arr = None if ts_char is None else np.asarray(ts_char).reshape(-1)
 
-    if stim_ms.size == 0 or UA_t.size == 0 or ts_state_num_full.size == 0:
-        return np.full(stim_ms.shape, "N", dtype="U1")
+    labels = np.full(event_ms.shape, "N", dtype="U1")
+    w0, w1 = map(float, win_ms)
 
-    # mapping from state number -> char
-    mapping: dict[int, str] = {}
-    if ts_state_char_arr is not None:
-        arr = np.asarray(ts_state_char_arr)
-        if arr.ndim > 1:
-            arr = arr.reshape(-1)
-        n_min = min(arr.size, ts_state_num_full.size)
-        for n, c in zip(ts_state_num_full[:n_min], arr[:n_min]):
-            mapping[int(n)] = str(c)[0]
-    mapping_default = " "
+    # must be same length
+    if t_ms.size == 0 or ts_num.size == 0 or t_ms.size != ts_num.size:
+        return labels
 
-    labels = np.full(stim_ms.shape, "N", dtype="U1")
-    w0, w1 = float(win_ms[0]), float(win_ms[1])
+    use_char = (ts_char_arr is not None and ts_char_arr.size == t_ms.size)
 
-    for i, s in enumerate(stim_ms):
-        lo = s + w0
-        hi = s + w1
-        mask = (UA_t >= lo) & (UA_t <= hi)
-        if not mask.any():
+    for i, s in enumerate(event_ms):
+        lo, hi = s + w0, s + w1
+
+        i0 = np.searchsorted(t_ms, lo, side="left")
+        i1 = np.searchsorted(t_ms, hi, side="right")
+        if i1 <= i0:
             continue
-        nums = ts_state_num_full[mask]
-        if nums.size == 0:
-            continue
-        chars = np.array([mapping.get(int(n), mapping_default) for n in nums], dtype="U1")
-        chars = chars[chars != " "]
-        if chars.size == 0:
-            continue
-        vals, counts = np.unique(chars, return_counts=True)
-        majority = vals[np.argmax(counts)]
-        if majority in ("A", "B"):
-            labels[i] = majority
+
+        if use_char:
+            chars = ts_char_arr[i0:i1].astype("U1")
+            chars = chars[(chars == "A") | (chars == "B")]
+            if chars.size:
+                vals, cnts = np.unique(chars, return_counts=True)
+                labels[i] = vals[np.argmax(cnts)]
         else:
-            labels[i] = "N"
+            if not num_to_label:
+                continue
+            nums = ts_num[i0:i1].astype(int, copy=False)
+            # map numeric codes to A/B and take majority
+            mapped = np.array([num_to_label.get(int(n), "N") for n in nums], dtype="U1")
+            mapped = mapped[(mapped == "A") | (mapped == "B")]
+            if mapped.size:
+                vals, cnts = np.unique(mapped, return_counts=True)
+                labels[i] = vals[np.argmax(cnts)]
+
     return labels
 
 def _behavior_medians_for_label(
@@ -822,7 +826,7 @@ def _behavior_valid_mask_from_cam0(
     cam0_z: np.ndarray,
     behv_t: np.ndarray,
     stim_ms: np.ndarray,
-    win_ms: Tuple[float, float] = WIN_MS,
+    win_ms: tuple[float, float] = WIN_MS,
     baseline_ms: float = NORMALIZE_FIRST_MS,
     min_trials: int = MIN_TRIALS,
 ) -> np.ndarray:
@@ -928,20 +932,16 @@ def _detect_IR_crossings(x: np.ndarray, fs: float | None, refractory_sec: float 
             keep.append(e)
     return np.asarray(keep, np.int64)
 
-def _load_ir_ms_from_aligned(aligned_path: Path, meta: Dict[str, Any]) -> np.ndarray:
+def _load_ir_ms_from_aligned(aligned_path: Path, meta: dict[str, Any]) -> np.ndarray:
     """
-    Compute IR event times (in BR-aligned ms) for this aligned bundle.
-
-    This mirrors the original baseline script logic:
+    Compute IR event times (in BR-aligned ms)
       - read the Intan IR stream for the matching Intan session
       - detect IR 1→0 edges
       - convert sample indices to seconds, then to BR-aligned ms
-        using anchor_ms from br_to_intan_shifts.csv.
+        using shift_ms from br_to_intan_shifts.csv.
 
     Returns:
-        ir_ms_br : np.ndarray of shape (N,) in *BR ms* timebase,
-                   suitable to use directly as event centers with
-                   NPRW_t, UA_t, beh_t_ms, vog_t_ms from the combined bundle.
+        ir_ms_br : np.ndarray of shape (N,) in BR time
     """
     br_idx = int(meta.get("br_idx", -1))
     if br_idx < 0:
@@ -954,7 +954,7 @@ def _load_ir_ms_from_aligned(aligned_path: Path, meta: Dict[str, Any]) -> np.nda
         return np.array([], float)
 
     intan_session = shift_entry.get("session")
-    shift_ms = float(shift_entry.get("anchor_ms", 0.0))
+    shift_ms = float(shift_entry.get("shift_ms", 0.0))
     if not intan_session:
         print(f"[baseline-IR] BR {br_idx}: empty Intan session; skipping IR.")
         return np.array([], float)
@@ -983,7 +983,7 @@ def _load_ir_ms_from_aligned(aligned_path: Path, meta: Dict[str, Any]) -> np.nda
         print(f"[baseline-IR] Intan={intan_session}: no IR crossings.")
         return np.array([], float)
 
-    # Intan seconds -> BR-aligned ms (same as original script: subtract anchor_ms)
+    # Intan seconds -> BR-aligned ms (same as original script: subtract shift_ms)
     ir_sec = ir_idx / fs
     ir_ms_br = ir_sec * 1000.0 - shift_ms
 
@@ -997,7 +997,7 @@ def _load_ir_ms_from_aligned(aligned_path: Path, meta: Dict[str, Any]) -> np.nda
 def extract_baseline_from_file(
     aligned_path: Path,
     ir_ms: np.ndarray,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Return a dictionary with all per-file data needed for later concatenation.
 
@@ -1006,13 +1006,32 @@ def extract_baseline_from_file(
     """
     # ---- load combined (NPRW/UA + stim + meta) ----
     aligned_npz = np.load(aligned_path, allow_pickle=True)
-    NPRW_t    = aligned_npz["nprw_t_ms_aligned"]
+    nprw_meta    = aligned_npz["nprw_meta"].item() #TODO 
     nprw_peak_ms = aligned_npz["nprw_peak_ms"].reshape(-1)[0]
     nprw_peak_amps = aligned_npz["nprw_peak_amps"].reshape(-1)[0]
+    nprw_rec_ms = (float(nprw_meta["rec_start_ms_aligned"]), float(nprw_meta["rec_end_ms_aligned"]))
+    nprw_rec_dur = nprw_meta['rec_dur']
+    # shift_ms=aligned_npz['shift_ms']
     
-    UA_t    = aligned_npz["ua_t_ms_aligned"]
+    ua_meta    = aligned_npz["ua_meta"].item()
     ua_peak_ms   = aligned_npz["ua_peak_ms"].reshape(-1)[0]
     ua_peak_amps   = aligned_npz["ua_peak_amps"].reshape(-1)[0]
+    ua_rec_ms   = (float(ua_meta["rec_start_ms"]),         float(ua_meta["rec_end_ms"]))
+
+    ua_rec_dur = ua_meta['rec_dur']
+    fs_ua = ua_meta['fs_ua']
+    fs_ts = ua_meta['fs_ts']
+    ua_samples = ua_meta['n_samples']
+    UA_t = ua_rec_ms[0] + np.arange(ua_samples) * (1000.0 / fs_ua)# build touchscreen time axis in ms (same absolute ms reference as UA_t)
+
+    # alignment meta (JSON)
+    meta = json.loads(aligned_npz["align_meta"].item()) if "align_meta" in aligned_npz.files else {}
+    sess = meta.get("session", aligned_path.stem)
+    br_idx = int(meta.get("br_idx", -1))
+
+    # IR times
+    ir_ms = np.asarray(ir_ms, float).ravel()
+    
     # UA ids
     ua_elec_1based = aligned_npz["ua_elec"]
     if ua_elec_1based is not None:
@@ -1045,14 +1064,6 @@ def extract_baseline_from_file(
     # ts_state on UA timebase
     ts_state_num = aligned_npz["ts_state_num"]
     ts_state_char = aligned_npz["ts_state_char"]
-        
-    # alignment meta (JSON)
-    meta = json.loads(aligned_npz["align_meta"].item()) if "align_meta" in aligned_npz.files else {}
-    sess = meta.get("session", aligned_path.stem)
-    br_idx = int(meta.get("br_idx", -1))
-
-    # IR times in the same aligned ms frame as NPRW_t / UA_t / beh_t_ms / vog_t_ms
-    ir_ms = np.asarray(ir_ms, float).ravel()
 
     # normalize ts_state arrays
     ts_state_num_full = None
@@ -1067,10 +1078,10 @@ def extract_baseline_from_file(
     print(
         f"[baseline-debug] {aligned_path.name}: "
         f"IR_n={ir_ms.size}, "
-        # f"vog_t_end={_end_or_nan(vog_t_ms):.3f} ms, "
-        f"behv_t_end={_end_or_nan(behv_t):.3f} ms, "
-        f"NPRW_t_end={_end_or_nan(NPRW_t):.3f} ms, "
-        f"UA_t_end={_end_or_nan(UA_t):.3f} ms"
+        # f"vog_t_end={_last(vog_t_ms):.3f} ms, "
+        f"Behavioral recording duration{_last(behv_t):.3f} ms, "
+        f"NPRW recording duration={_last(nprw_rec_dur):.3f} ms, "
+        f"UA recording duration={_last(ua_rec_dur):.3f} ms"
     )
 
     # ---- behavior Preprocessing (same as peristim) ----
@@ -1087,8 +1098,6 @@ def extract_baseline_from_file(
 
     cam0_z = _z_per_column(cam0_M) if cam0_M.size else cam0_M
     cam1_z = _z_per_column(cam1_M) if cam1_M.size else cam1_M
-
-    ir_ms = np.asarray(ir_ms, float).ravel()
 
     # ---- behavior-based IR gating (analogous to stim gating) ----
     if ir_ms.size and behv_t.size and cam0_z.size:
@@ -1135,16 +1144,21 @@ def extract_baseline_from_file(
 
     # ---- compute A/B labels from ts_state, but using IR events ----
     if ts_state_num_full is not None and np.size(UA_t) and ir_ms.size:
-        trial_labels = _compute_trial_labels_from_ts_state(
-            stim_ms=ir_ms,  # reusing arg name, but these are IR centers
-            UA_t=UA_t,
-            ts_state_num_full=ts_state_num_full,
-            ts_state_char_arr=ts_state_char_arr,
-            win_ms=WIN_MS,
+        ns2_t_ms = ua_rec_ms[0] + np.arange(ts_state_num_full.size, dtype=float) * (1000.0 / fs_ts) #TODO can make more general
+        trial_labels = _compute_trial_labels(
+            event_ms=ir_ms,
+            t_ms=ns2_t_ms,
+            ts_char=ts_state_char_arr,
+            ts_num=ts_state_num_full,
+            win_ms=(-500.0, 0.0),
+            num_to_label={1: "A", 2: "B"},
         )
     else:
         trial_labels = np.full(ir_ms.shape, "N", dtype="U1")
-
+        
+    vals, cnts = np.unique(trial_labels, return_counts=True)
+    print(dict(zip(vals, cnts)))
+    
     # ---- Behavior medians & segments (A/B) ----
     beh_cam0_pos_med_A, beh_rel_t_A, n_beh_A, beh_cam0_segs_A = _behavior_medians_for_label(
         cam0_z, behv_t, ir_ms, trial_labels, "A"
@@ -1195,12 +1209,37 @@ def extract_baseline_from_file(
     ts_state_char_segs = np.zeros((0, 0), dtype="U1")
     n_ts_state_trls = 0
 
+
+    # ---- ts_state peri-stim segments (numeric + char) ----
+    
+        # ts_state_num_binned = np.zeros(t_cat_ms.shape, dtype=np.int8)
+        # ts_state_char_binned = np.full(t_cat_ms.shape, 'N', dtype='U1')
+
+        # if ts_state_num.size > 0:
+        #     # t_cat_ms is in milliseconds since start of BR recording
+        #     # ts_state_num is per touchscreen sample at ts_fs_hz
+        #     # Map each bin center to nearest touchscreen sample index
+        #     ts_idx = np.round((t_cat_ms / 1000.0) * FS_NS2).astype(np.int64)
+
+        #     # Clip to valid range
+        #     ts_idx = np.clip(ts_idx, 0, ts_state_num.size - 1)
+
+        #     ts_state_num_binned = ts_state_num[ts_idx]
+        #     ts_state_char_binned = ts_state_char[ts_idx]
+
+        #     print(
+        #         f"[touchscreen] Binned states: shape={ts_state_num_binned.shape}, "
+        #         f"unique={np.unique(ts_state_num_binned)}"
+        #     )
+        # else:
+        #     print("[touchscreen] No touchscreen states to bin; using all 'N'.")
+        
     if ts_state_num_full is not None and np.size(UA_t):
         try:
             ts_rate_segs, _, ts_state_rel_t, _ = rcp.extract_peristim_segments(
                 rate_hz=ts_state_num_full.reshape(1, -1),
                 counts=None,
-                t_ms=UA_t,
+                t_ms=ns2_t_ms,
                 stim_ms=ir_ms,
                 win_ms=WIN_MS,
                 min_trials=MIN_TRIALS,
@@ -1211,9 +1250,8 @@ def extract_baseline_from_file(
         except RuntimeError as e:
             if "Only 0 peri-stim segments" not in str(e):
                 raise
-
         if ts_state_segs.size and ts_state_char_arr is not None:
-            mapping: Dict[int, str] = {}
+            mapping: dict[int, str] = {}
             if ts_state_char_arr.size == ts_state_num_full.size:
                 for n, c in zip(ts_state_num_full, ts_state_char_arr):
                     n_int = int(n)
@@ -1237,8 +1275,8 @@ def extract_baseline_from_file(
     n_ts_state_trls_A = 0
     n_ts_state_trls_B = 0
 
-    if ts_state_segs.size and ir_ms.size and np.size(UA_t):
-        mask_ts = _stims_mask_for_stream(ir_ms, UA_t, WIN_MS)
+    if ts_state_segs.size and ir_ms.size and UA_t.size:
+        mask_ts = _get_valid_events(ir_ms, ua_rec_ms, WIN_MS)
         if (
             mask_ts.size == trial_labels.size
             and mask_ts.sum() == ts_state_segs.shape[0]
@@ -1281,7 +1319,7 @@ def extract_baseline_from_file(
                 hr_rate_segs, _, hr_rel_t, _ = rcp.extract_peristim_segments(
                     rate_hz=hr_sig[None, :],    # (1, T)
                     counts=None,
-                    t_ms=UA_t,
+                    t_ms=ns2_t_ms,
                     stim_ms=ir_ms,
                     win_ms=WIN_MS,
                     min_trials=MIN_TRIALS,
@@ -1295,7 +1333,7 @@ def extract_baseline_from_file(
                     hr_segs_all = hr_rate_segs[:, 0, :]
 
                     # These events correspond to the same in-range-IR mask as UA
-                    mask_hr = _stims_mask_for_stream(ir_ms, UA_t, WIN_MS)
+                    mask_hr = _get_valid_events(ir_ms, ua_rec_ms, WIN_MS)
                     if (
                         mask_hr.size == trial_labels.size
                         and mask_hr.sum() == hr_segs_all.shape[0]
@@ -1334,7 +1372,7 @@ def extract_baseline_from_file(
                 vog_rate_segs, _, vog_rel_t, _ = rcp.extract_peristim_segments(
                     rate_hz=vog_sig[None, :],    # (1, T)
                     counts=None,
-                    t_ms=UA_t,
+                    t_ms=ns2_t_ms,
                     stim_ms=ir_ms,
                     win_ms=WIN_MS,
                     min_trials=MIN_TRIALS,
@@ -1348,7 +1386,7 @@ def extract_baseline_from_file(
                     vog_segs_all = vog_rate_segs[:, 0, :]
 
                     # These events correspond to the same in-range-IR mask as UA
-                    mask_vog = _stims_mask_for_stream(ir_ms, UA_t, WIN_MS)
+                    mask_vog = _get_valid_events(ir_ms, ua_rec_ms, WIN_MS)
                     if (
                         mask_vog.size == trial_labels.size
                         and mask_vog.sum() == vog_segs_all.shape[0]
@@ -1370,43 +1408,10 @@ def extract_baseline_from_file(
                             f"mask_vog.sum()={mask_vog.sum()}, "
                             f"vog_segs_all.shape[0]={vog_segs_all.shape[0]}, "
                             f"trial_labels.size={trial_labels.size}"
-                        )
+                        )    
 
-    # # ---- NPRW / UA peri-event segments (baseline-zeroed) ----
-    # _, _, NPRW_rel_t, NPRW_edges_ms, _, NPRW_rates_zeroed, NPRW_counts_segs = _safe_extract_segments(
-    #     NPRW_rate, NPRW_counts, NPRW_t, ir_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS
-    # )
-    # _, _, UA_rel_t, UA_edges_ms, _, UA_rates_zeroed, UA_counts_segs = _safe_extract_segments(
-    #     UA_rate, UA_counts, UA_t, ir_ms, WIN_MS, MIN_TRIALS, NORMALIZE_FIRST_MS
-    # )
-
-    # # labels on NPRW event axis
-    # mask_nprw = _stims_mask_for_stream(ir_ms, NPRW_t, WIN_MS)
-    # labels_nprw = trial_labels[mask_nprw] if trial_labels is not None else None
-
-    # # labels on UA event axis
-    # mask_ua = _stims_mask_for_stream(ir_ms, UA_t, WIN_MS)
-    # labels_ua = trial_labels[mask_ua] if trial_labels is not None else None
-
-    # # A/B subsets for NPRW
-    # NPRW_med_A, NPRW_var_A, n_nprw_A, NPRW_rates_zeroed_A, NPRW_counts_segs_A = _subset_neural_from_zeroed(
-    #     NPRW_rates_zeroed, NPRW_counts_segs, labels_nprw, "A"
-    # )
-    # NPRW_med_B, NPRW_var_B, n_nprw_B, NPRW_rates_zeroed_B, NPRW_counts_segs_B = _subset_neural_from_zeroed(
-    #     NPRW_rates_zeroed, NPRW_counts_segs, labels_nprw, "B"
-    # )
-
-    # # A/B subsets for UA
-    # UA_med_A, UA_var_A, n_ua_A, UA_rates_zeroed_A, UA_counts_segs_A = _subset_neural_from_zeroed(
-    #     UA_rates_zeroed, UA_counts_segs, labels_ua, "A"
-    # )
-    # UA_med_B, UA_var_B, n_ua_B, UA_rates_zeroed_B, UA_counts_segs_B = _subset_neural_from_zeroed(
-    #     UA_rates_zeroed, UA_counts_segs, labels_ua, "B"
-    # )
-    
-
-    ua_peak_ms_dedup, ua_amps_ms_dedup = _dedup_peaks(ua_peak_ms, ua_peak_amps, DEDUP_MS, MAX_CLUSTER_MS)
-    nprw_peak_ms_dedup, nprw_amps_ms_dedup = _dedup_peaks(nprw_peak_ms, nprw_peak_amps, DEDUP_MS, MAX_CLUSTER_MS)
+    ua_peak_ms_dedup, ua_amps_ms_dedup = _dedup_peaks(ua_peak_ms, ua_peak_amps, UA_DEDUP_MS, MAX_CLUSTER_MS)
+    nprw_peak_ms_dedup, nprw_amps_ms_dedup = _dedup_peaks(nprw_peak_ms, nprw_peak_amps, NPRW_DEDUP_MS, MAX_CLUSTER_MS)
 
     ua_counts, ua_rel_t, ua_edges_ms = _bin_counts_around_events(
         ua_peak_ms_dedup, UA_BIN_MS, ir_ms, WIN_MS,
@@ -1435,35 +1440,39 @@ def extract_baseline_from_file(
         nprw_rate_hz, nprw_rel_t, normalize_first_ms=NORMALIZE_FIRST_MS
     )
 
-    # labels on NPRW event axis
-    mask_nprw = _stims_mask_for_stream(ir_ms, NPRW_t, WIN_MS)
-    labels_nprw = trial_labels[mask_nprw] if trial_labels is not None else None
+    # NPRW
+    mask_nprw = _get_valid_events(ir_ms, nprw_rec_ms, WIN_MS)
+    nprw_rates_valid  = nprw_rates_hz_baselined[mask_nprw]
+    nprw_counts_valid = nprw_counts[mask_nprw]
+    labels_nprw = trial_labels[mask_nprw]
 
-    # labels on UA event axis
-    mask_ua = _stims_mask_for_stream(ir_ms, UA_t, WIN_MS)
-    labels_ua = trial_labels[mask_ua] if trial_labels is not None else None
-    
     idxA_nprw = np.where(labels_nprw == "A")[0]
     idxB_nprw = np.where(labels_nprw == "B")[0]
 
-    idxA_ua = np.where(labels_ua == "A")[0]
-    idxB_ua = np.where(labels_ua == "B")[0]
-
-    # NPRW subsets
-    NPRW_rates_zeroed_A = nprw_rates_hz_baselined[idxA_nprw]
-    NPRW_rates_zeroed_B = nprw_rates_hz_baselined[idxB_nprw]
-    NPRW_counts_A = nprw_counts[idxA_nprw]
-    NPRW_counts_B = nprw_counts[idxB_nprw]
+    NPRW_rates_zeroed_A = nprw_rates_valid[idxA_nprw]
+    NPRW_rates_zeroed_B = nprw_rates_valid[idxB_nprw]
+    NPRW_counts_A       = nprw_counts_valid[idxA_nprw]
+    NPRW_counts_B       = nprw_counts_valid[idxB_nprw]
+    
     NPRW_med_A = np.nanmedian(NPRW_rates_zeroed_A, axis = 0)
     NPRW_med_B = np.nanmedian(NPRW_rates_zeroed_B, axis = 0)
     NPRW_var_A = np.nanvar(NPRW_rates_zeroed_A, axis = 0)
     NPRW_var_B = np.nanvar(NPRW_rates_zeroed_B, axis = 0)
+    
+    # UA
+    mask_ua = _get_valid_events(ir_ms, ua_rec_ms, WIN_MS)
+    ua_rates_valid  = ua_rate_hz_baselined[mask_ua]
+    ua_counts_valid = ua_counts[mask_ua]
+    labels_ua = trial_labels[mask_ua]
 
-    # UA subsets
-    UA_rates_zeroed_A = ua_rate_hz_baselined[idxA_ua]
-    UA_rates_zeroed_B = ua_rate_hz_baselined[idxB_ua]
-    UA_counts_A = ua_counts[idxA_ua]
-    UA_counts_B = ua_counts[idxB_ua]
+    idxA_ua = np.where(labels_ua == "A")[0]
+    idxB_ua = np.where(labels_ua == "B")[0]
+
+    UA_rates_zeroed_A = ua_rates_valid[idxA_ua]
+    UA_rates_zeroed_B = ua_rates_valid[idxB_ua]
+    UA_counts_A       = ua_counts_valid[idxA_ua]
+    UA_counts_B       = ua_counts_valid[idxB_ua]
+
     UA_med_A = np.nanmedian(UA_rates_zeroed_A, axis = 0)
     UA_med_B = np.nanmedian(UA_rates_zeroed_B, axis = 0)
     UA_var_A = np.nanvar(UA_rates_zeroed_A, axis = 0)
@@ -1590,7 +1599,7 @@ def _normalize_metadata(df_raw: pd.DataFrame) -> pd.DataFrame:
     df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
     return df
 
-def _find_baseline_groups(df_norm: pd.DataFrame) -> Dict[Tuple[str, str], np.ndarray]:
+def _find_baseline_groups(df_norm: pd.DataFrame) -> dict[tuple[str, str], np.ndarray]:
     """
     Return mapping (ua_port_norm, depth_mm_norm) -> row indices of baseline rows.
     This mirrors the grouping logic from your baseline IR script.
@@ -1621,7 +1630,7 @@ def _find_baseline_groups(df_norm: pd.DataFrame) -> Dict[Tuple[str, str], np.nda
     else:
         df_base["_depth_mm_norm"] = "n/a"
 
-    groups: Dict[Tuple[str, str], np.ndarray] = {}
+    groups: dict[tuple[str, str], np.ndarray] = {}
     for (port, depth), g in df_base.groupby(["_ua_port_norm", "_depth_mm_norm"], sort=True):
         key = (str(port), str(depth))
         groups[key] = g.index.to_numpy()
@@ -1646,7 +1655,7 @@ def main():
     print(f"[baseline] found {len(groups)} UA_port×Depth baseline groups.")
 
     # Build mapping BR -> (ua_port, depth) for quick lookup
-    br_to_group: Dict[int, Tuple[str, str]] = {}
+    br_to_group: dict[int, tuple[str, str]] = {}
     if "br_file" in df_meta.columns:
         br_col = pd.to_numeric(df_meta["br_file"], errors="coerce")
     else:
@@ -1661,7 +1670,7 @@ def main():
 
     # Accumulators: per (port, depth) and per target A/B
     # Each target entry will store lists of pieces that we later concatenate.
-    acc: Dict[Tuple[str, str], Dict[str, Dict[str, List[Any]]]] = {}
+    acc: dict[tuple[str, str], dict[str, dict[str, list[Any]]]] = {}
 
     for aligned_path in files:
         # load meta to know which BR this file corresponds to
@@ -1796,8 +1805,13 @@ def main():
             groupA["beh_cam0_vel_med_list"].append(beh["beh_cam0_vel_med_A"])
             groupA["beh_cam1_vel_med_list"].append(beh["beh_cam1_vel_med_A"])
             groupA["n_beh"] += beh["n_beh_A"]
-            groupA["ir_ms"].append(res["ir_ms"])  # raw IR centers
-            groupA["trial_labels"].append(res["trial_labels"])
+            lab = res["trial_labels"]
+            ir  = res["ir_ms"]
+
+            mA = (lab == "A")
+            groupA["ir_ms"].append(ir[mA])
+            groupA["trial_labels"].append(lab[mA])
+
 
             if groupA["beh_rel_t"] is None:
                 groupA["beh_rel_t"] = beh["rel_t_A"]
@@ -1851,8 +1865,12 @@ def main():
             groupB["beh_cam0_vel_med_list"].append(beh["beh_cam0_vel_med_B"])
             groupB["beh_cam1_vel_med_list"].append(beh["beh_cam1_vel_med_B"])
             groupB["n_beh"] += beh["n_beh_B"]
-            groupB["ir_ms"].append(res["ir_ms"])
-            groupB["trial_labels"].append(res["trial_labels"])
+            lab = res["trial_labels"]
+            ir  = res["ir_ms"]
+
+            mB = (lab == "B")
+            groupB["ir_ms"].append(ir[mB])          
+            groupB["trial_labels"].append(lab[mB])
             
             if groupB["beh_rel_t"] is None:
                 groupB["beh_rel_t"] = beh["rel_t_B"]
@@ -2027,9 +2045,7 @@ def main():
                 else np.zeros((0, 0), dtype="U1")
             )
             n_ts_state_trials = int(ts_segs.shape[0])
-            ts_state_rel_t = (
-                G["ts_state_rel_t"] if G["ts_state_rel_t"] is not None else np.zeros(0)
-            )
+            ts_state_rel_t = G["ts_state_rel_t"] if G["ts_state_rel_t"] is not None else np.zeros(0, float)
             if G["hr_segs"]:
                 hr_segs = np.concatenate(G["hr_segs"], axis=0)  # (n_hr, T)
                 n_hr = int(hr_segs.shape[0])

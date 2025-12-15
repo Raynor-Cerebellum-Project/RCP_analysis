@@ -7,10 +7,11 @@ from pathlib import Path
 
 BATCH_SCRIPTS = [
     # "align_dlc_two_cams_to_br.py",
+    # "align_VOG_to_br.py",
     # "NPRW_Intan_analysis_threshold.py",
     # "compute_br_to_intan_shifts.py",
     # "UA_BR_analysis_threshold.py",
-    "make_aligned_npz_and_mat.py",
+    # "make_aligned_npz_and_mat.py",
     "extract_peri_IR_and_concat_baseline.py",
     "extract_peri_stim.py",
     "plot_complete_shaded_BT.py",

@@ -197,4 +197,68 @@ grid off;
 hold off;
 ylim([80 220])
 fig = gcf;
-exportgraphics(fig,'stim_evoked_hr_change_32ch_130_BR25.svg');
+print(fig, 'stim_evoked_hr_change_32ch_130_BR25.emf', '-depsc','-painters'); %force it to vector format
+
+%%
+% Plot trigger-averaged eye movement
+fs = 1000; % Sampling frequency in Hz
+% stim_ms = [1000, 5000, 10000]; % Stimulation times in milliseconds
+stim_times = stim_ms; % Convert milliseconds to seconds
+duration_before_stim = .5; % Duration before the stimulus (in seconds)
+duration_after_stim = 1; % Duration after the stimulus (in seconds)
+
+% Create an example heart rate time series (replace this with your actual HR data)
+t = 0:1/fs:15; % Time vector (15 seconds)
+% heart_rate = 60 + 5 * sin(2 * pi * 0.1 * t) + randn(size(t)); % Example heart rate signal with noise
+h_VOG = vog_t_ms;
+% Convert the heart rate to samples (in the context of your time series)
+stim_samples = round(stim_times * fs); % Convert stimulus times to sample indices
+
+% Initialize a matrix to hold the segments
+segments = [];
+
+% Loop through each stimulus time
+for i = 1:length(stim_samples)
+    stim_idx = stim_samples(i);
+    
+    % Define the segment around the stimulus
+    start_idx = stim_idx - duration_before_stim * fs; % Start index
+    end_idx = stim_idx + duration_after_stim * fs;   % End index
+    
+    % Check for bounds and extract segment
+    if start_idx > 0 && end_idx <= length(h_VOG)
+        segments(:, i) = h_VOG(start_idx:end_idx); % Store the segment
+    end
+end
+
+% Remove any empty columns from segments
+segments(:, all(isnan(segments))) = []; 
+
+% Compute the mean across stimuli
+mean_trace = nanmean(segments, 2);
+
+% Create time vector for the segments
+segment_time_vector = linspace(-duration_before_stim, duration_after_stim, size(segments, 1));
+
+% Plot individual traces and the mean trace
+figure;
+hold on;
+% Plot individual traces
+for i = 1:size(segments, 2)
+    plot(segment_time_vector, segments(:, i), 'Color', [0.7 0.7 0.7]); % Light grey for individual traces
+end
+
+% Plot mean trace
+plot(segment_time_vector, mean_trace, 'b-', 'LineWidth', 2, 'DisplayName', 'Mean Trace');
+
+% Customization of the plot
+xlabel('Time (s)');
+ylabel('Heart Rate (BPM)');
+title('Stimulus-Triggered eye movement');
+legend('Individual traces', 'Mean Trace');
+grid off;
+hold off;
+ylim([80 220])
+fig = gcf;
+print(fig, 'stim_evoked_hr_change_32ch_130_BR25.emf', '-depsc','-painters'); %force it to vector format
+

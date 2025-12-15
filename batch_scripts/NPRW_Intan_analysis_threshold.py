@@ -6,7 +6,8 @@ from probeinterface import Probe
 import spikeinterface as si
 import spikeinterface.preprocessing as spre
 import spikeinterface.extractors as se
-from sklearn.decomposition import PCA
+from spikeinterface.sortingcomponents.peak_detection import detect_peaks
+
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 
@@ -100,12 +101,13 @@ def main():
         rcp.extract_intan_aux_streams_npz(sess=sess, out_dir=NPRW_AUX_DATA, aux_streams=AUX_STREAM)
         
         # stim streams TODO anyway to leverage that this is sparse?
-        _, stim_ext_arrays = rcp.extract_stim_npz(sess=sess, out_dir=NPRW_AUX_DATA, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
+        stim_ext_arrays = rcp.extract_stim_npz(sess=sess, out_dir=NPRW_AUX_DATA, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
         # stim_ext_arrays = rcp.load_stim_detection(NPRW_AUX_DATA / f"{sess.name}_Intan_streams" / "stim_stream.npz") - skip to speed up when debugging
 
         # Load Intan neural stream and reorder
         rec = se.read_split_intan_files(sess, mode="concatenate", stream_name=INTAN_STREAM, use_names_as_ids=True)
         rec = spre.unsigned_to_signed(rec) # Convert UInt16 to int16
+        
         rec_reordered = rcp.reorder_recording_to_geometry(rec, intan_probe_mapping)
         rec_reordered = rec_reordered.set_probe(nprw_probe)
         
@@ -118,7 +120,6 @@ def main():
         blank_windows = None
 
         rec_artif_removed = rec_ref  # fallback
-
         fs_nprw = rec_reordered.get_sampling_frequency()
         n_total = rec_reordered.get_num_samples()
         
@@ -142,14 +143,6 @@ def main():
                     ms_after=ms_after,
                     mode="zeros",
                 )
-                
-                pad_before_samp = int(round(ARTRMV_MS_BEFORE * fs_nprw / 1000.0))
-                pad_after_samp  = int(round(ARTRMV_TAIL_MS  * fs_nprw / 1000.0))
-
-                starts_exp = np.clip(starts_samp - pad_before_samp, 0, None)
-                ends_exp   = np.clip(ends_samp   + pad_after_samp,  0, n_total)
-
-                blank_windows = {0: np.column_stack([starts_exp, ends_exp])}  # seg 0
             else:
                 print("[WARN] all block spans invalid or empty; skipping artifact removal.")
         else:
@@ -160,47 +153,26 @@ def main():
         rcp.save_recording(rec_artif_removed, out_dir)
         print(f"[{sess.name}] saved interpolated -> {out_dir}")
 
-        del rec, rec_ref
+        del rec_reordered, rec_hp, rec_ref
         gc.collect()
         
-        rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms = rcp.threshold_mua_rates(
+        n_seg = rec_artif_removed.get_num_segments()
+        noise_levels = si.get_noise_levels(rec_artif_removed, method="mad", return_in_uV=False) # They didn't write return_in_uV in their documentation
+        
+        print(f"[INFO] Segments of recording: {n_seg}, Average noise level: {np.nanmean(noise_levels)}")
+        peaks = detect_peaks(
             rec_artif_removed,
+            method="by_channel_torch",
             detect_threshold=THRESH,
             peak_sign=PEAK_SIGN,
-            bin_ms=BIN_MS,
-            sigma_ms=SIGMA_MS,
+            noise_levels=noise_levels,
             n_jobs=PARAMS.parallel_jobs,
-            blank_windows_samples=blank_windows,
         )
-        
-        X = rate_hz.T  # (n_bins, n_channels)
-        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-
-        n_bins, n_ch = X.shape
-        n_comp = min(5, n_bins, n_ch)
-
-        total_var = np.var(X, axis=0).sum()
-        if n_comp >= 1 and total_var > 0.0:
-            pca = PCA(n_components=n_comp, random_state=0)
-            pcs = pca.fit_transform(X)  # (n_bins, n_comp)
-            explained_var = np.nan_to_num(
-                pca.explained_variance_ratio_, nan=0.0
-            ).astype(np.float32)
-            pcs_T = pcs.T.astype(np.float32)  # (n_comp, n_bins)
-        else:
-            pcs_T = np.empty((0, n_bins), dtype=np.float32)
-            explained_var = np.empty((0,), dtype=np.float32)
         
         out_npz = NPRW_CKPT_ROOT / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
 
         save = dict(
-            rate_hz=rate_hz,
-            t_ms=t_cat_ms,
-            counts=counts_cat,
             peaks=peaks,
-            peak_t_ms=peak_t_ms,
-            pcs=pcs_T,
-            explained_var=explained_var,
             meta=dict(
                 detect_threshold=THRESH,
                 peak_sign=PEAK_SIGN,
@@ -209,13 +181,18 @@ def main():
                 fs=fs_nprw,
                 n_channels=rec_artif_removed.get_num_channels(),
                 session=str(sess.name),
+                n_samples = rec.get_total_samples(),
+                n_segs = rec.get_num_segments(),
+                rec_dur = rec.get_total_duration(),
+                rec_start_ms = rec.get_start_time()*1000,
+                rec_end_ms = rec.get_end_time()*1000,
             ))
         
         np.savez_compressed(out_npz, **save)
-        print(f"[{sess.name}] saved rate matrix + PCA -> {out_npz}")
+        print(f"[{sess.name}] saved rate matrix -> {out_npz}")
 
         # cleanup to keep memory stable on long batches
-        del rec_artif_removed, rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms
+        del rec, rec_artif_removed, peaks
         gc.collect()
 
 if __name__ == "__main__":

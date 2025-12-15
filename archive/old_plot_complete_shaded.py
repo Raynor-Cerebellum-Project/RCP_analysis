@@ -1,12 +1,10 @@
 from pathlib import Path
-from typing import Tuple, Optional
-from scipy.signal import filtfilt
 from types import SimpleNamespace
-import numpy as np
-import re
-from probeinterface import Probe
+import numpy as np, re
 from scipy.io import loadmat
+from scipy.signal import filtfilt
 
+from probeinterface import Probe
 import RCP_analysis as rcp
 
 import matplotlib
@@ -165,14 +163,14 @@ _imp_pat_elecnum = re.compile(
 def _order_rows_by_region_then_peak(
     ua_mat: np.ndarray,
     t_vec: np.ndarray,
-    ids_1based: Optional[np.ndarray],
+    ids_1based: np.ndarray | None,
     *,
     region_order=(0, 1, 2, 3),   # SMA, DPM, M1 inf, M1 sup
     pre_only: bool = True,       # search t<0 (or <=0 if include_zero=True)
     include_zero: bool = True,
     peak_mode: str = "max",      # "max" | "min" | "abs"
     earliest_at_top: bool = True # <<< NEW: place earliest rows visually at top
-) -> tuple[np.ndarray, Optional[np.ndarray]]:
+) -> tuple[np.ndarray, np.ndarray | None]:
     """
     Sort rows within each region by earliest *time* of peak in the selected window.
     Tie-breaker: larger peak magnitude (by peak_mode).
@@ -309,11 +307,11 @@ def load_impedances_from_textedit_dump(path_like: str | Path) -> dict[int, float
     return out
 
 def _apply_relative_offsets_by_ref(
-    lines: Optional[np.ndarray],
+    lines: np.ndarray | None,
     labels: list[str],
     keypoints=KEYPOINTS_ORDER,
-    ref_kp: Optional[str] = None,
-) -> Optional[np.ndarray]:
+    ref_kp: str | None = None,
+) -> np.ndarray | None:
     """
     For position lines (K,T), add a constant offset per trace so that:
       reference_kp_{x,y} → offset 0,
@@ -329,7 +327,7 @@ def _apply_relative_offsets_by_ref(
     L = lines.copy()
     lab_lc = [str(s).lower() for s in labels]
 
-    def find_idx(sought: str) -> Optional[int]:
+    def find_idx(sought: str) -> int | None:
         soughtrl = sought.lower()
         for i, s in enumerate(lab_lc):
             if s == soughtrl or s.endswith(soughtrl):
@@ -439,7 +437,7 @@ def _ua_region_code_from_elec(e: int) -> int:
     return 1_000_000
 
 def _simple_beh_labels(names: list[str],
-                       keypoints: Tuple[str, ...] = KEYPOINTS_ORDER) -> list[str]:
+                       keypoints: tuple[str, ...] = KEYPOINTS_ORDER) -> list[str]:
     """
     Map raw DLC-style names like
       'DLC_Resnet50_..._wrist_x'  -> 'wrist_x'

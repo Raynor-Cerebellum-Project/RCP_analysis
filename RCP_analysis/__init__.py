@@ -18,7 +18,6 @@ from .python.functions.utils import (
     load_stim_detection, 
     save_recording,
     stim_npz_path_from_br_idx,
-    load_shift_row_by_br_idx,
     butter_lowpass_pos_and_vel,
     butter_lowpass_pos_and_vel_3d,
     
@@ -47,7 +46,6 @@ from .python.functions.intan_preproc import (
 )    
 # blackrock / UA
 from .python.functions.br_preproc import (
-    threshold_mua_rates,
     list_br_sessions,
     ua_excel_path,
     load_UA_mapping_from_excel,
@@ -109,14 +107,13 @@ __all__ = [
     "butter_lowpass_pos_and_vel_3d",
     
     # BR/UA
-    "threshold_mua_rates",
     "list_br_sessions",
     "ua_excel_path",
-    "load_UA_mapping_from_excel",
-    "apply_ua_mapping_with_regions",
     "extract_br_aux_streams_npz",
+    "apply_ua_mapping_with_regions",
+    "load_UA_mapping_from_excel",
+    
     "stim_npz_path_from_br_idx",
-    "load_shift_row_by_br_idx"
 
     # Intan
     "extract_stim_npz",

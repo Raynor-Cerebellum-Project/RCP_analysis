@@ -5,6 +5,11 @@ import re
 from matplotlib import pyplot as plt
 from probeinterface import Probe
 from scipy.io import loadmat
+
+import matplotlib
+matplotlib.use("Agg")
+matplotlib.rcParams["svg.fonttype"] = "none"
+
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 
@@ -63,7 +68,7 @@ GEOM_PATH = (
 )
 
 # ---------- kinematics ----------
-KEYPOINTS_ORDER: Tuple[str, ...] = tuple(PARAMS.kinematics.get("keypoints"))
+KEYPOINTS_ORDER: tuple[str, ...] = tuple(PARAMS.kinematics.get("keypoints"))
 
 _imp_pat_elecnum = re.compile(
     r"\belec\s*\d+\s*-\s*(\d{1,3})\s+([0-9]+(?:\.[0-9]+)?)\s*(k?ohms?|kΩ|ohms?|Ω)\b",
@@ -142,7 +147,7 @@ def load_impedances_from_textedit_dump(path_like: str | Path) -> dict[int, float
         out[elec] = _unit_to_kohm(val, unit)
     return out
 
-def _simple_beh_labels(names, keypoints: Tuple[str, ...] = KEYPOINTS_ORDER):
+def _simple_beh_labels(names, keypoints: tuple[str, ...] = KEYPOINTS_ORDER):
     """
     Map raw DLC-style names like
       'DLC_Resnet50_..._wrist_x'  -> 'wrist_x'

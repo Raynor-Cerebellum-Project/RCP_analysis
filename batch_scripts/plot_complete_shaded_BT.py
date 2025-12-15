@@ -52,7 +52,7 @@ PROBE_WIDTH_RATIO    = 0.35
 # Base paths from config_loading
 
 # Figures
-FIG_ROOT   = OUT_BASE / "figures/shaded_BT"; FIG_ROOT.mkdir(parents=True, exist_ok=True)
+FIG_ROOT   = OUT_BASE / "figures/shaded_BT_png"; FIG_ROOT.mkdir(parents=True, exist_ok=True)
 FIG = SimpleNamespace(
     peri_posvel_median  = FIG_ROOT / "median_fr_plots",
     peri_posvel_meanMWT = FIG_ROOT / "mean_MWT_plots",
@@ -64,6 +64,14 @@ FIG.peri_var_meanMWT   = FIG_ROOT / "variance_MWT_plots"; FIG.peri_var_meanMWT.m
 FIG.peri_counts_meanMWT = FIG_ROOT / "median_count_MWT_plots"; FIG.peri_counts_meanMWT.mkdir(parents=True, exist_ok=True)
 FIG.peri_single_trials = FIG_ROOT / "single_trial_fr_plots"; FIG.peri_single_trials.mkdir(parents=True, exist_ok=True)
 
+<<<<<<< HEAD
+=======
+# Peri-stim checkpoints
+PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStim"
+
+# NPC aux / stim
+NPRW_AUX_DATA = OUT_BASE / "aux_data" / "NPRW"
+>>>>>>> a1d0101aa220855dd9325847b0fefab40a1190ca
 
 # NPRW mapping / geometry
 GEOM_PATH = (
@@ -80,22 +88,29 @@ KEYPOINTS_ORDER = tuple(PARAMS.kinematics.get("keypoints"))
 def _compute_target_means_for_cam(
     cam_pos_segs: np.ndarray,
     cam_names: list[str],
-    ts_state_segs: np.ndarray,
+    cam_rel_t: np.ndarray,          # (T_pos,)
+    ts_state_segs: np.ndarray,      # (n_trials, T_state)
+    ts_state_rel_t: np.ndarray,     # (T_state,)
     target_suffix: str,
 ):
     """
-    cam_pos_segs : (n_trials, n_kps, T_pos)
-    cam_names    : length n_kps, e.g. ["index_x", ..., "ta_x", "ta_y", "tb_x", "tb_y"]
-    ts_state_segs: (n_trials, T_state)
-    target_suffix: "ta" or "tb"
+    Uses ts_state == 1 as the 'on' state and resamples ts_state onto cam_rel_t
+    using nearest-neighbor in time.
 
     Returns
     -------
-    idx_mask : boolean mask over cam_names selecting target_x/target_y
-    mean_xy  : (2,) global mean [x, y] when ts_state == 1 (NaNs ignored)
-    mean_xy_per_trial : (n_trials, 2) per-trial [x, y] means when ts_state == 1
+    idx_mask : (n_kps,) bool
+    mean_xy  : (2,) global mean [x, y] when ts_state==1
+    mean_xy_per_trial : (n_trials, 2) per-trial mean [x, y] when ts_state==1
     """
-    if cam_pos_segs is None or cam_pos_segs.size == 0 or not cam_names:
+    if cam_pos_segs is None or np.size(cam_pos_segs) == 0 or cam_names is None or len(np.atleast_1d(cam_names)) == 0:
+        return None, None, None
+    if ts_state_segs is None or ts_state_segs.size == 0:
+        return None, None, None
+
+    cam_rel_t = np.asarray(cam_rel_t, float).ravel()
+    ts_state_rel_t = np.asarray(ts_state_rel_t, float).ravel()
+    if cam_rel_t.size == 0 or ts_state_rel_t.size == 0:
         return None, None, None
 
     cam_names_arr = np.asarray(cam_names)
@@ -104,33 +119,43 @@ def _compute_target_means_for_cam(
         return idx_mask, None, None
 
     # (n_trials, 2, T_pos)
-    target_pos = cam_pos_segs[:, idx_mask, :]
+    target_pos = np.asarray(cam_pos_segs, float)[:, idx_mask, :]
+    n_trials, _, T_pos = target_pos.shape
 
-    ts_state = ts_state_segs  # (n_trials, T_state)
-    state_on = (ts_state == 1)  # bool (n_trials, T_state)
-
-    # match time resolution
-    if target_pos.shape[2] == 2 * state_on.shape[1]:
-        state_on_up = np.repeat(state_on, 2, axis=1)  # (n_trials, T_pos)
-    elif target_pos.shape[2] == state_on.shape[1]:
-        state_on_up = state_on
-    else:
+    ts_state = np.asarray(ts_state_segs)
+    if ts_state.ndim != 2:
+        raise ValueError(f"ts_state_segs must be 2D (n_trials, T_state), got {ts_state.shape}")
+    if ts_state.shape[0] != n_trials:
         raise ValueError(
-            f"Time dims don't match: target_pos T={target_pos.shape[2]}, "
-            f"ts_state T={state_on.shape[1]}"
+            f"Trial mismatch: target_pos has {n_trials} trials but ts_state has {ts_state.shape[0]}"
         )
 
-    # Broadcast mask: (n_trials, T_pos) -> (n_trials, 1, T_pos)
-    mask = state_on_up[:, None, :]  # (n_trials, 1, T_pos)
+    # On-state on ts grid
+    state_on_ts = (ts_state == 1)  # (n_trials, T_state)
 
-    # Mask positions; non-1 states become NaN
-    pos_masked = np.where(mask, target_pos, np.nan)  # (n_trials, 2, T_pos)
+    # If grids already match, no resampling needed
+    if (T_pos == ts_state_rel_t.size) and np.allclose(cam_rel_t, ts_state_rel_t, atol=1e-6, rtol=0):
+        state_on_cam = state_on_ts
+    else:
+        # nearest-neighbor mapping from cam_rel_t -> ts_state_rel_t
+        idx = np.searchsorted(ts_state_rel_t, cam_rel_t, side="left")
+        idx = np.clip(idx, 0, ts_state_rel_t.size - 1)
 
-    # Global mean across trials and time → (2,)
-    mean_xy = np.nanmean(pos_masked, axis=(0, 2))
+        left = np.clip(idx - 1, 0, ts_state_rel_t.size - 1)
+        choose_left = (
+            np.abs(cam_rel_t - ts_state_rel_t[left])
+            <= np.abs(ts_state_rel_t[idx] - cam_rel_t)
+        )
+        idx = np.where(choose_left, left, idx)
 
-    # Per-trial means → (n_trials, 2)
-    mean_xy_per_trial = np.nanmean(pos_masked, axis=2)
+        state_on_cam = state_on_ts[:, idx]  # (n_trials, T_pos)
+
+    # Broadcast mask and apply
+    mask = state_on_cam[:, None, :]                 # (n_trials, 1, T_pos)
+    pos_masked = np.where(mask, target_pos, np.nan) # (n_trials, 2, T_pos)
+
+    mean_xy = np.nanmean(pos_masked, axis=(0, 2))      # (2,)
+    mean_xy_per_trial = np.nanmean(pos_masked, axis=2) # (n_trials, 2)
 
     return idx_mask, mean_xy, mean_xy_per_trial
 
@@ -144,7 +169,7 @@ def _strip_cam_prefix(n: str) -> str:
     return n
 
 def _simple_beh_labels(names: list[str],
-                       keypoints: Tuple[str, ...] = KEYPOINTS_ORDER) -> list[str]:
+                       keypoints: tuple[str, ...] = KEYPOINTS_ORDER) -> list[str]:
     """
     Map raw DLC-style names like:
       'DLC_Resnet50_..._wrist_x'  -> 'Wrist X'
@@ -278,6 +303,7 @@ def main():
         cam1_names   = raw_c1.tolist() if isinstance(raw_c1, np.ndarray) else raw_c1
 
         ts_state_segs = peri_stim_npz["ts_state_segs"]  # (n_trials, T_state)
+        ts_state_rel_t = peri_stim_npz["ts_state_rel_t"]  # (n_trials, T_state)
 
         # Decide which target to use based on folder name
         parent_name  = peri_stim_npz_loc.parent.name  # "Target_A" or "Target_B"
@@ -289,10 +315,10 @@ def main():
             target_suffix = ""
             
         idx0_mask, cam0_mean_xy, cam0_mean_xy_per_trial = _compute_target_means_for_cam(
-            cam0_pos_segs, cam0_names, ts_state_segs, target_suffix
+            cam0_pos_segs, cam0_names, beh_rel_t, ts_state_segs, ts_state_rel_t, target_suffix
         )
         idx1_mask, cam1_mean_xy, cam1_mean_xy_per_trial = _compute_target_means_for_cam(
-            cam1_pos_segs, cam1_names, ts_state_segs, target_suffix
+            cam1_pos_segs, cam1_names, beh_rel_t, ts_state_segs, ts_state_rel_t, target_suffix
         )
 
         target_pos_cam0 = cam0_mean_xy if cam0_mean_xy is not None else None
@@ -362,7 +388,7 @@ def main():
             file_name = f"{peri_stim_npz_loc.name}"
         else:
             file_name = f"Cond_{br_idx:03d}"
-        out_path_1 = out_dir_1_parent / f"{file_name}__median_ALL.svg"
+        out_path_1 = out_dir_1_parent / f"{file_name}__median_ALL.png"
 
         rcp.stacked_heatmaps_plus_behv(
             NPRW_med, UA_med,
@@ -425,7 +451,7 @@ def main():
         # -----------------------------------------------------------------
         out_dir_1b_parent = FIG.peri_var_median / target_label
         out_dir_1b_parent.mkdir(parents=True, exist_ok=True)
-        out_path_1b = out_dir_1b_parent / f"{file_name}__var_ALL.svg"
+        out_path_1b = out_dir_1b_parent / f"{file_name}__var_ALL.png"
 
         base_neural_var_title = f"Neural Variance (across {n_nprw} events)"
 
@@ -491,7 +517,7 @@ def main():
         # -----------------------------------------------------------------
         out_dir_2_parent = FIG.peri_posvel_meanMWT / target_label
         out_dir_2_parent.mkdir(parents=True, exist_ok=True)
-        out_path_2 = out_dir_2_parent / f"{file_name}__mean_MWT.svg"
+        out_path_2 = out_dir_2_parent / f"{file_name}__mean_MWT.png"
 
         # Select MWT indices
         idx_subset = _get_subset_indices(beh_labels_display, mode="MWT")
@@ -609,7 +635,7 @@ def main():
         # -----------------------------------------------------------------
         out_dir_2b_parent = FIG.peri_var_meanMWT / target_label
         out_dir_2b_parent.mkdir(parents=True, exist_ok=True)
-        out_path_2b = out_dir_2b_parent / f"{file_name}__var_MWT.svg"
+        out_path_2b = out_dir_2b_parent / f"{file_name}__var_MWT.png"
 
         title_MWT_neural_var = f"Neural Variance (across {n_nprw} events)"
 
@@ -674,7 +700,7 @@ def main():
         # -----------------------------------------------------------------
         out_dir_counts_MWT_parent = FIG.peri_counts_meanMWT / target_label
         out_dir_counts_MWT_parent.mkdir(parents=True, exist_ok=True)
-        out_path_counts_MWT = out_dir_counts_MWT_parent / f"{file_name}__counts_MWT.svg"
+        out_path_counts_MWT = out_dir_counts_MWT_parent / f"{file_name}__counts_MWT.png"
 
         title_MWT_neural_counts = (
             f"Median spike counts per bin (across {n_nprw} events)"
@@ -811,7 +837,7 @@ def main():
                 else:
                     base_fn = f"Cond_{br_idx:03d}"
 
-                out_path_single = single_dir / f"{base_fn}__trial_{i_trial:02d}_MWT.svg"
+                out_path_single = single_dir / f"{base_fn}__trial_{i_trial:02d}_MWT.png"
 
                 rcp.stacked_heatmaps_plus_behv(
                     nprw_single,

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, Tuple
+from typing import Any
 from pathlib import Path
 import yaml
 
@@ -8,16 +8,16 @@ import yaml
 class experimentParams:
     # required-ish (via YAML `paths`)
     data_root: str
-    location: Optional[str] = None
-    session: Optional[str]  = None
+    location: str | None
+    session: str | None
 
     # file locations (must be RELATIVE, if present)
-    geom_mat_rel: Optional[str] = None
+    geom_mat_rel: str | None
 
     # processing + per-probe/session config
     highpass_hz: float = 300.0
-    probes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    sessions: Dict[str, Any] = field(default_factory=dict)
+    probes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    sessions: dict[str, Any] = field(default_factory=dict)
 
     # runtime / chunking
     parallel_jobs: int = 8
@@ -25,11 +25,11 @@ class experimentParams:
     chunk: str = "1s"
 
     # rate estimation
-    NPRW_rate_est: Dict[str, Any] = field(default_factory=dict)
-    UA_rate_est: Dict[str, Any] = field(default_factory=dict)
+    NPRW_rate_est: dict[str, Any] = field(default_factory=dict)
+    UA_rate_est: dict[str, Any] = field(default_factory=dict)
 
     # kinematics
-    kinematics: Dict[str, Any] = field(default_factory=dict)
+    kinematics: dict[str, Any] = field(default_factory=dict)
 
 def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams:
     cfg = yaml.safe_load(yaml_path.read_text())
@@ -77,7 +77,7 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
     )
     return params
 
-def resolve_probe_geom_path(params, repo_root: Path, session_key: Optional[str] = None) -> Path:
+def resolve_probe_geom_path(params, repo_root: Path, session_key: str | None) -> Path:
     """
     Resolve the geometry/mapping .mat path.
 
