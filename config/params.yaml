@@ -1,5 +1,5 @@
 paths:
-  data_root: "/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis"
+  data_root: "//10.16.59.34/CullenLab_Server/Current Project Databases - NHP/2025 Cerebellum prosthesis"
   location: "Nike/20251203_NRR_RW011"
   session: "NRR_RW011"
   geom_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"

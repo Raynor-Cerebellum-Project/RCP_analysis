@@ -9,8 +9,6 @@ from matplotlib import cm
 from probeinterface.plotting import plot_probe
 from probeinterface import Probe
 
-# ---- knobs ----
-
 # ---- knobs: UA vmin/vmax per group/label ----
 UA_VRANGE_BY_LABEL = {
     "M1i+M1s": (-30, 125),
