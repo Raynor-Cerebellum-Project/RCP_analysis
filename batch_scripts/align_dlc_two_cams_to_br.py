@@ -1,7 +1,6 @@
-from pathlib import Path
-import pandas as pd
-import sys
 import RCP_analysis as rcp
+from RCP_analysis.python.functions.config_loading import *
+
 """ 
     This script aligns two camera perspectives to the Blackrock recording. It scans through all paired cam-0 and cam-1 .csv files and outputs aligned timing based on frame mappings identified from OCR_frame_mapping_BT_edit.py script.
     The alignment is based on the camera sync pulse, may need to double-check which channel the sync pulse is at.
@@ -11,19 +10,10 @@ import RCP_analysis as rcp
     Output:
         Aligned .csv file for both perspective
 """
+
 # ---------- Config ----------
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
-OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
-BR_ROOT = SESSION_LOC / "Blackrock"; BR_ROOT.mkdir(parents=True, exist_ok=True)
-VIDEO_ROOT = SESSION_LOC / "Video"; VIDEO_ROOT.mkdir(parents=True, exist_ok=True)
-BEHV_AUX_DATA   = OUT_BASE / "aux_data" / "Behavior"
-BEHV_CKPT_ROOT = OUT_BASE / "checkpoints" / "Behavior"; BEHV_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
-UA_CFG = PARAMS.probes.get("UA")
-CAMERA_SYNC_CH = int(UA_CFG.get("camera_sync_ch", 134))
+# Config loaded from config_loading
+
 
 def main():
     print(f"[scan] VIDEO_ROOT={VIDEO_ROOT}")

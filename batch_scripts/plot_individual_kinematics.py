@@ -1,12 +1,8 @@
-from pathlib import Path
 from typing import Tuple, Optional, List
 from types import SimpleNamespace
 import math
-import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import RCP_analysis as rcp
+from RCP_analysis.python.functions.config_loading import *
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -24,16 +20,10 @@ TRACES_TO_PLOT = ["Wrist X", "Wrist Y", "Middle X", "Middle Y"]
 # ---------------------------------------------------------------------
 # ROOTS / PARAMS
 # ---------------------------------------------------------------------
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-
-SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
-OUT_BASE    = SESSION_LOC / "results"
+# Base paths loaded from config_loading
 FIG_ROOT    = OUT_BASE / "figures" / "individual_trials"
 FIG_ROOT.mkdir(parents=True, exist_ok=True)
 
-PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStim"
-KEYPOINTS_ORDER = tuple(PARAMS.kinematics.get("keypoints"))
 
 # ---------------------------------------------------------------------
 # HELPERS

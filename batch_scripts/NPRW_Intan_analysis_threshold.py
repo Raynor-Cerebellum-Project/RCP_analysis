@@ -1,6 +1,4 @@
-from pathlib import Path
 import gc
-import numpy as np
 from scipy.io import loadmat
 
 # SpikeInterface
@@ -10,6 +8,7 @@ import spikeinterface.preprocessing as spre
 import spikeinterface.extractors as se
 from sklearn.decomposition import PCA
 import RCP_analysis as rcp
+from RCP_analysis.python.functions.config_loading import *
 
 """
     This script preprocesses the Intan data.
@@ -21,14 +20,9 @@ import RCP_analysis as rcp
 """
 
 # ---------- Config ----------
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
-OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
-INTAN_ROOT = SESSION_LOC / "Intan"; INTAN_ROOT.mkdir(parents=True, exist_ok=True)
+# Base paths from config_loading
 GEOM_PATH = rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT)
-NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
-NPRW_AUX_DATA   = OUT_BASE / "aux_data" / "NPRW"; NPRW_AUX_DATA.mkdir(parents=True, exist_ok=True)
+
 
 # Intan streams
 NPRW_CFG = PARAMS.probes.get("NPRW")

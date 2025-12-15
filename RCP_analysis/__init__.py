@@ -3,6 +3,7 @@ from .python.functions.params_loading import (
     load_experiment_params,
     resolve_probe_geom_path,
 )
+from .python.functions import config_loading
 # utils
 from .python.functions.utils import (
     find_per_cond_inputs,
@@ -70,6 +71,7 @@ __all__ = [
     # params
     "load_experiment_params",
     "resolve_probe_geom_path",
+    "config_loading",
 
     # utils
     "find_per_cond_inputs", 

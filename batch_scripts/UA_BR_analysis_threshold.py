@@ -1,12 +1,11 @@
-from pathlib import Path
 import gc, csv
-import numpy as np
 from sklearn.decomposition import PCA
 
 import spikeinterface as si
 import spikeinterface.preprocessing as spre
 import spikeinterface.extractors as se
 import RCP_analysis as rcp
+from RCP_analysis.python.functions.config_loading import *
 
 """ 
     This script preprocesses the Blackrock data.
@@ -18,15 +17,8 @@ import RCP_analysis as rcp
 """
 
 # ---------- Config ----------
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
-OUT_BASE  = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
-BR_ROOT = SESSION_LOC / "Blackrock"; BR_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_CSV  = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
+# Base paths from config_loading
 SHIFT_CSV = METADATA_ROOT / "br_to_intan_shifts.csv"
-
 BR_SESSION_FOLDERS = rcp.list_br_sessions(BR_ROOT)
 
 RATES = PARAMS.UA_rate_est
@@ -55,10 +47,8 @@ TOUCHSCREEN_CH = int(UA_CFG.get("touchscreen_ch", 139))
 TOUCHSCREEN_THRES_A = 1.0e6
 TOUCHSCREEN_THRES_B = 3.0e6
 
-UA_AUX_DATA = OUT_BASE / "aux_data" / "UA"
-NPRW_AUX_DATA = OUT_BASE / "aux_data" / "NPRW"
-UA_CKPT_OUT = OUT_BASE / "checkpoints" / "UA"; UA_CKPT_OUT.mkdir(parents=True, exist_ok=True)
-NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
+UA_CKPT_OUT = UA_CKPT_ROOT
+
 
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)

@@ -1,12 +1,11 @@
-from pathlib import Path
 from typing import Dict, Tuple, Optional, Any, List
 import json, re, csv
-import numpy as np
 import pandas as pd
 from scipy.io import savemat
 import spikeinterface.extractors as se
 import spikeinterface.preprocessing as spre
 import RCP_analysis as rcp
+from RCP_analysis.python.functions.config_loading import *
 
 """
 Baseline peristim extraction:
@@ -17,16 +16,8 @@ Baseline peristim extraction:
 """
 
 # config
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
-OUT_BASE = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
-ALIGNED_ROOT = OUT_BASE / "checkpoints" / "Aligned"
-METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_CSV = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
-PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStim"; PERI_ROOT.mkdir(parents=True, exist_ok=True)
-INTAN_ROOT   = SESSION_LOC / "Intan"; INTAN_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_ROOT = SESSION_LOC / "Metadata"; METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+# Base paths from config_loading
+ALIGNED_ROOT = ALIGNED_CKPT_ROOT
 SHIFTS_CSV   = METADATA_ROOT / "br_to_intan_shifts.csv"
 
 NPRW_RATES = PARAMS.NPRW_rate_est

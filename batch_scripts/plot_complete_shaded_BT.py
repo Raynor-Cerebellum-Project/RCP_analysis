@@ -1,16 +1,14 @@
-from pathlib import Path
 from typing import Tuple, Optional
 from types import SimpleNamespace
 
-import numpy as np
 from scipy.io import loadmat
 from probeinterface import Probe
 
-import matplotlib
-matplotlib.use("Agg")
-matplotlib.rcParams["svg.fonttype"] = "none"
-
 import RCP_analysis as rcp
+from RCP_analysis.python.functions.config_loading import *
+
+# Local plotting settings
+matplotlib.rcParams["svg.fonttype"] = "none"
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -51,11 +49,7 @@ PROBE_WIDTH_RATIO    = 0.35
 # ---------------------------------------------------------------------
 # ROOTS / PARAMS
 # ---------------------------------------------------------------------
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
-
-SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
-OUT_BASE    = SESSION_LOC / "results"; OUT_BASE.mkdir(parents=True, exist_ok=True)
+# Base paths from config_loading
 
 # Figures
 FIG_ROOT   = OUT_BASE / "figures/shaded_BT"; FIG_ROOT.mkdir(parents=True, exist_ok=True)
@@ -70,12 +64,6 @@ FIG.peri_var_meanMWT   = FIG_ROOT / "variance_MWT_plots"; FIG.peri_var_meanMWT.m
 FIG.peri_counts_meanMWT = FIG_ROOT / "median_count_MWT_plots"; FIG.peri_counts_meanMWT.mkdir(parents=True, exist_ok=True)
 FIG.peri_single_trials = FIG_ROOT / "single_trial_fr_plots"; FIG.peri_single_trials.mkdir(parents=True, exist_ok=True)
 
-
-# Peri-stim checkpoints
-PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStim"
-
-# NPC aux / stim
-NPRW_AUX_DATA = OUT_BASE / "aux_data" / "NPRW"
 
 # NPRW mapping / geometry
 GEOM_PATH = (
