@@ -1,12 +1,12 @@
 from pathlib import Path
 import gc, csv
 import numpy as np
-from sklearn.decomposition import PCA
 
 import spikeinterface as si
 import spikeinterface.preprocessing as spre
 import spikeinterface.extractors as se
 import RCP_analysis as rcp
+from spikeinterface.sortingcomponents.peak_detection import detect_peaks
 
 """ 
     This script preprocesses the Blackrock data.
@@ -37,8 +37,6 @@ PEAK_SIGN  = RATES.get("peak_sign")
 ARTRMV_MS_BEFORE = float(RATES.get("remove_ms_before", 5.0))
 ARTRMV_TAIL_MS   = float(RATES.get("remove_tail_ms_after", 5.0))
 
-FS_NS2 = 1000.0
-
 XLS = rcp.ua_excel_path(REPO_ROOT, PARAMS.probes)
 UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS else None
 if UA_MAP is None:
@@ -62,19 +60,6 @@ NPRW_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW"
 
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
-
-def _anchor_from_shifts_row(row: dict) -> tuple[int, float]:
-    """
-    From a shifts row, return (anchor_sample_intan, fs_intan).
-    If anchor_sample is missing, derive from anchor_ms.
-    """
-    fs_intan = float(row.get("fs_intan", 30000.0))
-    if row.get("anchor_sample", "") != "":
-        return int(row["anchor_sample"]), fs_intan
-    if row.get("anchor_ms", "") != "":
-        anchor_ms = float(row["anchor_ms"])
-        return int(round(anchor_ms * 1e-3 * fs_intan)), fs_intan
-    return 0, fs_intan
 
 # For triangle pulse corrected stuff, save for later
 def load_anchor_for_session(out_base: Path, session: str) -> tuple[int, float]:
@@ -106,29 +91,13 @@ def main():
     print("Found session folders:", len(sess_folders))
     for sess in (sess_folders[:]): # Can tweak here to isolate sessions 
         print(f"=== Session: {sess.name} ===")
-        _, touchscreen_sig, hr_sig, vog_sig = rcp.extract_br_aux_streams_npz(sess, UA_AUX_DATA, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH, TOUCHSCREEN_CH, HR_CH, VOG_CH) # Extract sync pulses and stuff
+        touchscreen_sig, hr_sig, vog_sig, meta_ns5, meta_ns2 = rcp.extract_br_aux_streams_npz(sess, UA_AUX_DATA, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH, TOUCHSCREEN_CH, HR_CH, VOG_CH) # Extract sync pulses and stuff
+        fs_hr = meta_ns2["fs_hr"]
+        fs_vog = meta_ns2["fs_vog"]
+        fs_ts = meta_ns2["fs_ts"]
+        
         rec_ns6 = se.read_blackrock(sess, stream_name = 'nsx6', all_annotations=True) # Load neural data
-        
-        # Threshold to get touchscreen state
-        ts_state_num = np.zeros(0, dtype=np.int8)
-        ts_state_char = np.full(0, 'N', dtype='U1')
-
-        if touchscreen_sig is not None:
-            touchscreen_sig = np.asarray(touchscreen_sig, float)
-            ts_state_num = np.zeros_like(touchscreen_sig, dtype=np.int8)
-            ts_state_char = np.full(touchscreen_sig.shape, 'N', dtype='U1')
-
-            ts_state_num[touchscreen_sig >= TOUCHSCREEN_THRES_A] = 1
-            ts_state_num[touchscreen_sig >= TOUCHSCREEN_THRES_B] = 2
-
-            ts_state_char[ts_state_num == 1] = 'A'
-            ts_state_char[ts_state_num == 2] = 'B'
-            print("Unique touchscreen states:", np.unique(ts_state_num))
-        else:
-            print("[touchscreen] No touchscreen signal; leaving ts_state_* empty.")
-        
-        br_idx = int(sess.name.split('_')[-1]) # resolve br index
-        n_channels = rec_ns6.get_num_channels()
+        br_idx = int(sess.name.split('_')[-1]) # reso
         
         rec_ns6, idx_rows, ua_elec, ua_nsp, ua_region, ua_region_names, ua_port = rcp.apply_ua_mapping_with_regions(rec_ns6, UA_MAP, br_idx, METADATA_CSV)
         UA_probe = ua_region.copy()
@@ -139,8 +108,6 @@ def main():
 
         # artifact windows
         block_bounds = np.empty((0, 2), dtype=int)
-        shifts_row = None
-        blank_windows = None
         
         # default to cleaned=ref unless we actually remove artifact
         rec_artif_removed = rec_hp
@@ -152,7 +119,8 @@ def main():
             # 1) find Intan session via metadata + NPRW rates
             stim_npz_path, intan_session_name = rcp.stim_npz_path_from_br_idx(br_idx, METADATA_CSV, NPRW_AUX_DATA)
             # 2) and fetch the shift row for the same BR index
-            shifts_row = rcp.load_shift_row_by_br_idx(SHIFT_CSV, br_idx)
+            br2fs_intan = rcp.get_metadata_mapping(SHIFT_CSV, 'br_idx', 'fs_intan')
+            br2shift_samp_intan = rcp.get_metadata_mapping(SHIFT_CSV, 'br_idx', 'shift_sample')
 
             if not stim_npz_path or not stim_npz_path.exists():
                 print(f"[WARN] stim_stream.npz not found for BR {br_idx:03d} (looked at {stim_npz_path}).")
@@ -162,17 +130,23 @@ def main():
                 stim = rcp.load_stim_detection(stim_npz_path)
                 block_bounds = stim.get("block_bounds_samples", [])
 
-        if block_bounds.size and shifts_row is not None: # TODO check if we can simplify this block
+        if block_bounds.size and br2shift_samp_intan is not None: # TODO check if we can simplify this block
             # Anchor from the SAME shifts row (important!)
-            anchor_samp_intan, fs_intan = _anchor_from_shifts_row(shifts_row)
+            fs_intan = float(br2fs_intan.get(br_idx, 30000.0))
+            shift_raw = br2shift_samp_intan.get(br_idx, None)
+            if shift_raw is None or (isinstance(shift_raw, str) and shift_raw.strip() == ""):
+                print(f"[WARN] Missing anchor_sample for br_idx={br_idx} in {SHIFT_CSV}. Skipping artifact removal.")
+                block_bounds = np.empty((0, 2), dtype=int)  # ensures you skip the removal block cleanly
+            else:
+                shift_samp_intan = float(shift_raw)
 
             starts_intan = block_bounds[:, 0].astype(np.int64)
             ends_intan   = block_bounds[:, 1].astype(np.int64)
 
             # shift+scale into UA sample index space
             scale = fs_ua / fs_intan
-            starts_ua = np.round((starts_intan - anchor_samp_intan) * scale).astype(np.int64)
-            ends_ua   = np.round((ends_intan   - anchor_samp_intan) * scale).astype(np.int64)
+            starts_ua = np.round((starts_intan - shift_samp_intan) * scale).astype(np.int64)
+            ends_ua   = np.round((ends_intan   - shift_samp_intan) * scale).astype(np.int64)
 
             # validity + clipping
             n_total = rec_hp.get_num_samples()
@@ -192,89 +166,60 @@ def main():
                     ms_after=ms_after,     # one window long enough for all spans
                     mode="zeros",          # or "linear"
                 )
-                pad_before_samp = int(round(ARTRMV_MS_BEFORE * fs_ua / 1000.0))
-                pad_after_samp  = int(round(ARTRMV_TAIL_MS  * fs_ua / 1000.0))
-
-                starts_exp = np.clip(starts_ua - pad_before_samp, 0, None)
-                ends_exp   = np.clip(ends_ua   + pad_after_samp,  0, n_total)
-
-                blank_windows = {0: np.column_stack([starts_exp, ends_exp])}  # seg 0
             else:
                 print("[WARN] all artifact intervals invalid after shift; skipping artifact removal.")
         else:
             if not block_bounds.size:
                 print("[WARN] no stim found, skipping artifact removal.")
-            elif shifts_row is None:
-                print("[WARN] no shift row found, skipping artifact removal.")
+            elif br2shift_samp_intan is None:
+                print("[WARN] no shift found, skipping artifact removal.")
             
-        out_npz_loc = UA_CKPT_OUT / f"pp__{sess.name}__NS6"; out_npz_loc.mkdir(parents=True, exist_ok=True)
-        rec_artif_removed.save(folder=out_npz_loc, overwrite=True)
-        print(f"[{sess.name}] (ns6) saved preprocessed -> {out_npz_loc}")
-
-        # compute rates
-        rate_hz, t_cat_ms, counts_cat, peaks, peak_t_ms = rcp.threshold_mua_rates( #TODO This needs to be reduced to detect peaks only, because fr estimation should be done later
+        out_dir = UA_CKPT_OUT / f"pp__{sess.name}__NS6"; out_dir.mkdir(parents=True, exist_ok=True)
+        rec_artif_removed.save(folder=out_dir, overwrite=True)
+        print(f"[{sess.name}] (ns6) saved preprocessed -> {out_dir}")
+        
+        del rec_hp
+        gc.collect()
+        
+        n_seg = rec_artif_removed.get_num_segments()
+        # Detect peaks
+        noise_levels = si.get_noise_levels(rec_artif_removed, method="mad", return_in_uV=False) # They didn't write return_in_uV in their documentation
+        
+        print(f"[INFO] Segments of recording: {n_seg}, Average noise level: {np.nanmean(noise_levels)}")
+        peaks = detect_peaks(
             rec_artif_removed,
+            method="by_channel_torch",
             detect_threshold=THRESH,
             peak_sign=PEAK_SIGN,
-            bin_ms=BIN_MS,
-            sigma_ms=SIGMA_MS,
+            noise_levels=noise_levels,
             n_jobs=PARAMS.parallel_jobs,
-            blank_windows_samples=blank_windows,
         )
         
-        ts_state_num_binned = np.zeros(t_cat_ms.shape, dtype=np.int8)
-        ts_state_char_binned = np.full(t_cat_ms.shape, 'N', dtype='U1')
+        # Threshold to get touchscreen state
+        ts_state_num = np.zeros(0, dtype=np.int8)
+        ts_state_char = np.full(0, 'N', dtype='U1')
 
-        if ts_state_num.size > 0:
-            # t_cat_ms is in milliseconds since start of BR recording
-            # ts_state_num is per touchscreen sample at ts_fs_hz
-            # Map each bin center to nearest touchscreen sample index
-            ts_idx = np.round((t_cat_ms / 1000.0) * FS_NS2).astype(np.int64)
+        if touchscreen_sig is not None:
+            touchscreen_sig = np.asarray(touchscreen_sig, float)
+            ts_state_num = np.zeros_like(touchscreen_sig, dtype=np.int8)
+            ts_state_char = np.full(touchscreen_sig.shape, 'N', dtype='U1')
 
-            # Clip to valid range
-            ts_idx = np.clip(ts_idx, 0, ts_state_num.size - 1)
+            ts_state_num[touchscreen_sig >= TOUCHSCREEN_THRES_A] = 1
+            ts_state_num[touchscreen_sig >= TOUCHSCREEN_THRES_B] = 2
 
-            ts_state_num_binned = ts_state_num[ts_idx]
-            ts_state_char_binned = ts_state_char[ts_idx]
-
-            print(
-                f"[touchscreen] Binned states: shape={ts_state_num_binned.shape}, "
-                f"unique={np.unique(ts_state_num_binned)}"
-            )
+            ts_state_char[ts_state_num == 1] = 'A'
+            ts_state_char[ts_state_num == 2] = 'B'
+            print("Unique touchscreen states:", np.unique(ts_state_num))
         else:
-            print("[touchscreen] No touchscreen states to bin; using all 'N'.")
-
-        
-        X = rate_hz.T  # (n_bins, n_channels)
-        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-
-        n_bins, n_ch = X.shape
-        n_comp = min(5, n_bins, n_ch)
-
-        total_var = np.var(X, axis=0).sum()
-        if n_comp >= 1 and total_var > 0.0:
-            pca = PCA(n_components=n_comp, random_state=0)
-            pcs = pca.fit_transform(X)  # (n_bins, n_comp)
-            explained_var = np.nan_to_num(
-                pca.explained_variance_ratio_, nan=0.0
-            ).astype(np.float32)
-            pcs_T = pcs.T.astype(np.float32)  # (n_comp, n_bins)
-        else:
-            pcs_T = np.empty((0, n_bins), dtype=np.float32)
-            explained_var = np.empty((0,), dtype=np.float32)
+            print("[touchscreen] No touchscreen signal; leaving ts_state_* empty.")
 
         out_npz = UA_CKPT_OUT / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
         
         save = dict(
-            rate_hz=rate_hz.astype(np.float32),
-            t_ms=t_cat_ms.astype(np.float32),
-            counts=counts_cat.astype(np.uint16),
             peaks=peaks,
-            peak_t_ms=peak_t_ms.astype(np.float32),
-            pcs=pcs_T,
-            explained_var=explained_var.astype(np.float32),            
-            ts_state_num=ts_state_num_binned,
-            ts_state_char=ts_state_char_binned,
+                   
+            ts_state_num=ts_state_num,
+            ts_state_char=ts_state_char,
 
             # UA indices
             ua_index=idx_rows.astype(np.int16),
@@ -283,6 +228,8 @@ def main():
             ua_region=ua_region,
             ua_region_names=ua_region_names,
             ua_port=ua_port,
+            
+            # Other signals
             hr_sig=hr_sig,
             vog_sig=vog_sig,
 
@@ -291,17 +238,29 @@ def main():
                 peak_sign=PEAK_SIGN,
                 bin_ms=BIN_MS,
                 sigma_ms=SIGMA_MS,
-                fs=fs_ua,
+                fs_ua=fs_ua,
+                fs_hr=fs_hr,
+                fs_vog=fs_vog,
+                fs_ts=fs_ts,
                 n_channels=rec_artif_removed.get_num_channels(),
                 session=str(sess.name),
+                n_samples = rec_ns6.get_total_samples(),
+                n_segs = rec_ns6.get_num_segments,
+                rec_dur = rec_ns6.get_total_duration(),
+                rec_start_ms = rec_ns6.get_start_time()*1000,
+                rec_end_ms = rec_ns6.get_end_time()*1000,
+
+                meta_ns5=meta_ns5,
+                meta_ns2=meta_ns2,
             ),
         )
         
         np.savez_compressed(out_npz, **save)
-        print(f"[{sess.name}] saved rate matrix + PCA -> {out_npz}")
+        print(f"[{sess.name}] saved rate matrix-> {out_npz}")
 
         # cleanup to keep memory stable on long batches
-        del rec_ns6, rec_hp, rec_artif_removed, rate_hz, t_cat_ms, counts_cat
+        del peaks, rec_ns6, rec_artif_removed
         gc.collect()
+        
 if __name__ == "__main__":
     main()

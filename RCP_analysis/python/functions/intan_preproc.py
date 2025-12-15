@@ -155,7 +155,7 @@ def extract_stim_npz(
     stim_ext = extract_stim_triggers_and_blocks(stim_data=stim_traces)
 
     # collect everything you want to save
-    arrays = {
+    stim_arrays = {
         "stim_traces": stim_traces,
         "active_channels": stim_ext.active_channels.astype(np.int32),
         "trigger_pairs": stim_ext.trigger_pairs, # int64 (trigs, 2)
@@ -172,9 +172,9 @@ def extract_stim_npz(
     )
 
     out_npz = stim_npz_dir / "stim_stream.npz"
-    np.savez_compressed(out_npz, **arrays, meta=json.dumps(meta))
+    np.savez_compressed(out_npz, **stim_arrays, meta=json.dumps(meta))
     print(f"[STIM] saved stim stream + triggers -> {out_npz}")
-    return out_npz, arrays
+    return stim_arrays
 
 # AUX streams
 def extract_intan_aux_streams_npz(
