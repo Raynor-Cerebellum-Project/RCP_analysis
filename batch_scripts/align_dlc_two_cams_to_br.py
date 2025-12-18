@@ -1,5 +1,6 @@
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
+import numpy as np
 
 """ 
     This script aligns two camera perspectives to the Blackrock recording. It scans through all paired cam-0 and cam-1 .csv files and outputs aligned timing based on frame mappings identified from OCR_frame_mapping_BT_edit.py script.
@@ -14,6 +15,28 @@ from RCP_analysis.python.functions.config_loading import *
 # ---------- Config ----------
 # Config loaded from config_loading
 
+def filter_low_likelihood(df, threshold=0.35):
+    """
+    Iterate columns to find _likelihood cols.
+    If col < threshold, set corresponding _x and _y to NaN.
+    """
+    count = 0 
+    for col in df.columns:
+        if str(col).endswith("likelihood"):
+             # e.g. "DLC_..._wrist_likelihood"
+             base = col[:-len("likelihood")]
+             col_x = base + "x"
+             col_y = base + "y"
+             
+             if col_x in df.columns and col_y in df.columns:
+                 mask = df[col] < threshold
+                 if mask.any():
+                     df.loc[mask, col_x] = np.nan
+                     df.loc[mask, col_y] = np.nan
+                     count += mask.sum()
+    if count > 0:
+        print(f"  [filter] masked {count} points (likelihood < {threshold})")
+    return df
 
 def main():
     print(f"[scan] VIDEO_ROOT={VIDEO_ROOT}")
@@ -35,6 +58,10 @@ def main():
         # Load OCR and DLC
         ocr0 = rcp.load_ocr_map(d['ocr'][0]); ocr1 = rcp.load_ocr_map(d['ocr'][1])
         dlc0 = rcp.load_dlc(d['dlc'][0]);     dlc1 = rcp.load_dlc(d['dlc'][1])
+        
+        # Filter likelihood
+        dlc0 = filter_low_likelihood(dlc0)
+        dlc1 = filter_low_likelihood(dlc1)
 
         # Align OCR -- eventually remove?
         aligned_dlc0 = rcp.align_dlc_to_corrected(dlc0, ocr0)
@@ -48,9 +75,10 @@ def main():
         # Now map vid_idx to br_idx
         ns5_path = None
         if vid_idx is not None and VIDEO_TO_BR:
-            br_idx = VIDEO_TO_BR.get(vid_idx)
-            if br_idx is not None:
-                print(f"[pairing] Video_File={vid_idx:03d} → BR_File={br_idx:03d})")
+            br_idx_str = VIDEO_TO_BR.get(vid_idx)
+            if br_idx_str is not None:
+                br_idx = int(br_idx_str)
+                print(f"[pairing] Video_File={vid_idx:03d} → BR_File={br_idx:03d}")
                 ns5_path = rcp.find_ns5_by_br_index(BR_ROOT, br_idx)
                 if ns5_path is None:
                     print(f"[warn] BR_File {br_idx:03d} not found by index; fallback to condition-name search.")
