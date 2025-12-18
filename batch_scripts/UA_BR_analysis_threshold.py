@@ -1,6 +1,4 @@
 import gc, csv
-from sklearn.decomposition import PCA
-
 import spikeinterface as si
 import spikeinterface.preprocessing as spre
 import spikeinterface.extractors as se
