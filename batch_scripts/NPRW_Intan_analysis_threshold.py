@@ -22,8 +22,7 @@ from RCP_analysis.python.functions.config_loading import *
 
 # ---------- Config ----------
 # Base paths from config_loading
-GEOM_PATH = rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT)
-
+GEOM_PATH = rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT, session_key=None)
 
 # Intan streams
 NPRW_CFG = PARAMS.probes.get("NPRW")

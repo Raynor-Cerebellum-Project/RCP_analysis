@@ -1,8 +1,6 @@
-from typing import Tuple
 from types import SimpleNamespace
 import re
 
-from matplotlib import pyplot as plt
 from probeinterface import Probe
 from scipy.io import loadmat
 

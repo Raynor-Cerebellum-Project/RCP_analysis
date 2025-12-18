@@ -1,5 +1,4 @@
 import json, csv
-from typing import Tuple, Optional
 from scipy.io import savemat
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
@@ -24,7 +23,7 @@ def _find_aligned_DLC_for_br_idx(behv_root: Path, br_idx: int) -> tuple[Path | N
       kind : 'both' | 'cam0' | 'cam1' | 'none'
 
     Matches filenames like:
-      ..._<BRIDX>_both_cams_aligned.csv
+      ..._<BRIDX>_both_cams_aligned.csnv
       ..._<BRIDX>_Cam-0_aligned.csv
       ..._<BRIDX>_Cam-1_aligned.csv
     """

@@ -5,6 +5,7 @@ import spikeinterface as si
 import spikeinterface.preprocessing as spre
 import spikeinterface.extractors as se
 import RCP_analysis as rcp
+from spikeinterface.sortingcomponents.peak_detection import detect_peaks
 from RCP_analysis.python.functions.config_loading import *
 
 """ 
@@ -79,7 +80,7 @@ def main():
     sess_folders = BR_SESSION_FOLDERS
     
     print("Found session folders:", len(sess_folders))
-    for sess in (sess_folders[:]): # Can tweak here to isolate sessions 
+    for sess in sess_folders[:]: # Can tweak here to isolate sessions 
         print(f"=== Session: {sess.name} ===")
         touchscreen_sig, hr_sig, vog_sig, meta_ns5, meta_ns2 = rcp.extract_br_aux_streams_npz(sess, UA_AUX_DATA, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH, TOUCHSCREEN_CH, HR_CH, VOG_CH) # Extract sync pulses and stuff
         fs_hr = meta_ns2["fs_hr"]
