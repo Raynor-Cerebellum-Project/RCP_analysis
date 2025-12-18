@@ -1,7 +1,4 @@
-from typing import Tuple, Optional, List
-from types import SimpleNamespace
 import math
-import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 
 # ---------------------------------------------------------------------

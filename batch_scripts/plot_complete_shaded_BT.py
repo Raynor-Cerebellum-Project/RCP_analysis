@@ -1,4 +1,3 @@
-from typing import Tuple, Optional
 from types import SimpleNamespace
 
 from scipy.io import loadmat

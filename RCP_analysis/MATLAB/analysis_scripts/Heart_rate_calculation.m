@@ -232,6 +232,7 @@ for i = 1:length(stim_samples)
 %     end
 end
 
+segments = segments/-1.2668e4;
 % Remove any empty columns from segments
 segments(:, all(isnan(segments))) = []; 
 
@@ -254,12 +255,12 @@ plot(segment_time_vector, mean_trace, 'b-', 'LineWidth', 2, 'DisplayName', 'Mean
 
 % Customization of the plot
 xlabel('Time (ms)');
-ylabel('Heart Rate (BPM)');
+ylabel('Horizontal eye position (deg)');
 title('Stimulus-Triggered eye movement');
 legend('Individual traces', 'Mean Trace');
 grid off;
 hold off;
-% ylim([80 220])
+ylim([-4 4])
 fig = gcf;
 print(fig, 'stim_evoked_hr_change_32ch_130_BR25.emf', '-depsc','-painters'); %force it to vector format
 

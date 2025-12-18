@@ -1,5 +1,5 @@
 % Read the VOG CSV file into a numeric matrix
-% VOG_data = readmatrix('NRR_RW007_001.csv');
+% VOG_data = readmatrix('NRR_RW011_027.csv');
 % VOG_data = readmatrix('NRR_RW006_003_2025_1029_145324.csv'); %baseline reaches
 % load('NRR_RW006_003_Cal.mat') %baseline reaches
 
@@ -203,16 +203,17 @@ print(fig, 'stim_evoked_hr_change_32ch_130_BR25.emf', '-depsc','-painters'); %fo
 % Plot trigger-averaged eye movement
 fs = 1000; % Sampling frequency in Hz
 % stim_ms = [1000, 5000, 10000]; % Stimulation times in milliseconds
-stim_times = stim_ms; % Convert milliseconds to seconds
-duration_before_stim = .5; % Duration before the stimulus (in seconds)
-duration_after_stim = 1; % Duration after the stimulus (in seconds)
+duration_before_stim = .05; % Duration before the stimulus (in seconds)
+duration_after_stim = .08; % Duration after the stimulus (in seconds)
 
 % Create an example heart rate time series (replace this with your actual HR data)
 t = 0:1/fs:15; % Time vector (15 seconds)
 % heart_rate = 60 + 5 * sin(2 * pi * 0.1 * t) + randn(size(t)); % Example heart rate signal with noise
-h_VOG = vog_t_ms;
+h_VOG = vog_sig;
+h_VOG(h_VOG>-3e6)=nan;
+h_VOG(h_VOG<-4.99e6)=nan;
 % Convert the heart rate to samples (in the context of your time series)
-stim_samples = round(stim_times * fs); % Convert stimulus times to sample indices
+stim_samples = round(stim_ms/10); % Convert stimulus times to sample indices
 
 % Initialize a matrix to hold the segments
 segments = [];
@@ -226,9 +227,9 @@ for i = 1:length(stim_samples)
     end_idx = stim_idx + duration_after_stim * fs;   % End index
     
     % Check for bounds and extract segment
-    if start_idx > 0 && end_idx <= length(h_VOG)
-        segments(:, i) = h_VOG(start_idx:end_idx); % Store the segment
-    end
+%     if start_idx > 0 && end_idx <= length(h_VOG)
+        segments(:, i) = h_VOG((start_idx:end_idx)-mean(h_VOG(start_idx:start_idx+100))/-2.222e4*0.75); % Store the segment
+%     end
 end
 
 % Remove any empty columns from segments
@@ -238,7 +239,7 @@ segments(:, all(isnan(segments))) = [];
 mean_trace = nanmean(segments, 2);
 
 % Create time vector for the segments
-segment_time_vector = linspace(-duration_before_stim, duration_after_stim, size(segments, 1));
+segment_time_vector = linspace(-duration_before_stim, duration_after_stim, size(segments, 1))*1000;
 
 % Plot individual traces and the mean trace
 figure;
@@ -252,13 +253,13 @@ end
 plot(segment_time_vector, mean_trace, 'b-', 'LineWidth', 2, 'DisplayName', 'Mean Trace');
 
 % Customization of the plot
-xlabel('Time (s)');
+xlabel('Time (ms)');
 ylabel('Heart Rate (BPM)');
 title('Stimulus-Triggered eye movement');
 legend('Individual traces', 'Mean Trace');
 grid off;
 hold off;
-ylim([80 220])
+% ylim([80 220])
 fig = gcf;
 print(fig, 'stim_evoked_hr_change_32ch_130_BR25.emf', '-depsc','-painters'); %force it to vector format
 

@@ -1,7 +1,5 @@
 import re, json
 from scipy.io import savemat
-from typing import List, Tuple, Optional
-from scipy.signal import fftconvolve
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 
