@@ -64,14 +64,11 @@ FIG.peri_var_meanMWT   = FIG_ROOT / "variance_MWT_plots"; FIG.peri_var_meanMWT.m
 FIG.peri_counts_meanMWT = FIG_ROOT / "median_count_MWT_plots"; FIG.peri_counts_meanMWT.mkdir(parents=True, exist_ok=True)
 FIG.peri_single_trials = FIG_ROOT / "single_trial_fr_plots"; FIG.peri_single_trials.mkdir(parents=True, exist_ok=True)
 
-<<<<<<< HEAD
-=======
 # Peri-stim checkpoints
 PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStim"
 
 # NPC aux / stim
 NPRW_AUX_DATA = OUT_BASE / "aux_data" / "NPRW"
->>>>>>> a1d0101aa220855dd9325847b0fefab40a1190ca
 
 # NPRW mapping / geometry
 GEOM_PATH = (
