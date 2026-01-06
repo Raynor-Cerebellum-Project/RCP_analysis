@@ -234,7 +234,7 @@ def main():
                 n_channels=rec_artif_removed.get_num_channels(),
                 session=str(sess.name),
                 n_samples = rec_ns6.get_total_samples(),
-                n_segs = rec_ns6.get_num_segments,
+                n_segs = rec_ns6.get_num_segments(),
                 rec_dur = rec_ns6.get_total_duration(),
                 rec_start_ms = rec_ns6.get_start_time()*1000,
                 rec_end_ms = rec_ns6.get_end_time()*1000,

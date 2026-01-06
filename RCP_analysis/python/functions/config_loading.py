@@ -82,7 +82,7 @@ if PARAMS is not None:
 
         
         # Metadata file
-        METADATA_CSV   = METADATA_ROOT / f"{Path(PARAMS.session)}_metadata.csv"
+        METADATA_CSV   = METADATA_ROOT / f"{PARAMS.session}_metadata.csv"
 
         # Probe config (Common usage)
         UA_CFG = PARAMS.probes.get("UA", {})

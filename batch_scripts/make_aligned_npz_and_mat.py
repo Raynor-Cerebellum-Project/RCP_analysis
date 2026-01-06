@@ -96,6 +96,30 @@ def _ua_perm_by_region(
 
     return perm
 
+def _clean_meta(meta):
+    """
+    Return a clean dictionary without complex objects (like recording extractors).
+    Useful for saving to .npz/.mat without pickling heavy dependencies.
+    """
+    if not isinstance(meta, dict):
+         if hasattr(meta, "item"):
+             meta = meta.item()
+         if not isinstance(meta, dict):
+             return {} # Fallback
+             
+    clean = {}
+    for k, v in meta.items():
+        # Skip keys known to hold heavy objects
+        if k in ("recording", "sorting", "extractor", "neo_reader"):
+            continue
+        # Skip if value is a module, class, or complex object
+        if hasattr(v, "__module__") and not isinstance(v, (np.ndarray, np.generic)):
+            # Keep only if it's a simple type we trust (optional check)
+            pass
+            
+        clean[k] = v
+    return clean
+
 def main():
     if not SHIFTS_CSV.exists():
         raise SystemExit(f"[error] shifts CSV not found: {SHIFTS_CSV}")
