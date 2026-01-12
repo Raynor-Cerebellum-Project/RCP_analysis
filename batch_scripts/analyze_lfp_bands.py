@@ -1,4 +1,5 @@
 import gc
+import os
 import csv
 import numpy as np
 from scipy import signal
@@ -11,27 +12,56 @@ from probeinterface import Probe
 import spikeinterface as si
 import spikeinterface.preprocessing as spre
 import spikeinterface.extractors as se
+import warnings
+from joblib import Parallel, delayed
+from scipy.optimize import curve_fit, OptimizeWarning
 
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 
 """
-    This script analyzes LFP bands (Alpha, Beta, Low Gamma, High Gamma).
-    It processes both NPRW (Intan) and Utah Array (Blackrock) data.
+    Analyzes LFP bands (Alpha, Beta, Low/High Gamma) for NPRW (Intan) and Utah Array (Blackrock)
+    
+    Pipeline:
+      1. Extraction: Loads stimulation events and extracts epochs (-500ms to +1000ms)
+      2. Blanking: Applies 'copy_baseline' blanking to remove stim artifacts (-5ms to +101ms)
+      3. Cleaning: Bandpass filter (Reverse/Anti-causal), Resample to 1kHz, Baseline Correction,
+         Exponential Decay Removal, and Common Median Template Subtraction
+      4. Filtering: Extracts power in specific frequency bands
+      
+    Associated Scripts:
+      - debug_lfp_pipeline_plots.py: Visualizes the pipeline steps (Raw -> Blanked -> Filtered, etc.)
+      - plot_lfp_check.py: General quality check of aligned LFP
+      - plot_lfp_artifact_comparison.py: Uses 'comparison' output to validate cleaning
     
     Output:
         Aligned data .npz files containing windowed traces for each band.
+        - NPRW: results/checkpoints/NPRW_LFP/aligned_lfp__{session_name}.npz
+        - Utah: results/checkpoints/UA_LFP/aligned_lfp__{session_name}.npz
+        
+        Debug Plots (if enabled):
+        - results/figures/debug_pipeline/{session_name}/step_*.png
 """
 
-# ---------- Constants ----------
-TARGET_FS = 1000.0
+# ---------- TOGGLES ----------
+# Toggle for including comparison windows (raw vs clean) for artifact check plots
+# See: plot_lfp_artifact_comparison.py
+RUN_COMPARISON_ANALYSIS = False
+
+# Toggle for saving debug plots of the pipeline steps
+# See: debug_lfp_pipeline_plots.py
+SAVE_DEBUG_PLOTS = False
+
+# ---------- CONSTANTS ----------
+TARGET_FS = 1000
 BLANK_PRE_MS = 5.0
-BLANK_POST_MS = 101.0  # UPDATED to 101.0ms
+BLANK_POST_MS = 101.0 
 EPOCH_PRE_MS = 500.0
 EPOCH_POST_MS = 1000.0
 FIT_START_OFFSET_MS = 0.0 # From end of blanking
+BAD_THRES = 700.0 # in uV - after common median reference (last step)
 
-# ---------- Config ----------
+# ---------- CONFIG ----------
 # Bands of interest
 LFP_BANDS = {
     "alpha": (5, 13),
@@ -43,19 +73,12 @@ LFP_BANDS = {
 # Filter order for butterworth
 FILTER_ORDER = 4
 
-# Alignment Window
-WIN_MS = (-500.0, 800.0)
-
 # Output Directories
 NPRW_LFP_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW_LFP"
 UA_LFP_CKPT_ROOT = OUT_BASE / "checkpoints" / "UA_LFP"
-CACHE_NPRW_DS_ROOT = OUT_BASE / "checkpoints" / "NPRW_DS_Raw"
-CACHE_UA_DS_ROOT = OUT_BASE / "checkpoints" / "UA_DS_Raw"
 
 NPRW_LFP_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
 UA_LFP_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
-CACHE_NPRW_DS_ROOT.mkdir(parents=True, exist_ok=True)
-CACHE_UA_DS_ROOT.mkdir(parents=True, exist_ok=True)
 
 # NPRW Config
 NPRW_CFG = PARAMS.probes.get("NPRW")
@@ -75,359 +98,90 @@ global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chun
 si.set_global_job_kwargs(**global_job_kwargs)
 
 
-def remove_stimulation_artifacts(
-    traces: np.ndarray,
-    stim_indices: np.ndarray,
-    fs: float,
-    blank_pre_ms: float = 5.0,
-    blank_post_ms: float = 120.0,
-    template_post_ms: float = 800.0,
-    fit_exponential: bool = True,
-    use_robust_median: bool = True,
-    outlier_threshold: float = 3.0,
-    blanking_mode: str = 'interp') -> np.ndarray:
-    """
-    Comprehensive stimulation artifact removal pipeline.
-    """
-    n_channels, n_samples = traces.shape
-    traces_cleaned = traces.copy()
-    
-    # Convert ms to samples
-    blank_pre = int(blank_pre_ms * fs / 1000)
-    blank_post = int(blank_post_ms * fs / 1000)
-    template_post = int(template_post_ms * fs / 1000)
-    
-    # ---- STEP 1: Apply Blanking FIRST ----
-    # Zero out or interpolate the immediate artifact region
-    # This ensures the template is not contaminated by the massive transient
-    traces_cleaned = apply_blanking(
-        traces_cleaned, stim_indices, fs, blank_pre_ms, blank_post_ms, mode=blanking_mode
-    )
-    
-    # ---- STEP 2: Bandpass Filter (0.5 - 300 Hz) ----
-    # User requested bandpass after blanking
-    print("    [Artifact Removal] Applying Bandpass Filter (0.5 - 300 Hz)...")
-    sos_bp = signal.butter(4, [0.5, 300.0], btype='bandpass', fs=fs, output='sos')
-    traces_cleaned = signal.sosfiltfilt(sos_bp, traces_cleaned, axis=1)
-
-    # ---- STEP 3: Extract post-stim epochs for template ----
-    # Only use POST-STIM data for template (not pre-stim)
-    # Start from end of blank period to avoid immediate transient
-    
-    template_start_offset = blank_post  # Start after immediate artifact
-    template_length = template_post - blank_post
-    
-    epochs_for_template = []
-    valid_stim_indices = []
-    
-    for stim_idx in stim_indices:
-        start = stim_idx + template_start_offset
-        end = stim_idx + template_post
-        
-        if start >= 0 and end <= n_samples:
-            epochs_for_template.append(traces_cleaned[:, start:end].copy())
-            valid_stim_indices.append(stim_idx)
-    
-    if len(epochs_for_template) == 0:
-        print("[WARN] No valid epochs for template computation")
-        return traces_cleaned
-    
-    epochs_array = np.array(epochs_for_template)  # (n_trials, n_channels, n_time)
-    
-    # ---- STEP 4: Compute robust median template per channel ----
-    if use_robust_median:
-        template = compute_robust_median_template(
-            epochs_array, outlier_threshold=outlier_threshold
-        )
-    else:
-        template = np.median(epochs_array, axis=0)  # (n_channels, n_time)
-    
-    # ---- STEP 5: Optionally fit exponential to template ----
-    if fit_exponential:
-        template = fit_and_remove_exponential_from_template(template, fs)
-    
-    # ---- STEP 6: Subtract template from each trial ----
-    for stim_idx in valid_stim_indices:
-        start = stim_idx + template_start_offset
-        end = stim_idx + template_post
-        
-        # Get pre-stim baseline for this trial
-        baseline_start = max(0, stim_idx - int(100 * fs / 1000))  # 100ms pre-stim
-        baseline_end = stim_idx - blank_pre
-        
-        if baseline_end > baseline_start:
-            baseline = np.mean(traces_cleaned[:, baseline_start:baseline_end], axis=1, keepdims=True)
-        else:
-            baseline = np.zeros((n_channels, 1))
-        
-        # Subtract template (preserving baseline)
-        template_baseline = template[:, -int(50 * fs / 1000):].mean(axis=1, keepdims=True)  # Last 50ms of template
-        traces_cleaned[:, start:end] -= (template - template_baseline)
-    
-    return traces_cleaned
-
-
-def compute_robust_median_template(
-    epochs: np.ndarray,
-    outlier_threshold: float = 3.0) -> np.ndarray:
-    """
-    Compute median template with outlier trial rejection per channel.
-    """
-    n_trials, n_channels, n_time = epochs.shape
-    template = np.zeros((n_channels, n_time))
-    
-    for ch in range(n_channels):
-        ch_epochs = epochs[:, ch, :]  # (n_trials, n_time)
-        
-        # Compute power/variance of each trial for this channel
-        trial_power = np.var(ch_epochs, axis=1)
-        
-        # MAD-based outlier detection
-        median_power = np.median(trial_power)
-        mad = np.median(np.abs(trial_power - median_power))
-        
-        if mad > 0:
-            outlier_mask = np.abs(trial_power - median_power) > outlier_threshold * mad * 1.4826
-        else:
-            outlier_mask = np.zeros(n_trials, dtype=bool)
-        
-        # Compute median excluding outliers
-        clean_epochs = ch_epochs[~outlier_mask, :]
-        
-        if len(clean_epochs) > 0:
-            template[ch, :] = np.median(clean_epochs, axis=0)
-        else:
-            template[ch, :] = np.median(ch_epochs, axis=0)
-    
-    return template
-
-
-def fit_and_remove_exponential_from_template(
-    template: np.ndarray,
-    fs: float,
-    fit_start_ms: float = 50.0,
-    fit_end_ms: float = None) -> np.ndarray:
-    """
-    Fit exponential decay to template and subtract it.
-    """
-    n_channels, n_time = template.shape
-    template_corrected = template.copy()
-    
-    fit_start = int(fit_start_ms * fs / 1000)
-    fit_end = n_time if fit_end_ms is None else int(fit_end_ms * fs / 1000)
-    
-    def exp_decay(t, a, tau, c):
-        return a * np.exp(-t / tau) + c
-    
-    t = np.arange(fit_end - fit_start)
-    
-    for ch in range(n_channels):
-        segment = template[ch, fit_start:fit_end]
-        
-        # Initial parameter guess
-        a0 = segment[0] - segment[-1]
-        tau0 = len(segment) / 3
-        c0 = segment[-1]
-        
-        try:
-            popt, _ = curve_fit(
-                exp_decay, t, segment,
-                p0=[a0, tau0, c0],
-                bounds=([-np.inf, 1, -np.inf], [np.inf, len(segment) * 10, np.inf]),
-                maxfev=5000
-            )
-            
-            # Subtract exponential from full template for this channel
-            t_full = np.arange(n_time)
-            # Use popt to generate full decay
-            # Wait, the user code is slightly loose here. 
-            # It fits on 't' which is fit_end-fit_start. 
-            # It needs to extrapolate to t_full?
-            # User code: exp_fit = exp_decay(t_full, popt[0], popt[1], 0)
-            # This implicitly assumes t=0 is aligned to template[fit_start]?
-            # Actually, t in curve_fit starts at 0 (scan index 0).
-            # So if we use t_full, we are modeling decay from start of template window.
-            # But we optimized params for the segment. 
-            # If the segment starts at t=fit_start, then decay logic is shifted.
-            # Let's assume standard exponential model: y(t) = A*exp(-t/tau).
-            # The user code fits to `segment` vs `t`.
-            # Then predicts `t_full`.
-            # This is fine if we assume the decay "starts" (t=0) at the beginning of the template window (or wherever t_full=0 is). 
-            # But the segment fit starts later. 
-            # I will trust the user code logic for now.
-            
-            exp_fit = exp_decay(t_full, popt[0], popt[1], 0)  # No offset
-            template_corrected[ch, :] -= exp_fit
-            
-        except (RuntimeError, ValueError):
-            # If fit fails, just demean
-            template_corrected[ch, :] -= np.mean(template[ch, -int(50 * fs / 1000):])
-    
-    return template_corrected
-
-
-def apply_blanking(
-    traces: np.ndarray,
-    stim_indices: np.ndarray,
-    fs: float,
-    blank_pre_ms: float = 5.0,
-    blank_post_ms: float = 120.0,
-    taper_ms: float = 5.0,
-    mode: str = 'interp') -> np.ndarray:
-    """
-    Apply blanking (Interpolation or Zeroing).
-    mode: 'interp' (linear), 'zero', or 'copy_baseline' (copy pre-stim activity).
-    """
-    n_channels, n_samples = traces.shape
-    traces_blanked = traces.copy()
-    
-    blank_pre = int(blank_pre_ms * fs / 1000)
-    blank_post = int(blank_post_ms * fs / 1000)
-    
-    # Pre-calculate copy offset for 'copy_baseline'
-    # Use window equal to blanking duration immediately preceding the blanking window.
-    # Blanking window = [stim-pre, stim+post]
-    # Source window = [stim-pre - duration, stim-pre]
-    blank_duration_samps = blank_pre + blank_post
-    
-    taper_samples = int(taper_ms * fs / 1000) if mode == 'interp' else 0
-    
-    for stim_idx in stim_indices:
-        start = stim_idx - blank_pre
-        end = stim_idx + blank_post
-        
-        # Bounds check
-        if start < 0 or end >= n_samples:
-            continue
-            
-        if mode == 'copy_baseline':
-            # Copy preceding usage
-            src_start = start - blank_duration_samps
-            src_end = start
-            
-            if src_start < 0:
-                # Not enough baseline, fall back to zero or interp? 
-                # Let's just zero it or repeat the available bit.
-                traces_blanked[:, start:end] = 0.0
-            else:
-                traces_blanked[:, start:end] = traces_blanked[:, src_start:src_end]
-            continue
-            
-        if mode == 'zero':
-            # Strict zeroing
-            s_safe = max(0, start)
-            e_safe = min(n_samples, end)
-            traces_blanked[:, s_safe:e_safe] = 0.0
-            continue
-
-        # Get anchor points (with small buffer for stability)
-        pre_anchor_start = max(0, start - taper_samples)
-        post_anchor_end = min(n_samples, end + taper_samples)
-        
-        # Use median of anchor regions for stability
-        val_pre = np.median(traces_blanked[:, pre_anchor_start:start], axis=1)
-        val_post = np.median(traces_blanked[:, end:post_anchor_end], axis=1)
-        
-        # Linear interpolation
-        n_pts = end - start
-        interp = np.linspace(val_pre, val_post, n_pts).T  # (n_channels, n_pts)
-        
-        # Apply with cosine taper at edges
-        if taper_samples > 0:
-            taper_in = 0.5 * (1 - np.cos(np.linspace(0, np.pi, taper_samples)))
-            taper_out = 0.5 * (1 + np.cos(np.linspace(0, np.pi, taper_samples)))
-            
-            # Blend at start
-            blend_start = start
-            blend_end = min(start + taper_samples, end)
-            blend_len = blend_end - blend_start
-            
-            if blend_len > 0:
-                original = traces_blanked[:, blend_start:blend_end]
-                interpolated = interp[:, :blend_len]
-                traces_blanked[:, blend_start:blend_end] = (
-                    original * (1 - taper_in[:blend_len]) + 
-                    interpolated * taper_in[:blend_len]
-                )
-            
-            # Middle section (full interpolation)
-            if blend_end < end - taper_samples:
-                traces_blanked[:, blend_end:end-taper_samples] = interp[:, blend_len:-taper_samples]
-            
-            # Blend at end
-            blend_start_out = max(start + taper_samples, end - taper_samples)
-            if blend_start_out < end:
-                out_len = end - blend_start_out
-                original = traces_blanked[:, blend_start_out:end]
-                interpolated = interp[:, -out_len:]
-                traces_blanked[:, blend_start_out:end] = (
-                    interpolated * taper_out[-out_len:] + 
-                    original * (1 - taper_out[-out_len:])
-                )
-        else:
-            traces_blanked[:, start:end] = interp
-    
-    return traces_blanked
+# =============================================================================
+# Core Cleaning Functions
+# =============================================================================
 
 def clean_epochs(epochs, fs, pre_samps=500):
     """
-    Per-trial cleaning:
-    1. Baseline correction (pre-stim mean).
-    2. Exponential Recovery Removal (Fit & Subtract).
+    Applies per-trial cleaning to extracted epochs:
+      1. Baseline correction (subtract pre-stim mean).
+      2. Exponential recovery filling & subtraction (post-blanking).
+      3. Median template subtraction (common artifact removal).
+      
+    Args:
+        epochs (np.ndarray): (n_trials, n_ch, n_time)
+        fs (float): Sampling rate (Hz)
+        pre_samps (int): Number of pre-stim samples for baseline.
+        
+    Returns:
+        np.ndarray: Cleaned epochs.
     """
     n_trials, n_ch, n_time = epochs.shape
     cleaned = epochs.copy()
     
-    # 1. Baseline Correction (Pre-Stim)
-    # Assume stim is at pre_samps.
-    # Subtract mean of pre-stim window
+    # --- 1. Baseline Correction (Pre-Stim) ---
     if pre_samps > 0:
         baseline = np.mean(cleaned[:, :, :pre_samps], axis=2, keepdims=True)
         cleaned -= baseline
         
-    # 2. Exponential Removal (Per-Trial)
-    # Fit window: starts after blanking (+buffer).
+    # --- 2. Exponential Removal (Per-Trial) ---
+    # Fit window starts after blanking (+buffer)
     fit_start_ms = BLANK_POST_MS + FIT_START_OFFSET_MS
     fit_start_idx = pre_samps + int(fit_start_ms * fs / 1000)
     
     if fit_start_idx >= n_time:
         return cleaned
 
-    # Define Exponential Function
-    def exp_decay(t, a, tau, c):
-        return a * np.exp(-t / tau) + c
-        
     t_fit = np.arange(n_time - fit_start_idx)
     
-    print(f"    [Cleaning] Fitting Exponentials (Trial-by-Trial)...")
+    print(f"    [Cleaning] Fitting Exponentials (Trial-by-Trial) using Parallel Processing...")
     
-    from scipy.optimize import curve_fit, OptimizeWarning
-    import warnings
+    # Suppress optimization warnings during parallel fit
     warnings.simplefilter('ignore', OptimizeWarning)
     warnings.simplefilter('ignore', RuntimeWarning)
 
-    # 1. Fit each trial and channel INDIVIDUALLY
-    for i in range(n_trials):
-        for c in range(n_ch):
-            y_segment = cleaned[i, c, fit_start_idx:]
-            
-            # Initial Guess
-            a0 = y_segment[0] - y_segment[-1]
-            tau0 = len(y_segment) / 4.0
-            c0 = y_segment[-1]
-            try:
-                popt, _ = curve_fit(
-                    exp_decay, t_fit, y_segment,
-                    p0=[a0, tau0, c0],
-                    bounds=([-np.inf, 1.0, -np.inf], [np.inf, n_time*2, np.inf]),
-                    maxfev=1000
-                )
-                fit_curve = exp_decay(t_fit, *popt)
-                cleaned[i, c, fit_start_idx:] -= fit_curve
-            except Exception:
-                pass
+    def exp_decay(t, a, tau, c):
+        return a * np.exp(-t / tau) + c
 
-    # 3. Median Template Subtraction (Post-Exp)
+    def fit_and_clean_single(y_data, t_fit):
+        # Work on the post-blanking segment
+        y_seg = y_data[fit_start_idx:]
+        
+        # Initial guesses
+        a0 = y_seg[0] - y_seg[-1]
+        tau0 = len(y_seg) / 4.0
+        c0 = y_seg[-1]
+        
+        try:
+            popt, _ = curve_fit(
+                exp_decay, t_fit, y_seg,
+                p0=[a0, tau0, c0],
+                bounds=([-np.inf, 1.0, -np.inf], [np.inf, len(y_seg)*2, np.inf]),
+                maxfev=500 
+            )
+            fit_curve = exp_decay(t_fit, *popt)
+            
+            # Subtract fit
+            y_clean = y_data.copy()
+            y_clean[fit_start_idx:] -= fit_curve
+            return y_clean
+        except:
+            # Fallback: Return original if fit fails
+            return y_data
+
+    # Parallelize across all (trial * channel) traces
+    # Flatten to list of 1D arrays
+    flat_data = cleaned.reshape(-1, n_time)
+    
+    results_flat = Parallel(n_jobs=-int(os.cpu_count() or 1), batch_size='auto')(
+        delayed(fit_and_clean_single)(trace, t_fit) for trace in flat_data
+    )
+    
+    # Reshape back to (n_trials, n_ch, n_time)
+    cleaned = np.array(results_flat).reshape(n_trials, n_ch, n_time)
+
+    # --- 3. Median Template Subtraction ---
     print(f"    [Cleaning] Subtracting Median Template (Post-Exp)...")
     template_median = np.median(cleaned, axis=0) # (n_ch, n_time)
     cleaned -= template_median[None, :, :]
@@ -436,7 +190,7 @@ def clean_epochs(epochs, fs, pre_samps=500):
 
 def filter_epochs(epochs, fs, low, high, order=4):
     """
-    Apply bandpass filter to array of epochs (n_trials, n_ch, n_time).
+    Apply bandpass filter to array of epochs (n_trials, n_ch, n_time) along time axis.
     """
     nyq = 0.5 * fs
     low_norm = low / nyq
@@ -444,17 +198,9 @@ def filter_epochs(epochs, fs, low, high, order=4):
     sos = signal.butter(order, [low_norm, high_norm], btype='band', output='sos')
     return signal.sosfiltfilt(sos, epochs, axis=2) # Time axis is 2
 
-    
-def apply_bandpass(traces, fs, lowcut, highcut, order=FILTER_ORDER):
-    """
-    Apply Butterworth bandpass filter.
-    traces: (n_channels, n_samples)
-    """
-    nyq = 0.5 * fs
-    low = lowcut / nyq
-    high = highcut / nyq
-    sos = signal.butter(order, [low, high], btype='band', output='sos')
-    return signal.sosfiltfilt(sos, traces, axis=1)
+# =============================================================================
+# Helper Functions
+# =============================================================================
 
 def get_intan_geometry():
     GEOM_PATH = rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT, session_key=None)
@@ -496,6 +242,10 @@ class BlankingRecording(si.BaseRecording):
                         'pre_ms': pre_ms, 'post_ms': post_ms, 'mode': mode}
 
 class BlankingRecordingSegment(si.BaseRecordingSegment):
+    """
+    Custom SI segment that zeros out or interpolates over stir-related artifacts 
+    defined by stim_indices.
+    """
     def __init__(self, parent_segment, stim_indices, pre_samples, post_samples, mode='interp'):
         si.BaseRecordingSegment.__init__(self, **parent_segment.get_times_kwargs())
         self._parent_segment = parent_segment
@@ -681,6 +431,9 @@ def plot_debug_step(rec, step_name, stim_indices, pre_ms=50, post_ms=200, save_d
     """
     if len(stim_indices) == 0: return
     
+    if not SAVE_DEBUG_PLOTS:
+        return
+    
     # Use first stimulus
     stim_idx = stim_indices[0]
     fs = rec.get_sampling_frequency()
@@ -692,7 +445,7 @@ def plot_debug_step(rec, step_name, stim_indices, pre_ms=50, post_ms=200, save_d
     if start_frame < 0: start_frame = 0
     if end_frame > rec.get_num_samples(): end_frame = rec.get_num_samples()
     
-    traces = rec.get_traces(start_frame=start_frame, end_frame=end_frame, return_scaled=True)
+    traces = rec.get_traces(start_frame=start_frame, end_frame=end_frame, return_in_uV=True)
     t_axis = (np.arange(traces.shape[0]) / fs * 1000.0) - pre_ms
     
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -788,6 +541,10 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
     sess_path = valid_folders[0] # Take first match
     
     out_npz = NPRW_LFP_CKPT_ROOT / f"aligned_lfp__{sess_name}.npz"
+    if out_npz.exists():
+        print(f"[NPRW] Skipping {sess_name}, output exists.")
+        return
+        
     print(f"[NPRW] Processing {sess_name}")
 
     # Geometry
@@ -798,9 +555,29 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
     nprw_probe.set_device_channel_indices(intan_probe_mapping)
     
     # 1. Load Resulting Stim Times First (Need for Blanking)
-    stim_ext_arrays = rcp.extract_stim_npz(sess=sess_path, out_dir=NPRW_AUX_DATA, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
-    block_bounds = stim_ext_arrays.get("block_bounds_samples")
-    stim_start_samps_native = block_bounds[:, 0] if block_bounds.size else np.array([])
+    stim_npz_dir = NPRW_AUX_DATA / f"{sess_path.name}_Intan_streams"
+    stim_npz_path = stim_npz_dir / "stim_stream.npz"
+    
+    if stim_npz_path.exists():
+        print(f"    [Stim] Loading existing stim file: {stim_npz_path.name}")
+        # Use existing function or load npz directly
+        try:
+             stim_data = rcp.load_stim_detection(stim_npz_path)
+             stim = stim_data # Assign for metadata usage later
+             # stim_data is dict, block_bounds_samples is key
+             block_bounds = stim_data.get("block_bounds_samples")
+        except Exception as e:
+             print(f"    [Stim] Error loading existing file ({e}), re-extracting...")
+             stim_ext_arrays = rcp.extract_stim_npz(sess=sess_path, out_dir=NPRW_AUX_DATA, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
+             stim = stim_ext_arrays # Assign for metadata
+             block_bounds = stim_ext_arrays.get("block_bounds_samples")
+    else:
+         print(f"    [Stim] Extracting stim stream (first run)...")
+         stim_ext_arrays = rcp.extract_stim_npz(sess=sess_path, out_dir=NPRW_AUX_DATA, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
+         stim = stim_ext_arrays # Assign for metadata
+         block_bounds = stim_ext_arrays.get("block_bounds_samples")
+
+    stim_start_samps_native = block_bounds[:, 0] if (block_bounds is not None and block_bounds.size) else np.array([])
     
     # 2. Load Raw Recording (Lazy)
     rec = se.read_split_intan_files(sess_path, mode="concatenate", stream_name=INTAN_STREAM, use_names_as_ids=True)
@@ -818,35 +595,79 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
         curr_sess_name=sess_name
     )
     
-    # 4. Get Traces (Eager Load of Processed Data)
-    print("  [NPRW] Loading processed traces into memory...")
-    traces = rec_proc.get_traces(return_in_uV=True).T
+    # 4. Get Traces (Parallel Epoch Extraction)
+    # Instead of loading WHOLE recording, we extract only the epochs we need.
+    print("  [NPRW] Extracting epochs directly from Lazy Recording (Parallel)...")
     
-    # 5. Get Traces (Raw/Unblanked) for Comparison
-    # We re-run the pipeline but SKIP the blanking step by passing empty stim indices
-    # This gives us Filtered + Resampled data without the artifact removal
-    print("  [NPRW] Building RAW (Unblanked) pipeline...")
-    rec_proc_raw = build_lfp_preprocessing_pipeline(
-        rec_reordered, 
-        stim_indices_native=np.array([]), # Skip blanking
-        curr_sess_name=sess_name
+    # We need stim indices in the TARGET_FS domain
+    # stim_start_samps_native are in fs_native (30000)
+    # The pipeline resamples to TARGET_FS (typically 1000)
+    stim_indices_res = (stim_start_samps_native * TARGET_FS / fs_native).astype(int)
+    
+    # Define generic parallel extractor
+    def extract_single_epoch(rec_obj, center_idx, pre_samps, post_samps):
+        start = center_idx - pre_samps
+        end = center_idx + post_samps
+        
+        # Check bounds
+        if start < 0 or end > rec_obj.get_num_samples():
+            return None # Skip
+            
+        # Get trace (n_samples, n_ch) -> Transpose to (n_ch, n_samples)
+        # return_in_uV=True handles scaling
+        return rec_obj.get_traces(start_frame=start, end_frame=end, return_in_uV=True).T
+
+    pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000.0)
+    post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000.0)
+    
+    segs_list = Parallel(n_jobs=-int(os.cpu_count() or 1), batch_size='auto')(
+        delayed(extract_single_epoch)(rec_proc, idx, pre_samps, post_samps) 
+        for idx in stim_indices_res
     )
-    print("  [NPRW] Loading RAW traces...")
-    traces_raw = rec_proc_raw.get_traces(return_in_uV=True).T
     
-    n_channels, n_samples = traces.shape
+    # Filter out Nones
+    segs_list = [s for s in segs_list if s is not None]
     
-    # Stim times to ms
+    if not segs_list:
+        print("  [Warn] No valid epochs found.")
+        return
+
+    segs_bb = np.stack(segs_list, axis=0) # (n_trials, n_ch, n_time)
+    n_trials, n_ch, n_time = segs_bb.shape
+    
+    # Construct rel_t_epoch
+    rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - EPOCH_PRE_MS
+    
+    print(f"  [NPRW] Extracted {n_trials} epochs. Shape: {segs_bb.shape}")
+
+    # 5. Get RAW Comparison Epochs (Parallel)
+    traces_raw_epochs = None
+    if RUN_COMPARISON_ANALYSIS:
+        # We re-run the pipeline but SKIP the blanking step
+        print("  [NPRW] Building RAW (Unblanked) pipeline...")
+        rec_proc_raw = build_lfp_preprocessing_pipeline(
+            rec_reordered, 
+            stim_indices_native=np.array([]), # Skip blanking
+            curr_sess_name=sess_name
+        )
+        
+        print("  [NPRW] Extracting RAW epochs (Parallel)...")
+        segs_list_raw = Parallel(n_jobs=-int(os.cpu_count() or 1), batch_size='auto')(
+            delayed(extract_single_epoch)(rec_proc_raw, idx, pre_samps, post_samps) 
+            for idx in stim_indices_res
+        )
+        # Assume same validity mask
+        segs_list_raw = [s for s in segs_list_raw if s is not None]
+        traces_raw_epochs = np.stack(segs_list_raw, axis=0) # (n_trials, n_ch, n_time)
+    
+    # Stim times to ms (just for meta)
     stim_ms = stim_start_samps_native * 1000.0 / fs_native
     
     # 1. DISABLE GLOBAL CMR per user request
     print("  [INFO] Global Common Median Reference (CMR) DISABLED.")
     
-    # Construct Timebase
-    t_ms = np.arange(n_samples, dtype=float) * 1000.0 / TARGET_FS
-    
     # 6. Epoching: Extract Broadband (-500 to +1000)
-    # We epoch first, then clean.
+    # Already done above!
     WIN_EPOCH = (-EPOCH_PRE_MS, EPOCH_POST_MS)
     
     # Sub-windows for final saving
@@ -854,24 +675,34 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
     WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS) # 500ms post-blank
     WIN_COMP = (-50.0, 200.0)
     
+    # Valid stim times
+    valid_stim = stim_ms 
+    
     results = {}
     
-    print(f"  Segmenting Broadband Epochs ({WIN_EPOCH} ms)...", flush=True)
-    segs_bb, _, rel_t_epoch, valid_stim = rcp.extract_peristim_segments(
-        rate_hz=traces.astype(np.float32), 
-        counts=None,
-        t_ms=t_ms,
-        stim_ms=stim_ms,
-        win_ms=WIN_EPOCH
-    )
-    
-    if valid_stim is None:
+    if len(segs_bb) == 0:
         print(f"  [WARN] No valid segments found for {sess_name}. Skipping.")
         return
         
     # 7. Per-Trial Cleaning
     print(f"  Cleaning Epochs (Baseline + Exp Removal)...")
     segs_bb_clean = clean_epochs(segs_bb, TARGET_FS)
+    
+    # --- Step 7.5: Reject Bad Channels (Threshold > 500 uV) ---
+    # Calculate peak amplitude per trial, per channel: (N_trials, N_ch)
+    peaks_per_trial = np.nanmax(np.abs(segs_bb_clean), axis=2) 
+    # Get median peak across trials for each channel: (N_ch,)
+    median_peak_ch = np.nanmedian(peaks_per_trial, axis=0)
+    
+    bad_ch_mask = median_peak_ch > BAD_THRES
+    bad_ch_indices = np.flatnonzero(bad_ch_mask)
+    
+    if len(bad_ch_indices) > 0:
+         print(f"  [Rejection] removing {len(bad_ch_indices)} channels > {BAD_THRES}uV (median peak): {bad_ch_indices}")
+         # Set to NaN
+         segs_bb_clean[:, bad_ch_mask, :] = np.nan
+    
+    results['bad_channels'] = bad_ch_indices
     
     # Helper to slice extracted epoch into sub-windows
     def slice_epoch(data, t_axis, target_win):
@@ -882,26 +713,24 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
     # Slice Broadband Results
     results['broadband_pre'], t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
     results['broadband_post'], t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
-    results['broadband_comp'], t_comp = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_COMP)
     
-    # 8. Raw Comparison (No Cleaning)
-    print(f"  Segmenting Raw (Unblanked)...", flush=True)
+    if RUN_COMPARISON_ANALYSIS:
+        results['broadband_comp'], t_comp = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_COMP)
+        
+        # 8. Raw Comparison (No Cleaning)
+        print(f"  Segmenting Raw (Unblanked)...", flush=True)
+        
+        # Use already extracted raw epochs
+        segs_bb_raw = traces_raw_epochs
+        segs_raw = segs_bb_raw
+        
+        if segs_raw is not None:
+             results['broadband_raw_pre'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_PRE)
+             results['broadband_raw_post'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_POST)
+             results['broadband_raw_comp'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_COMP)
     
-    # valid_stim contains timestamps (ms), use directly
-    segs_raw, _, _, _ = rcp.extract_peristim_segments(
-        rate_hz=traces_raw.astype(np.float32), 
-        counts=None,
-        t_ms=t_ms,
-        stim_ms=valid_stim, # Use valid timestamps directly
-        win_ms=WIN_EPOCH
-    )
-    if segs_raw is not None:
-         results['broadband_raw_pre'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_PRE)
-         results['broadband_raw_post'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_POST)
-         results['broadband_raw_comp'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_COMP)
-
-    # Save Timebase info
-    results['rel_time_comp'] = t_comp
+        # Save Timebase info
+        results['rel_time_comp'] = t_comp
     
     # 9. Band Analysis (Filter Cleaned Epochs)
     for band_name, (low, high) in LFP_BANDS.items():
@@ -922,6 +751,10 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
         "stim_ms": valid_stim, # Original indices relative to full recording
         "rel_time_pre": t_pre,
         "rel_time_post": t_post,
+        # Metadata
+        "stim_channels": stim.get('stim_channels', []),
+        "stim_amplitudes": stim.get('amplitudes', []),
+        "stim_notes": stim.get('notes', ""),
         **results
     }
     
@@ -930,31 +763,48 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
     np.savez_compressed(out_npz, **save_dict)
     print(f"  Saved -> {out_npz}")
     
-    del rec, rec_reordered, rec_proc, traces, results
+    # Cleanup memory
+    try:
+        del rec, rec_reordered, rec_proc, results
+        if 'traces' in locals(): del traces
+    except:
+        pass
     gc.collect()
 
 
 def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan: float, shift_sample: float):
-    # Find BR session folder
-    # Helper from utils? rcp.list_br_sessions finds folders.
-    # We need to match br_idx to folder.
-    # Usually folder name ends in _<03d>
-    
     matches = [p for p in BR_ROOT.iterdir() if p.is_dir() and f"_{br_idx:03d}" in p.name]
-    if not matches:
-        # Fallback: check if it's just the folder name logic
-        # Some sessions might be named differently. 
-        # Try finding by date if possible, but br_idx is most reliable suffix
-        print(f"[UA] No session folder found for BR {br_idx:03d}")
-        return
-    sess_path = matches[0]
     
-    out_npz = UA_LFP_CKPT_ROOT / f"aligned_lfp__{sess_path.name}.npz"
-    # if out_npz.exists():
-    #     print(f"[UA] Skipping {sess_path.name}, output exists.")
-    #     return
+    if matches:
+        sess_path = matches[0]
+        # It's a directory
+    else:
+        # Check for files (flat structure)
+        # Look for .ns files
+        matches_files = [p for p in BR_ROOT.iterdir() if p.is_file() and f"_{br_idx:03d}" in p.name and p.suffix in ['.ns2', '.ns5', '.ns6']]
+        if matches_files:
+            ns6 = [f for f in matches_files if f.suffix == '.ns6']
+            ns2 = [f for f in matches_files if f.suffix == '.ns2']
+            if ns6:
+                sess_path = ns6[0]
+            elif ns2:
+                sess_path = ns2[0]
+            else:
+                sess_path = matches_files[0]
+        else:
+            print(f"[UA] No session folder or files found for BR {br_idx:03d}")
+            return
+
+    # Construct unique identifier for output filename
+    # If it's a file, sess_path.name includes extension. removing it for cleanliness in filename
+    sess_id = sess_path.stem if sess_path.is_file() else sess_path.name
+    
+    out_npz = UA_LFP_CKPT_ROOT / f"aligned_lfp__{sess_id}.npz"
+    if out_npz.exists():
+        print(f"[UA] Skipping {sess_id}, output exists.")
+        return
         
-    print(f"[UA] Processing {sess_path.name}")
+    print(f"[UA] Processing {sess_id} (Source: {sess_path.name})")
     
     # Load Recording
     try:
@@ -1015,22 +865,20 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     # Use existing trace as "raw" for flow, though it is filtered/cleaned.
     traces_unref = traces.copy()
     print("  [UA] Global Common Median Reference (CMR) DISABLED.")
-    # Let's align with NPRW:
-    # traces_raw in NPRW was filtered raw.
-    # traces_unref was not captured in new NPRW block explicitly? Ah, I removed it?
-    # In NPRW I didn't assign traces_unref.    # 4. Get Traces (Raw/Unblanked) for Comparison
-    print("  [UA] Building RAW (Unblanked) pipeline...")
-    rec_proc_raw = build_lfp_preprocessing_pipeline(
-        rec_mapped, 
-        stim_indices_native=np.array([]), # Skip blanking
-        curr_sess_name=sess_path.name
-    )
-    print("  [UA] Loading RAW traces...")
-    traces_raw = rec_proc_raw.get_traces(return_in_uV=True).T
+    # 4. Get Traces (Raw/Unblanked) for Comparison
+    traces_raw = None
+    if RUN_COMPARISON_ANALYSIS:
+        print("  [UA] Building RAW (Unblanked) pipeline...")
+        rec_proc_raw = build_lfp_preprocessing_pipeline(
+            rec_mapped, 
+            stim_indices_native=np.array([]), # Skip blanking
+            curr_sess_name=sess_path.name
+        )
+        print("  [UA] Loading RAW traces...")
+        traces_raw = rec_proc_raw.get_traces(return_in_uV=True).T
 
-    # 1. DISABLE GLOBAL CMR per user request
-    traces_unref = traces_raw.copy() 
-    print("  [UA] Global Common Median Reference (CMR) DISABLED.")
+        # 1. DISABLE GLOBAL CMR per user request
+        print("  [UA] Global Common Median Reference (CMR) DISABLED.")
 
     # Segment
     t_ms = np.arange(n_samples, dtype=float) * 1000.0 / TARGET_FS
@@ -1066,30 +914,33 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         
     results['broadband_pre'], t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
     results['broadband_post'], t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
-    results['broadband_comp'], t_comp = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_COMP)
     
     results['broadband_raw_comp'] = None 
     results['broadband_unref_comp'] = None
-    
-    # 8. Raw Comparison
-    print(f"  Segmenting Raw (Unblanked)...", flush=True)
-    
-    # valid_stim contains timestamps (ms)
-    segs_raw, _, _, _ = rcp.extract_peristim_segments(
-        rate_hz=traces_raw.astype(np.float32), 
-        counts=None,
-        t_ms=t_ms,
-        stim_ms=valid_stim,
-        win_ms=WIN_EPOCH
-    )
-    if segs_raw is not None:
-         results['broadband_raw_pre'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_PRE)
-         results['broadband_raw_post'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_POST)
-         results['broadband_raw_comp'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_COMP)
-         results['broadband_unref_comp'] = results['broadband_raw_comp']
 
-    # Save Timebase info
-    results['rel_time_comp'] = t_comp
+    if RUN_COMPARISON_ANALYSIS:
+        results['broadband_comp'], t_comp = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_COMP)
+        
+        # 8. Raw Comparison
+        print(f"  Segmenting Raw (Unblanked)...", flush=True)
+        
+        if traces_raw is not None:
+            # valid_stim contains timestamps (ms)
+            segs_raw, _, _, _ = rcp.extract_peristim_segments(
+                rate_hz=traces_raw.astype(np.float32), 
+                counts=None,
+                t_ms=t_ms,
+                stim_ms=valid_stim,
+                win_ms=WIN_EPOCH
+            )
+            if segs_raw is not None:
+                 results['broadband_raw_pre'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_PRE)
+                 results['broadband_raw_post'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_POST)
+                 results['broadband_raw_comp'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_COMP)
+                 results['broadband_unref_comp'] = results['broadband_raw_comp']
+
+        # Save Timebase info
+        results['rel_time_comp'] = t_comp
     
     # 9. Band Analysis
     for band_name, (low, high) in LFP_BANDS.items():

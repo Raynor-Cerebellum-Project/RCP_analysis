@@ -15,6 +15,7 @@ import spikeinterface.extractors as se
 # Assuming run from repo root or e:/NHP_...
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
+import warnings
 
 # ---------- Config ----------
 TARGET_FS = 1000
@@ -39,7 +40,6 @@ GROUP_COLORS = [
     '#7f7f7f', # Gray (113-128)
 ]
 
-# --- copy of BlankingRecording from analyze_lfp_bands.py ---
 # --- copy of BlankingRecording from analyze_lfp_bands.py ---
 class BlankingRecording(si.BaseRecording):
     def __init__(self, parent_recording, stim_indices, pre_ms=5.0, post_ms=20.0, mode='interp'):
@@ -249,7 +249,7 @@ def plot_debug_step_colored(rec, step_name, stim_indices, pre_ms=50, post_ms=200
     if start_frame < 0: start_frame = 0
     if end_frame > rec.get_num_samples(): end_frame = rec.get_num_samples()
     
-    traces = rec.get_traces(start_frame=start_frame, end_frame=end_frame, return_scaled=True)
+    traces = rec.get_traces(start_frame=start_frame, end_frame=end_frame, return_in_uV=True)
     t_axis = (np.arange(traces.shape[0]) / fs * 1000.0) - pre_ms
     
     fig, ax = plt.subplots(figsize=(12, 7))
@@ -447,7 +447,7 @@ def run_debug_pipeline(sess_name):
         if start_samp < 0: continue
         if end_samp > rec_res.get_num_samples(): continue
         
-        traces = rec_res.get_traces(start_frame=start_samp, end_frame=end_samp, return_scaled=True).T
+        traces = rec_res.get_traces(start_frame=start_samp, end_frame=end_samp, return_in_uV=True).T
         epoch_list.append(traces)
         
     if not epoch_list:
@@ -515,8 +515,25 @@ def run_debug_pipeline(sess_name):
     # 2. Subtract Template from all trials
     epochs_clean = epochs_exp_clean - template_median[None, :, :]
     
-    # Plot Step 6
-    plot_epoch_snapshot(epochs_clean[0], "6_MedianTemplateSubtracted", TARGET_FS, pre_ms=EPOCH_PRE_MS, save_dir=SAVE_DIR)
+    # --- Step 6.5: Reject Bad Channels (Threshold > 500 uV) ---
+    print("Applying Threshold Rejection (> 500 uV)...")
+    BAD_THRES = 500.0
+    
+    # Check max abs amplitude per channel
+    peak_amps = np.max(np.abs(epochs_clean[0]), axis=1) # (n_ch,)
+    bad_ch_mask = peak_amps > BAD_THRES
+    bad_ch_indices = np.flatnonzero(bad_ch_mask)
+    num_bad = len(bad_ch_indices)
+    
+    # Set bad channels to NaN
+    epochs_clean_rej = epochs_clean.copy()
+    if num_bad > 0:
+        print(f"  [Reject] Removing {num_bad} channels > {BAD_THRES} uV: {bad_ch_indices}")
+        epochs_clean_rej[:, bad_ch_mask, :] = np.nan
+        
+    # Plot Step 6 (Adjusted with Rejection info)
+    title_extra = f"\n(Removed {num_bad} ch > {BAD_THRES}uV: {list(bad_ch_indices)})" if num_bad > 0 else ""
+    plot_epoch_snapshot(epochs_clean_rej[0], "6_MedianTemplateSubtracted_Rej", TARGET_FS, pre_ms=EPOCH_PRE_MS, save_dir=SAVE_DIR, title_suffix=title_extra)
     
     # --- PLOT TRANSIENT PROFILES (The Template) ---
     print("Plotting Transient Profiles (Templates)...")
@@ -525,17 +542,22 @@ def run_debug_pipeline(sess_name):
     # --- Step 7: Alpha Band (5-13 Hz) ---
     print("Applying Alpha Filter (5-13 Hz)...")
     sos = signal.butter(4, [5.0, 13.0], btype='band', fs=TARGET_FS, output='sos')
-    epochs_alpha = signal.sosfiltfilt(sos, epochs_clean, axis=2)
+    
+    # Use Rejected Data for Filtering (NaNs will propagate, which is fine/desired for visual exclusion)
+    # Note: sosfiltfilt handles NaNs poorly (might spread them). 
+    # Better to fill with 0 or interp? But user asked to "delete" them. NaNs usually hide in matplotlib.
+    # We will let them be NaNs to ensure they don't appear in the average or plot.
+    epochs_alpha = signal.sosfiltfilt(sos, epochs_clean_rej, axis=2)
     
     # Plot Pre-Stim Focus
-    plot_epoch_snapshot(epochs_alpha[0], "7a_Alpha_PreStim", TARGET_FS, pre_ms=EPOCH_PRE_MS, x_lim=(-500, -5), save_dir=SAVE_DIR)
+    plot_epoch_snapshot(epochs_alpha[0], "7a_Alpha_PreStim", TARGET_FS, pre_ms=EPOCH_PRE_MS, x_lim=(-500, -5), save_dir=SAVE_DIR, title_suffix=title_extra)
     
     # Plot Post-Stim Focus
-    plot_epoch_snapshot(epochs_alpha[0], "7b_Alpha_PostStim", TARGET_FS, pre_ms=EPOCH_PRE_MS, x_lim=(BLANK_POST_MS, 600), save_dir=SAVE_DIR)
+    plot_epoch_snapshot(epochs_alpha[0], "7b_Alpha_PostStim", TARGET_FS, pre_ms=EPOCH_PRE_MS, x_lim=(BLANK_POST_MS, 600), save_dir=SAVE_DIR, title_suffix=title_extra)
 
     print("Done.")
 
-def plot_epoch_snapshot(traces, step_name, fs, pre_ms=500.0, x_lim=None, save_dir=None):
+def plot_epoch_snapshot(traces, step_name, fs, pre_ms=500.0, x_lim=None, save_dir=None, title_suffix=""):
     """
     Plot helper for epoch data (n_ch, n_time)
     """
@@ -546,11 +568,20 @@ def plot_epoch_snapshot(traces, step_name, fs, pre_ms=500.0, x_lim=None, save_di
     
     # Group Colors
     for ch_idx in range(n_ch):
+        # Skip NaNs
+        if np.isnan(traces[ch_idx, :]).all():
+            continue
+            
         group_idx = ch_idx // 16
         color = GROUP_COLORS[group_idx % len(GROUP_COLORS)]
         ax.plot(t_axis, traces[ch_idx, :], color=color, alpha=0.6, linewidth=0.8)
         
-    ax.plot(t_axis, np.mean(traces, axis=0), color='k', linewidth=2.5, linestyle='--', label='Mean')
+    # Mean (ignoring NaNs)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        mean_trace = np.nanmean(traces, axis=0) # safe mean
+        
+    ax.plot(t_axis, mean_trace, color='k', linewidth=2.5, linestyle='--', label='Mean')
     
     # Custom Legend (Reuse logic from main plotter)
     from matplotlib.lines import Line2D
@@ -561,7 +592,7 @@ def plot_epoch_snapshot(traces, step_name, fs, pre_ms=500.0, x_lim=None, save_di
     leg_labels.append("Mean")
     ax.legend(leg_handles, leg_labels, loc='upper right', fontsize='small')
     
-    ax.set_title(f"Debug: {step_name}")
+    ax.set_title(f"Debug: {step_name}{title_suffix}")
     ax.set_xlabel("Time from Stim (ms)")
     ax.set_ylabel("uV")
     ax.axvline(0, color='k', linestyle=':', alpha=0.5)
