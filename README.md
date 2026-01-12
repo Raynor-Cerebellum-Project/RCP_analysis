@@ -174,6 +174,29 @@ Preprocessing and spike sorting are handled in Python using [SpikeInterface](htt
 3. These plots include (Median, variance, mean traces, median count traces, and chosen / best DLC coordinates)
 4, Plot first 4 trials
 
+## 9. LFP Band Analysis
+`batch_scripts/analyze_lfp_bands.py`
+
+Performs blanking, cleaning, and bandpass filtering of LFP data for both NPRW and Utah arrays, aligned to stimulation events.
+
+**Steps:**
+1.  **Alignment**: Loads stimulation events from Intan aux stream and aligns Utah data using calculated shifts.
+2.  **Artifact Removal (Blanking)**: Applies "copy_baseline" blanking to stimulation artifacts (-5ms to +101ms).
+3.  **Cleaning**:
+    *   Reverse (Anti-Causal) Bandpass Filter (0.5 - 500 Hz).
+    *   Resample to 1kHz.
+    *   Baseline Correction (subtract pre-stim mean).
+    *   Exponential Decay Removal (trial-by-trial fit & subtraction).
+    *   Common Median Template Subtraction.
+    *   Bad Channel Rejection (>700µV threshold).
+4.  **Band Filtering**: Extracts power in Alpha (5-13Hz), Beta (13-30Hz), Low Gamma (30-60Hz), and High Gamma (60-120Hz).
+5.  **Output**: Saves `.npz` files in `results/checkpoints/NPRW_LFP` and `results/checkpoints/UA_LFP`.
+
+**Visualization:**
+*   `scripts/plot_lfp_check.py`: Generates comprehensive plots (traces, heatmaps, PSDs) for all frequency bands.
+*   `scripts/plot_lfp_artifact_comparison.py`: Validates cleaning by comparing Raw vs. Blanked vs. Cleaned signals.
+*   `scripts/debug_lfp_pipeline_plots.py`: Generates step-by-step pipeline visualizations (Raw -> Blanked -> Filtered) for debugging.
+
 ## Other plots
 `RSA_poststim.ipynb`
 - RSA plots
