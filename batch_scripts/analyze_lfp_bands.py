@@ -23,6 +23,14 @@ from RCP_analysis.python.functions.config_loading import *
         Aligned data .npz files containing windowed traces for each band.
 """
 
+# ---------- Constants ----------
+TARGET_FS = 1000.0
+BLANK_PRE_MS = 5.0
+BLANK_POST_MS = 101.0  # UPDATED to 101.0ms
+EPOCH_PRE_MS = 500.0
+EPOCH_POST_MS = 1000.0
+FIT_START_OFFSET_MS = 0.0 # From end of blanking
+
 # ---------- Config ----------
 # Bands of interest
 LFP_BANDS = {
@@ -32,7 +40,6 @@ LFP_BANDS = {
     "high_gamma": (60, 120)
 }
 
-TARGET_FS = 1000  # Downsample to 1kHz
 # Filter order for butterworth
 FILTER_ORDER = 4
 
@@ -362,7 +369,7 @@ def apply_blanking(
     
     return traces_blanked
 
-def clean_epochs(epochs, fs, pre_samps=500, blank_post_ms=105.0):
+def clean_epochs(epochs, fs, pre_samps=500):
     """
     Per-trial cleaning:
     1. Baseline correction (pre-stim mean).
@@ -378,10 +385,9 @@ def clean_epochs(epochs, fs, pre_samps=500, blank_post_ms=105.0):
         baseline = np.mean(cleaned[:, :, :pre_samps], axis=2, keepdims=True)
         cleaned -= baseline
         
-    # 2. Exponential Removal
+    # 2. Exponential Removal (Per-Trial)
     # Fit window: starts after blanking (+buffer).
-    # Blanking ends at 105ms. Let's start fitting at 110ms.
-    fit_start_ms = blank_post_ms + 5.0 
+    fit_start_ms = BLANK_POST_MS + FIT_START_OFFSET_MS
     fit_start_idx = pre_samps + int(fit_start_ms * fs / 1000)
     
     if fit_start_idx >= n_time:
@@ -395,14 +401,12 @@ def clean_epochs(epochs, fs, pre_samps=500, blank_post_ms=105.0):
     
     print(f"    [Cleaning] Fitting Exponentials (Trial-by-Trial)...")
     
-    # Optimize: Loop is slow. But robust.
-    # We can try to parallelize or just live with it.
-    # For 50 trials * 128 ch = 6400 fits. ~5-10s.
     from scipy.optimize import curve_fit, OptimizeWarning
     import warnings
     warnings.simplefilter('ignore', OptimizeWarning)
     warnings.simplefilter('ignore', RuntimeWarning)
 
+    # 1. Fit each trial and channel INDIVIDUALLY
     for i in range(n_trials):
         for c in range(n_ch):
             y_segment = cleaned[i, c, fit_start_idx:]
@@ -411,7 +415,6 @@ def clean_epochs(epochs, fs, pre_samps=500, blank_post_ms=105.0):
             a0 = y_segment[0] - y_segment[-1]
             tau0 = len(y_segment) / 4.0
             c0 = y_segment[-1]
-            
             try:
                 popt, _ = curve_fit(
                     exp_decay, t_fit, y_segment,
@@ -419,17 +422,16 @@ def clean_epochs(epochs, fs, pre_samps=500, blank_post_ms=105.0):
                     bounds=([-np.inf, 1.0, -np.inf], [np.inf, n_time*2, np.inf]),
                     maxfev=1000
                 )
-                
-                # Subtract fit from the post-blank region
-                # Note: We only subtract from fit_start onwards?
-                # Or do we extrapolate back to the blanking end?
-                # Usually we subtract the recovery tail.
                 fit_curve = exp_decay(t_fit, *popt)
                 cleaned[i, c, fit_start_idx:] -= fit_curve
-                
             except Exception:
-                pass # variable usage is implicit/handled by pass
-                
+                pass
+
+    # 3. Median Template Subtraction (Post-Exp)
+    print(f"    [Cleaning] Subtracting Median Template (Post-Exp)...")
+    template_median = np.median(cleaned, axis=0) # (n_ch, n_time)
+    cleaned -= template_median[None, :, :]
+    
     return cleaned
 
 def filter_epochs(epochs, fs, low, high, order=4):
@@ -624,6 +626,54 @@ class BlankingRecordingSegment(si.BaseRecordingSegment):
         return traces
 
 
+# --- Time Reversal Wrapper for Backward Filtering ---
+class TimeReversedRecordingSegment(si.BaseRecordingSegment):
+    def __init__(self, parent_segment):
+        si.BaseRecordingSegment.__init__(self, **parent_segment.get_times_kwargs())
+        self._parent_segment = parent_segment
+        self._n_samples = parent_segment.get_num_samples()
+
+    def get_num_samples(self):
+        return self._n_samples
+
+    def get_traces(self, start_frame, end_frame, channel_indices):
+        # Time Reversal Logic:
+        # Requesting [start, end) in reversed time
+        # corresponds to [N - end, N - start) in original time
+        # Then flip the result.
+        
+        N = self._n_samples
+        if start_frame is None: start_frame = 0
+        if end_frame is None: end_frame = N
+        
+        # Original indices
+        orig_start = N - end_frame
+        orig_end = N - start_frame
+        
+        # Handle negatives/bounds if caller requests out of bounds (though SI handles bounds usually)
+        # Assuming valid inputs or handling by parent
+        
+        traces = self._parent_segment.get_traces(orig_start, orig_end, channel_indices)
+        
+        # Flip along time axis (axis 0)
+        return traces[::-1, :]
+
+class TimeReversedRecording(si.BaseRecording):
+    def __init__(self, parent_recording):
+        si.BaseRecording.__init__(self, parent_recording.get_sampling_frequency(), 
+                               parent_recording.get_channel_ids(), 
+                               parent_recording.get_dtype())
+        
+        parent_recording.copy_metadata(self)
+        self._parent = parent_recording
+        
+        for i in range(parent_recording.get_num_segments()):
+            self.add_recording_segment(TimeReversedRecordingSegment(
+                parent_recording._recording_segments[i]
+            ))
+            
+        self._kwargs = {'parent_recording': parent_recording.to_dict()}
+
 # --- Debug Plotting ---
 def plot_debug_step(rec, step_name, stim_indices, pre_ms=50, post_ms=200, save_dir=None):
     """
@@ -666,9 +716,6 @@ def plot_debug_step(rec, step_name, stim_indices, pre_ms=50, post_ms=200, save_d
 def build_lfp_preprocessing_pipeline(
     recording: si.BaseRecording,
     stim_indices_native: np.ndarray,
-    blank_pre_ms: float = 5.0,
-    blank_post_ms: float = 120.0,
-    target_fs: float = 1000.0,
     curr_sess_name: str = "unknown") -> si.BaseRecording:
     """
     Custom pipeline with Manual Blanking Class.
@@ -680,15 +727,15 @@ def build_lfp_preprocessing_pipeline(
     plot_debug_step(recording, "0_Raw", stim_indices_native, save_dir=DEBUG_DIR)
     
     # 1. Blanking (Custom) - On RAW Data (30kHz)
-    # Window: -5ms to +105ms
     # Strategy: Copy Baseline (-115ms to -5ms)
+    # Use globals BLANK_PRE_MS, BLANK_POST_MS
     if len(stim_indices_native) > 0:
-        print(f"    [SI Pipeline] Custom Blanking (Copy Baseline) ({len(stim_indices_native)} events, -{blank_pre_ms}ms to +{blank_post_ms}ms) on RAW...")
+        print(f"    [SI Pipeline] Custom Blanking (Copy Baseline) ({len(stim_indices_native)} events, -{BLANK_PRE_MS}ms to +{BLANK_POST_MS}ms) on RAW...")
         rec_blanked = BlankingRecording(
             recording,
             stim_indices_native,
-            pre_ms=blank_pre_ms,
-            post_ms=blank_post_ms,
+            pre_ms=BLANK_PRE_MS,
+            post_ms=BLANK_POST_MS,
             mode='copy_baseline'
         )
         
@@ -697,20 +744,29 @@ def build_lfp_preprocessing_pipeline(
     else:
         rec_blanked = recording
         
-    # 2. Bandpass Filter (0.5 - 500 Hz)
-    print("    [SI Pipeline] Bandpass Filtering (0.5 - 500 Hz)...")
-    rec_filtered = spre.bandpass_filter(rec_blanked, freq_min=0.5, freq_max=500.0, dtype='float32')
+    # 2. Bandpass Filter (0.5 - 500 Hz) - REVERSE FILTERING
+    # "Pass our data end to start through the filter and then flip it back"
+    print("    [SI Pipeline] Bandpass Filtering (0.5 - 500 Hz) [REVERSE / ANTI-CAUSAL]...")
     
-    # Debug Plot: Step 2 = Filtered
-    plot_debug_step(rec_filtered, "2_Filtered_30k", stim_indices_native, pre_ms=50, post_ms=200, save_dir=DEBUG_DIR)
+    # a. Reverse Time
+    rec_rev = TimeReversedRecording(rec_blanked)
+    
+    # b. Filter (Standard Butterworth, but applied to reversed stream)
+    rec_rev_filt = spre.bandpass_filter(rec_rev, freq_min=0.5, freq_max=500.0, dtype='float32')
+    
+    # c. Reverse Time Back (Un-flip)
+    rec_filtered = TimeReversedRecording(rec_rev_filt)
+    
+    # Debug Plot: Step 2 = Filtered (Reverse)
+    plot_debug_step(rec_filtered, "2_Filtered_30k_Rev", stim_indices_native, pre_ms=50, post_ms=200, save_dir=DEBUG_DIR)
     
     # 3. Resampling (30k -> 1k)
-    print(f"    [SI Pipeline] Resampling to {target_fs} Hz...")
-    rec_resampled = spre.resample(rec_filtered, resample_rate=target_fs)
+    print(f"    [SI Pipeline] Resampling to {TARGET_FS} Hz...")
+    rec_resampled = spre.resample(rec_filtered, resample_rate=TARGET_FS)
     
     # Scale stim indices for debug plotting of resampled data
     fs_native = recording.get_sampling_frequency() # Get native FS from original recording
-    stim_indices_resampled = (stim_indices_native * target_fs / fs_native).astype(int)
+    stim_indices_resampled = (stim_indices_native * TARGET_FS / fs_native).astype(int)
     
     # Debug Plot: Step 3 = Resampled
     plot_debug_step(rec_resampled, "3_Resampled_1k", stim_indices_resampled, pre_ms=50, post_ms=200, save_dir=DEBUG_DIR)
@@ -759,9 +815,6 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
     rec_proc = build_lfp_preprocessing_pipeline(
         rec_reordered, 
         stim_indices_native=stim_start_samps_native,
-        blank_pre_ms=5.0, 
-        blank_post_ms=105.0, # Updated to 105ms
-        target_fs=TARGET_FS,
         curr_sess_name=sess_name
     )
     
@@ -776,9 +829,6 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
     rec_proc_raw = build_lfp_preprocessing_pipeline(
         rec_reordered, 
         stim_indices_native=np.array([]), # Skip blanking
-        blank_pre_ms=5.0, 
-        blank_post_ms=105.0,
-        target_fs=TARGET_FS,
         curr_sess_name=sess_name
     )
     print("  [NPRW] Loading RAW traces...")
@@ -797,11 +847,11 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
     
     # 6. Epoching: Extract Broadband (-500 to +1000)
     # We epoch first, then clean.
-    WIN_EPOCH = (-500.0, 1000.0)
+    WIN_EPOCH = (-EPOCH_PRE_MS, EPOCH_POST_MS)
     
     # Sub-windows for final saving
-    WIN_PRE = (-500.0, -5.0)
-    WIN_POST = (105.0, 605.0) # 500ms post-blank
+    WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
+    WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS) # 500ms post-blank
     WIN_COMP = (-50.0, 200.0)
     
     results = {}
@@ -837,15 +887,12 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
     # 8. Raw Comparison (No Cleaning)
     print(f"  Segmenting Raw (Unblanked)...", flush=True)
     
-    # Ensure valid_stim is integer indices
-    if valid_stim is not None:
-        valid_stim = np.array(valid_stim, dtype=int)
-        
+    # valid_stim contains timestamps (ms), use directly
     segs_raw, _, _, _ = rcp.extract_peristim_segments(
         rate_hz=traces_raw.astype(np.float32), 
         counts=None,
         t_ms=t_ms,
-        stim_ms=stim_ms[valid_stim], # Use valid subset
+        stim_ms=valid_stim, # Use valid timestamps directly
         win_ms=WIN_EPOCH
     )
     if segs_raw is not None:
@@ -955,9 +1002,6 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     rec_proc = build_lfp_preprocessing_pipeline(
         rec_mapped, 
         stim_indices_native=stim_indices_native,
-        blank_pre_ms=5.0, 
-        blank_post_ms=105.0,
-        target_fs=TARGET_FS,
         curr_sess_name=sess_path.name
     )
     
@@ -979,9 +1023,6 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     rec_proc_raw = build_lfp_preprocessing_pipeline(
         rec_mapped, 
         stim_indices_native=np.array([]), # Skip blanking
-        blank_pre_ms=5.0, 
-        blank_post_ms=105.0,
-        target_fs=TARGET_FS,
         curr_sess_name=sess_path.name
     )
     print("  [UA] Loading RAW traces...")
@@ -994,11 +1035,11 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     # Segment
     t_ms = np.arange(n_samples, dtype=float) * 1000.0 / TARGET_FS
     
-    # 6. Epoching
-    WIN_EPOCH = (-500.0, 1000.0)
-    WIN_PRE = (-500.0, -5.0)
-    WIN_POST = (105.0, 605.0)
-    WIN_COMP = (-50.0, 200.0)
+    # --- Parameters ---
+    WIN_EPOCH = (-EPOCH_PRE_MS, EPOCH_POST_MS)   # Epoch Window
+    WIN_PRE   = (-EPOCH_PRE_MS, -BLANK_PRE_MS)    # Baseline Window
+    WIN_POST  = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)   # Analysis Window (Post-Blank)
+    WIN_COMP  = (-50.0, 200.0)   # Comparison Window
 
     results = {}
     
@@ -1033,14 +1074,12 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     # 8. Raw Comparison
     print(f"  Segmenting Raw (Unblanked)...", flush=True)
     
-    if valid_stim is not None:
-        valid_stim = np.array(valid_stim, dtype=int)
-
+    # valid_stim contains timestamps (ms)
     segs_raw, _, _, _ = rcp.extract_peristim_segments(
         rate_hz=traces_raw.astype(np.float32), 
         counts=None,
         t_ms=t_ms,
-        stim_ms=stim_ms_ua[valid_stim],
+        stim_ms=valid_stim,
         win_ms=WIN_EPOCH
     )
     if segs_raw is not None:
