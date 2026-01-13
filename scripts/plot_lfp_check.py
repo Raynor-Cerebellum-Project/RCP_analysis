@@ -1,7 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import RCP_analysis.python.functions.config_loading as cfg
+import RCP_analysis.python.functions.utils as rcp
 import warnings
+from pathlib import Path
 
 # Define output directory from config
 NPRW_LFP_DIR = cfg.OUT_BASE / "checkpoints" / "NPRW_LFP"
@@ -46,6 +48,38 @@ PLOT_CONFIG = {
     }
 }
 
+def get_representative_channel(data_array):
+    """
+    Find a channel index that has valid, non-flat data.
+    data_array: (n_trials, n_ch, n_time)
+    """
+    if data_array is None:
+        return 0
+        
+    n_ch = data_array.shape[1]
+    
+    # Try middle first
+    mid = n_ch // 2
+    
+    # Scan outward from middle
+    offsets = np.arange(n_ch)
+    # Interleave 0, 1, -1, 2, -2...
+    scan_order = []
+    for i in range(n_ch):
+        if mid + i < n_ch: scan_order.append(mid + i)
+        if i > 0 and mid - i >= 0: scan_order.append(mid - i)
+        
+    for ch in scan_order:
+        # Check if channel has data transparency
+        traces = data_array[:, ch, :]
+        if np.all(np.isnan(traces)):
+             continue
+        if np.nanstd(traces) < 1e-6: # Flat line
+             continue
+        return ch
+        
+    return mid # Fallback
+
 def process_directory(lfp_dir, fig_dir, label="LFP"):
     if not lfp_dir.exists():
         print(f"Directory not found: {lfp_dir}")
@@ -84,6 +118,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                  print(f"  [Skip] Missing broadband_post in {npz_file.name}")
                  continue
         
+        # Session Name
         if 'session' in data: session = str(data['session'])
         else: session = npz_file.stem.replace("aligned_lfp__", "")
             
@@ -99,28 +134,68 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
         # --- Channel Order ---
         sort_idx = np.arange(n_ch)
         
-        # --- Metadata (Basic from NPZ) ---
-        stim_chs = data.get('stim_channels', [])
-        stim_amps = data.get('stim_amplitudes', [])
-        stim_str = ""
-        # Formatting
-        if len(stim_chs) > 0:
-             if isinstance(stim_chs, (list, np.ndarray)) and len(stim_chs) > 2:
-                  try:
-                      stim_chs_arr = np.array(stim_chs)
-                      if np.all(np.diff(stim_chs_arr) == 1):
-                          stim_curr_str = f"{stim_chs_arr[0]}-{stim_chs_arr[-1]}"
-                      else:
-                          stim_curr_str = str(stim_chs)
-                  except:
-                      stim_curr_str = str(stim_chs)
-             else:
-                 stim_curr_str = str(stim_chs)
-             stim_str = f" | Stim Ch: {stim_curr_str}"
+        # --- Metadata (Detailed) ---
+        # Try to load stim_stream.npz for this session to get accurate freq/chans
+        # Path: results/aux_data/NPRW/{session}_Intan_streams/stim_stream.npz
+        # We need to guess the session name from the file if 'session' key is generic
+        # Usually data['session'] is the intan session name.
         
-        if len(stim_amps) > 0:
-             uniq_amps = np.unique(stim_amps)
-             stim_str += f" | Amp: {uniq_amps} uA"
+        stim_npz = cfg.NPRW_AUX_DATA / f"{session}_Intan_streams" / "stim_stream.npz"
+        
+        active_str = "Unknown"
+        freq_str = "Unknown"
+        amp_str = ""
+        
+        if stim_npz.exists():
+            try:
+                stim_info = rcp.load_stim_detection(stim_npz)
+                
+                # Channels
+                chs = stim_info.get('active_channels')
+                if chs is not None and chs.size > 0:
+                    chs = np.sort(chs)
+                    if len(chs) > 2 and np.all(np.diff(chs) == 1):
+                        active_str = f"{chs[0]}-{chs[-1]}"
+                    else:
+                        active_str = str(list(chs))
+                else:
+                    active_str = "None"
+                    
+                # Frequency
+                trigs = stim_info.get('trigger_pairs')
+                if trigs is not None and trigs.shape[0] > 1:
+                    starts = trigs[:, 0]
+                    diffs = np.diff(starts)
+                    median_diff = np.median(diffs)
+                    if median_diff > 0:
+                         # Assume 30k unless we know otherwise (stim stream is usually native fs)
+                         stim_fs = 30000.0 
+                         freq_val = stim_fs / median_diff
+                         
+                         if abs(freq_val - 130) < 15: freq_str = "130 Hz"
+                         elif abs(freq_val - 400) < 20: freq_str = "400 Hz"
+                         else: freq_str = f"{freq_val:.1f} Hz"
+                    else:
+                        freq_str = "Error"
+                else:
+                    freq_str = "No Triggers"
+
+            except:
+                pass
+        else:
+            # Fallback to what's in the NPZ (likely from analysis script)
+            s_ch = data.get('stim_channels', [])
+            if len(s_ch) > 0: active_str = str(s_ch)
+        
+        # Amplitudes from metadata check (or from NPZ if saved)
+        # analyze_lfp_bands saves 'stim_amplitudes'
+        saved_amps = data.get('stim_amplitudes', [])
+        if len(saved_amps) > 0:
+             u_amps = np.unique(saved_amps)
+             amp_str = f"| {u_amps} uA"
+
+        # Title Construction
+        title_str = f"Stim: {active_str} | {freq_str} {amp_str}"
 
         # Setup Figure
         bands = ['broadband', 'alpha', 'beta', 'low_gamma', 'high_gamma']
@@ -128,11 +203,12 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
         
         # Combine Pre/Post into single heatmap
         fig, axes = plt.subplots(n_rows, 3, figsize=(18, 3 * n_rows), constrained_layout=True,
-                               gridspec_kw={'width_ratios': [3, 1, 1]})
-        fig.suptitle(f"LFP Check ({label}): {session}\n{stim_str}\n(N={n_trials})", fontsize=14)
+                                gridspec_kw={'width_ratios': [3, 1, 1]})
+        fig.suptitle(f"{session}\n{title_str}\n(N={n_trials})", fontsize=14)
         
-        # Pick representative channel
-        rep_ch_idx = n_ch // 2
+        # Pick representative channel (Robust)
+        # Use broadband post as the reference for activity
+        rep_ch_idx = get_representative_channel(data.get('broadband_post'))
         
         for i, band in enumerate(bands):
             # Keys
@@ -180,15 +256,9 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             if t_post is None and d_post is not None: t_post = t_ms
             
             # --- HEATMAPS (Combined) ---
-            # Construct combined timeline and data
             # Determine gap
             t_gap_start = t_pre[-1]
             t_gap_end = t_post[0]
-            # Create a gap of NaNs. Estimated sampling is based on fs.
-            # We can just construct t_combined directly if we know the sample count, 
-            # or just append NaNs for the gap duration.
-            # Simplified approach: Use `imshow` extent, but that doesn't work for non-contiguous data easily without interpolation.
-            # Better approach: Create a full matrix with NaNs in the gap.
             
             # Estimate fs from time
             if len(t_pre) > 1:
@@ -210,15 +280,17 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 m_comb = np.hstack([m_pre[sort_idx, :], gap_data, m_post[sort_idx, :]])
                 
                 # Global Extent
-                # t_pre start to t_post end
-                # We can't strictly use extent if X isn't linear pixel-wise, but here it should be.
-                # Total samples
-                n_total = m_comb.shape[1]
                 t_start = t_pre[0]
                 t_end = t_post[-1]
                 
+                # Extent: [left, right, bottom, top]
+                # Note: imshow origin='upper' means top is index 0. extent bottom/top should match data coordinates.
+                # Usually we want y to be 0..n_ch
+                
                 im = ax.imshow(m_comb, aspect='auto', origin='upper', cmap=cmap, 
-                               vmin=-limit, vmax=limit, extent=[t_start, t_end, n_ch-1, 0])
+                               vmin=-limit, vmax=limit, extent=[t_start, t_end, n_ch - 0.5, -0.5]) 
+                               # Adjusted extent to center pixels on integer indices 0..n_ch-1
+                               
                 fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="uV")
                 
                 # Visual Blanking Region
@@ -226,6 +298,10 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
 
             ax.set_ylabel(f"{band.capitalize()}\nCh Index")
             ax.set_title(f"Combined Activity")
+            # Invert Y axis to have 0 at top (consistent with origin='upper')
+            # But extent might handle it. origin='upper' + extent bottom>top implies flipping.
+            # Let's simple rely on origin='upper' and correct tick labels logic if needed. 
+            # With origin='upper', index 0 is at the top.
             
             # X-Label
             if i == n_rows - 1: 
@@ -278,7 +354,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                     rm = np.nanmean(rep_pre, axis=0)
                 ax.plot(t_pre, rm, color='blue', lw=1.5, label='Mean')
             ax.set_ylim(y_range)
-            ax.set_title(f"Pre Traces (Ch {rep_ch_idx})")
+            ax.set_title(f"Pre (Ch {rep_ch_idx})")
             ax.set_yticklabels([])
             
             if PLOT_CONFIG['x_limits']['pre'] is not None: ax.set_xlim(PLOT_CONFIG['x_limits']['pre'])
@@ -295,7 +371,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                     rm = np.nanmean(rep_post, axis=0)
                 ax.plot(t_post, rm, color='red', lw=1.5, label='Mean')
             ax.set_ylim(y_range)
-            ax.set_title(f"Post Traces (Ch {rep_ch_idx})")
+            ax.set_title(f"Post (Ch {rep_ch_idx})")
             ax.set_yticklabels([])
             
             if PLOT_CONFIG['x_limits']['post'] is not None: ax.set_xlim(PLOT_CONFIG['x_limits']['post'])

@@ -2,6 +2,19 @@ import numpy as np
 import matplotlib.pyplot as plt
 import RCP_analysis.python.functions.config_loading as cfg
 
+"""
+Description:
+    Plots a comparison of raw LFP signals (red) vs. cleaned/filtered signals (black)
+    around the stimulation time to verify artifact removal efficacy.
+    Displays individual trial traces and their means.
+
+Input:
+    Aligned LFP .npz files containing 'broadband_comp' and 'broadband_raw_comp' (TOGGLE in analyze_lfp_bands)
+
+Output:
+    PNG plots saved to: <Session>/results/figures/NPRW_LFP/compare_artifact_traces_<session>.png
+"""
+
 LFP_DIR = cfg.OUT_BASE / "checkpoints" / "NPRW_LFP"
 FIG_DIR = cfg.OUT_BASE / "figures" / "NPRW_LFP"
 FIG_DIR.mkdir(parents=True, exist_ok=True)
