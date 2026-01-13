@@ -4,10 +4,14 @@ import RCP_analysis.python.functions.config_loading as cfg
 import warnings
 
 # Define output directory from config
-# Now reading from new aligned path
-LFP_DIR = cfg.OUT_BASE / "checkpoints" / "NPRW_LFP"
-FIG_DIR = cfg.OUT_BASE / "figures" / "NPRW_LFP"
-FIG_DIR.mkdir(parents=True, exist_ok=True)
+NPRW_LFP_DIR = cfg.OUT_BASE / "checkpoints" / "NPRW_LFP"
+UA_LFP_DIR = cfg.OUT_BASE / "checkpoints" / "UA_LFP"
+
+NPRW_FIG_DIR = cfg.OUT_BASE / "figures" / "NPRW_LFP"
+UA_FIG_DIR = cfg.OUT_BASE / "figures" / "UA_LFP"
+
+NPRW_FIG_DIR.mkdir(parents=True, exist_ok=True)
+UA_FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- Global Plotting Configuration ---
 PLOT_CONFIG = {
@@ -19,7 +23,7 @@ PLOT_CONFIG = {
     
     # Heatmap Scales (uV): Set value to enforce fixed scale, or None for dynamic (percentile)
     "scales": {
-        'broadband': 100.0,
+        'broadband': 30.0,
         'alpha': 10.0,
         'beta': 10.0,
         'low_gamma': 10.0,
@@ -29,10 +33,10 @@ PLOT_CONFIG = {
     # Trace Y-Axis Scales (uV): Set value for fixed +/- limit, or None for dynamic
     "trace_scales": {
         'broadband': 200, 
-        'alpha': 200,
-        'beta': 200,
-        'low_gamma': 200,
-        'high_gamma': 200
+        'alpha': 100,
+        'beta': 100,
+        'low_gamma': 100,
+        'high_gamma': 100
     },
 
     # X-Axis Limits (ms): Set tuple (min, max) or None for default
@@ -42,16 +46,18 @@ PLOT_CONFIG = {
     }
 }
 
-def plot_lfp_check():
-    if not LFP_DIR.exists():
-        print(f"Directory not found: {LFP_DIR}")
+def process_directory(lfp_dir, fig_dir, label="LFP"):
+    if not lfp_dir.exists():
+        print(f"Directory not found: {lfp_dir}")
         return
 
     # Find latest aligned file
-    files = sorted(LFP_DIR.glob("aligned_lfp__*.npz"))
+    files = sorted(lfp_dir.glob("aligned_lfp__*.npz"))
     if not files:
-        print(f"No aligned LFP npz files found in {LFP_DIR}")
+        print(f"No aligned LFP npz files found in {lfp_dir}")
         return
+    
+    print(f"--- Processing {label} ({len(files)} files) ---")
     
     # Iterate through all files
     for npz_file in files:
@@ -70,8 +76,13 @@ def plot_lfp_check():
         if 'rel_time_post' in data: t_ms = data['rel_time_post']
         elif 'rel_time_ms' in data: t_ms = data['rel_time_ms']
         else:
-            n_p = data['broadband_post'].shape[2]
-            t_ms = np.arange(n_p) * 1000.0 / fs
+            try:
+                n_p = data['broadband_post'].shape[2]
+                t_ms = np.arange(n_p) * 1000.0 / fs
+            except KeyError:
+                 # If empty or corrupt
+                 print(f"  [Skip] Missing broadband_post in {npz_file.name}")
+                 continue
         
         if 'session' in data: session = str(data['session'])
         else: session = npz_file.stem.replace("aligned_lfp__", "")
@@ -117,7 +128,7 @@ def plot_lfp_check():
         
         fig, axes = plt.subplots(n_rows, 4, figsize=(20, 3 * n_rows), constrained_layout=True,
                                gridspec_kw={'width_ratios': [2, 2, 1, 1]})
-        fig.suptitle(f"LFP Check: {session}\n{stim_str}\n(N={n_trials})", fontsize=14)
+        fig.suptitle(f"LFP Check ({label}): {session}\n{stim_str}\n(N={n_trials})", fontsize=14)
         
         # Pick representative channel
         rep_ch_idx = n_ch // 2
@@ -171,8 +182,10 @@ def plot_lfp_check():
             # Pre
             ax = axes[i, 0]
             if m_pre is not None:
-                im = ax.imshow(m_pre[sort_idx, :], aspect='auto', origin='upper', cmap=cmap, 
-                               vmin=-limit, vmax=limit, extent=[t_pre[0], t_pre[-1], n_ch-1, 0])
+                if m_pre.shape[1] > 0:
+                     im = ax.imshow(m_pre[sort_idx, :], aspect='auto', origin='upper', cmap=cmap, 
+                                    vmin=-limit, vmax=limit, extent=[t_pre[0], t_pre[-1], n_ch-1, 0])
+                     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="uV")
 
             ax.set_ylabel(f"{band.capitalize()}\nCh Index")
             ax.set_title(f"Pre-Stim")
@@ -186,13 +199,14 @@ def plot_lfp_check():
             
             if i != n_rows - 1 and xlim_pre is None: ax.set_xticklabels([])
             
-            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="uV")
-
             # Post
             ax = axes[i, 1]
             if m_post is not None:
-                im = ax.imshow(m_post[sort_idx, :], aspect='auto', origin='upper', cmap=cmap, 
-                               vmin=-limit, vmax=limit, extent=[t_post[0], t_post[-1], n_ch-1, 0])
+                if m_post.shape[1] > 0:
+                     im = ax.imshow(m_post[sort_idx, :], aspect='auto', origin='upper', cmap=cmap, 
+                                    vmin=-limit, vmax=limit, extent=[t_post[0], t_post[-1], n_ch-1, 0])
+                     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="uV")
+                     
             ax.set_title(f"Post-Stim")
             ax.set_yticklabels([])
             
@@ -205,8 +219,6 @@ def plot_lfp_check():
             
             if i != n_rows - 1 and xlim_post is None: ax.set_xticklabels([])
 
-            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="uV")
-            
             # --- TRACES (Shared Y-Axis) ---
             rep_pre = d_pre[:, rep_ch_idx, :] if d_pre is not None else None
             rep_post = d_post[:, rep_ch_idx, :] if d_post is not None else None
@@ -251,7 +263,7 @@ def plot_lfp_check():
             ax.set_title(f"Pre Traces (Ch {rep_ch_idx})")
             
             if xlim_pre is not None: ax.set_xlim(xlim_pre)
-            else: ax.set_xlim(t_pre[0], t_pre[-1])
+            elif t_pre is not None: ax.set_xlim(t_pre[0], t_pre[-1])
             
             if i == 0: ax.legend(loc='upper right', fontsize='x-small')
             
@@ -268,15 +280,22 @@ def plot_lfp_check():
             ax.set_yticklabels([])
             
             if xlim_post is not None: ax.set_xlim(xlim_post)
-            else: ax.set_xlim(t_post[0], t_post[-1])
+            elif t_post is not None: ax.set_xlim(t_post[0], t_post[-1])
 
-        out_path = FIG_DIR / f"check_lfp_heatmap_{session}.png"
+        out_path = fig_dir / f"check_lfp_heatmap_{session}.png"
         try:
              plt.savefig(out_path, dpi=150)
              print(f"  Saved plot to {out_path}")
         except Exception as e:
              print(f"  Error saving {out_path}: {e}")
         plt.close(fig)
+
+def plot_lfp_check():
+    # 1. Process NPRW
+    process_directory(NPRW_LFP_DIR, NPRW_FIG_DIR, label="NPRW_Intan")
+    
+    # 2. Process Utah Array
+    process_directory(UA_LFP_DIR, UA_FIG_DIR, label="Utah_Array")
 
 if __name__ == "__main__":
     plot_lfp_check()

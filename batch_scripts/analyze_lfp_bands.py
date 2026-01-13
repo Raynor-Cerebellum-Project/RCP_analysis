@@ -25,9 +25,10 @@ from RCP_analysis.python.functions.config_loading import *
     Pipeline:
       1. Extraction: Loads stimulation events and extracts epochs (-500ms to +1000ms)
       2. Blanking: Applies 'copy_baseline' blanking to remove stim artifacts (-5ms to +101ms)
-      3. Cleaning: Bandpass filter (Reverse/Anti-causal), Resample to 1kHz, Baseline Correction,
+      3. Global CMR: Subtracts common median across channels (Optional, USE_GLOBAL_CMR)
+      4. Cleaning: Bandpass filter (Reverse/Anti-causal), Resample to 1kHz, Baseline Correction,
          Exponential Decay Removal, and Common Median Template Subtraction
-      4. Filtering: Extracts power in specific frequency bands
+      5. Filtering: Extracts power in specific frequency bands
       
     Associated Scripts:
       - debug_lfp_pipeline_plots.py: Visualizes the pipeline steps (Raw -> Blanked -> Filtered, etc.)
@@ -51,6 +52,10 @@ RUN_COMPARISON_ANALYSIS = False
 # Toggle for saving debug plots of the pipeline steps
 # See: debug_lfp_pipeline_plots.py
 SAVE_DEBUG_PLOTS = False
+
+# Toggle for Global Common Median Reference (CMR)
+# Applies median subtraction across all channels before filtering
+USE_GLOBAL_CMR = True
 
 # ---------- CONSTANTS ----------
 TARGET_FS = 1000
@@ -497,12 +502,20 @@ def build_lfp_preprocessing_pipeline(
     else:
         rec_blanked = recording
         
+    # 1.5 Global CMR (Optional)
+    if USE_GLOBAL_CMR:
+        print("    [SI Pipeline] Global CMR (Median) ENABLED...")
+        rec_cmr = spre.common_reference(rec_blanked, reference='global', operator='median')
+        plot_debug_step(rec_cmr, "1_5_GlobalCMR_30k", stim_indices_native, pre_ms=50, post_ms=200, save_dir=DEBUG_DIR)
+    else:
+        rec_cmr = rec_blanked
+        
     # 2. Bandpass Filter (0.5 - 500 Hz) - REVERSE FILTERING
     # "Pass our data end to start through the filter and then flip it back"
     print("    [SI Pipeline] Bandpass Filtering (0.5 - 500 Hz) [REVERSE / ANTI-CAUSAL]...")
     
     # a. Reverse Time
-    rec_rev = TimeReversedRecording(rec_blanked)
+    rec_rev = TimeReversedRecording(rec_cmr)
     
     # b. Filter (Standard Butterworth, but applied to reversed stream)
     rec_rev_filt = spre.bandpass_filter(rec_rev, freq_min=0.5, freq_max=500.0, dtype='float32')
@@ -663,8 +676,12 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
     # Stim times to ms (just for meta)
     stim_ms = stim_start_samps_native * 1000.0 / fs_native
     
+    # Stim times to ms (just for meta)
+    stim_ms = stim_start_samps_native * 1000.0 / fs_native
+    
     # 1. DISABLE GLOBAL CMR per user request
-    print("  [INFO] Global Common Median Reference (CMR) DISABLED.")
+    if not USE_GLOBAL_CMR:
+        print("  [INFO] Global Common Median Reference (CMR) DISABLED.")
     
     # 6. Epoching: Extract Broadband (-500 to +1000)
     # Already done above!
@@ -776,8 +793,22 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     matches = [p for p in BR_ROOT.iterdir() if p.is_dir() and f"_{br_idx:03d}" in p.name]
     
     if matches:
-        sess_path = matches[0]
-        # It's a directory
+        # Found a directory
+        dir_path = matches[0]
+        # Look for ns files inside
+        ns_files = list(dir_path.glob("*.ns*"))
+        ns6 = [f for f in ns_files if f.suffix == '.ns6']
+        ns2 = [f for f in ns_files if f.suffix == '.ns2']
+        ns5 = [f for f in ns_files if f.suffix == '.ns5']
+        
+        if ns6: sess_path = ns6[0]
+        elif ns2: sess_path = ns2[0]
+        elif ns5: sess_path = ns5[0]
+        elif ns_files: sess_path = ns_files[0]
+        else:
+            print(f"[UA] Found directory {dir_path.name} but no .ns files inside.")
+            return
+            
     else:
         # Check for files (flat structure)
         # Look for .ns files
@@ -807,16 +838,13 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     print(f"[UA] Processing {sess_id} (Source: {sess_path.name})")
     
     # Load Recording
+    # Load Recording
     try:
-        try:
-            rec_raw = se.read_blackrock(str(sess_path), stream_name='nsx2', all_annotations=True)
-            if rec_raw.get_num_channels() < 64: raise ValueError("Too few channels (AUX?)")
-            print("  Using NS2 (1kHz)")
-        except Exception:
-            rec_raw = se.read_blackrock(str(sess_path), stream_name='nsx6', all_annotations=True)
-            print("  Using NS6 (30kHz)")
+        # User requested to use nsx6
+        print(f"  Loading Blackrock stream: nsx6")
+        rec_raw = se.read_blackrock(str(sess_path), stream_name='nsx6', all_annotations=True)
     except Exception as e:
-        print(f"[UA] Failed to load: {e}")
+        print(f"[UA] Failed to load nsx6: {e}")
         return
 
     # Mapping
@@ -948,8 +976,6 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         filt_epochs = filter_epochs(segs_bb_clean, TARGET_FS, low, high)
         results[f'{band_name}_pre'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_PRE)
         results[f'{band_name}_post'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_POST)
-        
-    results['rel_time_comp'] = t_comp
         
     # Save
     save_dict = {

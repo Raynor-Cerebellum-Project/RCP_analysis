@@ -17,9 +17,31 @@ import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 import warnings
 
+"""
+    Debug script to visualize LFP processing pipeline steps.
+    Synced with logic in batch_scripts/analyze_lfp_bands.py.
+    
+    Generates step-by-step plots:
+    0. Raw
+    1. Blanked (interpolated artifact)
+    1.5. Global CMR (Optional)
+    2. Filtered (Reverse/Anti-causal)
+    3. Resampled
+    4. Baseline Corrected
+    5. Exponential Removed
+    6. Template Subtracted
+    
+    Usage:
+        python debug_lfp_pipeline_plots.py
+        (Update SESSION variable at bottom to target specific session)
+"""
+
 # ---------- Config ----------
 TARGET_FS = 1000
 DEBUG_ROOT = OUT_BASE / "figures" / "debug_pipeline_colored"
+
+# Toggle for Global CMR
+USE_GLOBAL_CMR = False
 
 # --- Constants ---
 BLANK_PRE_MS = 5.0
@@ -67,6 +89,10 @@ class BlankingRecording(si.BaseRecording):
                         'pre_ms': pre_ms, 'post_ms': post_ms, 'mode': mode}
 
 class BlankingRecordingSegment(si.BaseRecordingSegment):
+    """
+    Custom SI segment that zeros out or interpolates over stir-related artifacts 
+    defined by stim_indices.
+    """
     def __init__(self, parent_segment, stim_indices, pre_samples, post_samples, mode='interp'):
         si.BaseRecordingSegment.__init__(self, **parent_segment.get_times_kwargs())
         self._parent_segment = parent_segment
@@ -393,16 +419,22 @@ def run_debug_pipeline(sess_name):
     
     # Step 1: Blanking (on RAW 30k)
     print("Applying Blanking (Copy Baseline) on RAW...")
-    # Step 1: Blanking (on RAW 30k)
-    print("Applying Blanking (Copy Baseline) on RAW...")
     rec_blank = BlankingRecording(rec_reordered, stim_indices, pre_ms=BLANK_PRE_MS, post_ms=BLANK_POST_MS, mode='copy_baseline')
     plot_debug_step_colored(rec_blank, "1_Blanked_30k", stim_indices, save_dir=SAVE_DIR)
+    
+    # Step 1.5: Global CMR (Enabled for Debug)
+    if USE_GLOBAL_CMR:
+        print("Applying Global CMR (Median)...")
+        rec_cmr = spre.common_reference(rec_blank, reference='global', operator='median')
+        plot_debug_step_colored(rec_cmr, "1_5_GlobalCMR_30k", stim_indices, save_dir=SAVE_DIR)
+    else:
+        rec_cmr = rec_blank
     
     # Step 2: Bandpass Filter (0.5 - 500 Hz) - REVERSE FILTERING
     print("Applying Bandpass Filter (0.5 - 500 Hz) [REVERSE / ANTI-CAUSAL]...")
     
     # a. Reverse Time
-    rec_rev = TimeReversedRecording(rec_blank)
+    rec_rev = TimeReversedRecording(rec_cmr)
     
     # b. Filter (Standard Butterworth, but applied to reversed stream)
     rec_rev_filt = spre.bandpass_filter(rec_rev, freq_min=0.5, freq_max=500.0, dtype='float32')
@@ -577,6 +609,7 @@ def plot_epoch_snapshot(traces, step_name, fs, pre_ms=500.0, x_lim=None, save_di
         ax.plot(t_axis, traces[ch_idx, :], color=color, alpha=0.6, linewidth=0.8)
         
     # Mean (ignoring NaNs)
+    import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
         mean_trace = np.nanmean(traces, axis=0) # safe mean
@@ -644,6 +677,24 @@ def plot_transient_profiles(template_data, step_name, fs, pre_ms=500.0, save_dir
     plt.close(fig)
 
 if __name__ == "__main__":
-    # Test on the session being processed
-    SESSION = "NRR_RW011_251203_140253"
-    run_debug_pipeline(SESSION)
+    # Batch run on all sessions found in checkpoints
+    NPRW_LFP_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW_LFP"
+    
+    npz_files = list(NPRW_LFP_CKPT_ROOT.glob("aligned_lfp__*.npz"))
+    
+    if not npz_files:
+        print(f"No checkpoint files found in {NPRW_LFP_CKPT_ROOT}")
+        sys.exit(0)
+        
+    print(f"Found {len(npz_files)} sessions to debug-plot.")
+    
+    for npz in npz_files:
+        # Filename format: aligned_lfp__{session_name}.npz
+        # Extract session name
+        sess_name = npz.stem.replace("aligned_lfp__", "")
+        
+        try:
+            run_debug_pipeline(sess_name)
+        except Exception as e:
+            print(f"[ERROR] Failed to run debug pipeline for {sess_name}: {e}")
+            continue
