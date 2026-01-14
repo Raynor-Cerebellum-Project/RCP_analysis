@@ -16,6 +16,7 @@ BATCH_SCRIPTS = [
     "extract_peri_stim.py",
     "generate_stim_summary.py",
     "plot_complete_shaded_BT.py",
+    "quantify_stim_kinematics.py",
 ]
 
 def run_scripts(base_dir: Path):

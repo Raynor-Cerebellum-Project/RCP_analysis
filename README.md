@@ -197,6 +197,21 @@ Performs blanking, cleaning, and bandpass filtering of LFP data for both NPRW an
 *   `scripts/plot_lfp_artifact_comparison.py`: Validates cleaning by comparing Raw vs. Blanked vs. Cleaned signals.
 *   `scripts/debug_lfp_pipeline_plots.py`: Generates step-by-step pipeline visualizations (Raw -> Blanked -> Filtered) for debugging.
 
+## 10. Kinematics Quantification
+`batch_scripts/quantify_stim_kinematics.py`
+
+Analyzes reach kinematics (Duration, Peak Speed) comparing stimulation conditions to baseline.
+
+**Features:**
+- Speed-based reach endpoint detection.
+- Statistical analysis (Welch's t-test vs Baseline) with significance clustering.
+- Generates Violin/Box plots with transparent, jittered individual points.
+- Parallel processing for fast dataset scanning.
+- Output: Stats summary CSVs and Figures in `results/figures/quantify_kinematics`.
+
+**Visualization:**
+*   `scripts/plot_individual_kinematics.py`: Plots individual kinematic traces for every trial in a grid layout to allow visual inspection and outlier identification. Output: `results/figures/individual_trials`.
+
 ## Other plots
 `RSA_poststim.ipynb`
 - RSA plots
