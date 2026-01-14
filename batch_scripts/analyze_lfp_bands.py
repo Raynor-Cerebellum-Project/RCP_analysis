@@ -6,6 +6,7 @@ from scipy import signal
 from scipy.io import loadmat
 from scipy.optimize import curve_fit
 from pathlib import Path
+import pandas as pd
 
 # SpikeInterface
 from probeinterface import Probe
@@ -18,6 +19,12 @@ from scipy.optimize import curve_fit, OptimizeWarning
 
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
+
+# ---------- MANUAL EXCLUSION ----------
+# Format: "Session_Name": [list of 0-based trial indices to skip]
+MANUAL_EXCLUSION = {
+    # Example: "20240101_01_session": [0, 5, 22] 
+}
 
 """
     Analyzes LFP bands (Alpha, Beta, Low/High Gamma) for NPRW (Intan) and Utah Array (Blackrock)
@@ -81,6 +88,8 @@ FILTER_ORDER = 4
 # Output Directories
 NPRW_LFP_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW_LFP"
 UA_LFP_CKPT_ROOT = OUT_BASE / "checkpoints" / "UA_LFP"
+ALIGNED_CKPT_ROOT = OUT_BASE / "checkpoints" / "Aligned"
+PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStim"
 
 NPRW_LFP_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
 UA_LFP_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
@@ -101,6 +110,54 @@ SHIFT_CSV = METADATA_ROOT / "br_to_intan_shifts.csv"
 # Global job kwargs
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
+
+
+# =============================================================================
+# Metadata Helpers (for Baseline Grouping)
+# =============================================================================
+
+def _normalize_metadata(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """Normalize column names to lowercase with underscores."""
+    df = df_raw.copy()
+    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+    return df
+
+def _find_baseline_groups(df_norm: pd.DataFrame) -> dict:
+    """
+    Return mapping (ua_port_norm, depth_mm_norm) -> row indices of baseline rows.
+    Mirrors the grouping logic from extract_peri_IR_and_concat_baseline.py.
+    """
+    if "notes" not in df_norm.columns:
+        return {}
+
+    is_baseline = df_norm["notes"].astype(str).str.lower().eq("baseline")
+    df_base = df_norm.loc[is_baseline].copy()
+
+    if df_base.empty:
+        return {}
+
+    # UA_port
+    if "ua_port" in df_base.columns:
+        df_base["_ua_port_norm"] = (
+            df_base["ua_port"].astype(str).str.upper().str.strip().replace({"": "UNKNOWN"})
+        )
+    else:
+        df_base["_ua_port_norm"] = "UNKNOWN"
+
+    # Depth_mm
+    if "depth_mm" in df_base.columns:
+        depth_num = pd.to_numeric(df_base["depth_mm"], errors="coerce")
+        df_base["_depth_mm_norm"] = depth_num.where(
+            depth_num.notna(), df_base["depth_mm"].astype(str)
+        ).replace({"": "n/a"})
+    else:
+        df_base["_depth_mm_norm"] = "n/a"
+
+    groups = {}
+    for (port, depth), g in df_base.groupby(["_ua_port_norm", "_depth_mm_norm"], sort=True):
+        key = (str(port), str(depth))
+        groups[key] = g.index.to_numpy()
+    return groups
 
 
 # =============================================================================
@@ -541,7 +598,32 @@ def build_lfp_preprocessing_pipeline(
     
     return rec_clean
 
-def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
+
+def extract_single_epoch(rec_obj, center_idx, pre_samps, post_samps):
+    """
+    Extract a single epoch from a recording object.
+    
+    Args:
+        rec_obj: SpikeInterface recording object
+        center_idx: Center sample index (typically stim onset)
+        pre_samps: Samples before center
+        post_samps: Samples after center
+    
+    Returns:
+        np.ndarray of shape (n_ch, n_time) or None if out of bounds
+    """
+    start = center_idx - pre_samps
+    end = center_idx + post_samps
+    
+    # Check bounds
+    if start < 0 or end > rec_obj.get_num_samples():
+        return None
+        
+    # Get trace (n_samples, n_ch) -> Transpose to (n_ch, n_samples)
+    return rec_obj.get_traces(start_frame=start, end_frame=end, return_in_uV=True).T
+
+
+def process_nprw_session(sess_name: str, br_idx: int, intan_idx: int, shift_ms: float = 0.0):
     """
     Process one Intan session: lazy load, SI clean/filter/DS, epoch.
     """
@@ -567,9 +649,41 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
     nprw_probe.set_contacts(positions=np.c_[intan_geom["x"], intan_geom["y"]], shape_params={"width": 12.0})
     nprw_probe.set_device_channel_indices(intan_probe_mapping)
     
-    # 1. Load Resulting Stim Times First (Need for Blanking)
-    stim_npz_dir = NPRW_AUX_DATA / f"{sess_path.name}_Intan_streams"
-    stim_npz_path = stim_npz_dir / "stim_stream.npz"
+    # 2. Load Raw Recording (Lazy)
+    rec = se.read_split_intan_files(sess_path, mode="concatenate", stream_name=INTAN_STREAM, use_names_as_ids=True)
+    rec = spre.unsigned_to_signed(rec)
+    rec_reordered = rcp.reorder_recording_to_geometry(rec, intan_probe_mapping)
+    rec_reordered = rec_reordered.set_probe(nprw_probe)
+    
+    fs_native = rec_reordered.get_sampling_frequency()
+
+    # 1. Load Resulting Stim Times
+    stim_start_samps_native = np.array([])
+    stim_channels_meta = ["Stim_Trigger"]
+
+    # Try loading from ALIGNED file first (as requested)
+    aligned_path = ALIGNED_CKPT_ROOT / f"aligned__{sess_name}__Intan_{intan_idx:03d}__BR_{br_idx:03d}.npz"
+    
+    if aligned_path.exists():
+        print(f"    [Stim] Loading from aligned file: {aligned_path.name}")
+        try:
+             aln = np.load(aligned_path, allow_pickle=True)
+             if "stim_ms" in aln:
+                 stim_ms_aligned = aln["stim_ms"]
+                 if stim_ms_aligned.size > 0:
+                      # Convert back to native samples
+                      # stim_ms in aligned file is (sample / fs * 1000 - shift)
+                      # So: sample = (ms + shift) * fs / 1000
+                      stim_start_samps_native = ((stim_ms_aligned + shift_ms) * fs_native / 1000.0).astype(np.int64)
+                      print(f"    [Stim] Found {len(stim_start_samps_native)} events in aligned file.")
+                      stim_channels_meta = ["Aligned_Stim_MS"]
+        except Exception as e:
+            print(f"    [WARN] Failed to load aligned file: {e}")
+
+    # Fallback to standard Stim stream if aligned failed
+    if len(stim_start_samps_native) == 0:
+        stim_npz_dir = NPRW_AUX_DATA / f"{sess_path.name}_Intan_streams"
+        stim_npz_path = stim_npz_dir / "stim_stream.npz"
     
     if stim_npz_path.exists():
         print(f"    [Stim] Loading existing stim file: {stim_npz_path.name}")
@@ -592,13 +706,50 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
 
     stim_start_samps_native = block_bounds[:, 0] if (block_bounds is not None and block_bounds.size) else np.array([])
     
-    # 2. Load Raw Recording (Lazy)
-    rec = se.read_split_intan_files(sess_path, mode="concatenate", stream_name=INTAN_STREAM, use_names_as_ids=True)
-    rec = spre.unsigned_to_signed(rec)
-    rec_reordered = rcp.reorder_recording_to_geometry(rec, intan_probe_mapping)
-    rec_reordered = rec_reordered.set_probe(nprw_probe)
+    # -------------------------------------------------------------------------
+    # [Control/IR Fallback]
+    # If no stim triggers found, load IR events from baseline PeriStim files
+    # -------------------------------------------------------------------------
+    stim_channels_meta = ["Stim_Trigger"]
+    if len(stim_start_samps_native) == 0:
+        print(f"    [Stim] No standard stim triggers found. Checking for baseline PeriStim files...")
+        
+        for target in ["Target_A", "Target_B"]:
+            if len(stim_start_samps_native) > 0:
+                break  # Already found
+                
+            target_dir = PERI_ROOT / target
+            if not target_dir.exists():
+                continue
+                
+            # Pattern: baseline__{session}*_target_{A,B}.npz
+            pattern = f"baseline__*{sess_name}*_target_{target[-1]}.npz"
+            matches = list(target_dir.glob(pattern))
+            
+            if matches:
+                baseline_file = matches[0]
+                print(f"    [Stim] Loading IR from baseline file: {baseline_file.name}")
+                try:
+                    bl_data = np.load(baseline_file, allow_pickle=True)
+                    if "stim_ms" in bl_data and bl_data["stim_ms"].size > 0:
+                        stim_ms_baseline = bl_data["stim_ms"]
+                        # Convert ms back to native samples
+                        # stim_ms in baseline file is in BR time (aligned)
+                        # So: sample = (ms + shift) * fs / 1000
+                        stim_start_samps_native = ((stim_ms_baseline + shift_ms) * fs_native / 1000.0).astype(np.int64)
+                        stim_channels_meta = ["Baseline_IR"]
+                        print(f"    [Stim] Found {len(stim_start_samps_native)} IR events from baseline file.")
+                except Exception as e:
+                    print(f"    [WARN] Failed to load baseline file: {e}")
+        
+        if len(stim_start_samps_native) == 0:
+            print(f"    [WARN] No IR events found in baseline files for {sess_name}.")
+
     
-    fs_native = rec_reordered.get_sampling_frequency()
+    # (Raw Loading moved up)
+    # rec = se.read_split_intan_files(...) 
+    # already done above to get fs_native for conversion
+    
     
     # 3. Build SI Pipeline
     # Blank(-5, +20) -> HP(0.5) -> LP(500) -> DS(1000)
@@ -633,9 +784,14 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
     pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000.0)
     post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000.0)
     
+    exclusion_list = MANUAL_EXCLUSION.get(sess_name, [])
+    if exclusion_list:
+        print(f"  [NPRW] Excluding {len(exclusion_list)} trials manually: {exclusion_list}")
+
     segs_list = Parallel(n_jobs=-int(os.cpu_count() or 1), batch_size='auto')(
         delayed(extract_single_epoch)(rec_proc, idx, pre_samps, post_samps) 
-        for idx in stim_indices_res
+        for i, idx in enumerate(stim_indices_res)
+        if i not in exclusion_list
     )
     
     # Filter out Nones
@@ -769,7 +925,7 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
         "rel_time_pre": t_pre,
         "rel_time_post": t_post,
         # Metadata
-        "stim_channels": stim.get('stim_channels', []),
+        "stim_channels": stim_channels_meta if stim_channels_meta == ["Control_IR"] else stim.get('stim_channels', stim_channels_meta),
         "stim_amplitudes": stim.get('amplitudes', []),
         "stim_notes": stim.get('notes', ""),
         **results
@@ -786,6 +942,216 @@ def process_nprw_session(sess_name: str, br_idx: int, shift_ms: float = 0.0):
         if 'traces' in locals(): del traces
     except:
         pass
+    gc.collect()
+
+
+# =============================================================================
+# Grouped Baseline LFP Processing
+# =============================================================================
+
+def process_baseline_group(
+    group_key: tuple,  # (port, depth)
+    session_infos: list,  # List of dicts with session info
+):
+    """
+    Process a group of baseline/control sessions by loading IR events from
+    existing baseline PeriStim files and concatenating LFP epochs.
+    
+    Args:
+        group_key: Tuple of (ua_port, depth_mm)
+        session_infos: List of dicts with keys: session, br_idx, intan_idx, shift_ms
+    """
+    port, depth = group_key
+    
+    # Sanitize for filename
+    def _sanitize(s):
+        return str(s).replace(".", "_").replace("/", "_").replace("\\", "_").replace(" ", "_")
+    
+    depth_str = _sanitize(depth)
+    port_str = _sanitize(port)
+    
+    out_npz = NPRW_LFP_CKPT_ROOT / f"aligned_lfp__baseline__Depth_{depth_str}_port_{port_str}.npz"
+    
+    if out_npz.exists():
+        print(f"[Baseline LFP] Skipping group Depth={depth}, Port={port}, output exists.")
+        return
+        
+    print(f"\n[Baseline LFP] Processing group: Depth={depth}, Port={port}")
+    print(f"    Sessions: {[s['session'] for s in session_infos]}")
+    
+    # 1. Load IR events from baseline PeriStim file
+    # Try Target_A first, then Target_B
+    # Use glob to handle different naming conventions (e.g., 43.0 vs 43_0)
+    ir_events_ms = None
+    for target in ["Target_A", "Target_B"]:
+        target_dir = PERI_ROOT / target
+        if not target_dir.exists():
+            continue
+            
+        # Use flexible glob pattern for depth (handles 43.0 and 43_0)
+        # Pattern: baseline__*_Depth_*{depth}*_port_{port}_target_{A,B}.npz
+        pattern = f"baseline__*Depth*{depth.replace('.', '*')}*port*{port}*target_{target[-1]}.npz"
+        matches = list(target_dir.glob(pattern))
+        
+        if matches:
+            baseline_file = matches[0]
+            print(f"    Loading IR events from: {baseline_file.name}")
+            try:
+                bl_data = np.load(baseline_file, allow_pickle=True)
+                if "stim_ms" in bl_data and bl_data["stim_ms"].size > 0:
+                    ir_events_ms = bl_data["stim_ms"]
+                    print(f"    Found {len(ir_events_ms)} IR events in baseline file.")
+                    break
+            except Exception as e:
+                print(f"    [WARN] Failed to load baseline file: {e}")
+    
+    if ir_events_ms is None or len(ir_events_ms) == 0:
+        print(f"    [WARN] No IR events found for group. Skipping.")
+        return
+    
+    # 2. Set up probe geometry
+    intan_geom, intan_probe_mapping = get_intan_geometry()
+    
+    nprw_probe = Probe(ndim=2)
+    nprw_probe.set_contacts(positions=np.c_[intan_geom["x"], intan_geom["y"]], shape_params={"width": 12.0})
+    nprw_probe.set_device_channel_indices(intan_probe_mapping)
+    
+    # 3. Process each session in the group
+    all_epochs_bb = []
+    all_epochs_raw = []
+    
+    for sess_info in session_infos:
+        sess_name = sess_info["session"]
+        shift_ms = sess_info["shift_ms"]
+        
+        # Find session folder
+        matches = list(INTAN_ROOT.glob(f"*{sess_name}*"))
+        valid_folders = [p for p in matches if p.is_dir()]
+        if not valid_folders:
+            print(f"    [WARN] Session folder not found: {sess_name}")
+            continue
+            
+        sess_path = valid_folders[0]
+        print(f"    Processing session: {sess_name}")
+        
+        try:
+            # Load raw recording
+            rec = se.read_split_intan_files(sess_path, mode="concatenate", stream_name=INTAN_STREAM, use_names_as_ids=True)
+            rec = spre.unsigned_to_signed(rec)
+            rec_reordered = rcp.reorder_recording_to_geometry(rec, intan_probe_mapping)
+            rec_reordered = rec_reordered.set_probe(nprw_probe)
+            
+            fs_native = rec_reordered.get_sampling_frequency()
+            rec_duration_ms = rec_reordered.get_total_duration() * 1000.0
+            
+            # Filter IR events for this session's recording duration
+            # IR events are in BR-aligned ms, convert back to session time
+            sess_ir_ms = ir_events_ms + shift_ms  # Add shift to get Intan time
+            
+            # Only keep events within this recording's duration
+            valid_mask = (sess_ir_ms >= 0) & (sess_ir_ms < rec_duration_ms)
+            sess_ir_ms_valid = sess_ir_ms[valid_mask]
+            
+            if len(sess_ir_ms_valid) == 0:
+                print(f"        No valid IR events for this session. Skipping.")
+                continue
+                
+            print(f"        Found {len(sess_ir_ms_valid)} valid IR events for this session.")
+            
+            # Convert to samples
+            stim_start_samps = (sess_ir_ms_valid * fs_native / 1000.0).astype(np.int64)
+            
+            # Build preprocessing pipeline (no blanking for baseline)
+            rec_proc = build_lfp_preprocessing_pipeline(
+                rec_reordered,
+                stim_indices_native=np.array([]),  # No blanking for control
+                curr_sess_name=sess_name
+            )
+            
+            # Convert to resampled indices
+            stim_indices_res = (stim_start_samps * TARGET_FS / fs_native).astype(np.int64)
+            
+            # Calculate epoch samples
+            pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000)
+            post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000)
+            n_samps_total = rec_proc.get_total_samples()
+            
+            # Extract epochs (sequential to avoid joblib pickling issues)
+            segs_list = []
+            for idx in stim_indices_res:
+                if (idx - pre_samps >= 0) and (idx + post_samps <= n_samps_total):
+                    seg = extract_single_epoch(rec_proc, idx, pre_samps, post_samps)
+                    if seg is not None:
+                        segs_list.append(seg)
+            
+            if len(segs_list) > 0:
+                sess_epochs = np.stack(segs_list, axis=0)
+                all_epochs_bb.append(sess_epochs)
+                print(f"        Extracted {len(segs_list)} epochs from session.")
+            else:
+                print(f"        [WARN] No valid epochs extracted from session.")
+                
+            del rec, rec_reordered, rec_proc
+            gc.collect()
+            
+        except Exception as e:
+            print(f"        [ERROR] Failed to process session {sess_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+    
+    # 4. Concatenate epochs across sessions
+    if len(all_epochs_bb) == 0:
+        print(f"    [WARN] No epochs extracted from any session in group. Skipping.")
+        return
+        
+    concat_epochs = np.concatenate(all_epochs_bb, axis=0)
+    print(f"    Concatenated epochs: {concat_epochs.shape} (trials, channels, time)")
+    
+    # 5. Clean epochs
+    print(f"    Cleaning epochs...")
+    concat_epochs_clean = clean_epochs(concat_epochs, TARGET_FS)
+    
+    # 6. Compute time vectors and slice
+    rel_t_epoch = np.linspace(-EPOCH_PRE_MS, EPOCH_POST_MS, concat_epochs_clean.shape[2])
+    
+    WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
+    WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)
+    
+    bb_pre, t_pre = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_PRE)
+    bb_post, t_post = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_POST)
+    
+    results = {
+        "broadband_pre": bb_pre,
+        "broadband_post": bb_post,
+    }
+    
+    # 7. Band analysis
+    for band_name, (low, high) in LFP_BANDS.items():
+        print(f"    Filtering {band_name} ({low}-{high} Hz)...")
+        filt_epochs = filter_epochs(concat_epochs_clean, TARGET_FS, low, high)
+        results[f'{band_name}_pre'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_PRE)
+        results[f'{band_name}_post'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_POST)
+    
+    # 8. Save
+    save_dict = {
+        "fs_lfp": TARGET_FS,
+        "channel_geom_x": intan_geom["x"],
+        "channel_geom_y": intan_geom["y"],
+        "group_port": port,
+        "group_depth": depth,
+        "sessions": [s["session"] for s in session_infos],
+        "stim_ms": ir_events_ms,  # All IR events from baseline file
+        "n_trials": concat_epochs_clean.shape[0],
+        "rel_time_pre": t_pre,
+        "rel_time_post": t_post,
+        "stim_channels": ["Baseline_IR"],
+        **results
+    }
+    
+    np.savez_compressed(out_npz, **save_dict)
+    print(f"    Saved -> {out_npz}")
+    
     gc.collect()
 
 
@@ -998,13 +1364,27 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     gc.collect()
 
 
-def quick_check_stim(sess_path: Path, stream_name: str, chanmap: np.ndarray) -> bool:
+def quick_check_stim(sess_path: Path, stream_name: str, chanmap: np.ndarray, intan_idx: int, br_idx: int) -> bool:
     """
-    Check if stim file exists and has events. 
-    If not, try to extract it. If result is empty, return False.
+    Check if stim file or aligned file exists and has events.
     """
     sess_name = sess_path.name
+    
+    # 0. Check Aligned File First
+    aligned_path = ALIGNED_CKPT_ROOT / f"aligned__{sess_name}__Intan_{intan_idx:03d}__BR_{br_idx:03d}.npz"
+    if aligned_path.exists():
+         try:
+             aln = np.load(aligned_path, allow_pickle=True)
+             if "stim_ms" in aln and aln["stim_ms"].size > 0:
+                 print(f"    [Check] Found aligned file with {aln['stim_ms'].size} events: {aligned_path.name}")
+                 return True
+         except:
+             pass
+
     stim_npz = NPRW_AUX_DATA / f"{sess_name}_Intan_streams" / "stim_stream.npz"
+    
+    # 1. Standard Stim Check
+    has_stim = False
     
     # Try loading existing fast
     if stim_npz.exists():
@@ -1014,29 +1394,66 @@ def quick_check_stim(sess_path: Path, stream_name: str, chanmap: np.ndarray) -> 
             bounds = stim_data.get("block_bounds_samples")
             if bounds is not None and bounds.size > 0:
                 print(f"    [Check] Found {len(bounds)} stim blocks.")
-                return True
+                has_stim = True
             else:
                 print("    [Check] Existing file has 0 stim blocks.")
-                return False
         except Exception as e:
             print(f"    [Check] Failed to load existing: {e}")
-            
-    # Fallback to extraction
-    try:
-        print(f"    [Check] Extracting new stim file...")
-        # This function tries to load existing or create new stim npz
-        stim_ext = rcp.extract_stim_npz(sess_path, out_dir=NPRW_AUX_DATA, stim_stream_name=stream_name, chanmap_perm=chanmap)
-        if stim_ext is None:
-            return False
-        
-        bounds = stim_ext.get("block_bounds_samples")
-        if bounds is None or bounds.size == 0:
-            return False
-            
+
+    # Fallback to extraction if not found or empty?? 
+    # Actually, if existing file is empty, it means we already tried extracting and found nothing.
+    # So we shouldn't re-extract standard stim. 
+    # But if file didn't exist, we try extraction.
+    
+    if not has_stim and not stim_npz.exists():
+        try:
+            print(f"    [Check] Extracting new stim file...")
+            stim_ext = rcp.extract_stim_npz(sess_path, out_dir=NPRW_AUX_DATA, stim_stream_name=stream_name, chanmap_perm=chanmap)
+            if stim_ext is not None:
+                bounds = stim_ext.get("block_bounds_samples")
+                if bounds is not None and bounds.size > 0:
+                     has_stim = True
+        except Exception as e:
+            print(f"  [Check Stim] Failed: {e}")
+
+    if has_stim:
         return True
+
+    # -------------------------------------------------------------------------
+    # [Control/IR Fallback Check]
+    # If no stim, check if we have valid IR events from baseline PeriStim files
+    # -------------------------------------------------------------------------
+    print(f"    [Check] No stim found. Checking for baseline PeriStim files...")
+    try:
+        # Look for baseline files in PERI_ROOT / Target_A and Target_B
+        sess_name = sess_path.name
+        
+        for target in ["Target_A", "Target_B"]:
+            target_dir = PERI_ROOT / target
+            if not target_dir.exists():
+                continue
+                
+            # Pattern: baseline__{session}*_target_{A,B}.npz
+            pattern = f"baseline__*{sess_name}*_target_{target[-1]}.npz"
+            matches = list(target_dir.glob(pattern))
+            
+            if matches:
+                baseline_file = matches[0]
+                print(f"    [Check] Found baseline file: {baseline_file.name}")
+                try:
+                    bl_data = np.load(baseline_file, allow_pickle=True)
+                    if "stim_ms" in bl_data and bl_data["stim_ms"].size > 0:
+                        print(f"    [Check] Baseline file has {bl_data['stim_ms'].size} IR events.")
+                        return True
+                except Exception as e:
+                    print(f"    [Check] Failed to load baseline file: {e}")
+                    
+        print(f"    [Check] No baseline PeriStim files found for {sess_name}.")
+                    
     except Exception as e:
-        print(f"  [Check Stim] Failed: {e}")
-        return False
+        print(f"    [Check] Baseline file check failed: {e}")
+            
+    return False
 
 def main():
     if not SHIFT_CSV.exists():
@@ -1056,12 +1473,97 @@ def main():
         print(f"[ERROR] Could not load Intan geometry: {e}")
         return
     
+    # =========================================================================
+    # Load Metadata to Identify Baseline Sessions
+    # =========================================================================
+    baseline_br_idxs = set()  # BR indices that are baseline sessions
+    baseline_groups = {}  # {(port, depth): [session_info, ...]}
+    
+    if METADATA_CSV.exists():
+        print(f"\nLoading metadata from {METADATA_CSV.name}...")
+        try:
+            df_meta_raw = pd.read_csv(METADATA_CSV)
+            df_meta = _normalize_metadata(df_meta_raw)
+            
+            groups = _find_baseline_groups(df_meta)
+            if groups:
+                print(f"Found {len(groups)} baseline groups: {list(groups.keys())}")
+                
+                # Build mapping BR -> (port, depth)
+                if "br_file" in df_meta.columns:
+                    br_col = pd.to_numeric(df_meta["br_file"], errors="coerce")
+                    for (port, depth), idxs in groups.items():
+                        for i in idxs:
+                            br = br_col.iloc[i]
+                            if pd.notna(br):
+                                baseline_br_idxs.add(int(br))
+                                
+                # Initialize groups for session collection
+                for key in groups:
+                    baseline_groups[key] = []
+                    
+        except Exception as e:
+            print(f"[WARN] Failed to load metadata for baseline detection: {e}")
+    else:
+        print(f"[WARN] Metadata CSV not found: {METADATA_CSV}. Baseline grouping disabled.")
+    
+    print(f"Identified {len(baseline_br_idxs)} baseline BR indices: {sorted(baseline_br_idxs)}")
+    
+    # =========================================================================
+    # Per-Session Loop (Skip Baseline Sessions)
+    # =========================================================================
     for row in rows:
         session_name = row["session"]
+        intan_idx = int(row["intan_idx"])
         br_idx = int(row["br_idx"])
         shift_ms = float(row["shift_ms"])
         fs_intan = float(row.get("fs_intan", 30000.0))
         shift_sample = float(row.get("shift_sample", 0.0))
+        
+        # Check if this is a baseline session
+        if br_idx in baseline_br_idxs:
+            print(f"\n[Baseline] Session {session_name} (BR={br_idx}) is baseline. Will process in group.")
+            
+            # Find which group this belongs to and add session info
+            if METADATA_CSV.exists():
+                try:
+                    df_meta_raw = pd.read_csv(METADATA_CSV)
+                    df_meta = _normalize_metadata(df_meta_raw)
+                    
+                    # Find the row for this br_idx
+                    if "br_file" in df_meta.columns:
+                        br_col = pd.to_numeric(df_meta["br_file"], errors="coerce")
+                        mask = br_col == br_idx
+                        if mask.any():
+                            row_meta = df_meta.loc[mask].iloc[0]
+                            port = row_meta.get("_ua_port_norm") if "_ua_port_norm" in row_meta else (
+                                str(row_meta.get("ua_port", "UNKNOWN")).upper().strip() or "UNKNOWN"
+                            )
+                            depth = row_meta.get("_depth_mm_norm") if "_depth_mm_norm" in row_meta else (
+                                str(row_meta.get("depth_mm", "n/a")).strip() or "n/a"
+                            )
+                            
+                            # Normalize port/depth the same way as _find_baseline_groups
+                            port = str(port).upper().strip() or "UNKNOWN"
+                            try:
+                                depth = float(depth)
+                            except:
+                                depth = str(depth)
+                            depth = str(depth)
+                            
+                            group_key = (port, depth)
+                            if group_key not in baseline_groups:
+                                baseline_groups[group_key] = []
+                            
+                            baseline_groups[group_key].append({
+                                "session": session_name,
+                                "br_idx": br_idx,
+                                "intan_idx": intan_idx,
+                                "shift_ms": shift_ms,
+                            })
+                except Exception as e:
+                    print(f"    [WARN] Failed to identify group for session: {e}")
+            continue
         
         # Resolve Intan Path
         matches = list(INTAN_ROOT.glob(f"*{session_name}*"))
@@ -1076,7 +1578,7 @@ def main():
         # --- Pre-Check Stim ---
         # We check stim BEFORE running either NPRW or UA analysis
         print(f"\nChecking stim for {session_name}...")
-        has_stim = quick_check_stim(sess_path, STIM_STREAM, intan_probe_mapping)
+        has_stim = quick_check_stim(sess_path, STIM_STREAM, intan_probe_mapping, intan_idx, br_idx)
         
         if not has_stim:
             print(f"  -> No valid stim events found. Skipping both NPRW and UA for this session.")
@@ -1085,7 +1587,7 @@ def main():
         print(f"  -> Stim OK. Proceeding...")
 
         try:
-            process_nprw_session(session_name, br_idx)
+            process_nprw_session(session_name, br_idx, intan_idx, shift_ms)
         except Exception as e:
             print(f"[ERROR] NPRW {session_name}: {e}")
             import traceback
@@ -1098,5 +1600,24 @@ def main():
             import traceback
             traceback.print_exc()
 
+    # =========================================================================
+    # Process Baseline Groups
+    # =========================================================================
+    if baseline_groups:
+        print(f"\n{'='*60}")
+        print("Processing Baseline Groups")
+        print(f"{'='*60}")
+        
+        for group_key, session_infos in baseline_groups.items():
+            if not session_infos:
+                continue
+            try:
+                process_baseline_group(group_key, session_infos)
+            except Exception as e:
+                print(f"[ERROR] Baseline group {group_key}: {e}")
+                import traceback
+                traceback.print_exc()
+
 if __name__ == "__main__":
     main()
+
