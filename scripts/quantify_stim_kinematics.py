@@ -1,12 +1,51 @@
 import numpy as np
+import warnings
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import re
 from pathlib import Path
+from scipy import stats
 from typing import Optional, Tuple
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
+import concurrent.futures
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+"""
+Purpose:
+  Quantifies reach kinematics (duration and peak speed) for stimulation experiments.
+  Compares stimulation conditions against a baseline control using Welch's t-test.
+  Generates visualization plots (Violin/Box plots with swarm overlays) and statistical summaries.
+
+Key Features:
+  - Speed-based reach endpoint detection (Peak Speed -> Drop -> Stability).
+  - Optional outlier detection and removal (IQR method).
+  - Combined analysis of conditions grouping by name pattern.
+  - Detailed statistical annotations (significance stars).
+
+Outputs:
+  - Figures: Saved to `results/figures/quantify_kinematics/`
+    - Summary plots (Violin/Box + Stripplot) for Duration and Peak Speed.
+    - Debug traces (if enabled) showing speed profiles and detection logic.
+  - Data:
+    - Stats Summary CSV: `*_stats_summary.csv` (Mean, Std, Count).
+    - Outliers CSV: `*_outliers.csv` (if detection enabled).
+
+Configuration Toggles (Global Flags):
+  - REMOVE_OUTLIERS (bool): Enable/Disable outlier detection.
+  - ANALYZE_COMBINED (bool): Enable/Disable aggregation of similar conditions.
+  - PLOT_FULL_CONDITIONS (bool): Enable/Disable plotting of individual conditions.
+  - SAVE_STATS_CSV (bool): Enable/Disable saving of statistical summary CSV.
+  - PLOT_DEBUG_TRACES (bool): Enable/Disable generation of debug trace plots for every trial.
+
+Adjustable Parameters:
+  - CAMERA_TO_USE: Select 'cam1' or 'cam0'.
+  - MIN_REACH_DURATION_MS: Minimum duration threshold for valid reaches.
+  - SELECTED_KEYPOINTS: Joint selection (e.g., 'middle_x').
+"""
+
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -14,10 +53,11 @@ from RCP_analysis.python.functions.config_loading import *
 CAMERA_TO_USE = "cam1"  # 'cam1' or 'cam0'
 START_OFFSET_MS = 0  # Start counting reach from this time (relative to alignment) -> base off of triggering IR sensor
 # Duration = Time(Max Pos) - START_OFFSET_MS
-MIN_REACH_DURATION_MS = 110 # Exclude <110ms duration
+MIN_REACH_DURATION_MS = 70.0 # Exclude <110ms duration
 MAX_REACH_DURATION_MS = 600.0
 
-SELECTED_KEYPOINTS = ["wrist_y"]  # Track only wrist_y (index 8 in beh_cam1_names)
+# Track only middle_x as requested
+SELECTED_KEYPOINTS = ["middle_x"] 
 
 EXCLUDE_CONDITIONS = [2, 3, 5, 8, 9, 25]  # Can be list of ints (Cond IDs) or strings (substring match)
 
@@ -78,10 +118,10 @@ EXCLUDE_TRIALS = {
 # Format: "baseline_port{A/B}_target{A/B}": [trial_indices]
 # User provided 1-based indices, converting to 0-based here:
 EXCLUDE_BASELINE_TRIALS = {
-    "baseline_portA_targetA": [1, 2, 3, 4, 6, 13, 14, 21, 24, 31],
-    "baseline_portB_targetA": [6, 9],
-    "baseline_portA_targetB": [6, 10, 13, 16, 20, 21, 22, 24, 31, 39, 40, 47, 56, 57],
-    "baseline_portB_targetB": [6, 8, 11, 12, 14, 15, 17, 20, 22, 26, 30, 31],
+    "baseline_portA_targetA": [1, 3, 4, 6, 13, 14, 21, 24],
+    "baseline_portB_targetA": [2, 6, 7, 9, 13, 18],
+    "baseline_portA_targetB": [6, 10, 13, 15, 16, 17, 20, 21, 22, 24, 25, 30, 39, 40, 42, 47, 56, 57],
+    "baseline_portB_targetB": [2, 3, 4, 6, 8, 10, 12, 15, 17, 20, 22, 23, 24, 26, 28, 30, 31, 35],
 }
 
 # Plotting Configuration
@@ -89,7 +129,16 @@ FIG_OUT_DIR = OUT_BASE / "figures" / "quantify_kinematics"
 FIG_OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Output format: 'png' or 'svg'
-OUTPUT_FORMAT = 'svg'  # Change to 'svg' for vector graphics
+OUTPUT_FORMAT = 'png'  # Change to 'svg' for vector graphics
+
+# Set to True to generate 5x5 grid of traces for every trial (for debugging alignment)
+PLOT_DEBUG_TRACES = True 
+
+# Analysis Flags
+REMOVE_OUTLIERS = False      # Set to False to skip outlier detection and removal
+ANALYZE_COMBINED = True      # Set to False to skip combined condition analysis
+PLOT_FULL_CONDITIONS = False # Set to True to plot individual conditions
+SAVE_STATS_CSV = False        # Set to False to skip saving stats CSV 
 
 plt.rcParams.update({'font.size': 14}) # Larger font for plots
 
@@ -139,7 +188,9 @@ def calculate_reach_metrics(
         
     # Speed profile (average across selected KPs)
     trial_speeds_all_kps = vel_segs[:, kp_idx, :]
-    trial_speed = np.nanmean(trial_speeds_all_kps, axis=1) # (n_trials, T)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        trial_speed = np.nanmean(trial_speeds_all_kps, axis=1) # (n_trials, T)
 
     # Position profile (Euclidean distance from start pos? Or just average magnitude?)
     metrics_list = []
@@ -158,259 +209,45 @@ def calculate_reach_metrics(
         idx_start = (np.abs(t_trial - START_OFFSET_MS)).argmin()
         t_start = t_trial[idx_start]
         
-        # Ensure we look FORWARD from start
-        # 2. Identify Max Position Excursion *after* start
-        # Calculate displacement from start for selected keypoints
-        # (n_sel_kps, T)
+        # --- New Speed-Based Logic ---
+        # Track middle_x position for plotting
         sel_pos = pos_segs[i, kp_idx, :]
-        start_pos = sel_pos[:, idx_start][:, None] # (n_sel, 1)
-        displacement = sel_pos - start_pos # (n_sel, T)
+        trace_for_stop = sel_pos[0, :]
         
-        # Metric: Combined displacement magnitude (Sum of Squares -> Distance proxy)
-        dist_trace = np.sqrt(np.nansum(displacement**2, axis=0)) # (T,)
+        # Find Peak Speed in 0-600ms window
+        dt = t_axis[1] - t_axis[0] if len(t_axis) > 1 else 10.0
+        if dt < 0.9: dt *= 1000.0 # Convert to ms if needed
         
-        # Find peak distance in the valid window [Start:]
-        valid_dist = dist_trace[idx_start:]
-        if valid_dist.size == 0: continue
+        max_samples = int(MAX_REACH_DURATION_MS / dt)
+        idx_max_dur = min(len(t_trial)-1, idx_start + max_samples)
+        
+        search_speed = speed[idx_start : idx_max_dur]
+        if search_speed.size == 0: continue
             
-        idx_peak_rel = np.argmax(valid_dist)
-        idx_peak = idx_start + idx_peak_rel
+        idx_peak_speed = idx_start + np.argmax(search_speed)
         
-        # --- Advanced End Point Detection ---
-        # 1. Identify Y-channel (or fallback to Euclidean distance if no Y found)
-        # Find index of Y channel in the selected keypoints
-        sel_kp_names = [kp_names[k] for k in kp_idx]
-        y_row_idx = None
-        for r, name in enumerate(sel_kp_names):
-            if "_y" in name.lower():
-                y_row_idx = r
-                break
+        # Define search params for next step
+        STABLE_WIN_MS = 20
+        LOW_SPEED_THRESH_RATIO = 0.20
+        peak_v = speed[idx_peak_speed]
+        thresh_v = peak_v * LOW_SPEED_THRESH_RATIO
+        win_samples = max(2, int(STABLE_WIN_MS / dt))
         
-        # Use Y-channel if found, else use dist_trace
-        if y_row_idx is not None:
-            trace_for_stop = sel_pos[y_row_idx, :]
-        else:
-            trace_for_stop = dist_trace
-            
-        # 2. Define "Assumed Stop" Window (20ms window starting at idx_peak)
-        # Assuming fs=100Hz from default or infer from t_axis?
-        # t_axis step
-        dt = t_axis[1] - t_axis[0] if len(t_axis) > 1 else 0.01
-        win_samples = int(0.02 / dt) # 20ms
-        win_samples = max(1, win_samples)
+        # Default endpoint is max duration unless found
+        idx_peak = idx_max_dur
         
-        # Window: [idx_peak, idx_peak + win_samples] (clipped to length)
-        stop_start = idx_peak
-        stop_end = min(len(t_trial), idx_peak + win_samples)
+        # Calculate dist_trace (abs displacement from start) for compatibility
+        dist_trace = np.abs(trace_for_stop - trace_for_stop[idx_start])
         
-        idx_peak_speed = idx_start # Default
+        # Scan forward from Peak Velocity for drop
+        # Look for speed < thresh_v and staying stable (low mean) for win_samples
+        scan_limit = max(idx_peak_speed, idx_max_dur - win_samples)
         
-        if stop_end > stop_start:
-            # Check if this is a "Max Duration" reach (likely ~600ms or hit end of window)
-            # User Rule: if detected at 600ms (or close), use last 100ms baseline method
-            is_max_duration = (stop_start >= len(t_trial) - 5) or ((t_trial[stop_start] - t_start) >= (MAX_REACH_DURATION_MS - 10))
-            
-            if is_max_duration:
-                # --- New Logic: Consecutive Window Stability Check (Local First Match) ---
-                # User Request (Step 1602): 
-                # "make windows 25ms... look to see if windows are of similar means and standard deviations... take the first one"
-                
-                # --- New Logic: Absolute Windowed Stability Search (0-600ms) ---
-                # User Request (Step 1636): 
-                # 1. Take absolute value of trace.
-                # 2. Windows 0-600ms (100ms width, 50ms overlap).
-                # 3. Discard huge STD (> 1.0?).
-                # 4. Compare remaining windows: if similar (mean/std diff < 0.3), take first one.
-                # 5. Find Min (A) or Max (B) within that window in ORIGINAL trace.
-                
-                # Parameters
-                WIN_LEN_MS = 20
-                STEP_MS = 10
-                MAX_TIME_MS = 600
-                HUGE_STD_THRESH = 0.5 # Heuristic for "Huge"
-                SIM_THRESH = 0.3 # User defined
-                
-                # Correction for dt units (ms vs s)
-                # t_axis is typically in ms (e.g. -600, -590...), so dt ~ 10.0
-                if dt > 0.9: 
-                     # dt is likely in ms
-                     win_samples = int(WIN_LEN_MS / dt)
-                     step_samples = int(STEP_MS / dt)
-                     max_samples = int(MAX_TIME_MS / dt)
-                else:
-                     # dt is likely in seconds (e.g. 0.01)
-                     win_samples = int(WIN_LEN_MS / (dt*1000.0))
-                     step_samples = int(STEP_MS / (dt*1000.0))
-                     max_samples = int(MAX_TIME_MS / (dt*1000.0))
-                
-                win_samples = max(1, win_samples)
-                step_samples = max(1, step_samples)
-                max_samples = max(1, max_samples)
-                
-                # 1. Absolute Trace for Stability Analysis
-                abs_trace = np.abs(trace_for_stop)
-                
-                # 2. Generate and Analyze Windows
-                # Scan from t=0 (idx_start) to t=600ms
-                # Note: `idx_start` aligns with t=0 (stim onset)
-                
-                valid_windows = [] # Store (start_idx, end_idx, mean, std)
-                
-                start_range = idx_start
-                end_range = idx_start + max_samples
-                end_range = min(len(abs_trace), end_range)
-                
-                scan_limit = end_range - win_samples
-                
-                for k in range(start_range, scan_limit, step_samples):
-                    w_start = k
-                    w_end = k + win_samples
-                    
-                    if w_end > len(abs_trace):
-                        break
-                    
-                    chunk = abs_trace[w_start : w_end]
-                    curr_mean = np.mean(chunk)
-                    curr_std = np.std(chunk)
-                    
-                # 3. Filter "Huge" Standard Deviations
-                # User (Step 1681): "let's not discard the large std windows."
-                # We interpret this as: We need them for the sequence check, but we won't 
-                # select one as the start point? Or just keep them in the list.
-                # Actually, we keep them to check continuity.
-                valid_windows.append({
-                    's': w_start, 'e': w_end, 
-                    'm': curr_mean, 'std': curr_std
-                })
-                
-                # 4. Compare Remaining Windows for Similarity + Future Check
-                chosen_window = None
-                last_similar_window = None
-                
-                if len(valid_windows) >= 2:
-                    for i in range(len(valid_windows) - 1):
-                        w1 = valid_windows[i]
-                        w2 = valid_windows[i+1] # Adjacent
-                        
-                        # Similarity Check (Is this a stable pair?)
-                        std_diff = abs(w1['std'] - w2['std'])
-                        
-                        if std_diff < SIM_THRESH:
-                            # Found a potential stable start (W1)
-                            
-                            # Future Check (Look ahead limit to 159ms)
-                            # "future change is only within 159ms of the window being looked at"
-                            is_future_bad = False
-                            
-                            # Calculate 159ms in samples
-                            # Check if dt is ms or s (same logic as above)
-                            if dt > 0.9:
-                                samples_159ms = int(159.0 / dt)
-                            else:
-                                samples_159ms = int(159.0 / (dt*1000.0))
-                            
-                            future_limit_idx = w1['s'] + samples_159ms
-                            
-                            # Scan future windows
-                            for k in range(i + 2, len(valid_windows)):
-                                wk = valid_windows[k]
-                                
-                                # Stop if we are beyond the 159ms window
-                                if wk['s'] > future_limit_idx:
-                                    break
-                                
-                                # Check for "Big" changes
-                                # "big std" (std > HUGE)
-                                future_std = wk['std']
-                                
-                                # Note: w1 is the reference for mean shift? Or wk-1?
-                                # "windows afterwards have big std" -> absolute check
-                                
-                                if future_std > HUGE_STD_THRESH:
-                                    is_future_bad = True
-                                    break
-                            
-                            if is_future_bad:
-                                # This stability is transient (just a pause before big move within 159ms).
-                                # "move on to windows after that"
-                                # Note this match as a fallback "last of comparable windows"
-                                last_similar_window = w1
-                                continue # Keep searching
-                            else:
-                                # Future is okay (or assumed okay if end of trace / past 159ms)
-                                chosen_window = w1
-                                break
-                    
-                    # If process exerts itself (no 'perfect' match found), use the last comparable window
-                    if chosen_window is None and last_similar_window is not None:
-                         chosen_window = last_similar_window
-                    
-                    # Fallback if NOTHING similar found at all?
-                    if chosen_window is None and len(valid_windows) > 0:
-                        chosen_window = valid_windows[0] # Very weak fallback
-                elif len(valid_windows) == 1:
-                     chosen_window = valid_windows[0]
-                
-                # 5. Refine End-Point in Chosen Window
-                if chosen_window:
-                    # Look in ORIGINAL trace (trace_for_stop)
-                    search_slice = trace_for_stop[chosen_window['s'] : chosen_window['e']]
-                    
-                    if len(search_slice) > 0:
-                        if target_code == 2: # Target B -> Maxima
-                            peak_idx_rel = np.argmax(search_slice)
-                        else: # Target A -> Minima (Default)
-                            peak_idx_rel = np.argmin(search_slice)
-                        
-                        idx_peak = chosen_window['s'] + peak_idx_rel
-                
-                else:
-                    # Fallback if NO valid windows (all high noise)
-                    # Maybe just stick with original detection or max displacement?
-                    pass # idx_peak remains whatever it was (default)
-
-            else:
-                # --- Previous Logic (Standard 20ms post-peak window) ---
-                stop_segment = trace_for_stop[stop_start:stop_end]
-                mean_stop = np.mean(stop_segment)
-                std_stop = np.std(stop_segment)
-                
-                # 3. Scan backwards from idx_peak
-                # Go back to start of reach
-                # Find first point (going backwards) where value crosses 1 SD threshold
-                # i.e., abs(val - mean) > 1 * std
-                
-                # We look for the TRANSITION from "Outside" to "Inside".
-                # Scanning backwards: usually we are Inside (at peak/stop). We look for when we were Outside.
-                # The "first point of where y values are crossing the 1 SD threshold" relative to the stop.
-                
-                final_idx = idx_peak # Default to original peak
-                
-                # Search backwards from idx_peak to idx_start
-                found_crossing = False
-                crossing_idx = idx_peak
-                
-                for k in range(idx_peak, idx_start, -1):
-                    val = trace_for_stop[k]
-                    if np.abs(val - mean_stop) > 1.0 * std_stop:
-                        # Found a point outside 1 SD
-                        crossing_idx = k
-                        found_crossing = True
-                        break
-                
-                if found_crossing:
-                    # User: "as long as values after that point are within 2 standard deviations, consider that to be the final reach point"
-                    # Check condition: From crossing_idx+1 to idx_peak (or end of window?), are all values within 2 SD?
-                    candidate_idx = crossing_idx + 1
-                    
-                    # Verify stability from candidate to stop_end (or idx_peak?)
-                    # "values after that point" -> implies up to the steady state?
-                    check_segment = trace_for_stop[candidate_idx : stop_end]
-                    
-                    is_stable = np.all(np.abs(check_segment - mean_stop) <= 2.0 * std_stop)
-                    
-                    if is_stable:
-                        idx_peak = candidate_idx # Update end point
+        for k in range(idx_peak_speed, scan_limit):
+            if speed[k] < thresh_v:
+                if np.mean(speed[k : k + win_samples]) < thresh_v:
+                    idx_peak = k
+                    break
                     
         t_peak = t_trial[idx_peak]
         
@@ -433,26 +270,22 @@ def calculate_reach_metrics(
         }
         metrics_list.append(m_dict)
         
-        if is_max_duration:
-            # Store debug info for this max duration trial
-            pass # Handled below generically now
-        
-        # Determine original peak index (before refinement)
-        # For max dur: stop_start (approx 600ms)
-        # For standard: stop_start (peak of valid_dist)
-        idx_orig_peak = stop_start
-        
         # Store debug info for ALL trials
+        is_max_duration = (idx_peak == idx_max_dur)
+        
         all_debug_traces.append({
             "idx_trial": i,
             "t": t_trial,
-            "y": trace_for_stop,
+            "pos": trace_for_stop,  # New key
+            "y": trace_for_stop,    # Legacy key (for plotting)
+            "speed": speed,
             "idx_start": idx_start,
-            "idx_final": idx_peak, # The refined peak
-            "idx_orig": idx_orig_peak,
+            "idx_final": idx_peak, 
+            "idx_orig": idx_peak_speed, # Use peak speed as ref
             "is_max_dur": is_max_duration,
             "idx_peak_speed": idx_peak_speed,
-            "win_50ms": int(0.050/dt) # Passing parameter for plotting scaling if needed
+            "thresh_v": thresh_v,
+            "win_50ms": int(0.050/dt)
         })
         
         if return_traces:
@@ -465,234 +298,244 @@ def calculate_reach_metrics(
     return df, [], all_debug_traces
 
 
+def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.DataFrame]:
+    try:
+        with np.load(p, allow_pickle=True) as data:
+            # 1. Determine Condition from 'overall_title' or filename
+            if p.name.startswith("baseline__"):
+                cond = "Baseline"
+            else:
+                # Try getting title from file
+                if "overall_title" in data:
+                    raw_title = data["overall_title"]
+                    # Handle 0-d array
+                    if raw_title.shape == ():
+                        cond = str(raw_title.item())
+                    else:
+                        cond = str(raw_title)
+                else:
+                    # Fallback to parsing filename
+                    parts = p.name.split("_")
+                    if len(parts) > 1 and parts[1].isdigit():
+                        cond = f"Cond_{parts[1]}"
+                    else:
+                        cond = "Stim"
+            
+            # Check exclusions
+            is_excluded = False
+            for ex in EXCLUDE_CONDITIONS:
+                if isinstance(ex, int):
+                    match = re.search(r"(\d+)", cond)
+                    if match and int(match.group(1)) == ex:
+                        is_excluded = True
+                        break
+                elif isinstance(ex, str):
+                    if ex in cond:
+                        is_excluded = True
+                        break
+            
+            if is_excluded:
+                return None
+
+            # Key names
+            pos_key = f"beh_{CAMERA_TO_USE}_segs"
+            vel_key = f"beh_{CAMERA_TO_USE}_vel_segs"
+            
+            if pos_key not in data: # Fallback
+                pos_key = f"{CAMERA_TO_USE}_segs"
+                vel_key = f"{CAMERA_TO_USE}_vel_segs"
+                
+            if pos_key not in data or vel_key not in data:
+                print(f"Skipping {p.name}: missing keys")
+                return None
+                
+            pos_segs = data[pos_key] # (n_trials, n_kps, T)
+            vel_segs = data[vel_key]
+            t_axis   = data["beh_rel_t"]
+            
+            # TS Check
+            if "ts_state_segs" in data:
+                ts_state = data["ts_state_segs"]
+            else:
+                ts_state = np.zeros((pos_segs.shape[0], pos_segs.shape[2])) 
+
+            names_key = f"beh_{CAMERA_TO_USE}_names"
+            kp_names = data[names_key].tolist() if names_key in data else []
+            
+            # Determine trial exclusions
+            trials_to_exclude = []
+            
+            # Check if this is a baseline file
+            if cond == "Baseline":
+                # Parse filename to determine port (A or B)
+                fname_lower = p.name.lower()
+                port = "A"  # Default
+                
+                if "_portb_" in fname_lower or "portb" in fname_lower or "_port_b_" in fname_lower or "port_b" in fname_lower:
+                    port = "B"
+                elif "_porta_" in fname_lower or "porta" in fname_lower or "_port_a_" in fname_lower or "port_a" in fname_lower:
+                    port = "A"
+                
+                # Determine target from target_code (1=A, 2=B)
+                target_letter = "A" if target_code == 1 else "B"
+                
+                # Build exclusion key
+                baseline_key = f"baseline_port{port}_target{target_letter}"
+                
+                print(f"  [Processing] Baseline File: {p.name} -> Config: {baseline_key}")
+                
+                # Get exclusions for this baseline configuration
+                if baseline_key in EXCLUDE_BASELINE_TRIALS:
+                    trials_to_exclude = EXCLUDE_BASELINE_TRIALS[baseline_key]
+            
+            # Retrieve metrics AND debug traces
+            df, _, all_debug_traces = calculate_reach_metrics(
+                pos_segs, vel_segs, ts_state, t_axis, kp_names, target_code, 
+                exclude_trials=trials_to_exclude, return_traces=False)
+            
+            # Plot Debug Traces for ALL trials (if enabled)
+            # Use thread-safe Figure interface (no global pyplot state)
+            if PLOT_DEBUG_TRACES and all_debug_traces:
+                # Batch into pages of 25
+                batch_size = 25
+                n_total = len(all_debug_traces)
+                n_pages = int(np.ceil(n_total / batch_size))
+                
+                for page in range(n_pages):
+                    batch_traces = all_debug_traces[page*batch_size : (page+1)*batch_size]
+                    n_batch = len(batch_traces)
+                    
+                    cols = 5
+                    rows = 5
+                    
+                    # Thread-safe figure creation
+                    fig_db = Figure(figsize=(20, 15))
+                    FigureCanvasAgg(fig_db) # Attach canvas
+                    axes_db = fig_db.subplots(rows, cols, squeeze=False)
+                    axes_db = axes_db.flatten()
+                    
+                    for idx_db, tr_info in enumerate(batch_traces):
+                        ax_db = axes_db[idx_db]
+                        t = tr_info['t']
+                        y = tr_info['y']
+                        idx_start = tr_info['idx_start']
+                        idx_final = tr_info['idx_final']
+                        idx_orig  = tr_info['idx_orig']
+                        win_50ms  = tr_info.get('win_50ms', 0)
+                        is_max_dur = tr_info.get('is_max_dur', False)
+                        idx_peak_speed = tr_info.get('idx_peak_speed', idx_start)
+                        
+                        # Safety check for lengths
+                        limit = len(t) - 1
+                        idx_orig = min(limit, idx_orig)
+                        idx_final = min(limit, idx_final)
+                        idx_peak_speed = min(limit, idx_peak_speed)
+                        
+                        # Plot Trace
+                        ax_db_pos = ax_db
+                        
+                        # 1. Plot Position (Left Axis)
+                        color_pos = 'tab:blue'
+                        lns1 = ax_db_pos.plot(t, tr_info['pos'], color=color_pos, alpha=0.7, label='Pos (MidX)')
+                        ax_db_pos.tick_params(axis='y', labelcolor=color_pos)
+                        
+                        # 2. Plot Speed (Right Axis)
+                        ax_db_spd = ax_db_pos.twinx()
+                        color_spd = 'tab:orange'
+                        lns2 = ax_db_spd.plot(t, tr_info['speed'], color=color_spd, alpha=0.6, linestyle='-', label='Speed')
+                        ax_db_spd.tick_params(axis='y', labelcolor=color_spd)
+                        
+                        # Mark Start
+                        ax_db_pos.axvline(t[min(limit, idx_start)], color='g', linestyle='--', label='Start')
+                        
+                        # Mark Peak Speed
+                        ax_db_spd.plot(t[idx_peak_speed], tr_info['speed'][idx_peak_speed], 'c^', markersize=6, label='Peak Vel')
+                        
+                        # Mark Threshold Line
+                        if 'thresh_v' in tr_info:
+                            ax_db_spd.axhline(tr_info['thresh_v'], color='gray', linestyle=':', alpha=0.5, label='End Thresh')
+
+                        # Mark Settled Peak (Refined End)
+                        ax_db_pos.plot(t[idx_final], tr_info['pos'][idx_final], 'rx', markersize=8, markeredgewidth=2, label='End')
+                        
+                        # Title
+                        dur = t[idx_final] - t[idx_start]
+                        title_color = 'red' if is_max_dur else 'black'
+                        ax_db.set_title(f"T{tr_info['idx_trial']} (Dur: {dur:.0f}ms)", color=title_color, fontsize=8)
+                        
+                        if idx_db == 0:
+                            ax_db.legend(fontsize='xx-small', loc='upper left')
+                            
+                    # Turn off unused axes
+                    for k in range(n_batch, len(axes_db)):
+                        axes_db[k].axis('off')
+                        
+                    fig_db.tight_layout()
+                    # Sanitize condition string for filename
+                    safe_cond = "".join([c if c.isalnum() else "_" for c in cond])
+                    
+                    # Create debug subfolder
+                    debug_dir = FIG_OUT_DIR / "debug"
+                    debug_dir.mkdir(exist_ok=True)
+                    
+                    fig_db.savefig(debug_dir / f"Debug_Traces_{target}_{safe_cond}_{p.stem}_page{page+1}.png")
+                    # No explicit close needed for Figure object, but helpful
+                    # del fig_db
+
+            # Sanity: if no metrics found, skip
+            if df.empty:
+                return None
+                
+            df["Condition"] = cond
+            df["SourceFile"] = p.stem
+            
+            # Exclude specific trials for this condition
+            # Extract condition number
+            match = re.search(r"(\d+)", cond)
+            if match:
+                cond_num = int(match.group(1))
+                if cond_num in EXCLUDE_TRIALS:
+                    # Get trials to exclude (0-indexed)
+                    trial_ex_indices = EXCLUDE_TRIALS[cond_num]
+                    # Filter out these trial indices
+                    df = df[~df.index.isin(trial_ex_indices)].reset_index(drop=True)
+                    if df.empty:
+                        return None
+            
+            return df
+            
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"Error processing {p.name}: {e}")
+        return None
+
 def process_target(target: str, target_code: int):
     results_dir = PERI_ROOT / f"Target_{target}"
     if not results_dir.exists():
         print(f"Skipping {target}: {results_dir} not found.")
-        return pd.DataFrame(), {}
+        return pd.DataFrame()
     
     print(f"\nScanning {results_dir}...")
     
     all_metrics = []
-    aggregated_traces = {} # Condition -> list of (t, speed)
 
     # Files
     all_files = sorted(results_dir.glob("*.npz"))
     
-    for p in all_files:
-        try:
-            with np.load(p, allow_pickle=True) as data:
-                # 1. Determine Condition from 'overall_title' or filename
-                if p.name.startswith("baseline__"):
-                    cond = "Baseline"
-                else:
-                    # Try getting title from file
-                    if "overall_title" in data:
-                        raw_title = data["overall_title"]
-                        # Handle 0-d array
-                        if raw_title.shape == ():
-                            cond = str(raw_title.item())
-                        else:
-                            cond = str(raw_title)
-                        
-                        # Cleanup: remove 'Target X' if present to make shorter?
-                        # user wants 'freq: 400 ...'
-                        # typically formats as "Cond_XX: freq..."
-                        # Let's keep it as is, maybe strip file part if redundant.
-                    else:
-                        # Fallback to parsing filename
-                        parts = p.name.split("_")
-                        if len(parts) > 1 and parts[1].isdigit():
-                            cond = f"Cond_{parts[1]}"
-                        else:
-                            cond = "Stim"
-                
-                # print(cond)
-                # Check exclusions
-                is_excluded = False
-                for ex in EXCLUDE_CONDITIONS:
-                    if isinstance(ex, int):
-                        # Check if condition string contains this number as a distinct integer (e.g. Cond_027 matches 27)
-                        # We specifically look for "Cond_X" or just numbers in the string
-                        # Using regex to find the first integer in the string
-                        match = re.search(r"(\d+)", cond)
-                        if match and int(match.group(1)) == ex:
-                            is_excluded = True
-                            break
-                    elif isinstance(ex, str):
-                        if ex in cond:
-                            is_excluded = True
-                            break
-                
-                if is_excluded:
-                    continue
-
-                # Key names
-                pos_key = f"beh_{CAMERA_TO_USE}_segs"
-                vel_key = f"beh_{CAMERA_TO_USE}_vel_segs"
-                
-                if pos_key not in data: # Fallback
-                    pos_key = f"{CAMERA_TO_USE}_segs"
-                    vel_key = f"{CAMERA_TO_USE}_vel_segs"
-                    
-                if pos_key not in data or vel_key not in data:
-                    print(f"Skipping {p.name}: missing keys")
-                    continue
-                    
-                pos_segs = data[pos_key] # (n_trials, n_kps, T)
-                vel_segs = data[vel_key]
-                t_axis   = data["beh_rel_t"]
-                print(f"  t_axis range: {t_axis[0]:.0f} to {t_axis[-1]:.0f} ms, N={len(t_axis)}")
-                
-                # TS Check
-                if "ts_state_segs" in data:
-                    ts_state = data["ts_state_segs"]
-                else:
-                    ts_state = np.zeros((pos_segs.shape[0], pos_segs.shape[2])) 
-
-                names_key = f"beh_{CAMERA_TO_USE}_names"
-                kp_names = data[names_key].tolist() if names_key in data else []
-                
-                # Determine trial exclusions
-                trials_to_exclude = []
-                
-                # Check if this is a baseline file
-                if cond == "Baseline":
-                    # Parse filename to determine port (A or B)
-                    # Baseline files typically named: baseline__port{A/B}_...
-                    fname_lower = p.name.lower()
-                    port = "A"  # Default
-                    
-                    if "_portb_" in fname_lower or "portb" in fname_lower or "_port_b_" in fname_lower or "port_b" in fname_lower:
-                        port = "B"
-                    elif "_porta_" in fname_lower or "porta" in fname_lower or "_port_a_" in fname_lower or "port_a" in fname_lower:
-                        port = "A"
-                    
-                    # Determine target from target_code (1=A, 2=B)
-                    target_letter = "A" if target_code == 1 else "B"
-                    
-                    # Build exclusion key
-                    baseline_key = f"baseline_port{port}_target{target_letter}"
-                    
-                    print(f"  [DEBUG] Baseline File: {p.name} -> Config: {baseline_key}")
-                    
-                    # Get exclusions for this baseline configuration
-                    if baseline_key in EXCLUDE_BASELINE_TRIALS:
-                        trials_to_exclude = EXCLUDE_BASELINE_TRIALS[baseline_key]
-                        print(f"    -> Excluding indices: {trials_to_exclude}")
-                
-                # Retrieve metrics AND debug traces
-                df, _, all_debug_traces = calculate_reach_metrics(
-                    pos_segs, vel_segs, ts_state, t_axis, kp_names, target_code, 
-                    exclude_trials=trials_to_exclude, return_traces=False)
-                
-                # Plot Debug Traces for ALL trials
-                if all_debug_traces:
-                    # Batch into pages of 25
-                    batch_size = 25
-                    n_total = len(all_debug_traces)
-                    n_pages = int(np.ceil(n_total / batch_size))
-                    
-                    for page in range(n_pages):
-                        batch_traces = all_debug_traces[page*batch_size : (page+1)*batch_size]
-                        n_batch = len(batch_traces)
-                        
-                        cols = 5
-                        rows = 5
-                        
-                        fig_db, axes_db = plt.subplots(rows, cols, figsize=(20, 15), squeeze=False)
-                        axes_db = axes_db.flatten()
-                        
-                        for idx_db, tr_info in enumerate(batch_traces):
-                            ax_db = axes_db[idx_db]
-                            t = tr_info['t']
-                            y = tr_info['y']
-                            idx_start = tr_info['idx_start']
-                            idx_final = tr_info['idx_final']
-                            idx_orig  = tr_info['idx_orig']
-                            win_50ms  = tr_info.get('win_50ms', 0)
-                            is_max_dur = tr_info.get('is_max_dur', False)
-                            idx_peak_speed = tr_info.get('idx_peak_speed', idx_start)
-                            
-                            # Safety check for lengths
-                            limit = len(t) - 1
-                            idx_orig = min(limit, idx_orig)
-                            idx_final = min(limit, idx_final)
-                            idx_peak_speed = min(limit, idx_peak_speed)
-                            
-                            # Plot Trace
-                            ax_db.plot(t, y, 'k-', alpha=0.7)
-                            
-                            # Mark Start
-                            ax_db.axvline(t[min(limit, idx_start)], color='g', linestyle='--', label='Start')
-                            
-                            # Mark Peak Speed (Scan Start)
-                            ax_db.plot(t[idx_peak_speed], y[idx_peak_speed], 'c^', markersize=6, label='Peak Vel')
-                            
-                            if is_max_dur:
-                                # Mark Original Peak (likely 600ms limit)
-                                ax_db.plot(t[idx_orig], y[idx_orig], 'bo', label='Orig 600ms')
-                                
-                                # Highlight Baseline Region (Last 50ms)
-                                bl_start_idx = max(0, len(y) - win_50ms)
-                                bl_start_idx = min(limit, bl_start_idx)
-                                ax_db.axvspan(t[bl_start_idx], t[-1], color='gray', alpha=0.2, label='Baseline')
-                            else:
-                                # Standard trial
-                                ax_db.plot(t[idx_orig], y[idx_orig], 'b.', alpha=0.5, label='Orig Peak')
-
-                            # Mark Settled Peak (Refined End)
-                            ax_db.plot(t[idx_final], y[idx_final], 'rx', markersize=8, markeredgewidth=2, label='End')
-                            
-                            # Title
-                            dur = t[idx_final] - t[idx_start]
-                            title_color = 'red' if is_max_dur else 'black'
-                            ax_db.set_title(f"T{tr_info['idx_trial']} (Dur: {dur:.0f}ms)", color=title_color, fontsize=8)
-                            
-                            if idx_db == 0:
-                                ax_db.legend(fontsize='xx-small', loc='upper left')
-                                
-                        # Turn off unused axes
-                        for k in range(n_batch, len(axes_db)):
-                            axes_db[k].axis('off')
-                            
-                        plt.tight_layout()
-                        # Sanitize condition string for filename
-                        safe_cond = "".join([c if c.isalnum() else "_" for c in cond])
-                        
-                        # Create debug subfolder
-                        debug_dir = FIG_OUT_DIR / "debug"
-                        debug_dir.mkdir(exist_ok=True)
-                        
-                        plt.savefig(debug_dir / f"Debug_Traces_{target}_{safe_cond}_{p.stem}_page{page+1}.png")
-                        plt.close(fig_db)
-
-                # Sanity: if no metrics found, skip
-                if df.empty:
-                    continue
-                    
-                df["Condition"] = cond
-                df["SourceFile"] = p.stem
-                
-                # Exclude specific trials for this condition
-                # Extract condition number
-                match = re.search(r"(\d+)", cond)
-                if match:
-                    cond_num = int(match.group(1))
-                    if cond_num in EXCLUDE_TRIALS:
-                        # Get trials to exclude (0-indexed)
-                        trials_to_exclude = EXCLUDE_TRIALS[cond_num]
-                        # Filter out these trial indices
-                        df = df[~df.index.isin(trials_to_exclude)].reset_index(drop=True)
-                        if df.empty:
-                            continue
-                
-                all_metrics.append(df)
-                
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"Error processing {p.name}: {e}")
+    # Parallelize file processing
+    # Use ThreadPoolExecutor for I/O bound tasks (loading large files over network)
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        # Submit all tasks
+        futures = {executor.submit(process_single_file, p, target, target_code): p for p in all_files}
+        
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                df = future.result()
+                if df is not None and not df.empty:
+                    all_metrics.append(df)
+            except Exception as exc:
+                print(f'Generated an exception: {exc}')
             
     if not all_metrics:
         return pd.DataFrame()
@@ -775,7 +618,7 @@ def detect_outliers(df: pd.DataFrame, target: str, suffix: str = ""):
     if outliers_list:
         outliers_df = pd.DataFrame(outliers_list)
         outliers_df.to_csv(FIG_OUT_DIR / f"{target}_outliers{suffix}.csv", index=False)
-        print(f"  Found {len(outliers_list)} outlier(s) for Target {target}{suffix}")
+        # print(f"  Found {len(outliers_list)} outlier(s) for Target {target}{suffix}")
         
         # Remove outliers from dataframe
         outlier_indices = [o["Global_Index"] for o in outliers_list]
@@ -785,6 +628,59 @@ def detect_outliers(df: pd.DataFrame, target: str, suffix: str = ""):
     return df
 
 
+
+def plot_individual_points(ax, data_list, conditions):
+    """Plot individual data points as hollow circles with jitter."""
+    plot_data = []
+    for i, c in enumerate(conditions):
+        y_vals = data_list[i]
+        if len(y_vals) > 0:
+            for val in y_vals:
+                plot_data.append({'x': i, 'y': val, 'condition': c})
+    
+    if plot_data:
+        plot_df = pd.DataFrame(plot_data)
+        
+        # Use scatter instead of stripplot for true transparency
+        # Add jitter manually
+        jitter_amount = 0.15
+        x_jittered = plot_df['x'] + np.random.uniform(-jitter_amount, jitter_amount, len(plot_df))
+        
+        ax.scatter(x_jittered, plot_df['y'], 
+                   facecolors='none',      # Transparent fill
+                   edgecolors='black',     # Black edge
+                   linewidths=1,
+                   s=40,                   # Size (similar to size=4 in stripplot)
+                   alpha=0.7,              # Edge transparency for overlap visibility
+                   zorder=10)
+
+def plot_significance(ax, valid_pos, valid_data, baseline_data, conditions, valid_indices):
+    """Annotate plot with significance stars (T-test vs Baseline)."""
+    if len(baseline_data) <= 3: return
+    
+    for i, idx in enumerate(valid_indices):
+          c_name = conditions[idx]
+          # Skip comparing baseline to itself
+          c_lower = str(c_name).lower()
+          if "baseline" in c_lower or "control" in c_lower:
+               continue
+               
+          curr_data = valid_data[i]
+          if len(curr_data) < 3: continue
+          
+          # T-Test (Welch's)
+          t_stat, p_val = stats.ttest_ind(curr_data, baseline_data, equal_var=False)
+          
+          res_str = ""
+          if p_val < 0.001: res_str = "***"
+          elif p_val < 0.01: res_str = "**"
+          elif p_val < 0.05: res_str = "*"
+          
+          if res_str:
+               x = valid_pos[i]
+               y_max = np.max(curr_data)
+               # Place text above max
+               ax.text(x, y_max, res_str, ha='center', va='bottom', fontsize=20, fontweight='bold', color='black')
 
 def plot_stim_quantification(
     df: pd.DataFrame, 
@@ -832,13 +728,12 @@ def plot_stim_quantification(
     # Row 1: Peak Speed (Violin)
     
     # Prepare Data Reuse
-    # We want to generate 3 figures: violin-box, box, bar
-    plot_types = ['violin-box', 'box', 'bar']
+    plot_types = ['violin-box', 'box']
     n_conds = len(conditions)
     
     for p_type in plot_types:
         # Width needs to accommodate conditions
-        width = max(10, n_conds * 1.5)
+        width = max(5, n_conds * 0.8)
         height = 10
         
         fig, axes = plt.subplots(2, 1, figsize=(width, height), sharex=True)
@@ -856,6 +751,15 @@ def plot_stim_quantification(
             valid_indices = [i for i, d in enumerate(data_list) if len(d) > 0]
             valid_data = [data_list[i] for i in valid_indices]
             valid_pos = x_pos[valid_indices]
+            
+            # --- Identify Baseline for Stats ---
+            baseline_data = [] # Data array
+            for c in conditions:
+                # Naive check for baseline/control condition
+                c_str = str(c).lower()
+                if "baseline" in c_str or "control" in c_str:
+                     baseline_data = df[df["Condition"] == c][metric].dropna().values
+                     if len(baseline_data) > 0: break
             
             # --- Plotting Logic based on Type ---
             
@@ -896,28 +800,11 @@ def plot_stim_quantification(
                     for median in bp['medians']:
                         median.set(color='black', linewidth=1.5)
 
-            elif p_type == 'bar':
-                # Bar plot with error bars (std dev)
-                mean_vals = [means.loc[c, metric] if c in means.index else 0 for c in conditions]
-                std_vals = [stds.loc[c, metric] if c in stds.index else 0 for c in conditions]
-                
-                # Plot bars
-                bars = ax.bar(x_pos, mean_vals, yerr=std_vals, capsize=5, alpha=0.6, 
-                             color=[color_map.get(c, 'blue') for c in conditions],
-                             edgecolor='black', linewidth=0.5)
+            # --- Individual Points (Hollow Circles, Jittered) ---
+            plot_individual_points(ax, data_list, conditions)
             
-            # --- Individual Points (Swarmplot) ---
-            plot_data = []
-            for i, c in enumerate(conditions):
-                y_vals = data_list[i]
-                if len(y_vals) > 0:
-                    for val in y_vals:
-                        plot_data.append({'x': i, 'y': val, 'condition': c})
-            
-            if plot_data:
-                plot_df = pd.DataFrame(plot_data)
-                sns.swarmplot(data=plot_df, x='x', y='y', ax=ax, 
-                             color='black', size=2.5, alpha=0.7, zorder=10)
+            # --- Statistics (T-Test vs Baseline) ---
+            plot_significance(ax, valid_pos, valid_data, baseline_data, conditions, valid_indices)
             
             # Adjust Axis
             ax.set_ylabel(ylabel)
@@ -926,10 +813,9 @@ def plot_stim_quantification(
             ax.set_xlim(-0.5, len(conditions) - 0.5) # Ensure consistent spacing
             
             # Set Y-axis limits
-            if metric == "duration_ms":
-                ax.set_ylim(0, 600)  # Duration: 0-600ms range
-            else:
-                ax.set_ylim(bottom=0)  # Other metrics: start from zero
+            # Add margin for stars and remove hard cap
+            ax.margins(y=0.15)
+            ax.set_ylim(bottom=0)
             
             # X Labels with custom mapping
             import textwrap
@@ -950,7 +836,7 @@ def plot_stim_quantification(
             
             labels = [f"{get_label(c)}\n(n={counts[c]})" for c in conditions]
             labels_wrapped = ["\n".join(textwrap.wrap(l, 20)) for l in labels]
-            ax.set_xticklabels(labels_wrapped, rotation=0, ha="center", fontsize=9)
+            ax.set_xticklabels(labels_wrapped, rotation=45, ha="right", fontsize=9)
             
         title_suffix = " (Combined)" if suffix == "_Combined" else ""
         plt.suptitle(f"Kinematics Summary - {target}{title_suffix} ({p_type})", fontsize=16)
@@ -963,57 +849,63 @@ def plot_stim_quantification(
         plt.savefig(FIG_OUT_DIR / save_name, bbox_inches='tight')
         plt.close(fig)
     
-    # Save statistics CSV
-    stats_df = means.copy()
-    stats_df.columns = [f"{c}_Mean" for c in stats_df.columns]
-    stats_df_std = stds.copy()
-    stats_df_std.columns = [f"{c}_Std" for c in stats_df_std.columns]
-    full_stats = pd.concat([stats_df, stats_df_std, counts.rename("Count")], axis=1)
-    full_stats.to_csv(FIG_OUT_DIR / f"{target}_stats_summary{suffix}.csv")
+    if SAVE_STATS_CSV:
+        # Save statistics CSV
+        stats_df = means.copy()
+        stats_df.columns = [f"{c}_Mean" for c in stats_df.columns]
+        stats_df_std = stds.copy()
+        stats_df_std.columns = [f"{c}_Std" for c in stats_df_std.columns]
+        full_stats = pd.concat([stats_df, stats_df_std, counts.rename("Count")], axis=1)
+        full_stats.to_csv(FIG_OUT_DIR / f"{target}_stats_summary{suffix}.csv")
+
+def run_target_analysis(target_char: str, target_code: int, display_name: str):
+    """
+    Run the full analysis pipeline for a single target:
+    - Process kinematics
+    - Detect/Remove outliers (optional)
+    - Plot individual conditions (optional)
+    - Plot combined conditions (optional)
+    """
+    print(f"Processing {display_name} (Target {target_char})...")
+    df = process_target(target_char, target_code)
+    
+    if df.empty:
+        print(f"No metrics found for {display_name}.")
+        return
+
+    # Use underscore name for file saving (outliers CSV)
+    file_name = display_name.replace(" ", "_")
+
+    # Outlier Removal
+    if REMOVE_OUTLIERS:
+        df_clean = detect_outliers(df, file_name)
+    else:
+        df_clean = df
+        
+    # Plot Full Conditions
+    if PLOT_FULL_CONDITIONS:
+         plot_stim_quantification(df_clean, display_name)
+         
+    # Combined Analysis
+    if ANALYZE_COMBINED:
+         df_combined = combine_conditions(df_clean)
+         
+         if REMOVE_OUTLIERS:
+              df_comb_clean = detect_outliers(df_combined, file_name, suffix="_Combined")
+         else:
+              df_comb_clean = df_combined
+              
+         plot_stim_quantification(df_comb_clean, display_name, suffix="_Combined", label_map=COMBINED_CONDITION_LABELS)
 
 def main():
     print(f"Quantifying kinematics for Session: {PARAMS.session}")
     print(f"Output Dir: {FIG_OUT_DIR}")
     
     # Target A (code 1) - Left Reach
-    print("Processing Left Reach (Target A)...")
-    df_a = process_target("A", 1)
-    if not df_a.empty:
-        # Detect outliers and remove them
-        df_a_clean = detect_outliers(df_a, "Left_Reach")
-        
-        # Original figure (Cleaned)
-        plot_stim_quantification(df_a_clean, "Left Reach")
-        
-        # Combined figure (Cleaned)
-        df_a_combined = combine_conditions(df_a_clean)
-        
-        # Also detect/remove outliers from combined groups if any remain relative to group stats
-        df_a_combined_clean = detect_outliers(df_a_combined, "Left_Reach", suffix="_Combined")
-        
-        plot_stim_quantification(df_a_combined_clean, "Left Reach", suffix="_Combined", label_map=COMBINED_CONDITION_LABELS)
-    else:
-        print("No metrics found for Left Reach.")
+    run_target_analysis("A", 1, "Left Reach")
         
     # Target B (code 2) - Right Reach
-    print("Processing Right Reach (Target B)...")
-    df_b = process_target("B", 2)
-    if not df_b.empty:
-        # Detect outliers and remove them
-        df_b_clean = detect_outliers(df_b, "Right_Reach")
-        
-        # Original figure (Cleaned)
-        plot_stim_quantification(df_b_clean, "Right Reach")
-        
-        # Combined figure (Cleaned)
-        df_b_combined = combine_conditions(df_b_clean)
-        
-        # Also detect/remove outliers from combined groups if any remain relative to group stats
-        df_b_combined_clean = detect_outliers(df_b_combined, "Right_Reach", suffix="_Combined")
-        
-        plot_stim_quantification(df_b_combined_clean, "Right Reach", suffix="_Combined", label_map=COMBINED_CONDITION_LABELS)
-    else:
-        print("No metrics found for Right Reach.")
+    run_target_analysis("B", 2, "Right Reach")
 
 if __name__ == "__main__":
     main()

@@ -362,6 +362,32 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
         # Session Name
         if 'session' in data: session = str(data['session'])
         else: session = npz_file.stem.replace("aligned_lfp__", "")
+        
+        # --- Detect Baseline Files ---
+        is_baseline = "baseline" in npz_file.stem
+        baseline_port = None
+        baseline_depth = None
+        
+        if is_baseline:
+            # Extract port and depth from filename or data
+            if 'group_port' in data:
+                baseline_port = str(data['group_port'])
+            if 'group_depth' in data:
+                baseline_depth = str(data['group_depth'])
+            
+            # Also try parsing from filename: aligned_lfp__baseline__Depth_43_0_port_A.npz
+            if baseline_port is None or baseline_depth is None:
+                stem = npz_file.stem
+                if 'port_' in stem:
+                    baseline_port = stem.split('port_')[-1].split('.')[0].split('_')[0]
+                if 'Depth_' in stem:
+                    depth_part = stem.split('Depth_')[-1].split('_port')[0]
+                    baseline_depth = depth_part.replace('_', '.')
+            
+            # Count sessions if available
+            n_sessions = len(data.get('sessions', [])) if 'sessions' in data else 1
+            
+            print(f"  [Baseline] Port={baseline_port}, Depth={baseline_depth}, Sessions={n_sessions}")
             
         if 'broadband_post' not in data:
             print(f"Error: 'broadband_post' key missing in {npz_file.name}. Skipping.")
@@ -436,7 +462,11 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                  amp_str = f"| {u_amps} uA"
 
         # Title Construction
-        title_str = f"Stim: {active_str} | {freq_str} {amp_str}"
+        if is_baseline:
+            title_str = f"Baseline | Port {baseline_port} | Depth {baseline_depth} mm"
+            session = f"Baseline_Depth_{baseline_depth}_port_{baseline_port}"  # For filename
+        else:
+            title_str = f"Stim: {active_str} | {freq_str} {amp_str}"
         
         # --- Pick Representative Channel ---
         rep_ch_idx = get_representative_channel(data.get('broadband_post'))
@@ -1033,10 +1063,10 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
 
 def plot_lfp_check():
     # 1. Process NPRW
-    # process_directory(NPRW_LFP_DIR, NPRW_FIG_DIR, label="NPRW_Intan")
+    process_directory(NPRW_LFP_DIR, NPRW_FIG_DIR, label="NPRW_Intan")
     
     # 2. Process Utah Array
-    process_directory(UA_LFP_DIR, UA_FIG_DIR, label="Utah_Array")
+    # process_directory(UA_LFP_DIR, UA_FIG_DIR, label="Utah_Array")
 
 if __name__ == "__main__":
     plot_lfp_check()

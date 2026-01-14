@@ -20,10 +20,14 @@ from scipy.optimize import curve_fit, OptimizeWarning
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 
-# ---------- MANUAL EXCLUSION ----------
-# Format: "Session_Name": [list of 0-based trial indices to skip]
-MANUAL_EXCLUSION = {
-    # Example: "20240101_01_session": [0, 5, 22] 
+# ---------- BASELINE TRIAL EXCLUSION ----------
+# Format: "baseline_port{A,B}_target{A,B}": [list of 0-based trial indices to skip]
+# Use this to remove false positive IR-triggered events (e.g., multiple triggers on same reach)
+EXCLUDE_BASELINE_TRIALS = {
+    "baseline_portA_targetA": [1, 3, 4, 6, 13, 14, 21, 24],
+    "baseline_portB_targetA": [2, 6, 7, 9, 13, 18],
+    "baseline_portA_targetB": [6, 10, 13, 15, 16, 17, 20, 21, 22, 24, 25, 30, 39, 40, 42, 47, 56, 57],
+    "baseline_portB_targetB": [2, 3, 4, 6, 8, 10, 12, 15, 17, 20, 22, 23, 24, 26, 28, 30, 31, 35],
 }
 
 """
@@ -623,6 +627,22 @@ def extract_single_epoch(rec_obj, center_idx, pre_samps, post_samps):
     return rec_obj.get_traces(start_frame=start, end_frame=end, return_in_uV=True).T
 
 
+def slice_epoch(data, t_axis, target_win):
+    """
+    Slice epoch data to a specific time window.
+    
+    Args:
+        data: np.ndarray of shape (n_trials, n_ch, n_time)
+        t_axis: Time axis array
+        target_win: Tuple of (start_ms, end_ms)
+    
+    Returns:
+        Tuple of (sliced_data, sliced_time_axis)
+    """
+    mask = (t_axis >= target_win[0]) & (t_axis < target_win[1])
+    return data[:, :, mask], t_axis[mask]
+
+
 def process_nprw_session(sess_name: str, br_idx: int, intan_idx: int, shift_ms: float = 0.0):
     """
     Process one Intan session: lazy load, SI clean/filter/DS, epoch.
@@ -983,6 +1003,7 @@ def process_baseline_group(
     # Try Target_A first, then Target_B
     # Use glob to handle different naming conventions (e.g., 43.0 vs 43_0)
     ir_events_ms = None
+    loaded_target = None  # Track which target was loaded
     for target in ["Target_A", "Target_B"]:
         target_dir = PERI_ROOT / target
         if not target_dir.exists():
@@ -1000,7 +1021,8 @@ def process_baseline_group(
                 bl_data = np.load(baseline_file, allow_pickle=True)
                 if "stim_ms" in bl_data and bl_data["stim_ms"].size > 0:
                     ir_events_ms = bl_data["stim_ms"]
-                    print(f"    Found {len(ir_events_ms)} IR events in baseline file.")
+                    loaded_target = target[-1]  # 'A' or 'B'
+                    print(f"    Found {len(ir_events_ms)} IR events in baseline file (Target {loaded_target}).")
                     break
             except Exception as e:
                 print(f"    [WARN] Failed to load baseline file: {e}")
@@ -1008,6 +1030,19 @@ def process_baseline_group(
     if ir_events_ms is None or len(ir_events_ms) == 0:
         print(f"    [WARN] No IR events found for group. Skipping.")
         return
+    
+    # 1.5. Apply Baseline Trial Exclusions
+    exclusion_key = f"baseline_port{port}_target{loaded_target}"
+    exclude_indices = EXCLUDE_BASELINE_TRIALS.get(exclusion_key, [])
+    if exclude_indices:
+        print(f"    [Exclusion] Removing {len(exclude_indices)} trials from {exclusion_key}: {exclude_indices}")
+        # Create mask for valid trials
+        valid_mask = np.ones(len(ir_events_ms), dtype=bool)
+        for idx in exclude_indices:
+            if 0 <= idx < len(ir_events_ms):
+                valid_mask[idx] = False
+        ir_events_ms = ir_events_ms[valid_mask]
+        print(f"    [Exclusion] Remaining trials: {len(ir_events_ms)}")
     
     # 2. Set up probe geometry
     intan_geom, intan_probe_mapping = get_intan_geometry()
@@ -1146,6 +1181,234 @@ def process_baseline_group(
         "rel_time_pre": t_pre,
         "rel_time_post": t_post,
         "stim_channels": ["Baseline_IR"],
+        **results
+    }
+    
+    np.savez_compressed(out_npz, **save_dict)
+    print(f"    Saved -> {out_npz}")
+    
+    gc.collect()
+
+
+# =============================================================================
+# Grouped Baseline LFP Processing - Utah Array
+# =============================================================================
+
+def process_baseline_group_utah(
+    group_key: tuple,  # (port, depth)
+    session_infos: list,  # List of dicts with session info
+):
+    """
+    Process a group of baseline/control sessions for Utah Array by loading IR events from
+    existing baseline PeriStim files and concatenating LFP epochs.
+    
+    Args:
+        group_key: Tuple of (ua_port, depth_mm)
+        session_infos: List of dicts with keys: session, br_idx, intan_idx, shift_ms, fs_intan
+    """
+    port, depth = group_key
+    
+    # Sanitize for filename
+    def _sanitize(s):
+        return str(s).replace(".", "_").replace("/", "_").replace("\\", "_").replace(" ", "_")
+    
+    depth_str = _sanitize(depth)
+    port_str = _sanitize(port)
+    
+    out_npz = UA_LFP_CKPT_ROOT / f"aligned_lfp__baseline__Depth_{depth_str}_port_{port_str}.npz"
+    
+    if out_npz.exists():
+        print(f"[Baseline UA] Skipping group Depth={depth}, Port={port}, output exists.")
+        return
+        
+    print(f"\n[Baseline UA] Processing group: Depth={depth}, Port={port}")
+    print(f"    Sessions: {[s['session'] for s in session_infos]}")
+    
+    # 1. Load IR events from baseline PeriStim file
+    ir_events_ms = None
+    loaded_target = None  # Track which target was loaded
+    for target in ["Target_A", "Target_B"]:
+        target_dir = PERI_ROOT / target
+        if not target_dir.exists():
+            continue
+            
+        # Use flexible glob pattern for depth
+        pattern = f"baseline__*Depth*{depth.replace('.', '*')}*port*{port}*target_{target[-1]}.npz"
+        matches = list(target_dir.glob(pattern))
+        
+        if matches:
+            baseline_file = matches[0]
+            print(f"    Loading IR events from: {baseline_file.name}")
+            try:
+                bl_data = np.load(baseline_file, allow_pickle=True)
+                if "stim_ms" in bl_data and bl_data["stim_ms"].size > 0:
+                    ir_events_ms = bl_data["stim_ms"]
+                    loaded_target = target[-1]  # 'A' or 'B'
+                    print(f"    Found {len(ir_events_ms)} IR events in baseline file (Target {loaded_target}).")
+                    break
+            except Exception as e:
+                print(f"    [WARN] Failed to load baseline file: {e}")
+    
+    if ir_events_ms is None or len(ir_events_ms) == 0:
+        print(f"    [WARN] No IR events found for group. Skipping.")
+        return
+    
+    # 1.5. Apply Baseline Trial Exclusions
+    exclusion_key = f"baseline_port{port}_target{loaded_target}"
+    exclude_indices = EXCLUDE_BASELINE_TRIALS.get(exclusion_key, [])
+    if exclude_indices:
+        print(f"    [Exclusion] Removing {len(exclude_indices)} trials from {exclusion_key}: {exclude_indices}")
+        valid_mask = np.ones(len(ir_events_ms), dtype=bool)
+        for idx in exclude_indices:
+            if 0 <= idx < len(ir_events_ms):
+                valid_mask[idx] = False
+        ir_events_ms = ir_events_ms[valid_mask]
+        print(f"    [Exclusion] Remaining trials: {len(ir_events_ms)}")
+    
+    # 2. Process each session in the group
+    all_epochs_bb = []
+    ua_region_global = None
+    ua_region_names_global = None
+    ua_elec_global = None
+    ua_nsp_global = None
+    
+    for sess_info in session_infos:
+        br_idx = sess_info["br_idx"]
+        shift_ms = sess_info["shift_ms"]
+        fs_intan = sess_info.get("fs_intan", 30000.0)
+        
+        # Find Blackrock ns6 file
+        ns6_files = [p for p in BR_ROOT.iterdir() if p.is_file() and f"_{br_idx:03d}" in p.name and p.suffix == '.ns6']
+        
+        if not ns6_files:
+            print(f"    [WARN] No .ns6 file found for BR {br_idx:03d}")
+            continue
+            
+        sess_path = ns6_files[0]
+        print(f"    Processing BR {br_idx:03d}: {sess_path.name}")
+        
+        try:
+            # Load Blackrock recording
+            rec_raw = se.read_blackrock(str(sess_path), stream_name='nsx6', all_annotations=True)
+            
+            # Apply UA mapping
+            rec_mapped, idx_rows, ua_elec, ua_nsp, ua_region, ua_region_names, ua_port_from_map = rcp.apply_ua_mapping_with_regions(
+                rec_raw, UA_MAP, br_idx, METADATA_CSV
+            )
+            
+            # Store region info from first session
+            if ua_region_global is None:
+                ua_region_global = ua_region
+                ua_region_names_global = ua_region_names
+                ua_elec_global = ua_elec
+                ua_nsp_global = ua_nsp
+            
+            fs_native = rec_mapped.get_sampling_frequency()
+            rec_duration_ms = rec_mapped.get_total_duration() * 1000.0
+            
+            # Convert IR events (in BR-aligned ms) to session time
+            # IR events are relative to BR time, shift_ms converts Intan->BR
+            # So for BR time we don't need to shift, IR events are already in BR time
+            sess_ir_ms_valid = ir_events_ms[(ir_events_ms >= 0) & (ir_events_ms < rec_duration_ms)]
+            
+            if len(sess_ir_ms_valid) == 0:
+                print(f"        No valid IR events for this session. Skipping.")
+                continue
+                
+            print(f"        Found {len(sess_ir_ms_valid)} valid IR events for this session.")
+            
+            # Convert to samples
+            stim_start_samps = (sess_ir_ms_valid * fs_native / 1000.0).astype(np.int64)
+            
+            # Build preprocessing pipeline (no blanking for baseline)
+            rec_proc = build_lfp_preprocessing_pipeline(
+                rec_mapped,
+                stim_indices_native=np.array([]),  # No blanking for control
+                curr_sess_name=sess_path.name
+            )
+            
+            # Convert to resampled indices
+            stim_indices_res = (stim_start_samps * TARGET_FS / fs_native).astype(np.int64)
+            
+            # Calculate epoch samples
+            pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000)
+            post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000)
+            n_samps_total = rec_proc.get_total_samples()
+            
+            # Extract epochs (sequential to avoid joblib pickling issues)
+            segs_list = []
+            for idx in stim_indices_res:
+                if (idx - pre_samps >= 0) and (idx + post_samps <= n_samps_total):
+                    seg = extract_single_epoch(rec_proc, idx, pre_samps, post_samps)
+                    if seg is not None:
+                        segs_list.append(seg)
+            
+            if len(segs_list) > 0:
+                sess_epochs = np.stack(segs_list, axis=0)
+                all_epochs_bb.append(sess_epochs)
+                print(f"        Extracted {len(segs_list)} epochs from session.")
+            else:
+                print(f"        [WARN] No valid epochs extracted from session.")
+                
+            del rec_raw, rec_mapped, rec_proc
+            gc.collect()
+            
+        except Exception as e:
+            print(f"        [ERROR] Failed to process BR {br_idx:03d}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+    
+    # 3. Concatenate epochs across sessions
+    if len(all_epochs_bb) == 0:
+        print(f"    [WARN] No epochs extracted from any session in group. Skipping.")
+        return
+        
+    concat_epochs = np.concatenate(all_epochs_bb, axis=0)
+    print(f"    Concatenated epochs: {concat_epochs.shape} (trials, channels, time)")
+    
+    # 4. Clean epochs
+    print(f"    Cleaning epochs...")
+    concat_epochs_clean = clean_epochs(concat_epochs, TARGET_FS)
+    
+    # 5. Compute time vectors and slice
+    rel_t_epoch = np.linspace(-EPOCH_PRE_MS, EPOCH_POST_MS, concat_epochs_clean.shape[2])
+    
+    WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
+    WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)
+    
+    bb_pre, t_pre = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_PRE)
+    bb_post, t_post = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_POST)
+    
+    results = {
+        "broadband_pre": bb_pre,
+        "broadband_post": bb_post,
+    }
+    
+    # 6. Band analysis
+    for band_name, (low, high) in LFP_BANDS.items():
+        print(f"    Filtering {band_name} ({low}-{high} Hz)...")
+        filt_epochs = filter_epochs(concat_epochs_clean, TARGET_FS, low, high)
+        results[f'{band_name}_pre'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_PRE)
+        results[f'{band_name}_post'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_POST)
+    
+    # 7. Save
+    save_dict = {
+        "fs_lfp": TARGET_FS,
+        "group_port": port,
+        "group_depth": depth,
+        "sessions": [s["session"] for s in session_infos],
+        "br_indices": [s["br_idx"] for s in session_infos],
+        "stim_ms": ir_events_ms,
+        "n_trials": concat_epochs_clean.shape[0],
+        "rel_time_pre": t_pre,
+        "rel_time_post": t_post,
+        "stim_channels": ["Baseline_IR"],
+        # UA-specific metadata
+        "ua_region": ua_region_global,
+        "ua_region_names": ua_region_names_global,
+        "ua_elec": ua_elec_global,
+        "ua_nsp": ua_nsp_global,
         **results
     }
     
@@ -1560,6 +1823,7 @@ def main():
                                 "br_idx": br_idx,
                                 "intan_idx": intan_idx,
                                 "shift_ms": shift_ms,
+                                "fs_intan": fs_intan,
                             })
                 except Exception as e:
                     print(f"    [WARN] Failed to identify group for session: {e}")
@@ -1611,10 +1875,20 @@ def main():
         for group_key, session_infos in baseline_groups.items():
             if not session_infos:
                 continue
+            
+            # Process NPRW (Intan) baseline
             try:
                 process_baseline_group(group_key, session_infos)
             except Exception as e:
-                print(f"[ERROR] Baseline group {group_key}: {e}")
+                print(f"[ERROR] Baseline NPRW group {group_key}: {e}")
+                import traceback
+                traceback.print_exc()
+            
+            # Process Utah Array baseline
+            try:
+                process_baseline_group_utah(group_key, session_infos)
+            except Exception as e:
+                print(f"[ERROR] Baseline UA group {group_key}: {e}")
                 import traceback
                 traceback.print_exc()
 

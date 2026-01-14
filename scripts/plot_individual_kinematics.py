@@ -1,3 +1,31 @@
+"""
+plot_individual_kinematics.py
+=============================
+
+Purpose:
+  Visualizes individual kinematic traces for every trial in the dataset.
+  Organizes plots by trial and camera (Cam0/Cam1) to allow manual inspection of trial quality.
+  Useful for identifying outlier trials or tracking bugs.
+
+Key Features:
+  - Generates grid plots (one subplot per trial).
+  - Filters displayed traces by keyword (e.g., "Wrist X", "Middle Y").
+  - Groups plots by Camera source (Cam0 block, then Cam1 block).
+
+Outputs:
+  - Figures: Saved to `results/figures/individual_trials/`
+    - One figure per condition per target.
+
+Configuration (Global Constants):
+  - TRACES_TO_PLOT (list): Substrings to filter which traces to show (e.g. ["Wrist X"]). 
+                           Set to None or empty list to plot all available traces.
+  - KINEMATICS_YLIM (tuple): Y-axis limits for the plots (e.g. (-4, 4)).
+  - N_COLS (int): Number of columns in the subplot grid.
+
+Adjustable Parameters:
+  - FIG_WIDTH_PER_COL, FIG_HEIGHT_PER_ROW: Sizing control for the output image.
+"""
+
 import math
 from RCP_analysis.python.functions.config_loading import *
 
@@ -31,7 +59,7 @@ def _strip_cam_prefix(n: str) -> str:
     if n.startswith("cam1_"): return n[len("cam1_"):]
     return n
 
-def _simple_beh_labels(names: list[str], keypoints: Tuple[str, ...] = KEYPOINTS_ORDER) -> list[str]:
+def _simple_beh_labels(names: list[str], keypoints: tuple[str, ...] = KEYPOINTS_ORDER) -> list[str]:
     out: list[str] = []
     kps_lc = tuple(kp.lower() for kp in keypoints)
     for n in names:
