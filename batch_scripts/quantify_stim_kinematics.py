@@ -56,6 +56,10 @@ START_OFFSET_MS = 0  # Start counting reach from this time (relative to alignmen
 MIN_REACH_DURATION_MS = 70.0 # Exclude <110ms duration
 MAX_REACH_DURATION_MS = 600.0
 
+# Position Constraints for detection
+START_POS_MAX_THRESH = 0.1  # Start must be within +/- 0.1 of 0 (Tightened)
+END_POS_MIN_THRESH = 2.0    # End must be at least +/- 2.0 away from 0
+
 # Track only middle_x as requested
 SELECTED_KEYPOINTS = ["middle_x"] 
 
@@ -101,27 +105,47 @@ COMBINED_CONDITION_LABELS = {
 
 # Exclude specific trials within conditions (condition_id: [trial_indices])
 # Trial indices are 0-indexed within each condition
-EXCLUDE_TRIALS = {
-    9: [7, 10, 11, 13],
-    10: [5],
-    14: [7],
-    18: [5, 7],
-    19: [4],
-    20: [3, 5],
-    21: [7],
-    23: [1, 9],
-    24: [5, 15],
-    27: [1, 3, 6],
+EXCLUDE_TRIALS_TARGET_A = {
+    6: [0, 8],
+    7: [2, 11],
+    10: [5, 9],
+    11: [3, 6],
+    12: [8],
+    14: [2, 3, 5, 6, 8],
+    15: [2, 4, 5, 6, 8],
+    16: [9, 10],
+    18: [5],
+    19: [0, 4],
+    20: [0, 1],
+    21: [5],
+    23: [8],
+    24: [0, 1, 5, 8, 10],
+    27: [1, 2],
+}
+
+EXCLUDE_TRIALS_TARGET_B = {
+    6: [1, 6, 7, 9, 10],
+    7: [0, 6, 13],
+    10: [12],
+    11: [7],
+    13: [1],
+    14: [10, 11],
+    15: [0],
+    19: [2, 11],
+    21: [2],
+    23: [5],
+    24: [9],
+    27: [1, 5, 9],
 }
 
 # Baseline-specific trial exclusions (organized by port and target)
 # Format: "baseline_port{A/B}_target{A/B}": [trial_indices]
 # User provided 1-based indices, converting to 0-based here:
 EXCLUDE_BASELINE_TRIALS = {
-    "baseline_portA_targetA": [1, 3, 4, 6, 13, 14, 21, 24],
-    "baseline_portB_targetA": [2, 6, 7, 9, 13, 18],
-    "baseline_portA_targetB": [6, 10, 13, 15, 16, 17, 20, 21, 22, 24, 25, 30, 39, 40, 42, 47, 56, 57],
-    "baseline_portB_targetB": [2, 3, 4, 6, 8, 10, 12, 15, 17, 20, 22, 23, 24, 26, 28, 30, 31, 35],
+    "baseline_portA_targetA": [1, 3, 4, 6, 13, 14, 21, 23, 24, 25, 31, 32, 38],
+    "baseline_portB_targetA": [1, 2, 4, 6, 7, 9, 13, 18],
+    "baseline_portA_targetB": [6, 10, 13, 15, 16, 17, 20, 21, 22, 24, 25, 30, 39, 40, 42, 44, 47, 56, 57],
+    "baseline_portB_targetB": [2, 3, 4, 6, 8, 10, 12, 15, 17, 19, 20, 22, 23, 24, 26, 28, 30, 31, 33, 35],
 }
 
 # Plotting Configuration
@@ -228,11 +252,35 @@ def calculate_reach_metrics(
         
         # Define search params for next step
         STABLE_WIN_MS = 20
-        LOW_SPEED_THRESH_RATIO = 0.20
+        LOW_SPEED_THRESH_RATIO = 0.10 # Tightened from 0.20 to force finding true stop/start
         peak_v = speed[idx_peak_speed]
         thresh_v = peak_v * LOW_SPEED_THRESH_RATIO
         win_samples = max(2, int(STABLE_WIN_MS / dt))
+
+        # --- Refine Start (Backward Scan) ---
+        # Scan backward from Peak Velocity for speed < thresh_v and stable
+        # AND check if position is "next to 0" (within threshold)
+        idx_start_refined = idx_start
+        for k in range(idx_peak_speed, -1, -1):
+            if speed[k] < thresh_v:
+                # Check position constraint: abs(pos) <= START_POS_MAX_THRESH
+                if np.abs(trace_for_stop[k]) <= START_POS_MAX_THRESH:
+                    # Check stability of PREVIOUS window [k-win : k]
+                    w_start = max(0, k - win_samples)
+                    if k > w_start: # Ensure window has size
+                        if np.mean(speed[w_start:k]) < thresh_v:
+                            idx_start_refined = k
+                            break
+                    else:
+                        # At start of trial (index 0)
+                        idx_start_refined = k
+                        break
         
+        # Update Start
+        idx_start = idx_start_refined
+        t_start = t_trial[idx_start]
+
+        # --- Refine End (Forward Scan) ---
         # Default endpoint is max duration unless found
         idx_peak = idx_max_dur
         
@@ -241,13 +289,16 @@ def calculate_reach_metrics(
         
         # Scan forward from Peak Velocity for drop
         # Look for speed < thresh_v and staying stable (low mean) for win_samples
+        # AND check if position is "at least 2" (>= END_POS_MIN_THRESH)
         scan_limit = max(idx_peak_speed, idx_max_dur - win_samples)
         
         for k in range(idx_peak_speed, scan_limit):
             if speed[k] < thresh_v:
-                if np.mean(speed[k : k + win_samples]) < thresh_v:
-                    idx_peak = k
-                    break
+                # Check position constraint: abs(pos) >= END_POS_MIN_THRESH
+                if np.abs(trace_for_stop[k]) >= END_POS_MIN_THRESH:
+                    if np.mean(speed[k : k + win_samples]) < thresh_v:
+                        idx_peak = k
+                        break
                     
         t_peak = t_trial[idx_peak]
         
@@ -388,6 +439,18 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
                 if baseline_key in EXCLUDE_BASELINE_TRIALS:
                     trials_to_exclude = EXCLUDE_BASELINE_TRIALS[baseline_key]
             
+            # If not baseline (or even if it is, but currently logic separates), check condition-based exclusions
+            # Note: "Baseline" condition usually doesn't match (\d+) regex, but checking explicitly
+            if cond != "Baseline":
+                 match = re.search(r"(\d+)", cond)
+                 if match:
+                     cond_num = int(match.group(1))
+                     # Select correct exclusion dict based on Target (1=A, 2=B)
+                     exclude_dict = EXCLUDE_TRIALS_TARGET_A if target_code == 1 else EXCLUDE_TRIALS_TARGET_B
+                     
+                     if cond_num in exclude_dict:
+                         trials_to_exclude.extend(exclude_dict[cond_num])
+            
             # Retrieve metrics AND debug traces
             df, _, all_debug_traces = calculate_reach_metrics(
                 pos_segs, vel_segs, ts_state, t_axis, kp_names, target_code, 
@@ -490,18 +553,8 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
             df["SourceFile"] = p.stem
             
             # Exclude specific trials for this condition
-            # Extract condition number
-            match = re.search(r"(\d+)", cond)
-            if match:
-                cond_num = int(match.group(1))
-                if cond_num in EXCLUDE_TRIALS:
-                    # Get trials to exclude (0-indexed)
-                    trial_ex_indices = EXCLUDE_TRIALS[cond_num]
-                    # Filter out these trial indices
-                    df = df[~df.index.isin(trial_ex_indices)].reset_index(drop=True)
-                    if df.empty:
-                        return None
-            
+            # (Moved logic to before calculate_reach_metrics so debug traces are also filtered)
+                        
             return df
             
     except Exception as e:

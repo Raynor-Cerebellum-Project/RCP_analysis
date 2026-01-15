@@ -1,7 +1,7 @@
-"""
-plot_individual_kinematics.py
-=============================
+import math
+from RCP_analysis.python.functions.config_loading import *
 
+"""
 Purpose:
   Visualizes individual kinematic traces for every trial in the dataset.
   Organizes plots by trial and camera (Cam0/Cam1) to allow manual inspection of trial quality.
@@ -26,8 +26,6 @@ Adjustable Parameters:
   - FIG_WIDTH_PER_COL, FIG_HEIGHT_PER_ROW: Sizing control for the output image.
 """
 
-import math
-from RCP_analysis.python.functions.config_loading import *
 
 # ---------------------------------------------------------------------
 # CONFIG
