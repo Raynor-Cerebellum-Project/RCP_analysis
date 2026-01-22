@@ -1,6 +1,7 @@
 import gc
 import os
 import csv
+import re
 import numpy as np
 from scipy import signal
 from scipy.io import loadmat
@@ -34,39 +35,24 @@ EXCLUDE_BASELINE_TRIALS = {
     Analyzes LFP bands (Alpha, Beta, Low/High Gamma) for NPRW (Intan) and Utah Array (Blackrock)
     
     Pipeline:
-      1. Extraction: Loads stimulation events and extracts epochs (-500ms to +1000ms)
-      2. Blanking: Applies 'copy_baseline' blanking to remove stim artifacts (-5ms to +101ms)
-      3. Global CMR: Subtracts common median across channels (Optional, USE_GLOBAL_CMR)
-      4. Cleaning: Bandpass filter (Reverse/Anti-causal), Resample to 1kHz, Baseline Correction,
-         Exponential Decay Removal, and Common Median Template Subtraction
-      5. Filtering: Extracts power in specific frequency bands
+      1. Extraction: Loads stimulation events and extracts epochs (-500ms to +1000ms) with padding.
+      2. Blanking: Applies 'copy_baseline' blanking to remove stim artifacts (-5ms to +101ms).
+      3. Local CMR (Intan): Subtracts common median within local radius (loaded from config). 
+      4. Utah CMR: DISABLED.
+      5. Filtering: Zero-phase bandpass filtering in specific frequency bands (using padded epochs).
+      6. Cleaning/Rejection: 
+         - No baseline correction or exponential/template subtraction.
+         - Bad channels rejected based on IMPEDANCE thresholds (Intan > 7000 kOhm, Utah > 1000 kOhm).
       
     Associated Scripts:
-      - debug_lfp_pipeline_plots.py: Visualizes the pipeline steps (Raw -> Blanked -> Filtered, etc.)
-      - plot_lfp_check.py: General quality check of aligned LFP
-      - plot_lfp_artifact_comparison.py: Uses 'comparison' output to validate cleaning
+      - debug_lfp_pipeline_plots.py: Visualizes the pipeline steps.
+      - plot_lfp_check.py: General quality check of aligned LFP.
     
     Output:
         Aligned data .npz files containing windowed traces for each band.
         - NPRW: results/checkpoints/NPRW_LFP/aligned_lfp__{session_name}.npz
         - Utah: results/checkpoints/UA_LFP/aligned_lfp__{session_name}.npz
-        
-        Debug Plots (if enabled):
-        - results/figures/debug_pipeline/{session_name}/step_*.png
 """
-
-# ---------- TOGGLES ----------
-# Toggle for including comparison windows (raw vs clean) for artifact check plots
-# See: plot_lfp_artifact_comparison.py
-RUN_COMPARISON_ANALYSIS = False
-
-# Toggle for saving debug plots of the pipeline steps
-# See: debug_lfp_pipeline_plots.py
-SAVE_DEBUG_PLOTS = False
-
-# Toggle for Global Common Median Reference (CMR)
-# Applies median subtraction across all channels before filtering
-USE_GLOBAL_CMR = True
 
 # ---------- CONSTANTS ----------
 TARGET_FS = 1000
@@ -74,15 +60,18 @@ BLANK_PRE_MS = 5.0
 BLANK_POST_MS = 101.0 
 EPOCH_PRE_MS = 500.0
 EPOCH_POST_MS = 1000.0
-FIT_START_OFFSET_MS = 0.0 # From end of blanking
-BAD_THRES = 700.0 # in uV - after common median reference (last step)
+PAD_MS = 1000.0 # Padding for zero-phase filtering
+INTAN_IMPEDANCE_CUTOFF = 7000.0 # in kOhm
+UTAH_IMPEDANCE_CUTOFF = 1000.0 # in kOhm
 
 # ---------- CONFIG ----------
 # Bands of interest
 LFP_BANDS = {
-    "alpha": (5, 13),
-    "beta": (13, 30),
-    "low_gamma": (30, 60),
+    "delta": (1, 4),
+    "theta": (4, 8),
+    "alpha": (8, 12),
+    "beta": (12, 25),
+    "low_gamma": (25, 60),
     "high_gamma": (60, 120)
 }
 
@@ -103,6 +92,7 @@ NPRW_CFG = PARAMS.probes.get("NPRW")
 INTAN_STREAM = NPRW_CFG.get("neural_data_stream")
 STIM_STREAM = NPRW_CFG.get("stim_data_stream")
 AUX_STREAM = NPRW_CFG.get("aux_stream")
+RADII = (NPRW_CFG.get("local_radius_inner"), NPRW_CFG.get("local_radius_outer"))
 
 # Utah Config
 UA_CFG = PARAMS.probes.get("UA")
@@ -110,6 +100,13 @@ XLS = rcp.ua_excel_path(REPO_ROOT, PARAMS.probes)
 UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS else None
 METADATA_CSV = METADATA_ROOT / f"{PARAMS.session}_metadata.csv"
 SHIFT_CSV = METADATA_ROOT / "br_to_intan_shifts.csv"
+
+# Impedance Config (Utah)
+IMP_BASE = OUT_BASE.parents[0]  # One level above OUT_BASE (results)
+IMP_FILES = {
+    "A": IMP_BASE / "Impedances" / "Utah_imp_Bank_A_start",
+    "B": IMP_BASE / "Impedances" / "Utah_imp_Bank_B_start",
+}
 
 # Global job kwargs
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
@@ -168,105 +165,174 @@ def _find_baseline_groups(df_norm: pd.DataFrame) -> dict:
 # Core Cleaning Functions
 # =============================================================================
 
-def clean_epochs(epochs, fs, pre_samps=500):
+def filter_zero_phase(epochs, fs, low, high, order=4):
     """
-    Applies per-trial cleaning to extracted epochs:
-      1. Baseline correction (subtract pre-stim mean).
-      2. Exponential recovery filling & subtraction (post-blanking).
-      3. Median template subtraction (common artifact removal).
-      
+    Apply zero-phase bandpass filter using filtfilt along axis 2 (time).
+    
     Args:
         epochs (np.ndarray): (n_trials, n_ch, n_time)
         fs (float): Sampling rate (Hz)
-        pre_samps (int): Number of pre-stim samples for baseline.
+        low (float): Low cutoff (Hz)
+        high (float): High cutoff (Hz)
+        order (int): Filter order
         
     Returns:
-        np.ndarray: Cleaned epochs.
-    """
-    n_trials, n_ch, n_time = epochs.shape
-    cleaned = epochs.copy()
-    
-    # --- 1. Baseline Correction (Pre-Stim) ---
-    if pre_samps > 0:
-        baseline = np.mean(cleaned[:, :, :pre_samps], axis=2, keepdims=True)
-        cleaned -= baseline
-        
-    # --- 2. Exponential Removal (Per-Trial) ---
-    # Fit window starts after blanking (+buffer)
-    fit_start_ms = BLANK_POST_MS + FIT_START_OFFSET_MS
-    fit_start_idx = pre_samps + int(fit_start_ms * fs / 1000)
-    
-    if fit_start_idx >= n_time:
-        return cleaned
-
-    t_fit = np.arange(n_time - fit_start_idx)
-    
-    print(f"    [Cleaning] Fitting Exponentials (Trial-by-Trial) using Parallel Processing...")
-    
-    # Suppress optimization warnings during parallel fit
-    warnings.simplefilter('ignore', OptimizeWarning)
-    warnings.simplefilter('ignore', RuntimeWarning)
-
-    def exp_decay(t, a, tau, c):
-        return a * np.exp(-t / tau) + c
-
-    def fit_and_clean_single(y_data, t_fit):
-        # Work on the post-blanking segment
-        y_seg = y_data[fit_start_idx:]
-        
-        # Initial guesses
-        a0 = y_seg[0] - y_seg[-1]
-        tau0 = len(y_seg) / 4.0
-        c0 = y_seg[-1]
-        
-        try:
-            popt, _ = curve_fit(
-                exp_decay, t_fit, y_seg,
-                p0=[a0, tau0, c0],
-                bounds=([-np.inf, 1.0, -np.inf], [np.inf, len(y_seg)*2, np.inf]),
-                maxfev=500 
-            )
-            fit_curve = exp_decay(t_fit, *popt)
-            
-            # Subtract fit
-            y_clean = y_data.copy()
-            y_clean[fit_start_idx:] -= fit_curve
-            return y_clean
-        except:
-            # Fallback: Return original if fit fails
-            return y_data
-
-    # Parallelize across all (trial * channel) traces
-    # Flatten to list of 1D arrays
-    flat_data = cleaned.reshape(-1, n_time)
-    
-    results_flat = Parallel(n_jobs=-int(os.cpu_count() or 1), batch_size='auto')(
-        delayed(fit_and_clean_single)(trace, t_fit) for trace in flat_data
-    )
-    
-    # Reshape back to (n_trials, n_ch, n_time)
-    cleaned = np.array(results_flat).reshape(n_trials, n_ch, n_time)
-
-    # --- 3. Median Template Subtraction ---
-    print(f"    [Cleaning] Subtracting Median Template (Post-Exp)...")
-    template_median = np.median(cleaned, axis=0) # (n_ch, n_time)
-    cleaned -= template_median[None, :, :]
-    
-    return cleaned
-
-def filter_epochs(epochs, fs, low, high, order=4):
-    """
-    Apply bandpass filter to array of epochs (n_trials, n_ch, n_time) along time axis.
+        np.ndarray: Filtered data
     """
     nyq = 0.5 * fs
     low_norm = low / nyq
     high_norm = high / nyq
-    sos = signal.butter(order, [low_norm, high_norm], btype='band', output='sos')
-    return signal.sosfiltfilt(sos, epochs, axis=2) # Time axis is 2
+    
+    b, a = signal.butter(order, [low_norm, high_norm], btype='band')
+    
+    # Apply filtfilt along time axis (axis=2)
+    return signal.filtfilt(b, a, epochs, axis=2)
 
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
+def get_bad_channels_intan(sess_path, threshold_kohm=2000.0):
+    """
+    Search for impedance.csv in the session path and identify bad channels.
+    Returns list of channel names (e.g. 'A-000') that exceed threshold.
+    """
+    matches = list(sess_path.glob("*impedance*.csv"))
+    if not matches:
+        return []
+        
+    imp_file = matches[0]
+    bad_ch_names = []
+    print(f"  [Impedance] Loading {imp_file.name}...")
+    try:
+        # Intan impedance CSV: "Channel Name", "Impedance Magnitude at 1000 Hz (kOhm)", ...
+        # Skips header
+        with open(imp_file, 'r', encoding='utf-8', errors='ignore') as f:
+            reader = csv.reader(f)
+            # Intan often has some metadata lines before header? 
+            # Usually header starts with "Channel Name"
+            header = None
+            for row in reader:
+                if row and "Channel Name" in row[0]:
+                    header = row
+                    break
+            
+            if not header:
+                 print("  [Warn] No header found in impedance file.")
+                 return []
+
+            # Find column
+            imp_col = -1
+            for i, h in enumerate(header):
+                if "kOhm" in h and "1000" in h:
+                    imp_col = i
+                    break
+            # Fallback if simplified header
+            if imp_col == -1:
+                 for i, h in enumerate(header):
+                     if "kOhm" in h:
+                         imp_col = i
+                         break
+            
+            if imp_col == -1:
+                print("  [Warn] Could not find kOhm column in impedance file.")
+                return []
+                
+            for row in reader:
+                if not row: continue
+                try:
+                    ch_name = row[0].strip()
+                    imp_val = float(row[imp_col])
+                    if imp_val > threshold_kohm:
+                        bad_ch_names.append(ch_name)
+                except:
+                    continue
+    except Exception as e:
+        print(f"  [Warn] Failed to read impedance file: {e}")
+        return []
+        
+    return bad_ch_names
+
+# =============================================================================
+# Utah Impedance Helper Functions
+# =============================================================================
+
+_imp_pat_elecnum = re.compile(
+    r"\belec\s*\d+\s*-\s*(\d{1,3})\s+([0-9]+(?:\.[0-9]+)?)\s*(k?ohms?|kΩ|ohms?|Ω)\b",
+    flags=re.IGNORECASE,
+)
+
+def _read_text_loose(p: Path) -> str:
+    if not p.exists():
+        raise FileNotFoundError(str(p))
+    b = p.read_bytes()
+    for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1", "mac_roman"):
+        try:
+            return b.decode(enc)
+        except Exception:
+            pass
+    filtered = bytes(ch for ch in b if 9 <= ch <= 126 or ch in (10, 13))
+    return filtered.decode("latin-1", errors="ignore")
+
+def _unit_to_kohm(val: float, unit: str) -> float:
+    u = (unit or "").lower()
+    if "k" in u:
+        return float(val)
+    return float(val) / 1000.0  # Ω → kΩ
+
+def load_impedances_from_textedit_dump(path_like: str | Path) -> dict[int, float]:
+    """
+    Parse lines like 'elec1-5   201 kOhm' from a loose text dump.
+    Returns { Elec#: impedance_kΩ }.
+    """
+    txt = _read_text_loose(Path(path_like))
+    out: dict[int, float] = {}
+    for m in _imp_pat_elecnum.finditer(txt):
+        elec_str, val_str, unit = m.groups()
+        try:
+            elec = int(elec_str)
+            val = float(val_str)
+        except Exception:
+            continue
+        out[elec] = _unit_to_kohm(val, unit)
+    return out
+
+def get_bad_channels_utah(imp_files_dict, ua_elec_ids, threshold_kohm=2000.0):
+    """
+    Load impedances from known Utah files and return indices of bad channels 
+    matching the current session's electrode IDs.
+    
+    Args:
+        imp_files_dict: dict {port: Path}, e.g. {"A": path_to_A, "B": path_to_B}
+        ua_elec_ids: (n_ch,) array of Electrode IDs (1-96 typically) corresponding to the data rows.
+        threshold_kohm: Exclusion threshold.
+        
+    Returns:
+        np.ndarray: Indices of rows in ua_elec_ids that have high impedance.
+    """
+    if ua_elec_ids is None or len(ua_elec_ids) == 0:
+        return np.array([], dtype=int)
+        
+    # Load all ports
+    imp_by_elec = {}
+    for port, p in imp_files_dict.items():
+        if p and p.exists():
+            try:
+                d = load_impedances_from_textedit_dump(p)
+                imp_by_elec.update(d)
+                print(f"  [Impedance] Parsed {len(d)} UA impedances from {p.name} (Port {port})")
+            except Exception as e:
+                print(f"  [Warn] Failed to parse UA impedance file {p}: {e}")
+                
+    bad_indices = []
+    for r, eid in enumerate(ua_elec_ids):
+        if eid is None or not np.isfinite(eid):
+            continue
+        z = imp_by_elec.get(int(eid)) # IDs are ints in the dict
+        if z is not None and z > threshold_kohm:
+            bad_indices.append(r)
+            
+    return np.array(bad_indices, dtype=int)
 
 def get_intan_geometry():
     GEOM_PATH = rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT, session_key=None)
@@ -491,63 +557,19 @@ class TimeReversedRecording(si.BaseRecording):
         self._kwargs = {'parent_recording': parent_recording.to_dict()}
 
 # --- Debug Plotting ---
-def plot_debug_step(rec, step_name, stim_indices, pre_ms=50, post_ms=200, save_dir=None):
-    """
-    Plots a snippet of data around the first stimulus event for all channels.
-    """
-    if len(stim_indices) == 0: return
-    
-    if not SAVE_DEBUG_PLOTS:
-        return
-    
-    # Use first stimulus
-    stim_idx = stim_indices[0]
-    fs = rec.get_sampling_frequency()
-    
-    start_frame = int(stim_idx - (pre_ms * fs / 1000.0))
-    end_frame = int(stim_idx + (post_ms * fs / 1000.0))
-    
-    # Safety Check
-    if start_frame < 0: start_frame = 0
-    if end_frame > rec.get_num_samples(): end_frame = rec.get_num_samples()
-    
-    traces = rec.get_traces(start_frame=start_frame, end_frame=end_frame, return_in_uV=True)
-    t_axis = (np.arange(traces.shape[0]) / fs * 1000.0) - pre_ms
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    # Plot all channels semi-transparent
-    ax.plot(t_axis, traces, color='k', alpha=0.1)
-    # Plot Mean
-    ax.plot(t_axis, np.mean(traces, axis=1), color='r', linewidth=2, label='Mean')
-    
-    ax.set_title(f"Debug: {step_name}\n(FS={fs}Hz, N={traces.shape[1]}ch)")
-    ax.set_xlabel("Time from Stim (ms)")
-    ax.axvline(0, color='g', linestyle='--')
-    ax.legend(loc='upper right')
-    
-    if save_dir:
-        save_dir = Path(save_dir)
-        save_dir.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_dir / f"step_{step_name}.png")
-        print(f"    [DEBUG PLOT] Saved -> {save_dir / f'step_{step_name}.png'}")
-    plt.close(fig)
-
 def build_lfp_preprocessing_pipeline(
     recording: si.BaseRecording,
     stim_indices_native: np.ndarray,
-    curr_sess_name: str = "unknown") -> si.BaseRecording:
+    curr_sess_name: str = "unknown",
+    local_radii: tuple | None = None) -> si.BaseRecording:
     """
     Custom pipeline with Manual Blanking Class.
+    
+    Args:
+        local_radii: If set, use local CMR with these radii (inner, outer). 
+                     If None, skip CMR (for Utah).
     """
-    # Debug Directory
-    DEBUG_DIR = OUT_BASE / "figures" / "debug_pipeline" / curr_sess_name
-    
-    # 0. Raw
-    plot_debug_step(recording, "0_Raw", stim_indices_native, save_dir=DEBUG_DIR)
-    
     # 1. Blanking (Custom) - On RAW Data (30kHz)
-    # Strategy: Copy Baseline (-115ms to -5ms)
-    # Use globals BLANK_PRE_MS, BLANK_POST_MS
     if len(stim_indices_native) > 0:
         print(f"    [SI Pipeline] Custom Blanking (Copy Baseline) ({len(stim_indices_native)} events, -{BLANK_PRE_MS}ms to +{BLANK_POST_MS}ms) on RAW...")
         rec_blanked = BlankingRecording(
@@ -557,46 +579,27 @@ def build_lfp_preprocessing_pipeline(
             post_ms=BLANK_POST_MS,
             mode='copy_baseline'
         )
-        
-        # Debug Plot: Step 1 = Blanked
-        plot_debug_step(rec_blanked, "1_Blanked_30k", stim_indices_native, pre_ms=50, post_ms=200, save_dir=DEBUG_DIR)
     else:
         rec_blanked = recording
         
-    # 1.5 Global CMR (Optional)
-    if USE_GLOBAL_CMR:
-        print("    [SI Pipeline] Global CMR (Median) ENABLED...")
-        rec_cmr = spre.common_reference(rec_blanked, reference='global', operator='median')
-        plot_debug_step(rec_cmr, "1_5_GlobalCMR_30k", stim_indices_native, pre_ms=50, post_ms=200, save_dir=DEBUG_DIR)
+    # 2. CMR (Local for Intan, None for Utah)
+    if local_radii is not None:
+        r_in, r_out = local_radii
+        print(f"    [SI Pipeline] Local CMR (Median, radius {r_in}-{r_out} um) ENABLED...")
+        rec_cmr = spre.common_reference(rec_blanked, reference='local', local_radius=(r_in, r_out), operator='median')
+        
     else:
+        print("    [SI Pipeline] CMR Skipped (Utah or Config)...")
         rec_cmr = rec_blanked
         
-    # 2. Bandpass Filter (0.5 - 500 Hz) - REVERSE FILTERING
-    # "Pass our data end to start through the filter and then flip it back"
-    print("    [SI Pipeline] Bandpass Filtering (0.5 - 500 Hz) [REVERSE / ANTI-CAUSAL]...")
-    
-    # a. Reverse Time
-    rec_rev = TimeReversedRecording(rec_cmr)
-    
-    # b. Filter (Standard Butterworth, but applied to reversed stream)
-    rec_rev_filt = spre.bandpass_filter(rec_rev, freq_min=0.5, freq_max=500.0, dtype='float32')
-    
-    # c. Reverse Time Back (Un-flip)
-    rec_filtered = TimeReversedRecording(rec_rev_filt)
-    
-    # Debug Plot: Step 2 = Filtered (Reverse)
-    plot_debug_step(rec_filtered, "2_Filtered_30k_Rev", stim_indices_native, pre_ms=50, post_ms=200, save_dir=DEBUG_DIR)
-    
     # 3. Resampling (30k -> 1k)
+    # SI resample includes anti-aliasing filter
     print(f"    [SI Pipeline] Resampling to {TARGET_FS} Hz...")
-    rec_resampled = spre.resample(rec_filtered, resample_rate=TARGET_FS)
+    rec_resampled = spre.resample(rec_cmr, resample_rate=TARGET_FS)
     
-    # Scale stim indices for debug plotting of resampled data
-    fs_native = recording.get_sampling_frequency() # Get native FS from original recording
-    stim_indices_resampled = (stim_indices_native * TARGET_FS / fs_native).astype(int)
+    rec_clean = rec_resampled
     
-    # Debug Plot: Step 3 = Resampled
-    plot_debug_step(rec_resampled, "3_Resampled_1k", stim_indices_resampled, pre_ms=50, post_ms=200, save_dir=DEBUG_DIR)
+    return rec_clean
     
     rec_clean = rec_resampled
     
@@ -678,6 +681,7 @@ def process_nprw_session(sess_name: str, br_idx: int, intan_idx: int, shift_ms: 
     fs_native = rec_reordered.get_sampling_frequency()
 
     # 1. Load Resulting Stim Times
+    stim = {}
     stim_start_samps_native = np.array([])
     stim_channels_meta = ["Stim_Trigger"]
 
@@ -697,34 +701,41 @@ def process_nprw_session(sess_name: str, br_idx: int, intan_idx: int, shift_ms: 
                       stim_start_samps_native = ((stim_ms_aligned + shift_ms) * fs_native / 1000.0).astype(np.int64)
                       print(f"    [Stim] Found {len(stim_start_samps_native)} events in aligned file.")
                       stim_channels_meta = ["Aligned_Stim_MS"]
+                      
+                      # Metadata
+                      if 'stim_channels' in aln: stim['stim_channels'] = aln['stim_channels']
+                      if 'stim_amplitudes' in aln: stim['amplitudes'] = aln['stim_amplitudes']
+                      if 'amplitudes' in aln: stim['amplitudes'] = aln['amplitudes']
+                      if 'notes' in aln: stim['notes'] = aln['notes']
         except Exception as e:
             print(f"    [WARN] Failed to load aligned file: {e}")
 
     # Fallback to standard Stim stream if aligned failed
+    # Fallback to standard Stim stream if aligned failed
     if len(stim_start_samps_native) == 0:
         stim_npz_dir = NPRW_AUX_DATA / f"{sess_path.name}_Intan_streams"
         stim_npz_path = stim_npz_dir / "stim_stream.npz"
-    
-    if stim_npz_path.exists():
-        print(f"    [Stim] Loading existing stim file: {stim_npz_path.name}")
-        # Use existing function or load npz directly
-        try:
-             stim_data = rcp.load_stim_detection(stim_npz_path)
-             stim = stim_data # Assign for metadata usage later
-             # stim_data is dict, block_bounds_samples is key
-             block_bounds = stim_data.get("block_bounds_samples")
-        except Exception as e:
-             print(f"    [Stim] Error loading existing file ({e}), re-extracting...")
+        
+        if stim_npz_path.exists():
+            print(f"    [Stim] Loading existing stim file: {stim_npz_path.name}")
+            # Use existing function or load npz directly
+            try:
+                 stim_data = rcp.load_stim_detection(stim_npz_path)
+                 stim = stim_data # Assign for metadata usage later
+                 # stim_data is dict, block_bounds_samples is key
+                 block_bounds = stim_data.get("block_bounds_samples")
+            except Exception as e:
+                 print(f"    [Stim] Error loading existing file ({e}), re-extracting...")
+                 stim_ext_arrays = rcp.extract_stim_npz(sess=sess_path, out_dir=NPRW_AUX_DATA, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
+                 stim = stim_ext_arrays # Assign for metadata
+                 block_bounds = stim_ext_arrays.get("block_bounds_samples")
+        else:
+             print(f"    [Stim] Extracting stim stream (first run)...")
              stim_ext_arrays = rcp.extract_stim_npz(sess=sess_path, out_dir=NPRW_AUX_DATA, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
              stim = stim_ext_arrays # Assign for metadata
              block_bounds = stim_ext_arrays.get("block_bounds_samples")
-    else:
-         print(f"    [Stim] Extracting stim stream (first run)...")
-         stim_ext_arrays = rcp.extract_stim_npz(sess=sess_path, out_dir=NPRW_AUX_DATA, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
-         stim = stim_ext_arrays # Assign for metadata
-         block_bounds = stim_ext_arrays.get("block_bounds_samples")
 
-    stim_start_samps_native = block_bounds[:, 0] if (block_bounds is not None and block_bounds.size) else np.array([])
+        stim_start_samps_native = block_bounds[:, 0] if (block_bounds is not None and block_bounds.size) else np.array([])
     
     # -------------------------------------------------------------------------
     # [Control/IR Fallback]
@@ -772,16 +783,17 @@ def process_nprw_session(sess_name: str, br_idx: int, intan_idx: int, shift_ms: 
     
     
     # 3. Build SI Pipeline
-    # Blank(-5, +20) -> HP(0.5) -> LP(500) -> DS(1000)
+    # Blank(-5, +20) -> Local CMR -> DS(1000)
     rec_proc = build_lfp_preprocessing_pipeline(
         rec_reordered, 
         stim_indices_native=stim_start_samps_native,
-        curr_sess_name=sess_name
+        curr_sess_name=sess_name,
+        local_radii=RADII
     )
     
     # 4. Get Traces (Parallel Epoch Extraction)
-    # Instead of loading WHOLE recording, we extract only the epochs we need.
-    print("  [NPRW] Extracting epochs directly from Lazy Recording (Parallel)...")
+    # Be sure to extract PADDED epochs for zero-phase filtering
+    print("  [NPRW] Extracting PADDED epochs directly from Lazy Recording (Parallel)...")
     
     # We need stim indices in the TARGET_FS domain
     # stim_start_samps_native are in fs_native (30000)
@@ -797,12 +809,12 @@ def process_nprw_session(sess_name: str, br_idx: int, intan_idx: int, shift_ms: 
         if start < 0 or end > rec_obj.get_num_samples():
             return None # Skip
             
-        # Get trace (n_samples, n_ch) -> Transpose to (n_ch, n_samples)
         # return_in_uV=True handles scaling
         return rec_obj.get_traces(start_frame=start, end_frame=end, return_in_uV=True).T
 
-    pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000.0)
-    post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000.0)
+    pad_samps = int(PAD_MS * TARGET_FS / 1000.0)
+    pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000.0) + pad_samps
+    post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000.0) + pad_samps
     
     exclusion_list = MANUAL_EXCLUSION.get(sess_name, [])
     if exclusion_list:
@@ -824,40 +836,13 @@ def process_nprw_session(sess_name: str, br_idx: int, intan_idx: int, shift_ms: 
     segs_bb = np.stack(segs_list, axis=0) # (n_trials, n_ch, n_time)
     n_trials, n_ch, n_time = segs_bb.shape
     
-    # Construct rel_t_epoch
-    rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - EPOCH_PRE_MS
+    # Construct rel_t_epoch (With padding included)
+    rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
     
     print(f"  [NPRW] Extracted {n_trials} epochs. Shape: {segs_bb.shape}")
 
-    # 5. Get RAW Comparison Epochs (Parallel)
-    traces_raw_epochs = None
-    if RUN_COMPARISON_ANALYSIS:
-        # We re-run the pipeline but SKIP the blanking step
-        print("  [NPRW] Building RAW (Unblanked) pipeline...")
-        rec_proc_raw = build_lfp_preprocessing_pipeline(
-            rec_reordered, 
-            stim_indices_native=np.array([]), # Skip blanking
-            curr_sess_name=sess_name
-        )
-        
-        print("  [NPRW] Extracting RAW epochs (Parallel)...")
-        segs_list_raw = Parallel(n_jobs=-int(os.cpu_count() or 1), batch_size='auto')(
-            delayed(extract_single_epoch)(rec_proc_raw, idx, pre_samps, post_samps) 
-            for idx in stim_indices_res
-        )
-        # Assume same validity mask
-        segs_list_raw = [s for s in segs_list_raw if s is not None]
-        traces_raw_epochs = np.stack(segs_list_raw, axis=0) # (n_trials, n_ch, n_time)
-    
     # Stim times to ms (just for meta)
     stim_ms = stim_start_samps_native * 1000.0 / fs_native
-    
-    # Stim times to ms (just for meta)
-    stim_ms = stim_start_samps_native * 1000.0 / fs_native
-    
-    # 1. DISABLE GLOBAL CMR per user request
-    if not USE_GLOBAL_CMR:
-        print("  [INFO] Global Common Median Reference (CMR) DISABLED.")
     
     # 6. Epoching: Extract Broadband (-500 to +1000)
     # Already done above!
@@ -866,7 +851,6 @@ def process_nprw_session(sess_name: str, br_idx: int, intan_idx: int, shift_ms: 
     # Sub-windows for final saving
     WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
     WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS) # 500ms post-blank
-    WIN_COMP = (-50.0, 200.0)
     
     # Valid stim times
     valid_stim = stim_ms 
@@ -877,23 +861,34 @@ def process_nprw_session(sess_name: str, br_idx: int, intan_idx: int, shift_ms: 
         print(f"  [WARN] No valid segments found for {sess_name}. Skipping.")
         return
         
-    # 7. Per-Trial Cleaning
-    print(f"  Cleaning Epochs (Baseline + Exp Removal)...")
-    segs_bb_clean = clean_epochs(segs_bb, TARGET_FS)
+    # 7. Per-Trial Cleaning - DISABLED (Baseline/Exp Removal)
+    print(f"  [Cleaning] Using RAW (resampled) epochs (Baseline/Exp/Template removal DISABLED).")
+    segs_bb_clean = segs_bb # Use padded, raw
     
-    # --- Step 7.5: Reject Bad Channels (Threshold > 500 uV) ---
-    # Calculate peak amplitude per trial, per channel: (N_trials, N_ch)
-    peaks_per_trial = np.nanmax(np.abs(segs_bb_clean), axis=2) 
-    # Get median peak across trials for each channel: (N_ch,)
-    median_peak_ch = np.nanmedian(peaks_per_trial, axis=0)
+    # --- Step 7.5: Reject Bad Channels ---
+    # Convert Channel IDs to Indices
+    chan_ids = rec_proc.get_channel_ids()
+    bad_ch_indices = []
+
+    # 1. Impedance Check (ONLY)
+    bad_names_imp = get_bad_channels_intan(sess_path, threshold_kohm=INTAN_IMPEDANCE_CUTOFF)
+    if bad_names_imp:
+         print(f"  [Rejection] Found {len(bad_names_imp)} bad channels from impedance file.")
+         # map to index
+         for name in bad_names_imp:
+             # Assume channel IDs match names?
+             # When use_names_as_ids=True, IDs are strings.
+             idx = np.where(chan_ids == name)[0]
+             if len(idx) > 0:
+                 bad_ch_indices.extend(idx)
     
-    bad_ch_mask = median_peak_ch > BAD_THRES
-    bad_ch_indices = np.flatnonzero(bad_ch_mask)
+    # Combined Bad Channels
+    bad_ch_indices = np.array(bad_ch_indices, dtype=int)
+    bad_ch_indices = np.unique(bad_ch_indices)
     
     if len(bad_ch_indices) > 0:
-         print(f"  [Rejection] removing {len(bad_ch_indices)} channels > {BAD_THRES}uV (median peak): {bad_ch_indices}")
-         # Set to NaN
-         segs_bb_clean[:, bad_ch_mask, :] = np.nan
+         print(f"  [Rejection] Removing {len(bad_ch_indices)} bad channels (Impedance > 2000kOhm or file-spec).")
+         segs_bb_clean[:, bad_ch_indices, :] = np.nan
     
     results['bad_channels'] = bad_ch_indices
     
@@ -903,35 +898,20 @@ def process_nprw_session(sess_name: str, br_idx: int, intan_idx: int, shift_ms: 
         mask = (t_axis >= target_win[0]) & (t_axis < target_win[1])
         return data[:, :, mask], t_axis[mask]
         
-    # Slice Broadband Results
+    # Slice Broadband Results (Crop Padding)
     results['broadband_pre'], t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
     results['broadband_post'], t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
     
-    if RUN_COMPARISON_ANALYSIS:
-        results['broadband_comp'], t_comp = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_COMP)
-        
-        # 8. Raw Comparison (No Cleaning)
-        print(f"  Segmenting Raw (Unblanked)...", flush=True)
-        
-        # Use already extracted raw epochs
-        segs_bb_raw = traces_raw_epochs
-        segs_raw = segs_bb_raw
-        
-        if segs_raw is not None:
-             results['broadband_raw_pre'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_PRE)
-             results['broadband_raw_post'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_POST)
-             results['broadband_raw_comp'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_COMP)
+    results['broadband_pre'], t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
+    results['broadband_post'], t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
     
-        # Save Timebase info
-        results['rel_time_comp'] = t_comp
-    
-    # 9. Band Analysis (Filter Cleaned Epochs)
+    # 9. Band Analysis (Zero-Phase Filter Cleaned Epochs)
     for band_name, (low, high) in LFP_BANDS.items():
         print(f"  Filtering Epochs {band_name} ({low}-{high} Hz)...", flush=True)
-        # Apply filter to the CLEANED broadband epochs
-        filt_epochs = filter_epochs(segs_bb_clean, TARGET_FS, low, high)
+        # Apply filter to the FULL PADDED epochs
+        filt_epochs = filter_zero_phase(segs_bb_clean, TARGET_FS, low, high)
         
-        # Slice
+        # Slice (Crop Padding)
         results[f'{band_name}_pre'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_PRE)
         results[f'{band_name}_post'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_POST)
     
@@ -1100,15 +1080,18 @@ def process_baseline_group(
             rec_proc = build_lfp_preprocessing_pipeline(
                 rec_reordered,
                 stim_indices_native=np.array([]),  # No blanking for control
-                curr_sess_name=sess_name
+                curr_sess_name=sess_name,
+                local_radii=RADII
             )
             
             # Convert to resampled indices
             stim_indices_res = (stim_start_samps * TARGET_FS / fs_native).astype(np.int64)
             
-            # Calculate epoch samples
-            pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000)
-            post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000)
+            # Calculate epoch samples (PADDED)
+            pad_samps = int(PAD_MS * TARGET_FS / 1000.0)
+            pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000) + pad_samps
+            post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000) + pad_samps
+            
             n_samps_total = rec_proc.get_total_samples()
             
             # Extract epochs (sequential to avoid joblib pickling issues)
@@ -1121,6 +1104,22 @@ def process_baseline_group(
             
             if len(segs_list) > 0:
                 sess_epochs = np.stack(segs_list, axis=0)
+                
+                # --- Reject Bad Channels (Impedance Only) ---
+                bad_names_imp = get_bad_channels_intan(sess_path)
+                if bad_names_imp:
+                     chan_ids = rec_proc.get_channel_ids()
+                     bad_ch_indices = []
+                     for name in bad_names_imp:
+                         idx = np.where(chan_ids == name)[0]
+                         if len(idx) > 0:
+                             bad_ch_indices.extend(idx)
+                     
+                     if bad_ch_indices:
+                         print(f"        [Rejection] Masking {len(bad_ch_indices)} bad channels (Imp).")
+                         bad_ch_indices = np.unique(bad_ch_indices)
+                         sess_epochs[:, bad_ch_indices, :] = np.nan
+                
                 all_epochs_bb.append(sess_epochs)
                 print(f"        Extracted {len(segs_list)} epochs from session.")
             else:
@@ -1143,12 +1142,14 @@ def process_baseline_group(
     concat_epochs = np.concatenate(all_epochs_bb, axis=0)
     print(f"    Concatenated epochs: {concat_epochs.shape} (trials, channels, time)")
     
-    # 5. Clean epochs
-    print(f"    Cleaning epochs...")
-    concat_epochs_clean = clean_epochs(concat_epochs, TARGET_FS)
+    # 5. Clean epochs (DISABLED)
+    print(f"    [Cleaning] Using RAW (resampled) epochs (Baseline/Exp/Template removal DISABLED).")
+    concat_epochs_clean = concat_epochs # Use padded, raw
     
     # 6. Compute time vectors and slice
-    rel_t_epoch = np.linspace(-EPOCH_PRE_MS, EPOCH_POST_MS, concat_epochs_clean.shape[2])
+    # rel_t_epoch needs to account for padding
+    n_time = concat_epochs_clean.shape[2]
+    rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
     
     WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
     WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)
@@ -1164,7 +1165,7 @@ def process_baseline_group(
     # 7. Band analysis
     for band_name, (low, high) in LFP_BANDS.items():
         print(f"    Filtering {band_name} ({low}-{high} Hz)...")
-        filt_epochs = filter_epochs(concat_epochs_clean, TARGET_FS, low, high)
+        filt_epochs = filter_zero_phase(concat_epochs_clean, TARGET_FS, low, high)
         results[f'{band_name}_pre'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_PRE)
         results[f'{band_name}_post'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_POST)
     
@@ -1321,6 +1322,7 @@ def process_baseline_group_utah(
             stim_start_samps = (sess_ir_ms_valid * fs_native / 1000.0).astype(np.int64)
             
             # Build preprocessing pipeline (no blanking for baseline)
+            # local_radii=None (default) -> Skips CMR which is correct for Utah per user request
             rec_proc = build_lfp_preprocessing_pipeline(
                 rec_mapped,
                 stim_indices_native=np.array([]),  # No blanking for control
@@ -1330,9 +1332,11 @@ def process_baseline_group_utah(
             # Convert to resampled indices
             stim_indices_res = (stim_start_samps * TARGET_FS / fs_native).astype(np.int64)
             
-            # Calculate epoch samples
-            pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000)
-            post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000)
+            # Calculate epoch samples (PADDED)
+            pad_samps = int(PAD_MS * TARGET_FS / 1000.0)
+            pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000) + pad_samps
+            post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000) + pad_samps
+            
             n_samps_total = rec_proc.get_total_samples()
             
             # Extract epochs (sequential to avoid joblib pickling issues)
@@ -1367,12 +1371,22 @@ def process_baseline_group_utah(
     concat_epochs = np.concatenate(all_epochs_bb, axis=0)
     print(f"    Concatenated epochs: {concat_epochs.shape} (trials, channels, time)")
     
-    # 4. Clean epochs
-    print(f"    Cleaning epochs...")
-    concat_epochs_clean = clean_epochs(concat_epochs, TARGET_FS)
+    # 4. Clean epochs (DISABLED)
+    print(f"    [Cleaning] Using RAW (resampled) epochs (Baseline/Exp/Template removal DISABLED).")
+    concat_epochs_clean = concat_epochs
+    
+    # --- Step 4.5: Reject Bad Channels (Impedance Only) ---
+    # Need ua_elec_global which was stored in the loop
+    bad_ch_indices = get_bad_channels_utah(IMP_FILES, ua_elec_global, threshold_kohm=UTAH_IMPEDANCE_CUTOFF)
+    
+    if len(bad_ch_indices) > 0:
+         print(f"    [Rejection] Removing {len(bad_ch_indices)} bad channels (Imp > 1000kOhm).")
+         concat_epochs_clean[:, bad_ch_indices, :] = np.nan
     
     # 5. Compute time vectors and slice
-    rel_t_epoch = np.linspace(-EPOCH_PRE_MS, EPOCH_POST_MS, concat_epochs_clean.shape[2])
+    # rel_t_epoch needs to account for padding
+    n_time = concat_epochs_clean.shape[2]
+    rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
     
     WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
     WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)
@@ -1388,7 +1402,7 @@ def process_baseline_group_utah(
     # 6. Band analysis
     for band_name, (low, high) in LFP_BANDS.items():
         print(f"    Filtering {band_name} ({low}-{high} Hz)...")
-        filt_epochs = filter_epochs(concat_epochs_clean, TARGET_FS, low, high)
+        filt_epochs = filter_zero_phase(concat_epochs_clean, TARGET_FS, low, high)
         results[f'{band_name}_pre'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_PRE)
         results[f'{band_name}_post'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_POST)
     
@@ -1505,37 +1519,19 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         stim_indices_native = np.floor(stim_ms_ua * fs_native / 1000.0).astype(int)
 
     # 2. Build SI Pipeline
-    # Blank(-5, +20) -> HP(0.5) -> LP(500) -> DS(1000)
+    # Blank(-5, +20) -> Local CMR (None) -> DS(1000)
+    # local_radii=None -> No CMR for Utah
     rec_proc = build_lfp_preprocessing_pipeline(
         rec_mapped, 
         stim_indices_native=stim_indices_native,
-        curr_sess_name=sess_path.name
+        curr_sess_name=sess_path.name,
+        local_radii=None 
     )
     
     # 3. Get Traces (Eager Load)
     print("  [UA] Loading processed traces into memory...")
     traces = rec_proc.get_traces(return_in_uV=True).T
     n_channels, n_samples = traces.shape
-
-    # 1. DISABLE GLOBAL CMR per user request
-    # traces_unref = traces_raw.copy() 
-    # Use existing trace as "raw" for flow, though it is filtered/cleaned.
-    traces_unref = traces.copy()
-    print("  [UA] Global Common Median Reference (CMR) DISABLED.")
-    # 4. Get Traces (Raw/Unblanked) for Comparison
-    traces_raw = None
-    if RUN_COMPARISON_ANALYSIS:
-        print("  [UA] Building RAW (Unblanked) pipeline...")
-        rec_proc_raw = build_lfp_preprocessing_pipeline(
-            rec_mapped, 
-            stim_indices_native=np.array([]), # Skip blanking
-            curr_sess_name=sess_path.name
-        )
-        print("  [UA] Loading RAW traces...")
-        traces_raw = rec_proc_raw.get_traces(return_in_uV=True).T
-
-        # 1. DISABLE GLOBAL CMR per user request
-        print("  [UA] Global Common Median Reference (CMR) DISABLED.")
 
     # Segment
     t_ms = np.arange(n_samples, dtype=float) * 1000.0 / TARGET_FS
@@ -1544,8 +1540,7 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     WIN_EPOCH = (-EPOCH_PRE_MS, EPOCH_POST_MS)   # Epoch Window
     WIN_PRE   = (-EPOCH_PRE_MS, -BLANK_PRE_MS)    # Baseline Window
     WIN_POST  = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)   # Analysis Window (Post-Blank)
-    WIN_COMP  = (-50.0, 200.0)   # Comparison Window
-
+    
     results = {}
     
     print(f"  Segmenting Broadband Epochs ({WIN_EPOCH} ms)...", flush=True)
@@ -1561,9 +1556,21 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         print(f"  [WARN] No valid segments found for {sess_path.name}. Skipping.")
         return
 
-    # 7. Per-Trial Cleaning
-    print(f"  Cleaning Epochs (Baseline + Exp Removal)...")
-    segs_bb_clean = clean_epochs(segs_bb, TARGET_FS)
+    # 7. Per-Trial Cleaning - DISABLED
+    print(f"  [Cleaning] Using RAW (resampled) epochs (Baseline/Exp/Template removal DISABLED).")
+    segs_bb_clean = segs_bb
+    
+    # --- Step 7.5: Reject Bad Channels ---
+    # 1. Impedance (Utah specific)
+    # Use global IMP_FILES and get_bad_channels_utah
+    bad_ch_indices = get_bad_channels_utah(IMP_FILES, ua_elec, threshold_kohm=UTAH_IMPEDANCE_CUTOFF)
+    
+    if len(bad_ch_indices) > 0:
+         print(f"  [Rejection] Removing {len(bad_ch_indices)} bad channels (Imp > {UTAH_IMPEDANCE_CUTOFF}kOhm).")
+         # We set them to NaN in the SEGMENTS (broadband)
+         segs_bb_clean[:, bad_ch_indices, :] = np.nan
+    
+    results['bad_channels'] = bad_ch_indices
     
     def slice_epoch(data, t_axis, target_win):
         mask = (t_axis >= target_win[0]) & (t_axis < target_win[1])
@@ -1572,39 +1579,32 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     results['broadband_pre'], t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
     results['broadband_post'], t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
     
-    results['broadband_raw_comp'] = None 
-    results['broadband_unref_comp'] = None
-
-    if RUN_COMPARISON_ANALYSIS:
-        results['broadband_comp'], t_comp = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_COMP)
-        
-        # 8. Raw Comparison
-        print(f"  Segmenting Raw (Unblanked)...", flush=True)
-        
-        if traces_raw is not None:
-            # valid_stim contains timestamps (ms)
-            segs_raw, _, _, _ = rcp.extract_peristim_segments(
-                rate_hz=traces_raw.astype(np.float32), 
-                counts=None,
-                t_ms=t_ms,
-                stim_ms=valid_stim,
-                win_ms=WIN_EPOCH
-            )
-            if segs_raw is not None:
-                 results['broadband_raw_pre'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_PRE)
-                 results['broadband_raw_post'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_POST)
-                 results['broadband_raw_comp'], _ = slice_epoch(segs_raw, rel_t_epoch, WIN_COMP)
-                 results['broadband_unref_comp'] = results['broadband_raw_comp']
-
-        # Save Timebase info
-        results['rel_time_comp'] = t_comp
-    
-    # 9. Band Analysis
+    # 9. Band Analysis (Filter Continuous -> Segment)
+    # This avoids padding issues for segments since we have continuous data
     for band_name, (low, high) in LFP_BANDS.items():
-        print(f"  Filtering Epochs {band_name} ({low}-{high} Hz)...", flush=True)
-        filt_epochs = filter_epochs(segs_bb_clean, TARGET_FS, low, high)
-        results[f'{band_name}_pre'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_PRE)
-        results[f'{band_name}_post'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_POST)
+        print(f"  Filtering Continuous Trace {band_name} ({low}-{high} Hz)...", flush=True)
+        # traces: (n_ch, n_samples). filter_zero_phase expects (trials, ch, time).
+        # We pass fake trial dim: (1, n_ch, n_samples)
+        filt_traces = filter_zero_phase(traces[None, :, :], TARGET_FS, low, high)[0] # Extract back
+        
+        # Segment fitlered traces
+        # Use same valid_stim
+        segs_filt, _, _, _ = rcp.extract_peristim_segments(
+            rate_hz=filt_traces.astype(np.float32), 
+            counts=None,
+            t_ms=t_ms,
+            stim_ms=valid_stim,
+            win_ms=WIN_EPOCH
+        )
+        
+        if segs_filt is not None:
+             # Apply Rejection
+             if len(bad_ch_indices) > 0:
+                 segs_filt[:, bad_ch_indices, :] = np.nan
+             
+             results[f'{band_name}_pre'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_PRE)
+             results[f'{band_name}_post'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_POST)
+
         
     # Save
     save_dict = {

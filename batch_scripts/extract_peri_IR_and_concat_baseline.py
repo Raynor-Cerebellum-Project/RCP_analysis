@@ -36,7 +36,8 @@ UA_TAIL_MS   = float(UA_RATES.get("remove_tail_ms_after", 5.0))
 UA_DEDUP_MS = float(UA_RATES.get("dedup_ms", 0.5))
 MAX_CLUSTER_MS = 0.5
 
-STIM_DUR = 100.0
+# NOTE: For baseline (IR events), there's no stimulation artifact, so no STIM_DUR needed.
+# Artifact blanking is disabled via BLANK_STIM_GAP = False (see line 52).
 
 KEYPOINTS_ORDER = tuple(PARAMS.kinematics.get("keypoints", []))
 
@@ -978,7 +979,7 @@ def _load_ir_ms_from_aligned(aligned_path: Path, meta: dict[str, Any]) -> np.nda
         print(f"[baseline-IR] Intan={intan_session}: empty IR signal.")
         return np.array([], float)
 
-    ir_idx = _detect_IR_crossings(sig, fs, refractory_sec=0.0005)
+    ir_idx = _detect_IR_crossings(sig, fs, refractory_sec=1.0)  # 1-second refractory for baseline
     if ir_idx.size == 0:
         print(f"[baseline-IR] Intan={intan_session}: no IR crossings.")
         return np.array([], float)

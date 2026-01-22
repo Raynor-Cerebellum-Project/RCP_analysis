@@ -142,11 +142,22 @@ def main():
             br_idx    = int(row["br_idx"])
             fs_nprw  = float(row.get("fs_intan", 30000.0))
             shift_ms = float(row["shift_ms"])
-            video_idx = int(br2video.get(br_idx))
-            if video_idx is None:
+            
+            # Parse video_idx (handle "4 -" format by stripping trailing dash/whitespace)
+            video_file_str = br2video.get(br_idx)
+            if video_file_str is None or video_file_str == '':
                 print(f"[warn] Video_File not found in metadata for BR {br_idx:03d}; "
                     f"falling back to BR index.")
                 video_idx = br_idx
+            else:
+                # Strip whitespace and trailing dash, then try to parse
+                cleaned_str = str(video_file_str).strip().rstrip('-').strip()
+                if cleaned_str.isdigit():
+                    video_idx = int(cleaned_str)
+                else:
+                    print(f"[warn] Video_File '{video_file_str}' invalid for BR {br_idx:03d}; "
+                        f"falling back to BR index.")
+                    video_idx = br_idx
 
             # load DLC csv
             beh_csv, _ = _find_aligned_DLC_for_br_idx(BEHV_CKPT_ROOT, video_idx)
@@ -272,7 +283,13 @@ def main():
             vog_col_names = np.array([], dtype=object)
 
             vog_csv = None
-            vog_file_idx = int(br2vog.get(br_idx)) if br2vog is not None else None
+            # Parse vog_file_idx (handle "3 -" format)
+            vog_file_str = br2vog.get(br_idx) if br2vog is not None else None
+            if vog_file_str is not None and vog_file_str != '':
+                cleaned_str = str(vog_file_str).strip().rstrip('-').strip()
+                vog_file_idx = int(cleaned_str) if cleaned_str.isdigit() else None
+            else:
+                vog_file_idx = None
 
             if vog_file_idx is not None:
                 # e.g. NRR_RW011_002_VOG_aligned.csv
