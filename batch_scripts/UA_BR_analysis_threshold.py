@@ -80,6 +80,16 @@ def main():
     print("Found session folders:", len(sess_folders))
     for sess in sess_folders[:]: # Can tweak here to isolate sessions 
         print(f"=== Session: {sess.name} ===")
+        
+        # Check if outputs already exist
+        out_dir = UA_CKPT_OUT / f"pp__{sess.name}__NS6"
+        out_npz = UA_CKPT_OUT / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
+        
+        if out_dir.exists() and out_npz.exists():
+            print(f"[SKIP] Both outputs already exist for {sess.name}")
+            print(f"       - Preprocessed: {out_dir}")
+            print(f"       - Rates: {out_npz}")
+            continue
         touchscreen_sig, hr_sig, vog_sig, meta_ns5, meta_ns2 = rcp.extract_br_aux_streams_npz(sess, UA_AUX_DATA, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH, TOUCHSCREEN_CH, HR_CH, VOG_CH) # Extract sync pulses and stuff
         fs_hr = meta_ns2["fs_hr"]
         fs_vog = meta_ns2["fs_vog"]

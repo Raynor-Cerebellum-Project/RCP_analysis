@@ -53,12 +53,17 @@ Adjustable Parameters:
 CAMERA_TO_USE = "cam1"  # 'cam1' or 'cam0'
 START_OFFSET_MS = 0  # Start counting reach from this time (relative to alignment) -> base off of triggering IR sensor
 # Duration = Time(Max Pos) - START_OFFSET_MS
-MIN_REACH_DURATION_MS = 70.0 # Exclude <110ms duration
-MAX_REACH_DURATION_MS = 600.0
+MIN_REACH_DURATION_MS = 100.0 # Exclude <110ms duration
+MAX_REACH_DURATION_MS = 800.0
 
 # Position Constraints for detection
-START_POS_MAX_THRESH = 0.1  # Start must be within +/- 0.1 of 0 (Tightened)
+START_POS_MAX_THRESH = 0.2  # Start must be within +/- 0.2 of 0 (Tightened)
 END_POS_MIN_THRESH = 2.0    # End must be at least +/- 2.0 away from 0
+
+# --- Speed Exclusion Thresholds ---
+# Exclude trials if Peak Speed is 0 or > 0.25 (User request)
+SPEED_EXCL_MIN = 0.005  
+SPEED_EXCL_MAX = 0.025
 
 # Track only middle_x as requested
 SELECTED_KEYPOINTS = ["middle_x"] 
@@ -111,10 +116,11 @@ EXCLUDE_TRIALS_TARGET_A = {
     10: [5, 9],
     11: [3, 6],
     12: [8],
+    13: [7],
     14: [2, 3, 5, 6, 8],
-    15: [2, 4, 5, 6, 8],
+    15: [1, 2, 4, 5, 6, 8],
     16: [9, 10],
-    18: [5],
+    18: [3, 5],
     19: [0, 4],
     20: [0, 1],
     21: [5],
@@ -124,15 +130,16 @@ EXCLUDE_TRIALS_TARGET_A = {
 }
 
 EXCLUDE_TRIALS_TARGET_B = {
-    6: [1, 6, 7, 9, 10],
+    6: [1, 6, 7, 8, 9, 10],
     7: [0, 6, 13],
     10: [12],
     11: [7],
-    13: [1],
+    13: [1, 10],
     14: [10, 11],
     15: [0],
+    18: [0],
     19: [2, 11],
-    21: [2],
+    21: [2, 9],
     23: [5],
     24: [9],
     27: [1, 5, 9],
@@ -143,8 +150,8 @@ EXCLUDE_TRIALS_TARGET_B = {
 # User provided 1-based indices, converting to 0-based here:
 EXCLUDE_BASELINE_TRIALS = {
     "baseline_portA_targetA": [1, 3, 4, 6, 13, 14, 21, 23, 24, 25, 31, 32, 38],
-    "baseline_portB_targetA": [1, 2, 4, 6, 7, 9, 13, 18],
-    "baseline_portA_targetB": [6, 10, 13, 15, 16, 17, 20, 21, 22, 24, 25, 30, 39, 40, 42, 44, 47, 56, 57],
+    "baseline_portB_targetA": [1, 2, 4, 6, 7, 9, 13, 16, 18],
+    "baseline_portA_targetB": [2, 6, 10, 13, 15, 16, 17, 19, 20, 21, 22, 24, 25, 30, 33, 39, 40, 42, 44, 47, 56, 57],
     "baseline_portB_targetB": [2, 3, 4, 6, 8, 10, 12, 15, 17, 19, 20, 22, 23, 24, 26, 28, 30, 31, 33, 35],
 }
 
@@ -158,10 +165,13 @@ OUTPUT_FORMAT = 'png'  # Change to 'svg' for vector graphics
 # Set to True to generate 5x5 grid of traces for every trial (for debugging alignment)
 PLOT_DEBUG_TRACES = True 
 
+# Set to True to include Peak Speed plots in quantification figures
+PLOT_PEAK_SPEED = False
+
 # Analysis Flags
 REMOVE_OUTLIERS = False      # Set to False to skip outlier detection and removal
 ANALYZE_COMBINED = True      # Set to False to skip combined condition analysis
-PLOT_FULL_CONDITIONS = False # Set to True to plot individual conditions
+PLOT_FULL_CONDITIONS = True # Set to True to plot individual conditions
 SAVE_STATS_CSV = False        # Set to False to skip saving stats CSV 
 
 plt.rcParams.update({'font.size': 14}) # Larger font for plots
@@ -222,9 +232,13 @@ def calculate_reach_metrics(
     all_debug_traces = []
 
     for i in range(n_trials):
-        # Skip excluded trials
-        if i in exclude_trials:
-            continue
+        # Determine if manually excluded
+        manual_exclude = (i in exclude_trials)
+        if manual_exclude:
+             # We still process it for debug traces, but flag it.
+             manual_excl_reason = "Manual Exclusion (List)"
+        else:
+             manual_excl_reason = ""
             
         speed = trial_speed[i] # (T,)
         t_trial = t_axis # (T,)
@@ -249,11 +263,23 @@ def calculate_reach_metrics(
         if search_speed.size == 0: continue
             
         idx_peak_speed = idx_start + np.argmax(search_speed)
+        peak_v = speed[idx_peak_speed]
+        
+        # --- Speed Exclusion Check ---
+        # User requested: Do NOT exclude trials, just don't plot these points.
+        # Logic: Create masked version of speed for plotting.
+        speed_for_plot = speed.copy()
+        mask_outliers = (speed_for_plot <= SPEED_EXCL_MIN) | (speed_for_plot > SPEED_EXCL_MAX)
+        
+        has_speed_outlier = False
+        if np.any(mask_outliers):
+             speed_for_plot[mask_outliers] = np.nan
+             has_speed_outlier = True
+             # We do NOT continue. We keep the trial.
         
         # Define search params for next step
         STABLE_WIN_MS = 20
-        LOW_SPEED_THRESH_RATIO = 0.10 # Tightened from 0.20 to force finding true stop/start
-        peak_v = speed[idx_peak_speed]
+        LOW_SPEED_THRESH_RATIO = 0.05 # Tightened to 5% to find "about 0" speed
         thresh_v = peak_v * LOW_SPEED_THRESH_RATIO
         win_samples = max(2, int(STABLE_WIN_MS / dt))
 
@@ -304,8 +330,15 @@ def calculate_reach_metrics(
         
         duration_ms = t_peak - t_start
         
-        if duration_ms < MIN_REACH_DURATION_MS or duration_ms > MAX_REACH_DURATION_MS:
-            continue
+        if manual_exclude:
+             is_excluded = True
+             excl_reason = manual_excl_reason
+        elif duration_ms < MIN_REACH_DURATION_MS or duration_ms > MAX_REACH_DURATION_MS:
+             is_excluded = True
+             excl_reason = f"Duration {duration_ms:.1f} ms (Limits {MIN_REACH_DURATION_MS}-{MAX_REACH_DURATION_MS})"
+        else:
+            is_excluded = False
+            excl_reason = ""
             
         # Peak Speed in this window
         window_speed = speed[idx_start : idx_peak+1]
@@ -319,7 +352,6 @@ def calculate_reach_metrics(
             "t_start": t_start,
             "t_peak": t_peak,
         }
-        metrics_list.append(m_dict)
         
         # Store debug info for ALL trials
         is_max_duration = (idx_peak == idx_max_dur)
@@ -329,24 +361,65 @@ def calculate_reach_metrics(
             "t": t_trial,
             "pos": trace_for_stop,  # New key
             "y": trace_for_stop,    # Legacy key (for plotting)
-            "speed": speed,
+            "speed": speed,         # RAW Speed (User requested full trace)
             "idx_start": idx_start,
             "idx_final": idx_peak, 
             "idx_orig": idx_peak_speed, # Use peak speed as ref
             "is_max_dur": is_max_duration,
             "idx_peak_speed": idx_peak_speed,
             "thresh_v": thresh_v,
-            "win_50ms": int(0.050/dt)
+            "win_50ms": int(0.050/dt),
+            "is_excluded": is_excluded,
+            "exclusion_reason": excl_reason
         })
         
-        if return_traces:
-            # Shift time to align 0 to Entry (idx_end)
-            collected_traces.append((t_trial, dist_trace))
+        # Only add to metrics if NOT excluded
+        if not is_excluded:
+             metrics_list.append(m_dict)
+             if return_traces:
+                 # Shift time to align 0 to Entry (idx_end)
+                 collected_traces.append((t_trial, dist_trace))
         
     df = pd.DataFrame(metrics_list)
+    
+    # Collect Outliers (Exclusions + Statistical)
+    outliers = []
+    
+    # 1. Add Exclusions from debug traces
+    for tr in all_debug_traces:
+        if tr.get('is_excluded'):
+            outliers.append({
+                'idx_trial': tr['idx_trial'],
+                'reason': tr['exclusion_reason'],
+                'value': 'Duration',
+                'z_score': 'N/A'
+            })
+
+    # 2. Check for Statistical Outliers in Speed and Duration (Z > 3)
+    if not df.empty and len(df) > 3:
+        for col in ['duration_ms', 'peak_speed']:
+             vals = df[col].values
+             mean_v = np.mean(vals)
+             std_v = np.std(vals)
+             if std_v > 0:
+                 z_scores = (vals - mean_v) / std_v
+                 # Identify outliers
+                 outlier_idxs = np.where(np.abs(z_scores) > 3.0)[0]
+                 for idx in outlier_idxs:
+                     trial_num = df.iloc[idx]['idx_trial']
+                     val = vals[idx]
+                     z = z_scores[idx]
+                     # Add to list
+                     outliers.append({
+                         'idx_trial': trial_num,
+                         'reason': f"Statistical Outlier ({col})",
+                         'value': f"{val:.2f}",
+                         'z_score': f"{z:.2f}"
+                     })
+                     
     if return_traces:
-        return df, collected_traces, all_debug_traces
-    return df, [], all_debug_traces
+        return df, collected_traces, all_debug_traces, outliers
+    return df, [], all_debug_traces, outliers
 
 
 def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.DataFrame]:
@@ -416,19 +489,20 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
             # Determine trial exclusions
             trials_to_exclude = []
             
+            # Default Port
+            fname_lower = p.name.lower()
+            port = "N/A"
+            if "_portb_" in fname_lower or "portb" in fname_lower or "_port_b_" in fname_lower or "port_b" in fname_lower:
+                port = "B"
+            elif "_porta_" in fname_lower or "porta" in fname_lower or "_port_a_" in fname_lower or "port_a" in fname_lower:
+                port = "A"
+
             # Check if this is a baseline file
             if cond == "Baseline":
-                # Parse filename to determine port (A or B)
-                fname_lower = p.name.lower()
-                port = "A"  # Default
-                
-                if "_portb_" in fname_lower or "portb" in fname_lower or "_port_b_" in fname_lower or "port_b" in fname_lower:
-                    port = "B"
-                elif "_porta_" in fname_lower or "porta" in fname_lower or "_port_a_" in fname_lower or "port_a" in fname_lower:
-                    port = "A"
-                
                 # Determine target from target_code (1=A, 2=B)
                 target_letter = "A" if target_code == 1 else "B"
+                
+                # Build exclusion key
                 
                 # Build exclusion key
                 baseline_key = f"baseline_port{port}_target{target_letter}"
@@ -452,7 +526,7 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
                          trials_to_exclude.extend(exclude_dict[cond_num])
             
             # Retrieve metrics AND debug traces
-            df, _, all_debug_traces = calculate_reach_metrics(
+            df, _, all_debug_traces, outliers = calculate_reach_metrics(
                 pos_segs, vel_segs, ts_state, t_axis, kp_names, target_code, 
                 exclude_trials=trials_to_exclude, return_traces=False)
             
@@ -498,8 +572,19 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
                         ax_db_pos = ax_db
                         
                         # 1. Plot Position (Left Axis)
+                        is_excluded = tr_info.get('is_excluded', False)
+                        
+                        # Policy: If excluded, make explicitly noticeable
                         color_pos = 'tab:blue'
-                        lns1 = ax_db_pos.plot(t, tr_info['pos'], color=color_pos, alpha=0.7, label='Pos (MidX)')
+                        alpha_pos = 0.7
+                        ls_pos = '-'
+                        
+                        if is_excluded:
+                            color_pos = 'red'
+                            alpha_pos = 0.4
+                            ls_pos = ':'
+                            
+                        lns1 = ax_db_pos.plot(t, tr_info['pos'], color=color_pos, alpha=alpha_pos, linestyle=ls_pos, label='Pos (MidX)')
                         ax_db_pos.tick_params(axis='y', labelcolor=color_pos)
                         
                         # 2. Plot Speed (Right Axis)
@@ -523,8 +608,10 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
                         
                         # Title
                         dur = t[idx_final] - t[idx_start]
-                        title_color = 'red' if is_max_dur else 'black'
-                        ax_db.set_title(f"T{tr_info['idx_trial']} (Dur: {dur:.0f}ms)", color=title_color, fontsize=8)
+                        title_color = 'red' if (is_max_dur or is_excluded) else 'black'
+                        title_text = f"T{tr_info['idx_trial']} (Dur: {dur:.0f}ms)"
+                        if is_excluded: title_text += " [EXCLUDED]"
+                        ax_db.set_title(title_text, color=title_color, fontsize=8)
                         
                         if idx_db == 0:
                             ax_db.legend(fontsize='xx-small', loc='upper left')
@@ -555,13 +642,53 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
             # Exclude specific trials for this condition
             # (Moved logic to before calculate_reach_metrics so debug traces are also filtered)
                         
-            return df
+            # Add metadata to Outliers
+            for o in outliers:
+                o['Condition'] = cond
+                o['Port'] = port
+                o['Target'] = target
+                o['TargetCode'] = target_code
+                
+            return df, outliers
             
     except Exception as e:
         import traceback
-        traceback.print_exc()
         print(f"Error processing {p.name}: {e}")
         return None
+
+def get_kinematics_id(filename: str) -> str:
+    """
+    Generate a unique ID for the behavior session to avoid duplicates.
+    
+    Baseline files: Combine across ports/depths for the same session+target.
+        - baseline__NRR_RW011_Depth_43.0_port_A_target_A
+        - baseline__NRR_RW011_Depth_43.0_port_B_target_A
+        → Both get ID: "baseline__NRR_RW011_target_A"
+    
+    Peristim files: Each BR index is a SEPARATE condition - NO deduplication.
+        - peristim__NRR_RW011_251203_141954__BR_006_target_A
+        - peristim__NRR_RW011_251203_141954__BR_007_target_A
+        → Different IDs (full filename preserved)
+    """
+    stem = filename.replace('.npz', '')
+    
+    # 1. Baseline: Deduplicate across ports/depths, but preserve target
+    if "baseline__" in stem:
+        # Extract session and target
+        # Format: baseline__<Session>_Depth_<X>_port_<Y>_target_<Z>
+        parts = stem.split("_target_")
+        if len(parts) == 2:
+            session_part = parts[0].split("_Depth")[0] if "_Depth" in parts[0] else parts[0]
+            target_part = parts[1]
+            return f"{session_part}_target_{target_part}"
+        # Fallback: just remove depth/port info
+        if "_Depth" in stem:
+            return stem.split("_Depth")[0]
+        return stem
+        
+    # 2. Peristim: NO deduplication - each file is unique
+    # Different BR indices = different conditions, must be kept separate
+    return stem
 
 def process_target(target: str, target_code: int):
     results_dir = PERI_ROOT / f"Target_{target}"
@@ -571,10 +698,26 @@ def process_target(target: str, target_code: int):
     
     print(f"\nScanning {results_dir}...")
     
+    print(f"\nScanning {results_dir}...")
+    
     all_metrics = []
+    all_outliers = []
 
     # Files
-    all_files = sorted(results_dir.glob("*.npz"))
+    all_files_raw = sorted(results_dir.glob("*.npz"))
+    
+    # Deduplicate: Only process one file per Behavioral Session
+    all_files = []
+    processed_ids = set()
+    
+    for p in all_files_raw:
+        kid = get_kinematics_id(p.name)
+        if kid in processed_ids:
+            continue
+        processed_ids.add(kid)
+        all_files.append(p)
+        
+    print(f"Found {len(all_files_raw)} files. Processing {len(all_files)} unique sessions.")
     
     # Parallelize file processing
     # Use ThreadPoolExecutor for I/O bound tasks (loading large files over network)
@@ -584,12 +727,31 @@ def process_target(target: str, target_code: int):
         
         for future in concurrent.futures.as_completed(futures):
             try:
-                df = future.result()
+                res = future.result()
+                if res is None: continue
+                df, file_outliers = res
+                
                 if df is not None and not df.empty:
                     all_metrics.append(df)
+                if file_outliers:
+                    all_outliers.extend(file_outliers)
             except Exception as exc:
                 print(f'Generated an exception: {exc}')
             
+    if not all_metrics:
+        return pd.DataFrame()
+        
+    if all_outliers:
+        out_df = pd.DataFrame(all_outliers)
+        # Reorder columns
+        cols = ['Condition', 'Port', 'Target', 'idx_trial', 'reason', 'value', 'z_score']
+        # Filter cols that exist
+        cols = [c for c in cols if c in out_df.columns]
+        out_df = out_df[cols]
+        csv_path = PERI_ROOT / f"outliers_Target_{target}.csv"
+        out_df.to_csv(csv_path, index=False)
+        print(f"Saved {len(out_df)} outliers to {csv_path}")
+
     if not all_metrics:
         return pd.DataFrame()
         
@@ -787,12 +949,21 @@ def plot_stim_quantification(
     for p_type in plot_types:
         # Width needs to accommodate conditions
         width = max(5, n_conds * 0.8)
-        height = 10
-        
-        fig, axes = plt.subplots(2, 1, figsize=(width, height), sharex=True)
         
         # --- Rows: Metrics ---
-        metrics = [("duration_ms", "Reach Duration (ms)"), ("peak_speed", "Peak Speed")]
+        metrics = [("duration_ms", "Reach Duration (ms)")]
+        if PLOT_PEAK_SPEED:
+            metrics.append(("peak_speed", "Peak Speed"))
+        
+        # Dynamic subplot creation based on number of metrics
+        n_rows = len(metrics)
+        height = 5 * n_rows  # 5 inches per row
+        
+        fig, axes = plt.subplots(n_rows, 1, figsize=(width, height), sharex=True)
+        
+        # Ensure axes is always iterable (even for single subplot)
+        if n_rows == 1:
+            axes = [axes]
         
         for ax, (metric, ylabel) in zip(axes, metrics):
             

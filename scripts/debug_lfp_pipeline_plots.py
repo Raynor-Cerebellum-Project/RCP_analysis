@@ -317,35 +317,7 @@ def plot_debug_step_colored(rec, step_name, stim_indices, pre_ms=50, post_ms=200
 def indent_colors():
     return GROUP_COLORS
 
-def run_debug_pipeline(sess_name):
-    # ... (skipping unchanged parts) ...
-    print(f"--- Running Debug Pipeline for {sess_name} ---")
-    
-    # 1. Locate Session
-    matches = list(INTAN_ROOT.glob(f"*{sess_name}*"))
-    if not matches:
-        print(f"Session {sess_name} not found in {INTAN_ROOT}")
-        return
-    sess_path = matches[0]
-    
-    # ... (skipping geometry/stim setup) ...
-    # Re-implementing simplified version to match context for replacement
-    
-    # Assume previous setup lines exist. We target the pipeline logic block.
-
-# (Wait, I need to check line numbers. run_debug_pipeline starts at 259.
-# I will just replace the "Step 2" block in run_debug_pipeline manually via MultiReplace or a new Replace call further down.
-# This Replace call is for the classes.)
-
-# Let's just add the classes first. 
-# Current view showed plot_debug_step_colored at line 186.
-# I will insert the classes BEFORE plot_debug_step_colored.
-
-
-def indent_colors():
-    return GROUP_COLORS
-
-def run_debug_pipeline(sess_name):
+def run_debug_pipeline(sess_name, stim_indices_override=None, shift_ms=0.0):
     print(f"--- Running Debug Pipeline for {sess_name} ---")
     
     # 1. Locate Session
@@ -356,7 +328,6 @@ def run_debug_pipeline(sess_name):
     sess_path = matches[0]
     
     # 2. Geometry
-    # Need to load geometry for mapping (reused from analyze_lfp_bands)
     GEOM_PATH = rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT, session_key=None)
     mat_probe = loadmat(Path(GEOM_PATH))
     intan_geom = {"x": mat_probe["xcoords"].ravel(), "y": mat_probe["ycoords"].ravel()}
@@ -367,39 +338,35 @@ def run_debug_pipeline(sess_name):
     nprw_probe.set_device_channel_indices(intan_probe_mapping)
     
     # 3. Load Stim Times
-    NPRW_CFG = PARAMS.probes.get("NPRW")
-    STIM_STREAM = NPRW_CFG.get("stim_data_stream")
-    INTAN_STREAM = NPRW_CFG.get("neural_data_stream")
-    
-    # We assume stim is extracted already, or we extract it
-    # Just load from aux_data if possible
-    
-    # Try loading existing fast to avoid re-extraction race condition
-    # NPRW_AUX_DATA is imported from config_loading
-    if 'NPRW_AUX_DATA' in globals():
-         aux_root = NPRW_AUX_DATA
+    if stim_indices_override is not None:
+        print(f"  Using provided stim indices (N={len(stim_indices_override)})")
+        stim_indices = stim_indices_override
     else:
-         # Fallback if somehow not imported
-         # Reconstruct from OUT_BASE if possible, or just default
-         aux_root = Path("results/data/NPRW_AUX") # Best effort
-         
-    # Better approach: Manually check file existence
-    stim_npz_path = aux_root / f"{sess_name}_Intan_streams" / "stim_stream.npz"
-    if stim_npz_path.exists():
-         print(f"  Loading existing stim: {stim_npz_path}")
-         try:
-             stim_data = rcp.load_stim_detection(stim_npz_path)
-             block_bounds = stim_data.get("block_bounds_samples")
-         except Exception as e:
-             print(f"  Error loading existing stim: {e}. Re-extracting.")
+        # Standard stim loading logic
+        NPRW_CFG = PARAMS.probes.get("NPRW")
+        STIM_STREAM = NPRW_CFG.get("stim_data_stream")
+        INTAN_STREAM = NPRW_CFG.get("neural_data_stream")
+        
+        # Manually check file existence
+        # Fallback to reconstructing path if NPRW_AUX_DATA not available (should be from config_loading)
+        aux_root = NPRW_AUX_DATA if 'NPRW_AUX_DATA' in globals() else Path("results/data/NPRW_AUX")
+        
+        stim_npz_path = aux_root / f"{sess_name}_Intan_streams" / "stim_stream.npz"
+        if stim_npz_path.exists():
+             print(f"  Loading existing stim: {stim_npz_path}")
+             try:
+                 stim_data = rcp.load_stim_detection(stim_npz_path)
+                 block_bounds = stim_data.get("block_bounds_samples")
+             except Exception as e:
+                 print(f"  Error loading existing stim: {e}. Re-extracting.")
+                 stim_ext_arrays = rcp.extract_stim_npz(sess=sess_path, out_dir=aux_root, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
+                 block_bounds = stim_ext_arrays.get("block_bounds_samples")
+        else:
+             print(f"  Extracting stim (file not found)...")
              stim_ext_arrays = rcp.extract_stim_npz(sess=sess_path, out_dir=aux_root, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
              block_bounds = stim_ext_arrays.get("block_bounds_samples")
-    else:
-         print(f"  Extracting stim (file not found)...")
-         stim_ext_arrays = rcp.extract_stim_npz(sess=sess_path, out_dir=aux_root, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
-         block_bounds = stim_ext_arrays.get("block_bounds_samples")
-         
-    stim_indices = block_bounds[:, 0] if (block_bounds is not None and block_bounds.size) else np.array([])
+             
+        stim_indices = block_bounds[:, 0] if (block_bounds is not None and block_bounds.size) else np.array([])
     
     if len(stim_indices) == 0:
         print("No stim indices found.")
@@ -413,6 +380,7 @@ def run_debug_pipeline(sess_name):
     
     # 5. Run Pipeline Steps & Plot
     SAVE_DIR = DEBUG_ROOT / sess_name
+    SAVE_DIR.mkdir(parents=True, exist_ok=True)
     
     # Step 0: Raw
     plot_debug_step_colored(rec_reordered, "0_Raw", stim_indices, save_dir=SAVE_DIR)
@@ -422,53 +390,36 @@ def run_debug_pipeline(sess_name):
     rec_blank = BlankingRecording(rec_reordered, stim_indices, pre_ms=BLANK_PRE_MS, post_ms=BLANK_POST_MS, mode='copy_baseline')
     plot_debug_step_colored(rec_blank, "1_Blanked_30k", stim_indices, save_dir=SAVE_DIR)
     
-    # Step 1.5: Global CMR (Enabled for Debug)
-    if USE_GLOBAL_CMR:
-        print("Applying Global CMR (Median)...")
-        rec_cmr = spre.common_reference(rec_blank, reference='global', operator='median')
-        plot_debug_step_colored(rec_cmr, "1_5_GlobalCMR_30k", stim_indices, save_dir=SAVE_DIR)
-    else:
-        rec_cmr = rec_blank
+    # Step 2: Local CMR (Intan)
+    # Using hardcoded RADII or loaded? Loaded from config logic normally.
+    NPRW_CFG = PARAMS.probes.get("NPRW")
+    RADII = (NPRW_CFG.get("local_radius_inner"), NPRW_CFG.get("local_radius_outer"))
     
-    # Step 2: Bandpass Filter (0.5 - 500 Hz) - REVERSE FILTERING
-    print("Applying Bandpass Filter (0.5 - 500 Hz) [REVERSE / ANTI-CAUSAL]...")
-    
-    # a. Reverse Time
-    rec_rev = TimeReversedRecording(rec_cmr)
-    
-    # b. Filter (Standard Butterworth, but applied to reversed stream)
-    rec_rev_filt = spre.bandpass_filter(rec_rev, freq_min=0.5, freq_max=500.0, dtype='float32')
-    
-    # c. Reverse Time Back (Un-flip)
-    rec_filt = TimeReversedRecording(rec_rev_filt)
-    
-    plot_debug_step_colored(rec_filt, "2_Filtered_30k_Rev", stim_indices, save_dir=SAVE_DIR)
+    print(f"Applying Local CMR (Median, radius {RADII})...")
+    rec_cmr = spre.common_reference(rec_blank, reference='local', local_radius=RADII, operator='median')
+    plot_debug_step_colored(rec_cmr, "2_LocalCMR_30k", stim_indices, save_dir=SAVE_DIR)
     
     # Step 3: Resample
     print("Applying Resample...")
-    rec_res = spre.resample(rec_filt, resample_rate=TARGET_FS)
+    rec_res = spre.resample(rec_cmr, resample_rate=TARGET_FS)
     # Scale indices
     fs_native = rec_reordered.get_sampling_frequency()
     stim_res = (stim_indices * TARGET_FS / fs_native).astype(int)
     plot_debug_step_colored(rec_res, "3_Resampled_1k", stim_res, save_dir=SAVE_DIR)
     
     # ----------------------------------------------------
-    # Additional Debug Steps: Epoch-based Cleaning & Filtering
+    # Additional Debug Steps: Epoch-based Filtering & Rejection
     # ----------------------------------------------------
     
-    # We need to extract an epoch around the FIRST stimulus manually to mimic the batch script
-    # Window: -500ms to +1000ms
-    
-    # Extract MULTIPLE epochs (e.g., 20) for template averaging
+    # Extract MULTIPLE epochs for debug
     n_debug_trials = min(20, len(stim_res))
-    print(f"  Extracting {n_debug_trials} epochs for debugging...")
+    print(f"  Extracting {n_debug_trials} padded epochs for debugging...")
+    
+    pad_samps = int(1000.0 * TARGET_FS / 1000.0) # 1s padding for filtering
+    pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000.0) + pad_samps
+    post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000.0) + pad_samps
     
     epoch_list = []
-    
-    # Pre-calc samples
-    pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000.0)
-    post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000.0)
-    tot_samps = pre_samps + post_samps
     
     for i in range(n_debug_trials):
         s_idx = stim_res[i]
@@ -487,108 +438,95 @@ def run_debug_pipeline(sess_name):
         return
 
     # Stack: (n_trials, n_ch, n_time)
-    epochs_arr = np.stack(epoch_list, axis=0)
+    epochs_pad = np.stack(epoch_list, axis=0) # Padded epochs
+    print(f"  Extracted shape: {epochs_pad.shape}")
     
-    # --- Step 4: Baseline Correction ---
-    # Subtract pre-stim mean (-500 to -5ms)
-    # pre_samps is index of 0ms (stim). Logic: :pre_samps excludes 0.
+    # --- Step 4: Impedance Rejection ---
+    # Need to load impedance file from session path
+    print("Applying Impedance Rejection...")
     
-    print("Applying Baseline Correction...")
-    epochs_bc = epochs_arr.copy()
-    if pre_samps > 0:
-        base = np.mean(epochs_bc[:, :, :pre_samps], axis=2, keepdims=True)
-        epochs_bc -= base
+    # Helper (copied from analyze_lfp_bands)
+    def get_bad_channels_intan(sess_path, threshold_kohm=2000.0):
+        matches = list(sess_path.glob("*impedance*.csv"))
+        if not matches: return []
+        imp_file = matches[0]
+        bad_ch_names = []
+        try:
+            with open(imp_file, 'r', encoding='utf-8', errors='ignore') as f:
+                reader = csv.reader(f)
+                header = None
+                for row in reader:
+                    if row and "Channel Name" in row[0]: # Start of data
+                        header = row; break
+                if not header: return []
+                
+                imp_col = -1
+                for i, h in enumerate(header):
+                    if "kOhm" in h: imp_col = i; break
+                if imp_col == -1: return []
+                
+                for row in reader:
+                    if not row: continue
+                    try:
+                        ch_name = row[0].strip()
+                        imp_val = float(row[imp_col])
+                        if imp_val > threshold_kohm: bad_ch_names.append(ch_name)
+                    except: continue
+        except: pass
+        return bad_ch_names
 
-    # Plot Step 4 (Snapshot of Trial 0)
-    plot_epoch_snapshot(epochs_bc[0], "4_BaselineCorrected", TARGET_FS, pre_ms=EPOCH_PRE_MS, save_dir=SAVE_DIR)
+    bad_names = get_bad_channels_intan(sess_path, threshold_kohm=7000.0) # Matches analyze_lfp_bands default
+    bad_indices = []
+    
+    chan_ids = rec_res.get_channel_ids()
+    for name in bad_names:
+        idx = np.where(chan_ids == name)[0]
+        if len(idx) > 0: bad_indices.extend(idx)
         
-    # --- Step 5: Exponential Removal (PER TRIAL) ---
-    print("Applying Exponential Removal (Trial-by-Trial)...")
+    bad_indices = np.unique(bad_indices)
     
-    fit_start_idx = pre_samps + int((BLANK_POST_MS + FIT_START_OFFSET_MS) * TARGET_FS / 1000.0)
-    
-    def exp_decay(t, a, tau, c):
-        return a * np.exp(-t / tau) + c
+    epochs_rej = epochs_pad.copy()
+    if len(bad_indices) > 0:
+        print(f"  Masking {len(bad_indices)} bad channels")
+        epochs_rej[:, bad_indices, :] = np.nan
         
-    from scipy.optimize import curve_fit, OptimizeWarning
-    import warnings
-    warnings.simplefilter('ignore', OptimizeWarning)
+    # --- Step 5: Zero-Phase Filter (Alpha Band Example) ---
+    print("Applying Zero-Phase Filter (Alpha 8-12 Hz) on PADDED epochs...")
     
-    epochs_exp_clean = epochs_bc.copy()
-    n_trials_debug = epochs_exp_clean.shape[0]
-    n_ch = epochs_exp_clean.shape[1]
-    n_time = epochs_exp_clean.shape[2]
+    # Filter function (copied)
+    def filter_zero_phase(epochs, fs, low, high, order=4):
+        nyq = 0.5 * fs
+        low_norm = low / nyq
+        high_norm = high / nyq
+        b, a = signal.butter(order, [low_norm, high_norm], btype='band')
+        return signal.filtfilt(b, a, epochs, axis=2)
+
+    epochs_filt = filter_zero_phase(epochs_rej, TARGET_FS, 8, 12)
     
-    t_fit = np.arange(n_time - fit_start_idx)
+    # Crop Padding for Plotting
+    # We want -500 to +1000 ms relative to stim
+    # Padding was 1000ms. So crop 1000ms from start and end.
     
-    # Fit each trial and channel
-    for i in range(n_trials_debug):
-        for c in range(n_ch):
-            y_seg = epochs_exp_clean[i, c, fit_start_idx:]
-            
-            a0 = y_seg[0] - y_seg[-1]
-            tau0 = len(y_seg) / 4.0
-            c0 = y_seg[-1]
-            try:
-                popt, _ = curve_fit(exp_decay, t_fit, y_seg, p0=[a0, tau0, c0], maxfev=1000)
-                fit_curve = exp_decay(t_fit, *popt)
-                epochs_exp_clean[i, c, fit_start_idx:] -= fit_curve
-            except:
-                pass
-            
-    plot_epoch_snapshot(epochs_exp_clean[0], "5_ExpRemoved_PerTrial", TARGET_FS, pre_ms=EPOCH_PRE_MS, save_dir=SAVE_DIR)
+    n_time = epochs_filt.shape[2]
+    # Indices relative to start of array
+    # Array starts at -1500 ms (approx) relative to stim
+    # We want start at -500 ms relative to stim
+    # So skip 1000 ms (pad_samps)
     
-    # --- Step 6: Median Template Subtraction ---
-    print("Applying Median Template Subtraction (Post-Exp)...")
+    # Actually just reuse slice logic to be precise
+    # Construct time axis for padded array
+    t_pad = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + 1000.0)
     
-    # 1. Compute Median Template (per channel, across trials) on EXP-CLEANED data
-    template_median = np.median(epochs_exp_clean, axis=0) # (n_ch, n_time)
+    WIN_PLOT = (-EPOCH_PRE_MS, EPOCH_POST_MS)
     
-    # 2. Subtract Template from all trials
-    epochs_clean = epochs_exp_clean - template_median[None, :, :]
+    mask = (t_pad >= WIN_PLOT[0]) & (t_pad < WIN_PLOT[1])
+    epochs_final = epochs_filt[:, :, mask]
+    t_final = t_pad[mask]
     
-    # --- Step 6.5: Reject Bad Channels (Threshold > 500 uV) ---
-    print("Applying Threshold Rejection (> 500 uV)...")
-    BAD_THRES = 500.0
-    
-    # Check max abs amplitude per channel
-    peak_amps = np.max(np.abs(epochs_clean[0]), axis=1) # (n_ch,)
-    bad_ch_mask = peak_amps > BAD_THRES
-    bad_ch_indices = np.flatnonzero(bad_ch_mask)
-    num_bad = len(bad_ch_indices)
-    
-    # Set bad channels to NaN
-    epochs_clean_rej = epochs_clean.copy()
-    if num_bad > 0:
-        print(f"  [Reject] Removing {num_bad} channels > {BAD_THRES} uV: {bad_ch_indices}")
-        epochs_clean_rej[:, bad_ch_mask, :] = np.nan
-        
-    # Plot Step 6 (Adjusted with Rejection info)
-    title_extra = f"\n(Removed {num_bad} ch > {BAD_THRES}uV: {list(bad_ch_indices)})" if num_bad > 0 else ""
-    plot_epoch_snapshot(epochs_clean_rej[0], "6_MedianTemplateSubtracted_Rej", TARGET_FS, pre_ms=EPOCH_PRE_MS, save_dir=SAVE_DIR, title_suffix=title_extra)
-    
-    # --- PLOT TRANSIENT PROFILES (The Template) ---
-    print("Plotting Transient Profiles (Templates)...")
-    plot_transient_profiles(template_median, "6b_TransientProfiles_PostExp", TARGET_FS, pre_ms=EPOCH_PRE_MS, save_dir=SAVE_DIR)
-    
-    # --- Step 7: Alpha Band (5-13 Hz) ---
-    print("Applying Alpha Filter (5-13 Hz)...")
-    sos = signal.butter(4, [5.0, 13.0], btype='band', fs=TARGET_FS, output='sos')
-    
-    # Use Rejected Data for Filtering (NaNs will propagate, which is fine/desired for visual exclusion)
-    # Note: sosfiltfilt handles NaNs poorly (might spread them). 
-    # Better to fill with 0 or interp? But user asked to "delete" them. NaNs usually hide in matplotlib.
-    # We will let them be NaNs to ensure they don't appear in the average or plot.
-    epochs_alpha = signal.sosfiltfilt(sos, epochs_clean_rej, axis=2)
-    
-    # Plot Pre-Stim Focus
-    plot_epoch_snapshot(epochs_alpha[0], "7a_Alpha_PreStim", TARGET_FS, pre_ms=EPOCH_PRE_MS, x_lim=(-500, -5), save_dir=SAVE_DIR, title_suffix=title_extra)
-    
-    # Plot Post-Stim Focus
-    plot_epoch_snapshot(epochs_alpha[0], "7b_Alpha_PostStim", TARGET_FS, pre_ms=EPOCH_PRE_MS, x_lim=(BLANK_POST_MS, 600), save_dir=SAVE_DIR, title_suffix=title_extra)
+    # Plot Snapshot (Alpha)
+    plot_epoch_snapshot(epochs_final[0], "5_Alpha_8-12Hz_Clean", TARGET_FS, pre_ms=EPOCH_PRE_MS, save_dir=SAVE_DIR)
 
     print("Done.")
-
 def plot_epoch_snapshot(traces, step_name, fs, pre_ms=500.0, x_lim=None, save_dir=None, title_suffix=""):
     """
     Plot helper for epoch data (n_ch, n_time)
@@ -640,41 +578,130 @@ def plot_epoch_snapshot(traces, step_name, fs, pre_ms=500.0, x_lim=None, save_di
         print(f"    [DEBUG PLOT] Saved -> {out_path}")
     plt.close(fig)
 
-def plot_transient_profiles(template_data, step_name, fs, pre_ms=500.0, save_dir=None):
+def run_baseline_debug_pipeline(npz_path):
     """
-    Plots the median template traces for all channels overlaid.
-    template_data: (n_ch, n_time)
+    Process baseline files by loading IR events from PeriStim baseline files
+    and using them as stim_indices for the debug pipeline.
+    
+    Approach mirrors analyze_lfp_bands.py lines 730-766:
+    1. Extract contributing sessions from aligned baseline LFP file
+    2. Load IR events from corresponding PeriStim baseline file  
+    3. Convert IR times to native samples
+    4. Run debug pipeline on representative session with those IR events
     """
-    n_ch, n_time = template_data.shape
-    t_axis = (np.arange(n_time) / fs * 1000.0) - pre_ms
+    print(f"\n--- Processing Baseline File: {npz_path.name} ---")
     
-    fig, ax = plt.subplots(figsize=(12, 7))
+    # Load aligned baseline LFP file
+    try:
+        bl_lfp_data = np.load(npz_path, allow_pickle=True)
+    except Exception as e:
+        print(f"  [ERROR] Failed to load baseline LFP file: {e}")
+        return
     
-    # Plot all channels with slight transparency
-    for c in range(n_ch):
-        group_idx = c // 16
-        color = GROUP_COLORS[group_idx % len(GROUP_COLORS)]
-        ax.plot(t_axis, template_data[c, :], color=color, alpha=0.5, linewidth=1.0)
+    # Extract metadata about contributing sessions
+    sessions = bl_lfp_data.get('sessions', [])
+    if isinstance(sessions, np.ndarray) and sessions.size > 0:
+        sessions = sessions.tolist() if hasattr(sessions, 'tolist') else list(sessions)
+    
+    if not sessions:
+        print(f"  [WARN] No session list found in baseline file. Cannot debug-plot.")
+        return
+    
+    print(f"  Found {len(sessions)} contributing sessions: {sessions}")
+    
+    # Extract port and depth from filename: aligned_lfp__baseline__Depth_43_0_port_A.npz
+    stem = npz_path.stem.replace("aligned_lfp__", "")
+    
+    # Parse port and depth
+    port_str = None
+    depth_str = None
+    target_str = None
+    
+    if "port_" in stem:
+        port_str = stem.split("port_")[-1].split("_")[0]  # Gets 'A' or 'B'
+    
+    if "Depth_" in stem:
+        depth_part = stem.split("Depth_")[-1].split("_port")[0]
+        depth_str = depth_part.replace("_", ".")  # Convert 43_0 to 43.0
+    
+    print(f"  [DEBUG] Parsed from filename: port={port_str}, depth={depth_str}")
+    
+    # Determine target from port (baseline files are port-specific)
+    # Need to check both targets
+    target_dirs = []
+    if port_str:
+        # Try both targets
+        for target in ["A", "B"]:
+            target_dirs.append((target, PERI_ROOT / f"Target_{target}"))
+   
+    # Load IR events from PeriStim baseline file
+    ir_times_ms = None
+    shift_ms = 0.0
+    
+    for target, target_dir in target_dirs:
+        if not target_dir.exists():
+            continue
         
-    # Plot Mean of Medians (Global Average Artifact)
-    ax.plot(t_axis, np.mean(template_data, axis=0), color='k', linewidth=3.0, linestyle='--', label='Mean of Templates')
+        # Pattern: baseline__NRR_RW011_Depth_43.0_port_{port}_target_{target}.npz
+        # Note: Depth uses DOTS not underscores (43.0 not 43_0)
+        if depth_str and port_str:
+            # Try exact pattern first
+            pattern = f"baseline__*_Depth_{depth_str}_port_{port_str}_target_{target}.npz"
+        else:
+            pattern = f"baseline__*port_{port_str}_target_{target}.npz" if port_str else "baseline__*target_{target}.npz"
+        
+        print(f"  [DEBUG] Searching for pattern: {pattern} in {target_dir}")
+        matches = list(target_dir.glob(pattern))
+        
+        if matches:
+            peristim_file = matches[0]
+            print(f"  Loading IR events from PeriStim file: {peristim_file.name}")
+            try:
+                ps_data = np.load(peristim_file, allow_pickle=True)
+                if 'stim_ms' in ps_data and ps_data['stim_ms'].size > 0:
+                    ir_times_ms = ps_data['stim_ms']
+                    print(f"  Found {len(ir_times_ms)} IR events")
+                    break
+            except Exception as e:
+                print(f"  [WARN] Failed to load PeriStim file: {e}")
     
-    ax.set_title(f"Transient Profiles (Median Templates)\n(N={n_ch} channels)")
-    ax.set_xlabel("Time from Stim (ms)")
-    ax.set_ylabel("uV")
-    ax.axvline(0, color='k', linestyle=':', alpha=0.5)
-    ax.axvspan(-5, BLANK_POST_MS, color='gray', alpha=0.1, label='Blank Region')
+    if ir_times_ms is None or len(ir_times_ms) == 0:
+        print(f"  [WARN] No IR events found in PeriStim files. Cannot debug-plot.")
+        return
     
-    # Zoom in on post-stim
-    ax.set_xlim(-50, 600)
+    # Process first contributing session as representative
+    representative_sess = sessions[0]
+    print(f"  Using representative session: {representative_sess}")
     
-    ax.legend(loc='upper right', fontsize='small')
+    # Load shift from metadata if available
+    shift_csv = METADATA_ROOT / "br_to_intan_shifts.csv"
+    if shift_csv.exists():
+        try:
+            import pandas as pd
+            df_shifts = pd.read_csv(shift_csv)
+            # Look for matching session
+            mask = df_shifts['Intan_Session'].astype(str).str.contains(representative_sess, na=False)
+            if mask.any():
+                shift_ms = float(df_shifts.loc[mask, 'Shift_ms'].iloc[0])
+                print(f"  Using shift: {shift_ms} ms")
+        except Exception as e:
+            print(f"  [WARN] Failed to load shift: {e}")
     
-    if save_dir:
-        out_path = Path(save_dir) / f"{step_name}.png"
-        plt.savefig(out_path)
-        print(f"    [DEBUG PLOT] Saved -> {out_path}")
-    plt.close(fig)
+    # Convert IR times from ms to native Intan samples (30kHz)
+    # IR times are in BR time, need to add shift to get Intan time
+    # Then convert ms to samples
+    fs_native = 30000.0  # Intan native sampling rate
+    ir_samps_native = ((ir_times_ms + shift_ms) * fs_native / 1000.0).astype(np.int64)
+    
+    print(f"  Converted {len(ir_samps_native)} IR times to native samples")
+    
+    # Run debug pipeline with IR events as stim_indices
+    try:
+        run_debug_pipeline(representative_sess, stim_indices_override=ir_samps_native, shift_ms=shift_ms)
+    except Exception as e:
+        print(f"  [ERROR] Failed to process representative session {representative_sess}: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     # Batch run on all sessions found in checkpoints
@@ -692,6 +719,14 @@ if __name__ == "__main__":
         # Filename format: aligned_lfp__{session_name}.npz
         # Extract session name
         sess_name = npz.stem.replace("aligned_lfp__", "")
+        
+        # Handle baseline files separately
+        if "baseline" in sess_name.lower():
+            try:
+                run_baseline_debug_pipeline(npz)
+            except Exception as e:
+                print(f"[ERROR] Failed to run baseline debug pipeline for {sess_name}: {e}")
+            continue
         
         try:
             run_debug_pipeline(sess_name)

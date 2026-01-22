@@ -23,7 +23,8 @@ UA_TAIL_MS   = float(UA_RATES.get("remove_tail_ms_after", 5.0))
 UA_DEDUP_MS = float(UA_RATES.get("dedup_ms", 0.5))
 MAX_CLUSTER_MS = 0.5
 
-STIM_DUR = 100.0
+# NOTE: Stimulation duration is now calculated dynamically per session from actual stim data
+# instead of using a hardcoded 100ms value. This supports single-pulse and variable-duration stims.
 
 KEYPOINTS_ORDER = tuple(PARAMS.kinematics.get("keypoints", []))  # [] if missing
 
@@ -847,6 +848,39 @@ def extract_one_file(aligned_path: Path) -> None:
     meta = json.loads(aligned_npz["align_meta"].item()) if "align_meta" in aligned_npz.files else {}
     sess   = meta.get("session", aligned_path.stem)
     br_idx = int(meta.get("br_idx", -1))
+    
+    # ---- Calculate actual stimulation duration from stim stream data ----
+    # This replaces the old hardcoded STIM_DUR = 100.0 to support single pulses and variable durations
+    stim_dur_ms = 0.0  # Default for sessions without stim
+    intan_idx = int(meta.get("intan_idx", -1))
+    
+    # Try to load stim stream data to get actual pulse durations
+    stim_npz_path = None
+    if br_idx >= 0:
+        try:
+            stim_npz_path, _ = rcp.stim_npz_path_from_br_idx(br_idx, METADATA_CSV, NPRW_AUX_DATA)
+        except Exception:
+            pass
+    
+    if stim_npz_path is not None and Path(stim_npz_path).exists():
+        try:
+            stim_data = rcp.load_stim_detection(stim_npz_path)
+            block_bounds_samp = stim_data.get("block_bounds_samples", np.empty((0, 2)))
+            stim_meta_str = stim_data.get("meta", "{}")
+            stim_meta = json.loads(stim_meta_str) if isinstance(stim_meta_str, str) else stim_meta_str
+            fs_stim = float(stim_meta.get("fs_hz", meta.get("fs_nprw", 30000.0)))
+            
+            if block_bounds_samp.size > 0:
+                # Calculate duration of each stim block/pulse
+                durations_ms = (block_bounds_samp[:, 1] - block_bounds_samp[:, 0]) * 1000.0 / fs_stim
+                stim_dur_ms = float(np.max(durations_ms))  # Use max for artifact window
+                print(f"[stim_dur] {aligned_path.name}: Detected stim duration = {stim_dur_ms:.2f} ms (from {len(durations_ms)} blocks)")
+            else:
+                print(f"[stim_dur] {aligned_path.name}: No stim blocks found")
+        except Exception as e:
+            print(f"[stim_dur] {aligned_path.name}: Could not load stim data: {e}; using default duration=0.0")
+    else:
+        print(f"[stim_dur] {aligned_path.name}: No stim NPZ found; using default duration=0.0")
 
 
     # ---- load aligned file for behavior / VOG / ts_state ----
@@ -1126,11 +1160,11 @@ def extract_one_file(aligned_path: Path) -> None:
     # bin ONLY on valid stims per stream
     ua_counts, ua_rel_t, ua_edges_ms, ua_left_bins = _bin_counts_around_stim(
         ua_peak_ms_dedup, UA_BIN_MS, stim_ms_ua_all,
-        UA_MS_BEFORE, (STIM_DUR + UA_TAIL_MS), WIN_MS
+        UA_MS_BEFORE, (stim_dur_ms + UA_TAIL_MS), WIN_MS
     )
     nprw_counts, nprw_rel_t, nprw_edges_ms, nprw_left_bins = _bin_counts_around_stim(
         nprw_peak_ms_dedup, NPRW_BIN_MS, stim_ms_nprw_all,
-        NPRW_MS_BEFORE, (STIM_DUR + NPRW_TAIL_MS), WIN_MS
+        NPRW_MS_BEFORE, (stim_dur_ms + NPRW_TAIL_MS), WIN_MS
     )
 
     ua_rate_hz = _smooth_counts_gauss(ua_counts, ua_edges_ms, ua_rel_t, UA_SIGMA_MS, ua_left_bins)

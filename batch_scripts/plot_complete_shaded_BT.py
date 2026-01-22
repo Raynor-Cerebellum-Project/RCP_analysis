@@ -45,6 +45,8 @@ HEIGHT_PER_RATIO_IN  = 4.0    # height per unit of `ratios` sum
 PROBE_GAP_RATIO      = 0.15
 PROBE_WIDTH_RATIO    = 0.35
 
+SKIP_EXISTING        = True   # If True, skip sessions where the first plot already exists
+
 # ---------------------------------------------------------------------
 # ROOTS / PARAMS
 # ---------------------------------------------------------------------
@@ -122,9 +124,12 @@ def _compute_target_means_for_cam(
     if ts_state.ndim != 2:
         raise ValueError(f"ts_state_segs must be 2D (n_trials, T_state), got {ts_state.shape}")
     if ts_state.shape[0] != n_trials:
-        raise ValueError(
-            f"Trial mismatch: target_pos has {n_trials} trials but ts_state has {ts_state.shape[0]}"
-        )
+        # Instead of raising error, truncate to common length
+        print(f"[warn] Trial mismatch: target_pos has {n_trials} trials but ts_state has {ts_state.shape[0]}. Truncating to min.")
+        n_min = min(n_trials, ts_state.shape[0])
+        ts_state = ts_state[:n_min]
+        target_pos = target_pos[:n_min]
+        n_trials = n_min
 
     # On-state on ts grid
     state_on_ts = (ts_state == 1)  # (n_trials, T_state)
@@ -270,6 +275,32 @@ def main():
             continue
 
         target_label   = peri_stim_npz_loc.parent.name
+        
+        # --- PRE-LOAD SKIP CHECK ---
+        if SKIP_EXISTING:
+            out_dir_check = FIG.peri_posvel_median / target_label
+            
+            # Derive expected output filename from input filename
+            # Pattern: peristim__{session}__BR_{br_idx}_...
+            fname = peri_stim_npz_loc.name
+            check_file = None
+            
+            if fname.startswith('baseline'):
+                check_file = f"{fname}__median_ALL.png"
+            else:
+                # Try to extract BR index
+                import re
+                match = re.search(r"BR_(\d+)", fname)
+                if match:
+                    br_val = int(match.group(1))
+                    check_file = f"Cond_{br_val:03d}__median_ALL.png"
+            
+            if check_file:
+                check_path = out_dir_check / check_file
+                if check_path.exists():
+                    print(f"  [Skip] {check_file} exists (pre-load check).")
+                    continue
+
         print(f"Processing {peri_stim_npz_loc.name} ({target_label})...")
 
         peri_stim_npz = np.load(peri_stim_npz_loc, allow_pickle=True)
@@ -385,6 +416,10 @@ def main():
         else:
             file_name = f"Cond_{br_idx:03d}"
         out_path_1 = out_dir_1_parent / f"{file_name}__median_ALL.png"
+
+        if SKIP_EXISTING and out_path_1.exists():
+            print(f"  [Skip] {file_name} exists.")
+            continue
 
         rcp.stacked_heatmaps_plus_behv(
             NPRW_med, UA_med,
