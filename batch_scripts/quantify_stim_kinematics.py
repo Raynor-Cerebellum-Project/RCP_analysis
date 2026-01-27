@@ -63,97 +63,10 @@ END_POS_MIN_THRESH = 2.0    # End must be at least +/- 2.0 away from 0
 # --- Speed Exclusion Thresholds ---
 # Exclude trials if Peak Speed is 0 or > 0.25 (User request)
 SPEED_EXCL_MIN = 0.005  
-SPEED_EXCL_MAX = 0.025
+SPEED_EXCL_MAX = 0.02
 
 # Track only middle_x as requested
-SELECTED_KEYPOINTS = ["middle_x"] 
-
-EXCLUDE_CONDITIONS = [2, 3, 5, 8, 9, 25]  # Can be list of ints (Cond IDs) or strings (substring match)
-
-# Custom labels for conditions
-CONDITION_LABELS = {
-    "baseline": "Control",
-    6: "32 ch \n (1-32)",
-    7: "32 ch \n (33-64)",
-    9: "32 ch \n (Rest, 33-64)",
-    10: "130Hz \n (1-32)",
-    11: "130Hz \n (33-64)",
-    12: "1-8",
-    13: "5-12",
-    14: "9-16",
-    15: "13-20",
-    16: "17-24",
-    17: "21-28",
-    18: "25-32",
-    19: "29-36",
-    20: "33-40",
-    21: "37-44",
-    23: "32 ch \n (1-32) Later",
-    24: "32 ch \n (32-64) Later",
-    27: "130Hz \n (1-32) Later",
-}
-
-# Labels for combined conditions
-COMBINED_CONDITION_LABELS = { 
-    "baseline": "Control",
-    6: "32 ch \n (1-32)",
-    7: "32 ch \n (33-64)",
-    9: "32 ch \n (Rest, 33-64)",
-    10: "130Hz \n (1-32)",
-    11: "130Hz \n (33-64)",
-    "Combined_12-16": "Chs 1-24",
-    "Combined_17-21": "Chs 21-44",
-    23: "32 ch \n (1-32) Later",
-    24: "32 ch \n (32-64) Later",
-    27: "130Hz \n (1-32) Later",
-}
-
-# Exclude specific trials within conditions (condition_id: [trial_indices])
-# Trial indices are 0-indexed within each condition
-EXCLUDE_TRIALS_TARGET_A = {
-    6: [0, 8],
-    7: [2, 11],
-    10: [5, 9],
-    11: [3, 6],
-    12: [8],
-    13: [7],
-    14: [2, 3, 5, 6, 8],
-    15: [1, 2, 4, 5, 6, 8],
-    16: [9, 10],
-    18: [3, 5],
-    19: [0, 4],
-    20: [0, 1],
-    21: [5],
-    23: [8],
-    24: [0, 1, 5, 8, 10],
-    27: [1, 2],
-}
-
-EXCLUDE_TRIALS_TARGET_B = {
-    6: [1, 6, 7, 8, 9, 10],
-    7: [0, 6, 13],
-    10: [12],
-    11: [7],
-    13: [1, 10],
-    14: [10, 11],
-    15: [0],
-    18: [0],
-    19: [2, 11],
-    21: [2, 9],
-    23: [5],
-    24: [9],
-    27: [1, 5, 9],
-}
-
-# Baseline-specific trial exclusions (organized by port and target)
-# Format: "baseline_port{A/B}_target{A/B}": [trial_indices]
-# User provided 1-based indices, converting to 0-based here:
-EXCLUDE_BASELINE_TRIALS = {
-    "baseline_portA_targetA": [1, 3, 4, 6, 13, 14, 21, 23, 24, 25, 31, 32, 38],
-    "baseline_portB_targetA": [1, 2, 4, 6, 7, 9, 13, 16, 18],
-    "baseline_portA_targetB": [2, 6, 10, 13, 15, 16, 17, 19, 20, 21, 22, 24, 25, 30, 33, 39, 40, 42, 44, 47, 56, 57],
-    "baseline_portB_targetB": [2, 3, 4, 6, 8, 10, 12, 15, 17, 19, 20, 22, 23, 24, 26, 28, 30, 31, 33, 35],
-}
+SELECTED_KEYPOINTS = ["wrist_x"] 
 
 # Plotting Configuration
 FIG_OUT_DIR = OUT_BASE / "figures" / "quantify_kinematics"
@@ -170,11 +83,162 @@ PLOT_PEAK_SPEED = False
 
 # Analysis Flags
 REMOVE_OUTLIERS = False      # Set to False to skip outlier detection and removal
-ANALYZE_COMBINED = True      # Set to False to skip combined condition analysis
+ANALYZE_COMBINED = False      # Set to False to skip combined condition analysis
 PLOT_FULL_CONDITIONS = True # Set to True to plot individual conditions
 SAVE_STATS_CSV = False        # Set to False to skip saving stats CSV 
 
 plt.rcParams.update({'font.size': 14}) # Larger font for plots
+
+
+if "NRR_RW012" in PARAMS.session:
+    EXCLUDE_CONDITIONS = []
+
+    CONDITION_LABELS = {
+        "baseline": "Control",
+    }
+
+    
+    # Labels for combined conditions
+    COMBINED_CONDITION_LABELS = { 
+        "baseline": "Control",
+    }
+
+    # Exclude specific trials within conditions (condition_id: [trial_indices])
+    # Trial indices are 0-indexed within each condition
+    EXCLUDE_TRIALS_TARGET_A = {
+        6: [],
+        7: [],
+        10: [],
+        11: [],
+        12: [],
+        13: [],
+        14: [],
+        15: [],
+        16: [],
+        18: [],
+        19: [],
+        20: [],
+        21: [],
+        23: [],
+        24: [],
+        27: [],
+    }
+
+    EXCLUDE_TRIALS_TARGET_B = {
+        6: [],
+        7: [],
+        10: [],
+        11: [],
+        13: [],
+        14: [],
+        15: [],
+        18: [],
+        19: [],
+        21: [],
+        23: [],
+        24: [],
+        27: [],
+    }
+
+    # Baseline-specific trial exclusions (organized by port and target)
+    # Format: "baseline_port{A/B}_target{A/B}": [trial_indices]
+    # User provided 1-based indices, converting to 0-based here:
+    EXCLUDE_BASELINE_TRIALS = {
+        "baseline_portA_targetA": [],
+        "baseline_portB_targetA": [],
+        "baseline_portA_targetB": [],
+        "baseline_portB_targetB": [],
+    }
+
+
+elif "NRR_RW011" in PARAMS.session:
+    EXCLUDE_CONDITIONS = [2, 3, 5, 8, 9, 25]
+
+    # Custom labels for conditions
+    CONDITION_LABELS = {
+        "baseline": "Control",
+        6: "32 ch \n (1-32)",
+        7: "32 ch \n (33-64)",
+        9: "32 ch \n (Rest, 33-64)",
+        10: "130Hz \n (1-32)",
+        11: "130Hz \n (33-64)",
+        12: "1-8",
+        13: "5-12",
+        14: "9-16",
+        15: "13-20",
+        16: "17-24",
+        17: "21-28",
+        18: "25-32",
+        19: "29-36",
+        20: "33-40",
+        21: "37-44",
+        23: "32 ch \n (1-32) Later",
+        24: "32 ch \n (32-64) Later",
+        27: "130Hz \n (1-32) Later",
+    }
+
+    # Labels for combined conditions
+    COMBINED_CONDITION_LABELS = { 
+        "baseline": "Control",
+        6: "32 ch \n (1-32)",
+        7: "32 ch \n (33-64)",
+        9: "32 ch \n (Rest, 33-64)",
+        10: "130Hz \n (1-32)",
+        11: "130Hz \n (33-64)",
+        "Combined_12-16": "Chs 1-24",
+        "Combined_17-21": "Chs 21-44",
+        23: "32 ch \n (1-32) Later",
+        24: "32 ch \n (32-64) Later",
+        27: "130Hz \n (1-32) Later",
+    }
+
+    # Exclude specific trials within conditions (condition_id: [trial_indices])
+    # Trial indices are 0-indexed within each condition
+    EXCLUDE_TRIALS_TARGET_A = {
+        6: [0, 8],
+        7: [2, 11],
+        10: [5, 9],
+        11: [3, 6],
+        12: [8],
+        13: [7],
+        14: [2, 3, 5, 6, 8],
+        15: [1, 2, 4, 5, 6, 8],
+        16: [9, 10],
+        18: [3, 5],
+        19: [0, 4],
+        20: [0, 1],
+        21: [5],
+        23: [8],
+        24: [0, 1, 5, 8, 10],
+        27: [1, 2],
+    }
+
+    EXCLUDE_TRIALS_TARGET_B = {
+        6: [1, 6, 7, 8, 9, 10],
+        7: [0, 6, 13],
+        10: [12],
+        11: [7],
+        13: [1, 10],
+        14: [10, 11],
+        15: [0],
+        18: [0],
+        19: [2, 11],
+        21: [2, 9],
+        23: [5],
+        24: [9],
+        27: [1, 5, 9],
+    }
+
+    # Baseline-specific trial exclusions (organized by port and target)
+    # Format: "baseline_port{A/B}_target{A/B}": [trial_indices]
+    # User provided 1-based indices, converting to 0-based here:
+    EXCLUDE_BASELINE_TRIALS = {
+        "baseline_portA_targetA": [1, 3, 4, 6, 13, 14, 21, 23, 24, 25, 31, 32, 38],
+        "baseline_portB_targetA": [1, 2, 4, 6, 7, 9, 13, 16, 18],
+        "baseline_portA_targetB": [2, 6, 10, 13, 15, 16, 17, 19, 20, 21, 22, 24, 25, 30, 33, 39, 40, 42, 44, 47, 56, 57],
+        "baseline_portB_targetB": [2, 3, 4, 6, 8, 10, 12, 15, 17, 19, 20, 22, 23, 24, 26, 28, 30, 31, 33, 35],
+    }
+
 
 # ---------------------------------------------------------------------
 # HELPERS
@@ -269,7 +333,7 @@ def calculate_reach_metrics(
         # User requested: Do NOT exclude trials, just don't plot these points.
         # Logic: Create masked version of speed for plotting.
         speed_for_plot = speed.copy()
-        mask_outliers = (speed_for_plot <= SPEED_EXCL_MIN) | (speed_for_plot > SPEED_EXCL_MAX)
+        mask_outliers = (np.abs(speed_for_plot) <= SPEED_EXCL_MIN) | (np.abs(speed_for_plot) > SPEED_EXCL_MAX)
         
         has_speed_outlier = False
         if np.any(mask_outliers):

@@ -45,7 +45,7 @@ HEIGHT_PER_RATIO_IN  = 4.0    # height per unit of `ratios` sum
 PROBE_GAP_RATIO      = 0.15
 PROBE_WIDTH_RATIO    = 0.35
 
-SKIP_EXISTING        = True   # If True, skip sessions where the first plot already exists
+SKIP_EXISTING        = False   # If True, skip sessions where the first plot already exists
 
 # ---------------------------------------------------------------------
 # ROOTS / PARAMS

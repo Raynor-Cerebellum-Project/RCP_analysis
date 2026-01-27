@@ -15,12 +15,15 @@ import numpy as np
 # ---------- Config ----------
 # Config loaded from config_loading
 
-def filter_low_likelihood(df, threshold=0.35):
+def filter_low_likelihood(df, threshold=0.4):
     """
     Iterate columns to find _likelihood cols.
     If col < threshold, set corresponding _x and _y to NaN.
     """
     count = 0 
+    # Pass 1: Mask all low-likelihood points
+    xy_cols_to_interp = []
+    
     for col in df.columns:
         if str(col).endswith("likelihood"):
              # e.g. "DLC_..._wrist_likelihood"
@@ -34,8 +37,17 @@ def filter_low_likelihood(df, threshold=0.35):
                      df.loc[mask, col_x] = np.nan
                      df.loc[mask, col_y] = np.nan
                      count += mask.sum()
+                 
+                 # Add to list for Pass 2
+                 xy_cols_to_interp.extend([col_x, col_y])
+                 
+    # Pass 2: Interpolate only the coordinate columns we checked
+    if xy_cols_to_interp:
+        # Interpolate linear throughout
+        df[xy_cols_to_interp] = df[xy_cols_to_interp].interpolate(method='linear')
+
     if count > 0:
-        print(f"  [filter] masked {count} points (likelihood < {threshold})")
+        print(f"  [filter] masked {count} points (likelihood < {threshold}) and interpolated.")
     return df
 
 def main():
