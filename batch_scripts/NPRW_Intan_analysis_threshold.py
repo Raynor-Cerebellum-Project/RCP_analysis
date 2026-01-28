@@ -99,7 +99,6 @@ def main():
         # aux streams (sync channels etc.)
         rcp.extract_intan_aux_streams_npz(sess=sess, out_dir=NPRW_AUX_DATA, aux_streams=AUX_STREAM)
         
-        # stim streams TODO anyway to leverage that this is sparse?
         stim_ext_arrays = rcp.extract_stim_npz(sess=sess, out_dir=NPRW_AUX_DATA, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
         # stim_ext_arrays = rcp.load_stim_detection(NPRW_AUX_DATA / f"{sess.name}_Intan_streams" / "stim_stream.npz") - skip to speed up when debugging
 
@@ -107,8 +106,8 @@ def main():
         rec = se.read_split_intan_files(sess, mode="concatenate", stream_name=INTAN_STREAM, use_names_as_ids=True)
         rec = spre.unsigned_to_signed(rec) # Convert UInt16 to int16
         
+        rec = rec.set_probe(nprw_probe)
         rec_reordered = rcp.reorder_recording_to_geometry(rec, intan_probe_mapping)
-        rec_reordered = rec_reordered.set_probe(nprw_probe)
         
         # Local CMR
         rec_hp = spre.highpass_filter(rec_reordered, freq_min=float(PARAMS.highpass_hz))
@@ -116,7 +115,6 @@ def main():
         
         # block_bounds_samples: shape (# stim blocks, 2) in absolute samples
         block_bounds = stim_ext_arrays.get("block_bounds_samples")
-        blank_windows = None
 
         rec_artif_removed = rec_ref  # fallback
         fs_nprw = rec_reordered.get_sampling_frequency()
