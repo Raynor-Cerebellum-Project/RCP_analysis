@@ -77,6 +77,33 @@ def get_metadata_mapping(meta_csv: Path, field1: str, field2: str) -> dict[int, 
 
         return mapping
 
+def detect_IR_crossings(x: np.ndarray, fs: float | None, refractory_sec: float = 0.0005) -> np.ndarray:
+    x = np.asarray(x, float).ravel()
+    if x.size == 0:
+        return np.array([], np.int64)
+
+    # fill NaNs without changing indexing
+    if not np.isfinite(x).all():
+        med = np.nanmedian(x)
+        x = np.nan_to_num(x, nan=med)
+
+    lo, hi = float(np.min(x)), float(np.max(x))
+    thr = 0.5 * (lo + hi)
+    b = (x > thr).astype(np.int8)
+
+    db = np.diff(b, prepend=b[0])
+    edges = np.flatnonzero(db == -1)
+
+    if edges.size == 0:
+        return edges.astype(np.int64)
+
+    refr = max(1, int(round(refractory_sec * fs))) if (fs and fs > 0) else 1
+    keep = [edges[0]]
+    for e in edges[1:]:
+        if e - keep[-1] >= refr:
+            keep.append(e)
+    return np.asarray(keep, np.int64)
+
 # OCR / DLC
 def load_ocr_map(ocr_csv: Path) -> pd.DataFrame:
     """

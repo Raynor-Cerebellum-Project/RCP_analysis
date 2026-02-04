@@ -29,7 +29,8 @@ NPRW_CFG = PARAMS.probes.get("NPRW")
 INTAN_STREAM = NPRW_CFG.get("neural_data_stream")
 STIM_STREAM = NPRW_CFG.get("stim_data_stream") # "Stim channel"
 AUX_STREAM = NPRW_CFG.get("aux_stream")
-
+IR_STREAM = NPRW_CFG.get("ir_stream")
+PROCESS_ONLY = PARAMS.preprocessing.get("process_only")  # list of BR indices to process; empty = all, need to map from BR indices to Intan indices using METADATA
 
 # Local reference params, both floats
 RADII = (PARAMS.probes.get("NPRW").get("local_radius_inner"), PARAMS.probes.get("NPRW").get("local_radius_outer"))
@@ -40,6 +41,7 @@ THRESH     = RATES.get("detect_threshold")
 PEAK_SIGN  = RATES.get("peak_sign")
 ARTRMV_MS_BEFORE = float(RATES.get("remove_ms_before", 20.0))
 ARTRMV_TAIL_MS   = float(RATES.get("remove_tail_ms_after", 20.0))
+
 
 # Artifact correction parameters
 params = rcp.PCAArtifactParams(
@@ -102,6 +104,30 @@ def main():
         stim_ext_arrays = rcp.extract_stim_npz(sess=sess, out_dir=NPRW_AUX_DATA, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
         # stim_ext_arrays = rcp.load_stim_detection(NPRW_AUX_DATA / f"{sess.name}_Intan_streams" / "stim_stream.npz") - skip to speed up when debugging
 
+        # 4) Load Intan IR stream
+        rec_ir = se.read_split_intan_files(
+            sess,
+            mode="concatenate",
+            stream_name=IR_STREAM,
+            use_names_as_ids=True,
+        )
+        rec_ir = spre.unsigned_to_signed(rec_ir)  # UInt16 -> int16
+        
+        fs_ir = float(rec_ir.sampling_frequency)
+        sig = np.asarray(rec_ir.get_traces()).squeeze()
+        if sig is None or sig.size == 0:
+            print(f"[IR] Intan={sess}: empty IR signal.")
+
+        ir_idx = rcp.detect_IR_crossings(sig, fs_ir, refractory_sec=0.0005)
+        if ir_idx.size == 0:
+            print(f"[IR] Intan={sess}: no IR crossings.")
+
+        # Convert to ms
+        ir_ms = ir_idx / fs_ir * 1000.0
+        
+        del rec_ir, sig
+        gc.collect()
+        
         # Load Intan neural stream and reorder
         rec = se.read_split_intan_files(sess, mode="concatenate", stream_name=INTAN_STREAM, use_names_as_ids=True)
         rec = spre.unsigned_to_signed(rec) # Convert UInt16 to int16
@@ -115,12 +141,14 @@ def main():
         
         # block_bounds_samples: shape (# stim blocks, 2) in absolute samples
         block_bounds = stim_ext_arrays.get("block_bounds_samples")
+        stim_channels = stim_ext_arrays['active_channels']
 
         rec_artif_removed = rec_ref  # fallback
         fs_nprw = rec_reordered.get_sampling_frequency()
         n_total = rec_reordered.get_num_samples()
         
-        if block_bounds.size:
+        dur_ms = None
+        if block_bounds is not None and block_bounds.size:
             starts_samp = block_bounds[:, 0]
             ends_samp   = block_bounds[:, 1]
 
@@ -170,12 +198,16 @@ def main():
 
         save = dict(
             peaks=peaks,
+            ir_idx=ir_idx,
+            ir_ms=ir_ms,
             meta=dict(
                 detect_threshold=THRESH,
                 peak_sign=PEAK_SIGN,
                 bin_ms=BIN_MS,
                 sigma_ms=SIGMA_MS,
                 fs=fs_nprw,
+                stim_channels=stim_channels,
+                stim_dur = dur_ms if dur_ms is not None else 0.0,
                 n_channels=rec_artif_removed.get_num_channels(),
                 session=str(sess.name),
                 n_samples = rec.get_total_samples(),
@@ -186,7 +218,7 @@ def main():
             ))
         
         np.savez_compressed(out_npz, **save)
-        print(f"[{sess.name}] saved rate matrix -> {out_npz}")
+        print(f"[{sess.name}] saved peaks -> {out_npz}")
 
         # cleanup to keep memory stable on long batches
         del rec, rec_artif_removed, peaks

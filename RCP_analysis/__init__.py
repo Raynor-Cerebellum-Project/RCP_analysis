@@ -8,6 +8,7 @@ from .python.functions import config_loading
 from .python.functions.utils import (
     find_per_cond_inputs,
     get_metadata_mapping,
+    detect_IR_crossings,
     load_ocr_map,
     load_dlc, 
     align_dlc_to_corrected,
@@ -74,6 +75,7 @@ __all__ = [
     # utils
     "find_per_cond_inputs", 
     "get_metadata_mapping",
+    "detect_IR_crossings",
     "load_ocr_map",
     "load_dlc", 
     "align_dlc_to_corrected",

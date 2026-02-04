@@ -904,95 +904,6 @@ def _behavior_valid_mask_from_cam0(
 
     return mask_beh
 
-# IR event loader
-def _detect_IR_crossings(x: np.ndarray, fs: float | None, refractory_sec: float = 0.0005) -> np.ndarray:
-    x = np.asarray(x, float).ravel()
-    if x.size == 0:
-        return np.array([], np.int64)
-
-    # fill NaNs without changing indexing
-    if not np.isfinite(x).all():
-        med = np.nanmedian(x)
-        x = np.nan_to_num(x, nan=med)
-
-    lo, hi = float(np.min(x)), float(np.max(x))
-    thr = 0.5 * (lo + hi)
-    b = (x > thr).astype(np.int8)
-
-    db = np.diff(b, prepend=b[0])
-    edges = np.flatnonzero(db == -1)
-
-    if edges.size == 0:
-        return edges.astype(np.int64)
-
-    refr = max(1, int(round(refractory_sec * fs))) if (fs and fs > 0) else 1
-    keep = [edges[0]]
-    for e in edges[1:]:
-        if e - keep[-1] >= refr:
-            keep.append(e)
-    return np.asarray(keep, np.int64)
-
-def _load_ir_ms_from_aligned(aligned_path: Path, meta: dict[str, Any]) -> np.ndarray:
-    """
-    Compute IR event times (in BR-aligned ms)
-      - read the Intan IR stream for the matching Intan session
-      - detect IR 1→0 edges
-      - convert sample indices to seconds, then to BR-aligned ms
-        using shift_ms from br_to_intan_shifts.csv.
-
-    Returns:
-        ir_ms_br : np.ndarray of shape (N,) in BR time
-    """
-    br_idx = int(meta.get("br_idx", -1))
-    if br_idx < 0:
-        print(f"[baseline-IR] {aligned_path.name}: meta has no valid br_idx; skipping IR.")
-        return np.array([], float)
-
-    shift_entry = BR_TO_INTAN_SHIFTS.get(br_idx)
-    if shift_entry is None:
-        print(f"[baseline-IR] BR {br_idx}: no entry in br_to_intan_shifts; skipping IR.")
-        return np.array([], float)
-
-    intan_session = shift_entry.get("session")
-    shift_ms = float(shift_entry.get("shift_ms", 0.0))
-    if not intan_session:
-        print(f"[baseline-IR] BR {br_idx}: empty Intan session; skipping IR.")
-        return np.array([], float)
-
-    intan_dir = INTAN_ROOT / intan_session
-    try:
-        rec_ir = se.read_split_intan_files(
-            intan_dir,
-            mode="concatenate",
-            stream_name=IR_STREAM,
-            use_names_as_ids=True,
-        )
-        rec_ir = spre.unsigned_to_signed(rec_ir)  # UInt16 -> int16
-    except Exception as e:
-        print(f"[baseline-IR] Reading IR stream failed for Intan={intan_session}: {e}")
-        return np.array([], float)
-
-    fs = float(rec_ir.sampling_frequency)
-    sig = np.asarray(rec_ir.get_traces()).squeeze()
-    if sig is None or sig.size == 0:
-        print(f"[baseline-IR] Intan={intan_session}: empty IR signal.")
-        return np.array([], float)
-
-    ir_idx = _detect_IR_crossings(sig, fs, refractory_sec=0.0005)
-    if ir_idx.size == 0:
-        print(f"[baseline-IR] Intan={intan_session}: no IR crossings.")
-        return np.array([], float)
-
-    # Intan seconds -> BR-aligned ms (same as original script: subtract shift_ms)
-    ir_sec = ir_idx / fs
-    ir_ms_br = ir_sec * 1000.0 - shift_ms
-
-    print(
-        f"[baseline-IR] {aligned_path.name}: BR={br_idx}, Intan={intan_session}, "
-        f"shift_ms={shift_ms:g}, n_IR={ir_ms_br.size}"
-    )
-    return ir_ms_br.astype(float)
-
 # Per-file baseline extraction, uses ir_ms instead of stim_ms
 def extract_baseline_from_file(
     aligned_path: Path,
@@ -1028,6 +939,7 @@ def extract_baseline_from_file(
     meta = json.loads(aligned_npz["align_meta"].item()) if "align_meta" in aligned_npz.files else {}
     sess = meta.get("session", aligned_path.stem)
     br_idx = int(meta.get("br_idx", -1))
+    recording_stim_dur = float(meta.get("recording_stim_dur", np.nan))
 
     # IR times
     ir_ms = np.asarray(ir_ms, float).ravel()

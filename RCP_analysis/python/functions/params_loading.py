@@ -30,6 +30,9 @@ class experimentParams:
 
     # kinematics
     kinematics: dict[str, Any] = field(default_factory=dict)
+    
+    # additional preprocessing params
+    preprocessing: dict[str, Any] = field(default_factory=dict)
 
 def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams:
     cfg = yaml.safe_load(yaml_path.read_text())
@@ -56,6 +59,16 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
     kin_cfg["num_camera"] = kin_cfg.get("num_camera")
     kin_cfg["keypoints"] = tuple(map(str.strip, (kin_cfg["keypoints"])))
 
+    pre_cfg = dict(cfg.get("preprocessing", {}) or {})
+
+    # ensure process_only is a list[int]
+    po = pre_cfg.get("process_only", [])
+    if po is None:
+        po = []
+    if not isinstance(po, list):
+        raise TypeError("preprocessing.process_only must be a list (e.g. [1,2])")
+    pre_cfg["process_only"] = [int(x) for x in po]
+
     # dataclass
     params = experimentParams(
         data_root=str(data_root),
@@ -74,6 +87,7 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
         NPRW_rate_est=cfg.get("NPRW_rate_est", {}) or {},
         UA_rate_est=cfg.get("UA_rate_est", {}) or {},
         kinematics=kin_cfg,
+        preprocessing=pre_cfg,
     )
     return params
 

@@ -1,12 +1,20 @@
 paths:
   data_root: "/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis"
-  location: "Nike/20251203_NRR_RW011"
-  session: "NRR_RW011"
+  location: "Nike/20260129_NRR_RW013"
+  session: "NRR_RW013"
   geom_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
   
 kinematics:
   keypoints: [index, middle, hand, wrist, start, TA, TB]
   num_camera: 2
+
+preprocessing:
+  has_BR: True
+  has_kinematics: True
+  has_VOG: False
+  has_HR: False
+  output_aligned_mat: True
+  process_only: [1, 2, 3] # Input as BR indexes, e.g. [1, 2] to only process BR_001 and BR_002
 
 # ---- Spike preprocessing ----
 highpass_hz: 300.0
@@ -40,6 +48,7 @@ probes:
     neural_data_stream: "RHS2000 amplifier channel"
     stim_data_stream: "Stim channel"
     aux_stream: "USB board ADC input channel"
+    ir_stream: "USB board digital input channel"
 
 # ---- chunking / parallel ----
 parallel_jobs: 8
@@ -48,8 +57,8 @@ chunk: "4s"
 
 # ---- Intan firing rate (threshold MUA) ----
 NPRW_rate_est:
-  bin_ms: 10.0          # bin width for counts
-  sigma_ms: 10.0       # Gaussian kernel std
+  bin_ms: 20.0          # bin width for counts
+  sigma_ms: 20.0       # Gaussian kernel std
   detect_threshold: 3
   peak_sign: "both"
   remove_ms_before: 20.0

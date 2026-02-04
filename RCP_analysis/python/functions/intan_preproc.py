@@ -47,22 +47,19 @@ def extract_stim_triggers_and_blocks(
     stim_data: np.ndarray,   # (n_channels, n_samples)
 ) -> StimTriggerResult:
     """
-    Detect stimulation pulses and group them into repeating blocks.
+    Detect stimulation pulses and group them into blocks [beg end]
 
-    Parameters
-    ----------
+    Parameters:
     stim_data : array, shape (n_channels, n_samples)
-        Raw stim stream (as saved from Intan/USB ADC/etc.). Zero means baseline.
+        Raw stim stream, zero means baseline
 
-    Returns
-    -------
-    StimTriggerResult
+    Returns: StimTriggerResult object
     """
     if stim_data.ndim != 2:
         raise ValueError("stim_data must be (n_channels, n_samples)")
 
     # 1) return active channels
-    active_channels = np.flatnonzero((stim_data != 0).any(axis=1))
+    active_channels = np.flatnonzero((stim_data != 0).any(axis=1)) + 1  # 1-based channel IDs
     if active_channels.size == 0:
         # nothing to do
         return StimTriggerResult(
