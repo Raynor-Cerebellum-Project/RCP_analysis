@@ -1526,25 +1526,25 @@ def main():
     # # normal: per-file processing
     # for file in stim_files:
     #     extract_one_file(file, out_dir = STIM_PERI_ROOT, use_ir_ms=False, split_targets=True)
-    #     # Extract files normally - done
-    #     # Split A and B reaches - done
-    #     # Aggregate and save - done
+        # Extract files normally - done
+        # Split A and B reaches - done
+        # Aggregate and save - done
         
-    #     # td = extract_trials_from_npz(f)
-    #     # aggregate_and_save_normal(td, PERI_ROOT)
+        # td = extract_trials_from_npz(f)
+        # aggregate_and_save_normal(td, PERI_ROOT)
 
-    # # at_rest: per-file processing (no A/B)
-    # for file in at_rest_files:
-    #     extract_one_file(file, out_dir = AT_REST_PERI_ROOT, use_ir_ms=False, split_targets=False)
+    # at_rest: per-file processing (no A/B)
+    for file in at_rest_files:
+        extract_one_file(file, out_dir = AT_REST_PERI_ROOT, use_ir_ms=False, split_targets=False)
         # Extract files without splitting by target - done
         # Aggregate and save - done
         
         # td = extract_trials_from_npz(f)
         # aggregate_and_save_at_rest(td, PERI_ROOT)
 
-    # control: split A/B, align to ir_ms
-    for file in control_files:
-        extract_one_file(file, out_dir = CONTROL_PERI_ROOT, use_ir_ms=True, split_targets=True)
+    # # control: split A/B, align to ir_ms
+    # for file in control_files:
+    #     extract_one_file(file, out_dir = CONTROL_PERI_ROOT, use_ir_ms=True, split_targets=True)
         # Extract files normally but use ir_ms as alignment - done
         # Concatenate trials across files per group - TODO
         # Split A and B reaches - done

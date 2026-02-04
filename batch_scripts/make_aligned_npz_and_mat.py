@@ -131,7 +131,7 @@ def main():
     if not rows:
         raise SystemExit("[error] shifts CSV has no rows")
 
-    for row in rows[50:]:
+    for row in rows:
         try:
             intan_filename   = row["intan_filename"]
             intan_idx = int(row["intan_idx"])
