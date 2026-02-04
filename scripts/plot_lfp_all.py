@@ -8,10 +8,16 @@ from pathlib import Path
 from scipy import signal, stats
 import pandas as pd
 import csv
+import scipy.io
+from scipy.ndimage import gaussian_filter1d
+from scipy.interpolate import interp1d
 
 # Define output directory from config
 NPRW_LFP_DIR = cfg.OUT_BASE / "checkpoints" / "NPRW_LFP"
 UA_LFP_DIR = cfg.OUT_BASE / "checkpoints" / "UA_LFP"
+
+# Probe Geometry Map for CSD
+PROBE_MAP_FILE = cfg.REPO_ROOT / "config" / "ImecPrimateStimRec128_BT_corrected_091525.mat"
 
 NPRW_FIG_DIR = cfg.OUT_BASE / "figures" / "NPRW_LFP"
 UA_FIG_DIR = cfg.OUT_BASE / "figures" / "UA_LFP"
@@ -21,12 +27,13 @@ UA_FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- Global Plotting Configuration ---
 FIGURE_CONFIG = {
-    'process_original': False,          # The existing heatmap/trace plot
+    'process_original': True,          # The existing heatmap/trace plot
     'process_power_spectra': True,      # PSD (Pre vs Post)
     'process_lfp_coherence': False,     # (Stage 2: Disabled) Mag Squared Coherence 
-    'process_phase_coherence': True,    # ITPC (Phase consistency across trials)
-    'process_ersp': True,               # (Stage 2: New) Event-Related Spectral Perturbation
+    'process_phase_coherence': False,    # ITPC (Phase consistency across trials)
+    'process_ersp': False,               # (Stage 2: New) Event-Related Spectral Perturbation
     'process_band_stats': True,         # (Stage 2: New) Band Power Stats (Pre vs Post)
+    'process_csd': True,                # Current Source Density (CSD) Analysis
 }
 
 PLOT_CONFIG = {
@@ -39,6 +46,8 @@ PLOT_CONFIG = {
     # Heatmap Scales (uV): Set value to enforce fixed scale, or None for dynamic (percentile)
     "scales": {
         'broadband': 30.0,
+        'delta': 10.0,
+        'theta': 10.0,
         'alpha': 10.0,
         'beta': 10.0,
         'low_gamma': 10.0,
@@ -48,6 +57,8 @@ PLOT_CONFIG = {
     # Trace Y-Axis Scales (uV): Set value for fixed +/- limit, or None for dynamic
     "trace_scales": {
         'broadband': 200, 
+        'delta': 100,
+        'theta': 100,
         'alpha': 100,
         'beta': 100,
         'low_gamma': 100,
@@ -109,8 +120,10 @@ def calculate_psd(data, fs):
     
     # Valid Pxx: (n_trials, n_ch, n_freq)
     # Average across trials
-    psd_mean = np.nanmean(Pxx, axis=0)
-    psd_sem = np.nanstd(Pxx, axis=0) / np.sqrt(n_trials)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        psd_mean = np.nanmean(Pxx, axis=0)
+        psd_sem = np.nanstd(Pxx, axis=0) / np.sqrt(n_trials)
     
     return f, psd_mean, psd_sem
 
@@ -226,7 +239,9 @@ def calculate_ersp(data_pre, data_post, fs, nperseg=128, noverlap=100):
     P_post = np.abs(Zxx_post)**2
     # Mean across trials for the "Evoked+Induced" response? 
     # ERSP is usually: Mean(Power_trial) / Baseline
-    mean_post_power = np.nanmean(P_post, axis=0) # (n_ch, n_freq, n_time)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        mean_post_power = np.nanmean(P_post, axis=0) # (n_ch, n_freq, n_time)
     
     # 3. Normalize (dB): 10 * log10(Post / Baseline)
     # Broadcast baseline across time
@@ -240,9 +255,11 @@ def calculate_band_power_stats(data_pre, data_post, fs):
     Returns: Dict of results per band
     """
     bands = {
-        'Alpha': (4, 13),
-        'Beta': (13, 30),
-        'Low Gamma': (30, 60),
+        'Delta': (1, 4),
+        'Theta': (4, 8),
+        'Alpha': (8, 12), # Match analyze_lfp_bands range
+        'Beta': (12, 25),
+        'Low Gamma': (25, 60),
         'High Gamma': (60, 120)
     }
     
@@ -290,9 +307,11 @@ def calculate_band_power_stats(data_pre, data_post, fs):
 def add_band_annotations(ax):
     """Adds vertical spans for standard LFP bands."""
     bands = [
-        (4, 13, 'green', 'Alpha'),
-        (13, 30, 'yellow', 'Beta'),
-        (30, 60, 'orange', 'Low Gamma'),
+        (1, 4, 'pink', 'Delta'),
+        (4, 8, 'purple', 'Theta'),
+        (8, 12, 'green', 'Alpha'),
+        (12, 25, 'yellow', 'Beta'),
+        (25, 60, 'orange', 'Low Gamma'),
         (60, 120, 'red', 'High Gamma')
     ]
     
@@ -305,6 +324,76 @@ def add_band_annotations(ax):
     # Only keep band labels in a specific order if present
     
     return by_label
+
+def calculate_csd(lfp_mean, y_coords):
+    """
+    Computes 1D Current Source Density (CSD) from LFP using interpolation 
+    to handle irregular spacing/gaps.
+    
+    Parameters:
+    lfp_mean: (n_ch, n_time) - Mean LFP voltage
+    y_coords: (n_ch,) - Depth coordinate for each channel
+    
+    Returns:
+    csd: (n_grid-2, n_time) - CSD values on uniform grid
+    csd_depths: (n_grid-2,) - Depth coordinates for CSD rows
+    """
+    # 1. Sort and Unique channels by depth
+    y_coords = y_coords.flatten()
+    sort_idx = np.argsort(y_coords)
+    sorted_lfp = lfp_mean[sort_idx, :]
+    sorted_depths = y_coords[sort_idx]
+    
+    # Handle duplicates (multiple channels at same depth) -> Average them
+    unique_depths, unique_indices = np.unique(sorted_depths, return_index=True)
+    
+    if len(unique_depths) < len(sorted_depths):
+        # Average duplicate depths
+        lfp_unique = []
+        for d in unique_depths:
+            idxs = np.where(sorted_depths == d)[0]
+            lfp_unique.append(np.mean(sorted_lfp[idxs], axis=0))
+        ls_lfp = np.array(lfp_unique)
+        ls_depths = unique_depths
+    else:
+        ls_lfp = sorted_lfp
+        ls_depths = sorted_depths
+
+    # 2. Define Uniform Grid (to handle gaps)
+    # Use 20 um spacing (standard for probes)
+    dz = 20.0
+    
+    # Filter out NaNs from source data before interpolation
+    # Filter only channels that are BAD (all NaNs or mostly NaNs). 
+    # Do NOT filter if just a time-gap (column of NaNs) exists.
+    # Check if a channel has valid data in at least 50% of timepoints?
+    # Or just check if it's not ALL NaNs.
+    valid_mask = np.any(np.isfinite(ls_lfp), axis=1)
+    
+    ls_lfp = ls_lfp[valid_mask]
+    ls_depths = ls_depths[valid_mask]
+    
+    if len(ls_depths) < 2: return None, None # Cannot Calc CSD
+    
+    grid_y = np.arange(ls_depths[0], ls_depths[-1] + dz/2, dz) # Include end
+    
+    # 3. Interpolate LFP onto Grid
+    # Linear interpolation is robust for gaps
+    f_interp = interp1d(ls_depths, ls_lfp, kind='linear', axis=0, fill_value="extrapolate")
+    lfp_grid = f_interp(grid_y)
+    
+    # 4. Spatial Smoothing on Grid
+    # Smooth across the grid points (sigma=1 grid step = 20um)
+    lfp_smoothed = gaussian_filter1d(lfp_grid, sigma=1.0, axis=0)
+    
+    # 5. Compute CSD (2nd derivative)
+    # CSD ~ -d^2V / dz^2
+    csd = -np.diff(lfp_smoothed, n=2, axis=0) / (dz**2)
+    
+    # Adjust depths (lost 2 edge points)
+    csd_depths = grid_y[1:-1]
+    
+    return csd, csd_depths
 
 def process_directory(lfp_dir, fig_dir, label="LFP"):
     if not lfp_dir.exists():
@@ -333,6 +422,22 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             print(f"Warning: Failed to load stimulation summary: {e}")
     else:
         print(f"Warning: Stimulation summary not found at {summary_csv}")
+
+    # Load Probe Map for CSD (if enabled and labeled Intan)
+    y_coords = None
+    if FIGURE_CONFIG.get('process_csd', False) and "Intan" in label:
+        if PROBE_MAP_FILE.exists():
+            try:
+                mat = scipy.io.loadmat(PROBE_MAP_FILE)
+                if 'ycoords' in mat:
+                     y_coords = mat['ycoords']
+                     print(f"Loaded Probe Map for CSD: {PROBE_MAP_FILE.name}")
+                else:
+                     print("Warning: ycoords not found in probe map")
+            except Exception as e:
+                print(f"Error loading probe map: {e}")
+        else:
+             print(f"Warning: Probe map not found at {PROBE_MAP_FILE}")
 
     # Iterate through all files
     for npz_file in files:
@@ -474,7 +579,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
         # --- 1. Original Plot (Heatmaps + Traces) ---
         if FIGURE_CONFIG.get('process_original', True):
             print("  Generating Original Heatmap/Trace Plot...")
-            bands = ['broadband', 'alpha', 'beta', 'low_gamma', 'high_gamma']
+            bands = ['broadband', 'delta', 'theta', 'alpha', 'beta', 'low_gamma', 'high_gamma']
             n_rows = len(bands)
             
             # Combine Pre/Post into single heatmap
@@ -598,7 +703,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                     ax.plot(t_pre, rm, color='blue', lw=1.5, label='Mean')
                 ax.set_ylim(y_range)
                 ax.set_title(f"Pre (Ch {rep_ch_idx})")
-                ax.set_yticklabels([])
+                ax.set_ylabel("uV")
                 
                 if PLOT_CONFIG['x_limits']['pre'] is not None: ax.set_xlim(PLOT_CONFIG['x_limits']['pre'])
                 elif t_pre is not None: ax.set_xlim(t_pre[0], t_pre[-1])
@@ -615,7 +720,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                     ax.plot(t_post, rm, color='red', lw=1.5, label='Mean')
                 ax.set_ylim(y_range)
                 ax.set_title(f"Post (Ch {rep_ch_idx})")
-                ax.set_yticklabels([])
+                ax.set_ylabel("uV")
                 
                 if PLOT_CONFIG['x_limits']['post'] is not None: ax.set_xlim(PLOT_CONFIG['x_limits']['post'])
                 elif t_post is not None: ax.set_xlim(t_post[0], t_post[-1])
@@ -726,7 +831,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
         n_plots = len(groups)
         n_cols = 2
         n_rows = int(np.ceil(n_plots / n_cols))
-        figsize = (16, 3 * n_rows)
+        figsize = (8, 3 * n_rows)
 
         # --- 2. Power Spectra (Overlay, Grouped) ---
         if FIGURE_CONFIG.get('process_power_spectra', False):
@@ -744,6 +849,32 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             if bb_post is not None:
                 f_post, psd_post_all, sem_post_all = calculate_psd(bb_post, fs)
             else: psd_post_all = None
+
+            # Pre-calculate Global Y-Limits for PSD (Log Scale -> need min > 0)
+            y_max_psd = 0
+            y_min_psd = np.inf
+            
+            for grp_idxs, _ in groups:
+                if psd_pre_all is not None:
+                     v = np.nanmean(psd_pre_all[grp_idxs, :], axis=0)
+                     if np.any(np.isfinite(v)): 
+                         y_max_psd = max(y_max_psd, np.nanmax(v))
+                         v_pos = v[v > 0]
+                         if v_pos.size > 0: y_min_psd = min(y_min_psd, np.nanmin(v_pos))
+                         
+                if psd_post_all is not None:
+                     v = np.nanmean(psd_post_all[grp_idxs, :], axis=0)
+                     if np.any(np.isfinite(v)): 
+                         y_max_psd = max(y_max_psd, np.nanmax(v))
+                         v_pos = v[v > 0]
+                         if v_pos.size > 0: y_min_psd = min(y_min_psd, np.nanmin(v_pos))
+            
+            # Apply padding for log scale
+            if y_max_psd > 0:
+                y_max_psd = y_max_psd * 1.5 # More headroom for log
+                y_min_psd = y_min_psd * 0.5 if y_min_psd != np.inf else 1e-3
+            else:
+                y_max_psd = 1.0; y_min_psd = 1e-3
 
             for i, (grp_idxs, grp_name) in enumerate(groups):
                 if i >= len(axes_flat): break
@@ -769,6 +900,8 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 # Simplify: Label all for clarity or just outer.
                 ax.set_xlabel("Freq (Hz)")
                 ax.set_ylabel("Power")
+                ax.set_yscale('log')
+                ax.set_ylim(bottom=y_min_psd, top=y_max_psd)
                 if i == 0: ax.legend(loc='upper right', fontsize='small')
                 ax.grid(True, alpha=0.3)
                 
@@ -785,6 +918,28 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, constrained_layout=True)
             fig.suptitle(f"{session} - PSD Ratio 10*log10(Post/Pre)\n{title_str}", fontsize=14)
             axes_flat = axes.flatten()
+
+            # Pre-calculate Global Min/Max for Ratio
+            r_min = np.inf
+            r_max = -np.inf
+            
+            for grp_idxs, _ in groups:
+                if psd_pre_all is not None and psd_post_all is not None:
+                     g_pre = np.nanmean(psd_pre_all[grp_idxs, :], axis=0)
+                     g_post = np.nanmean(psd_post_all[grp_idxs, :], axis=0)
+                     g_pre[g_pre == 0] = 1e-10
+                     ratio_db = 10 * np.log10(g_post / g_pre)
+                     if np.any(np.isfinite(ratio_db)):
+                         r_min = min(r_min, np.nanmin(ratio_db))
+                         r_max = max(r_max, np.nanmax(ratio_db))
+            
+            if r_min == np.inf: r_min = -5; r_max = 5
+            else:
+                 # Symmetry? User didn't ask, but consistent range is good.
+                 # Just use min/max with padding
+                 r_range = r_max - r_min
+                 r_min -= r_range * 0.1
+                 r_max += r_range * 0.1
 
             for i, (grp_idxs, grp_name) in enumerate(groups):
                 if i >= len(axes_flat): break
@@ -808,6 +963,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 ax.set_xlim(0, 120)
                 ax.set_xlabel("Freq (Hz)")
                 ax.set_ylabel("dB Change")
+                ax.set_ylim(r_min, r_max)
                 ax.grid(True, alpha=0.3)
                 
             # Hide unused axes
@@ -822,7 +978,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
         if FIGURE_CONFIG.get('process_lfp_coherence', False):
             print("  Generating Grouped LFP Coherence...")
 
-            fig, axes = plt.subplots(4, 2, figsize=(16, 16), constrained_layout=True)
+            fig, axes = plt.subplots(4, 2, figsize=(8, 16), constrained_layout=True)
             fig.suptitle(f"{session} - LFP Coherence (Channel vs Group Mean)\n{title_str}", fontsize=14)
             axes_flat = axes.flatten()
 
@@ -986,10 +1142,36 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 stats_res = calculate_band_power_stats(bb_pre, bb_post, fs)
                 
                 # Bands to plot
-                band_names = ['Alpha', 'Beta', 'Low Gamma', 'High Gamma']
+                band_names = ['Delta', 'Theta', 'Alpha', 'Beta', 'Low Gamma', 'High Gamma']
                 x_pos = np.arange(len(band_names))
                 width = 0.35
                 
+                # Pre-calculate Global Max for Y-Axis (Log Scale)
+                y_max_stat = 0
+                y_min_stat = np.inf
+                
+                for grp_idxs, _ in groups:
+                     for band in band_names:
+                         res = stats_res.get(band)
+                         if res:
+                             # Re-calc similar to plotting loop
+                             m_pre = np.nanmean(res['mean_pre'][grp_idxs])
+                             m_post = np.nanmean(res['mean_post'][grp_idxs])
+                             s_pre = np.nanstd(res['mean_pre'][grp_idxs]) / np.sqrt(len(grp_idxs))
+                             s_post = np.nanstd(res['mean_post'][grp_idxs]) / np.sqrt(len(grp_idxs))
+                             
+                             top = max(m_pre + s_pre, m_post + s_post)
+                             bot = min(m_pre, m_post) # Use mean for min check (se might make it negative? No power >=0)
+                             
+                             y_max_stat = max(y_max_stat, top)
+                             if bot > 0: y_min_stat = min(y_min_stat, bot)
+                
+                if y_max_stat > 0:
+                     y_max_stat = y_max_stat * 2.0 # Log scale needs head room
+                     y_min_stat = y_min_stat * 0.5 if y_min_stat != np.inf else 1e-2
+                else: 
+                     y_max_stat = 1.0; y_min_stat = 1e-2
+
                 for i, (grp_idxs, grp_name) in enumerate(groups):
                     if i >= len(axes_flat): break
                     ax = axes_flat[i]
@@ -1049,7 +1231,10 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                     ax.set_title(grp_name)
                     ax.set_xticks(x_pos)
                     ax.set_xticklabels(band_names)
+                    ax.set_xticklabels(band_names)
                     ax.set_ylabel("Power (uV^2/Hz)")
+                    ax.set_yscale('log')
+                    if y_max_stat > 0: ax.set_ylim(bottom=y_min_stat, top=y_max_stat)
                     if i == 0: ax.legend()
                     ax.grid(axis='y', alpha=0.3)
             
@@ -1061,12 +1246,96 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             plt.savefig(out_path, dpi=150)
             plt.close(fig)
 
+        # --- 7. CSD Analysis (NPRW Only) ---
+        if FIGURE_CONFIG.get('process_csd', False) and y_coords is not None and "Intan" in label:
+            # Verify channel count matches map
+            if len(y_coords) == n_ch and bb_post is not None:
+                print("  Generating CSD Analysis (Pre + Post)...")
+                
+                # CSD needs Event-Locked Data. 
+                # Combine Pre (if avail) and Post.
+                
+                # 1. Post
+                erp_post = np.nanmean(bb_post, axis=0) # (n_ch, n_time)
+                
+                # Time vectors from Data Dict
+                if 'rel_time_post' in data: t_post = data['rel_time_post']
+                else: t_post = np.arange(erp_post.shape[1]) / fs * 1000
+                
+                erp_combined = erp_post
+                t_combined = t_post
+                
+                # 2. Pre?
+                if bb_pre is not None:
+                    erp_pre = np.nanmean(bb_pre, axis=0)
+                    if 'rel_time_pre' in data: t_pre = data['rel_time_pre']
+                    else: t_pre = np.arange(erp_pre.shape[1]) / fs * 1000 - (erp_pre.shape[1]/fs*1000)
+
+                    # Gap?
+                    # t_pre usually negative, t_post positive.
+                    # Create a gap of NaNs for visual separation (e.g. 1ms? or just gap in time axis)
+                    # pcolormesh needs continuous X? No, but heatmaps usually have uniform grid.
+                    # We can insert NaN columns to represent the artifact/blanking.
+                    
+                    if len(t_post) > 0 and len(t_pre) > 0:
+                        gap_ms = t_post[0] - t_pre[-1]
+                        if gap_ms > 0:
+                            n_gap = int(gap_ms / 1000 * fs)
+                            if n_gap > 0:
+                                gap_data = np.full((n_ch, n_gap), np.nan)
+                                # Construct gap time: careful with linspace to not overlap
+                                gap_time = np.linspace(t_pre[-1], t_post[0], n_gap+2)[1:-1]
+                                
+                                erp_combined = np.concatenate([erp_pre, gap_data, erp_post], axis=1)
+                                t_combined = np.concatenate([t_pre, gap_time, t_post])
+                            else:
+                                erp_combined = np.concatenate([erp_pre, erp_post], axis=1)
+                                t_combined = np.concatenate([t_pre, t_post])
+                        else:
+                             # Overlap? Just concat
+                             erp_combined = np.concatenate([erp_pre, erp_post], axis=1)
+                             t_combined = np.concatenate([t_pre, t_post])
+                            
+                # Calculate CSD
+                csd_val, csd_depths = calculate_csd(erp_combined, y_coords)
+                
+                if csd_val is not None:
+                    # Plot CSD Heatmap
+                    fig_csd, ax_csd = plt.subplots(figsize=(10, 6), constrained_layout=True)
+                    fig_csd.suptitle(f"{session} - CSD (Current Source Density)\n{title_str}", fontsize=14)
+                    
+                    # Plot with pcolormesh
+                    # Use symmetric colormap
+                    vm = np.nanpercentile(np.abs(csd_val), 98)
+                    if vm == 0: vm = 1e-6
+                    
+                    mesh = ax_csd.pcolormesh(t_combined, csd_depths, csd_val, 
+                                            cmap='RdBu_r', vmin=-vm, vmax=vm, shading='auto')
+                    
+                    ax_csd.set_xlabel("Time (ms)")
+                    ax_csd.set_ylabel("Depth (um from Tip)")
+                    # ax_csd.invert_yaxis() # Deep is down? 
+                    # If y=0 is Tip (Deep), and we want Tip at Bottom -> Normal Y Axis (0 at bottom).
+                    # So remove invert_yaxis.
+                    
+                    # Mark 0
+                    ax_csd.axvline(0, color='k', linestyle='--', alpha=0.5)
+                    
+                    cb = plt.colorbar(mesh, ax=ax_csd)
+                    cb.set_label("CSD (uV/mm^2)")
+                    
+                    out_path = fig_dir / f"check_lfp_csd_{session}.png"
+                    plt.savefig(out_path, dpi=150)
+                    plt.close(fig_csd)
+
+
+
 def plot_lfp_check():
     # 1. Process NPRW
     process_directory(NPRW_LFP_DIR, NPRW_FIG_DIR, label="NPRW_Intan")
     
     # 2. Process Utah Array
-    # process_directory(UA_LFP_DIR, UA_FIG_DIR, label="Utah_Array")
+    process_directory(UA_LFP_DIR, UA_FIG_DIR, label="Utah_Array")
 
 if __name__ == "__main__":
     plot_lfp_check()
