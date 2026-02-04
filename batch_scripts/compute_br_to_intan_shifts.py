@@ -14,8 +14,9 @@ NPRW_CAMERA_SYNC_CH = int(NPRW_CFG.get("triangle_sync_ch", 1))
 UA_CFG = PARAMS.probes.get("UA")
 CAMERA_SYNC_CH = int(UA_CFG.get("camera_sync_ch", 134))
 TRIANGLE_SYNC_CH = int(UA_CFG.get("triangle_sync_ch", 138))
-MATCH_WINDOW_MS = 1000.0
 
+LOC_REFINE_N = 50        # like MATLAB's N
+        
 def _xcorr_normalized(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     x = np.asarray(x, float)
     y = np.asarray(y, float)
@@ -49,7 +50,7 @@ def load_template(template_mat_path: Path) -> np.ndarray:
     return np.asarray(m["template"], float).squeeze()
 
 def find_locs_via_template(adc_lock: np.ndarray, template: np.ndarray, fs: float, peak=0.95) -> np.ndarray:
-    corr, lags = _xcorr_normalized(adc_lock, template)
+    corr, lags = _xcorr_normalized(adc_lock[:300000], template) # Hard coded to first 300k samples to speed up
     try:
         from scipy.signal import find_peaks
         idx, _ = find_peaks(corr, height=peak)
@@ -146,21 +147,32 @@ def main():
     if not METADATA_CSV.exists():
         raise SystemExit(f"[error] mapping CSV not found: {METADATA_CSV}")
     intan2br = rcp.get_metadata_mapping(METADATA_CSV, "Intan_File", "BR_File")
+    notes_col = rcp.get_metadata_mapping(METADATA_CSV, "Intan_File", "Notes")
     print(f"[map] Loaded Intan→BR rows: {len(intan2br)}")
-
+    
     # Load template
     template = load_template(TEMPLATE)
 
     # iterate BR Intan pairs, compute shift, and write shifts to CSV
     summary_rows = []
     for intan_idx, br_str in sorted(intan2br.items()):
+        intan_filename = intan_idx_to_sess.get(intan_idx)
+        
         br_idx = int(br_str)
-        intan_sess = intan_idx_to_sess.get(intan_idx)
-        if intan_sess is None:
+        br_ns5_file_name = f"{PARAMS.session}_{br_idx:03d}"
+        
+        # Flags
+        note_val   = str(notes_col.get(intan_idx, ""))
+        note_norm = note_val.strip().lower()
+
+        is_control = (note_norm == "baseline")
+        is_at_rest  = (note_norm == "rest")
+
+        if intan_filename is None:
             print(f"[warn] No session name for Intan_File={intan_idx} (skipping)")
             continue
 
-        adc_npz = NPRW_AUX_DATA / f"{intan_sess}_Intan_streams" / "aux_streams.npz"
+        adc_npz = NPRW_AUX_DATA / f"{intan_filename}_Intan_streams" / "aux_streams.npz"
         if not adc_npz.exists():
             print(f"[warn] Intan AUX stream missing: {adc_npz} (skip Intan {intan_idx} → BR {br_idx})")
             continue
@@ -176,7 +188,7 @@ def main():
         br_sync_locs = find_locs_via_template(intan_BR_start_signal, template, fs_intan, peak=0.95)
         print(f"[locs] Intan {intan_idx:03d} peaks ≥0.95: {br_sync_locs.size} | first 10: {br_sync_locs[:10].tolist() if br_sync_locs.size else []}")
         if br_sync_locs.size == 0:
-            print(f"[warn] No template peaks found for {intan_sess}; skipping.")
+            print(f"[warn] No template peaks found for {intan_filename}; skipping.")
             continue
         
         # ---- load BR (lazy) ----
@@ -184,12 +196,12 @@ def main():
         rec_br = None
         dur_intan_sec = len(intan_triangle_signal) / fs_intan
         dur_br_sec = float("nan")
-
-        br_ns5_file = BR_ROOT / f"{PARAMS.session}_{br_idx:03d}.ns5"
+        
+        br_ns5_file_path = BR_ROOT / f"{br_ns5_file_name}.ns5"
         use_br = False
-        if br_ns5_file.exists():
+        if br_ns5_file_path.exists():
             try:
-                rec_br = se.read_blackrock(br_ns5_file)  # does not load all data
+                rec_br = se.read_blackrock(br_ns5_file_path)  # does not load all data
                 fs_br = rec_br.get_sampling_frequency()
                 # map TRIANGLE_SYNC_CH to a valid channel id
                 if str(TRIANGLE_SYNC_CH) not in rec_br.get_channel_ids():
@@ -201,12 +213,10 @@ def main():
                 except Exception:
                     pass
             except Exception as e:
-                print(f"[note] BR open failed for {br_ns5_file}: {e}")
+                print(f"[note] BR open failed for {br_ns5_file_path}: {e}")
                 rec_br, fs_br, use_br = None, float("nan"), False
 
-
         # refine each block using triangle sync channel TODO FIX THIS
-        LOC_REFINE_N = 50        # like MATLAB's N
         locs_rows = []
         locs_rows_dt = []
         
@@ -272,11 +282,14 @@ def main():
             
         # keep CSV summary row
         summary_rows.append(dict(
-            session=intan_sess,
+            intan_filename=intan_filename,
             intan_idx=intan_idx,
+            br_filename=br_ns5_file_name,
             br_idx=br_idx,
-            adc_npz=str(adc_npz),
-            br_ns5=str(br_ns5_file),
+            is_control=is_control,
+            is_at_rest=is_at_rest,
+            notes=note_val,
+            # br_ns5=str(br_ns5_file_path),
             fs_intan=fs_intan,
             fs_br=fs_br,
             shift_sample=adjusted_shift_sample,
@@ -284,6 +297,7 @@ def main():
             shift_ms=shift_ms,
             dur_intan_sec=dur_intan_sec,
             dur_br_sec=dur_br_sec,
+            adc_npz=str(adc_npz),
             triangle_refined_from=template_shift_sample,
             triangle_refine_delta_samples=adjustment_samples,
             n_locs=len(locs_rows),

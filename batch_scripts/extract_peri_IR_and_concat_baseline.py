@@ -1029,6 +1029,7 @@ def extract_baseline_from_file(
     meta = json.loads(aligned_npz["align_meta"].item()) if "align_meta" in aligned_npz.files else {}
     sess = meta.get("session", aligned_path.stem)
     br_idx = int(meta.get("br_idx", -1))
+    recording_stim_dur = float(meta.get("recording_stim_dur", np.nan))
 
     # IR times
     ir_ms = np.asarray(ir_ms, float).ravel()

@@ -393,9 +393,7 @@ def main():
         base_neural_title = f"Neural Activity (median Δ) / Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
         full_overall_title = f"{overall_title} {target_label.replace('_', ' ')}"
 
-        # -----------------------------------------------------------------
-        # Stim site detection (for probe inset)
-        # -----------------------------------------------------------------
+        # ---- stim site detection (probe inset) ---- TODO this can be extracted from active_channels
         stim_npz = NPRW_AUX_DATA / f"{sess}_Intan_streams" / "stim_stream.npz"
         stim_locs = None
         if stim_npz.exists():

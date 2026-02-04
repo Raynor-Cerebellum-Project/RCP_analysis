@@ -78,7 +78,7 @@ def main():
     sess_folders = BR_SESSION_FOLDERS
     
     print("Found session folders:", len(sess_folders))
-    for sess in sess_folders[:]: # Can tweak here to isolate sessions 
+    for sess in sess_folders[:]: # Can tweak here to isolate sessions
         print(f"=== Session: {sess.name} ===")
         
         # Check if outputs already exist
@@ -96,7 +96,7 @@ def main():
         fs_ts = meta_ns2["fs_ts"]
         
         rec_ns6 = se.read_blackrock(sess, stream_name = 'nsx6', all_annotations=True) # Load neural data
-        br_idx = int(sess.name.split('_')[-1]) # reso
+        br_idx = int(sess.name.split('_')[-1])
         
         rec_ns6, idx_rows, ua_elec, ua_nsp, ua_region, ua_region_names, ua_port = rcp.apply_ua_mapping_with_regions(rec_ns6, UA_MAP, br_idx, METADATA_CSV)
         UA_probe = ua_region.copy()
@@ -255,7 +255,7 @@ def main():
         )
         
         np.savez_compressed(out_npz, **save)
-        print(f"[{sess.name}] saved rate matrix-> {out_npz}")
+        print(f"[{sess.name}] saved peaks-> {out_npz}")
 
         # cleanup to keep memory stable on long batches
         del peaks, rec_ns6, rec_artif_removed
