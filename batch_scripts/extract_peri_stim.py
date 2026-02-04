@@ -1524,8 +1524,8 @@ def main():
         raise SystemExit(f"[error] No combined aligned NPZs found at {ALIGNED_CKPT_ROOT}")
     
     # # normal: per-file processing
-    # for file in stim_files:
-    #     extract_one_file(file, out_dir = STIM_PERI_ROOT, use_ir_ms=False, split_targets=True)
+    for file in stim_files:
+        extract_one_file(file, out_dir = STIM_PERI_ROOT, use_ir_ms=False, split_targets=True)
         # Extract files normally - done
         # Split A and B reaches - done
         # Aggregate and save - done
@@ -1543,8 +1543,8 @@ def main():
         # aggregate_and_save_at_rest(td, PERI_ROOT)
 
     # # control: split A/B, align to ir_ms
-    # for file in control_files:
-    #     extract_one_file(file, out_dir = CONTROL_PERI_ROOT, use_ir_ms=True, split_targets=True)
+    for file in control_files:
+        extract_one_file(file, out_dir = CONTROL_PERI_ROOT, use_ir_ms=True, split_targets=True)
         # Extract files normally but use ir_ms as alignment - done
         # Concatenate trials across files per group - TODO
         # Split A and B reaches - done
