@@ -77,7 +77,7 @@ def _dedup_peaks(
         for i in range(1, num_peaks):
             isi = t_ch[i] - t_ch[i - 1]
             if isi > dedup_ms or (t_ch[i] - t_ch[cluster_start]) > max_cluster_ms: # If isi violation or cluster too big has to be between 0.5ms (ISI violation) or max threshold: 1 ms (could be another MUA)
-                best = cluster_start + np.argmax(a_ch[cluster_start: i]) # Find max and give index
+                best = cluster_start + np.argmax(np.abs(a_ch[cluster_start: i])) # Find max and give index
                 keep[best] = True # Keep this spike
                 cluster_start = i
 
