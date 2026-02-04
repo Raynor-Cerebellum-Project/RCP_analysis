@@ -13,7 +13,6 @@ BATCH_SCRIPTS = [
     # "compute_br_to_intan_shifts.py",
     "UA_BR_analysis_threshold.py",
     "make_aligned_npz_and_mat.py",
-    # "extract_peri_IR_and_concat_baseline.py",
     # "extract_peri_stim.py",
     # "generate_stim_summary.py",
     # "plot_complete_shaded_BT.py",
