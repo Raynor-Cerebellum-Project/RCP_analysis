@@ -99,12 +99,27 @@ def main():
     locs = nprw_probe.contact_positions.astype(float)
 
     # ---- find peri-stim NPZs (NEW FORMAT) ----
-    files = sorted(PERI_ROOT.glob("peristim__*.npz"))
+    files = sorted(PERI_ROOT.rglob("peristim__*.npz"))
     if not files:
-        print(f"[warn] No peristim__*.npz found in {PERI_ROOT}")
+        print(f"[warn] No peristim__*.npz found in {PERI_ROOT} or its subdirectories")
         return
 
     for peri_path in files:
+        # mirror the folder structure in the output
+        rel_parent = peri_path.parent.relative_to(PERI_ROOT)
+        current_fig_root = FIG_ROOT / rel_parent
+        
+        current_fig = SimpleNamespace(
+            peri_median  = current_fig_root / "median_fr_plots",
+            peri_var     = current_fig_root / "variance_fr_plots",
+            peri_counts  = current_fig_root / "median_count_plots",
+            peri_single  = current_fig_root / "single_trial_fr_plots",
+        )
+        current_fig.peri_median.mkdir(parents=True, exist_ok=True)
+        current_fig.peri_var.mkdir(parents=True, exist_ok=True)
+        current_fig.peri_counts.mkdir(parents=True, exist_ok=True)
+        current_fig.peri_single.mkdir(parents=True, exist_ok=True)
+
         peri = np.load(peri_path, allow_pickle=True)
 
         sess = _safe_get_scalar_str(peri["sess"])
@@ -155,7 +170,7 @@ def main():
         # -----------------------------------------------------------------
         # FIG 1: MEDIAN HEATMAPS
         # -----------------------------------------------------------------
-        out_path_1 = FIG.peri_median / f"{base_fn}__median.png"
+        out_path_1 = current_fig.peri_median / f"{base_fn}__median.png"
         rcp.stacked_heatmaps_plus_behv(
             NPRW_med, UA_med,
             NPRW_rel_t if (NPRW_med.size and NPRW_rel_t.size) else None,
@@ -200,7 +215,7 @@ def main():
         # -----------------------------------------------------------------
         # FIG 2: VARIANCE HEATMAPS
         # -----------------------------------------------------------------
-        out_path_2 = FIG.peri_var / f"{base_fn}__var.png"
+        out_path_2 = current_fig.peri_var / f"{base_fn}__var.png"
         title_var = f"Neural Variance (across {n_nprw} events)"
         rcp.stacked_heatmaps_plus_behv(
             NPRW_var, UA_var,
@@ -245,7 +260,7 @@ def main():
         # -----------------------------------------------------------------
         # FIG 3: MEDIAN BIN COUNTS
         # -----------------------------------------------------------------
-        out_path_3 = FIG.peri_counts / f"{base_fn}__counts.png"
+        out_path_3 = current_fig.peri_counts / f"{base_fn}__counts.png"
         title_counts = f"Median spike counts per bin (across {n_nprw} events)"
         rcp.stacked_heatmaps_plus_behv(
             NPRW_med_counts, UA_med_counts,
@@ -300,7 +315,7 @@ def main():
                     else np.zeros((0, 0), float)
                 )
 
-                out_single = FIG.peri_single / f"{base_fn}__trial_{i_trial:02d}.png"
+                out_single = current_fig.peri_single / f"{base_fn}__trial_{i_trial:02d}.png"
                 title_single_kin = f"(no behavior) single trial {i_trial+1}"
                 title_single_neural = (
                     f"Neural Activity (single trial {i_trial+1}) / "
