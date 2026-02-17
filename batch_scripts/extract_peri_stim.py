@@ -1072,7 +1072,7 @@ def _save_peristim(
         }
         savemat(out_mat, mat, do_compression=True)
 
-def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False, split_targets: bool = True) -> None:
+def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False, split_targets: bool = True, is_control: bool = False) -> None:
     """
     Load aligned .npz, compute peri-stim med/var for NPRW+UA,
     + behavior/VOG/ts_state peri-stim summaries, and save to PERI_ROOT.
@@ -1332,10 +1332,14 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         # dedup peaks
         ua_peak_ms_dedup, ua_amps_ms_dedup = _dedup_peaks(ua_peak_ms, ua_peak_amps, UA_DEDUP_MS, MAX_CLUSTER_MS)
 
+        # Blanking params (disable for controls)
+        ua_ms_before = 0.0 if is_control else UA_MS_BEFORE
+        ua_tail_ms   = 0.0 if is_control else UA_TAIL_MS
+
         # bin ONLY on valid stims per stream
         ua_counts, ua_rel_t, ua_edges_ms, ua_left_bins = _bin_counts_around_stim(
             ua_peak_ms_dedup, UA_BIN_MS, event_ms,
-            UA_MS_BEFORE, (stim_dur + UA_TAIL_MS), WIN_MS
+            ua_ms_before, (stim_dur + ua_tail_ms), WIN_MS
         )
         ua_rates_hz = _smooth_counts_gauss(ua_counts, ua_edges_ms, ua_rel_t, UA_SIGMA_MS, ua_left_bins)
         ua_rates_hz_baselined = rcp.baseline_zero_each_trial(ua_rates_hz, ua_rel_t, normalize_first_ms=NORMALIZE_FIRST_MS)
@@ -1343,10 +1347,14 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
     # dedup peaks
     nprw_peak_ms_dedup, nprw_amps_ms_dedup = _dedup_peaks(nprw_peak_ms, nprw_peak_amps, NPRW_DEDUP_MS, MAX_CLUSTER_MS)
 
+    # Blanking params (disable for controls)
+    nprw_ms_before = 0.0 if is_control else NPRW_MS_BEFORE
+    nprw_tail_ms   = 0.0 if is_control else NPRW_TAIL_MS
+
     # bin ONLY on valid stims per stream
     nprw_counts, nprw_rel_t, nprw_edges_ms, nprw_left_bins = _bin_counts_around_stim(
         nprw_peak_ms_dedup, NPRW_BIN_MS, event_ms,
-        NPRW_MS_BEFORE, (stim_dur + NPRW_TAIL_MS), WIN_MS
+        nprw_ms_before, (stim_dur + nprw_tail_ms), WIN_MS
     )
     nprw_rates_hz = _smooth_counts_gauss(nprw_counts, nprw_edges_ms, nprw_rel_t, NPRW_SIGMA_MS, nprw_left_bins)
     nprw_rates_hz_baselined = rcp.baseline_zero_each_trial(nprw_rates_hz, nprw_rel_t, normalize_first_ms=NORMALIZE_FIRST_MS)
@@ -1524,8 +1532,8 @@ def main():
         raise SystemExit(f"[error] No combined aligned NPZs found at {ALIGNED_CKPT_ROOT}")
     
     # # normal: per-file processing
-    for file in stim_files:
-        extract_one_file(file, out_dir = STIM_PERI_ROOT, use_ir_ms=False, split_targets=True)
+    # for file in stim_files:
+    #     extract_one_file(file, out_dir = STIM_PERI_ROOT, use_ir_ms=False, split_targets=True)
         # Extract files normally - done
         # Split A and B reaches - done
         # Aggregate and save - done
@@ -1534,8 +1542,8 @@ def main():
         # aggregate_and_save_normal(td, PERI_ROOT)
 
     # at_rest: per-file processing (no A/B)
-    for file in at_rest_files:
-        extract_one_file(file, out_dir = AT_REST_PERI_ROOT, use_ir_ms=False, split_targets=False)
+    # for file in at_rest_files:
+    #     extract_one_file(file, out_dir = AT_REST_PERI_ROOT, use_ir_ms=False, split_targets=False)
         # Extract files without splitting by target - done
         # Aggregate and save - done
         
@@ -1544,7 +1552,7 @@ def main():
 
     # # control: split A/B, align to ir_ms
     for file in control_files:
-        extract_one_file(file, out_dir = CONTROL_PERI_ROOT, use_ir_ms=True, split_targets=True)
+        extract_one_file(file, out_dir = CONTROL_PERI_ROOT, use_ir_ms=True, split_targets=True, is_control=True)
         # Extract files normally but use ir_ms as alignment - done
         # Concatenate trials across files per group - TODO
         # Split A and B reaches - done
