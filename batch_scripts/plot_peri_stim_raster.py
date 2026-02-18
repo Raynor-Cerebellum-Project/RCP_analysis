@@ -608,6 +608,19 @@ def process_file(npz_path, best_controls=None):
                                     diff_norm = stim_norm - ctrl_norm
                         
                         if diff_norm is not None:
+                            # Apply blanking mask to diff_norm
+                            if stim_dur_ms > 0:
+                                t0, t1 = -20.0, stim_dur_ms + 20.0
+                                if centers_ms is not None:
+                                    mask = (centers_ms >= t0) & (centers_ms <= t1)
+                                    if diff_norm.shape[1] == len(mask):
+                                        diff_norm[:, mask] = np.nan
+                                elif edges_ms is not None:
+                                    ctrs = (edges_ms[:-1] + edges_ms[1:]) / 2
+                                    mask = (ctrs >= t0) & (ctrs <= t1)
+                                    if diff_norm.shape[1] == len(mask):
+                                        diff_norm[:, mask] = np.nan
+
                             fig_diff = plt.figure(figsize=FIG_SIZE_RW)
                             gs_diff = gridspec.GridSpec(rows, cols, figure=fig_diff, hspace=0.3, wspace=0.3)
                             
@@ -870,6 +883,19 @@ def process_file(npz_path, best_controls=None):
                                     diff_norm = stim_norm - ctrl_norm
                         
                         if diff_norm is not None:
+                            # Apply blanking mask to diff_norm
+                            if stim_dur_ms > 0:
+                                t0, t1 = -5.0, stim_dur_ms + 5.0
+                                if centers_ms is not None:
+                                    mask = (centers_ms >= t0) & (centers_ms <= t1)
+                                    if diff_norm.shape[1] == len(mask):
+                                        diff_norm[:, mask] = np.nan
+                                elif edges_ms is not None:
+                                    ctrs = (edges_ms[:-1] + edges_ms[1:]) / 2
+                                    mask = (ctrs >= t0) & (ctrs <= t1)
+                                    if diff_norm.shape[1] == len(mask):
+                                        diff_norm[:, mask] = np.nan
+
                             fig_diff_ua = plt.figure(figsize=FIG_SIZE_UA)
                             gs_diff = gridspec.GridSpec(rows, cols, figure=fig_diff_ua, hspace=0.3, wspace=0.3)
                             
