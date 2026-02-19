@@ -53,7 +53,7 @@ SKIP_EXISTING        = False   # If True, skip sessions where the first plot alr
 # Base paths from config_loading
 
 # Figures
-FIG_ROOT   = OUT_BASE / "figures/shaded_BT_png"; FIG_ROOT.mkdir(parents=True, exist_ok=True)
+FIG_ROOT   = OUT_BASE / "figures/shaded_BT_svg"; FIG_ROOT.mkdir(parents=True, exist_ok=True)
 FIG = SimpleNamespace(
     peri_posvel_median  = FIG_ROOT / "median_fr_plots",
     peri_posvel_meanMWT = FIG_ROOT / "mean_MWT_plots",
@@ -286,14 +286,14 @@ def main():
             check_file = None
             
             if fname.startswith('baseline'):
-                check_file = f"{fname}__median_ALL.png"
+                check_file = f"{fname}__median_ALL.svg"
             else:
                 # Try to extract BR index
                 import re
                 match = re.search(r"BR_(\d+)", fname)
                 if match:
                     br_val = int(match.group(1))
-                    check_file = f"Cond_{br_val:03d}__median_ALL.png"
+                    check_file = f"Cond_{br_val:03d}__median_ALL.svg"
             
             if check_file:
                 check_path = out_dir_check / check_file
@@ -413,7 +413,7 @@ def main():
             file_name = f"{peri_stim_npz_loc.name}"
         else:
             file_name = f"Cond_{br_idx:03d}"
-        out_path_1 = out_dir_1_parent / f"{file_name}__median_ALL.png"
+        out_path_1 = out_dir_1_parent / f"{file_name}__median_ALL.svg"
 
         if SKIP_EXISTING and out_path_1.exists():
             print(f"  [Skip] {file_name} exists.")
@@ -480,7 +480,7 @@ def main():
         # -----------------------------------------------------------------
         out_dir_1b_parent = FIG.peri_var_median / target_label
         out_dir_1b_parent.mkdir(parents=True, exist_ok=True)
-        out_path_1b = out_dir_1b_parent / f"{file_name}__var_ALL.png"
+        out_path_1b = out_dir_1b_parent / f"{file_name}__var_ALL.svg"
 
         base_neural_var_title = f"Neural Variance (across {n_nprw} events)"
 
@@ -546,7 +546,7 @@ def main():
         # -----------------------------------------------------------------
         out_dir_2_parent = FIG.peri_posvel_meanMWT / target_label
         out_dir_2_parent.mkdir(parents=True, exist_ok=True)
-        out_path_2 = out_dir_2_parent / f"{file_name}__mean_MWT.png"
+        out_path_2 = out_dir_2_parent / f"{file_name}__mean_MWT.svg"
 
         # Select MWT indices
         idx_subset = _get_subset_indices(beh_labels_display, mode="MWT")
@@ -664,7 +664,7 @@ def main():
         # -----------------------------------------------------------------
         out_dir_2b_parent = FIG.peri_var_meanMWT / target_label
         out_dir_2b_parent.mkdir(parents=True, exist_ok=True)
-        out_path_2b = out_dir_2b_parent / f"{file_name}__var_MWT.png"
+        out_path_2b = out_dir_2b_parent / f"{file_name}__var_MWT.svg"
 
         title_MWT_neural_var = f"Neural Variance (across {n_nprw} events)"
 
@@ -729,7 +729,7 @@ def main():
         # -----------------------------------------------------------------
         out_dir_counts_MWT_parent = FIG.peri_counts_meanMWT / target_label
         out_dir_counts_MWT_parent.mkdir(parents=True, exist_ok=True)
-        out_path_counts_MWT = out_dir_counts_MWT_parent / f"{file_name}__counts_MWT.png"
+        out_path_counts_MWT = out_dir_counts_MWT_parent / f"{file_name}__counts_MWT.svg"
 
         title_MWT_neural_counts = (
             f"Median spike counts per bin (across {n_nprw} events)"
@@ -866,7 +866,7 @@ def main():
                 else:
                     base_fn = f"Cond_{br_idx:03d}"
 
-                out_path_single = single_dir / f"{base_fn}__trial_{i_trial:02d}_MWT.png"
+                out_path_single = single_dir / f"{base_fn}__trial_{i_trial:02d}_MWT.svg"
 
                 rcp.stacked_heatmaps_plus_behv(
                     nprw_single,

@@ -37,6 +37,10 @@ from .python.functions.utils import (
     load_intan_aux,
     parse_intan_session_dtkey, 
     load_behavior_npz,
+    
+    dedup_peaks,
+    bin_counts_around_stim,
+    smooth_counts_gauss,
 )
 # intan
 from .python.functions.intan_preproc import (
@@ -107,6 +111,9 @@ __all__ = [
     
     "butter_lowpass_pos_and_vel",
     "butter_lowpass_pos_and_vel_3d",
+    "dedup_peaks",
+    "bin_counts_around_stim",
+    "smooth_counts_gauss",
     
     # BR/UA
     "list_br_sessions",

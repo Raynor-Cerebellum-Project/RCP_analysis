@@ -60,8 +60,6 @@ PLOT_METRIC = "mean"   # "mean" or "median"
 SUBSETS     = "ALL"  # "MWT" (Middle,Wrist,Target) or "ALL"
 KINEMATICS_YLIM = (-4, 4) # z-scores
 
-
-
 # ---------- params / roots ----------
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PARAMS    = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
@@ -675,6 +673,8 @@ def main_baselines():
                     print("[warn] Baseline UA: impedance mask would remove all rows; skipping mask.")
         except Exception as e:
             print(f"[warn] Baseline UA impedance mask failed: {e}")
+            
+            
         # ---- Split UA rows into region groups for baseline plotting ----
         if ua_plot is not None:
             ids_arr = np.asarray(ids_plot) if ids_plot is not None else np.full(ua_plot.shape[0], np.nan)
