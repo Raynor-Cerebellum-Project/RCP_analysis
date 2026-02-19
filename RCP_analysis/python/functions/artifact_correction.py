@@ -103,8 +103,7 @@ class IPCA_Artifact_Correction:
         Returns:
             signal_corrected: artifact-corrected signal
         """
-        V = template.weights
-        X_artifact = signal @ V.T @ V
+        X_artifact = signal @ template.weights.T @ template.weights
         return signal - X_artifact
 
 
