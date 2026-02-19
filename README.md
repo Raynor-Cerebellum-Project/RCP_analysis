@@ -101,7 +101,7 @@ Preprocessing and spike sorting are handled in Python using [SpikeInterface](htt
 
 **Steps:**
 1. Load geometry and mapping (`.mat` file)
-2. Extract stim data and locations of stim pulses (individual pulses and blocks) - saves .npz file
+2. Extract stim data, ir crossings, and locations of stim pulses (individual pulses and blocks) - saves .npz file
 3. Extract auxiliary data (sync pulses) - saves .npz file
 4. Load Intan neural data, attach probe info, and reorder based on mapping
 5. Preprocess Intan (`.rhs`) data (high-pass filter, common local median reference default radius: 30, 150 $\mu\text{m}$)
@@ -116,7 +116,7 @@ Preprocessing and spike sorting are handled in Python using [SpikeInterface](htt
 1. Load metadata to match intan files to BR files
 2. Load template sent from BR to Intan and Intan ADC file
 3. Match the template to the BR template signal
-4. Save the shifts and adjusted shifts calculated from these two signals
+4. Save the shifts and adjusted shifts and other information calculated from these two signals in `data_root/location/Metadata/br_to_intan_shifts.csv`
 
 ## 4. BR / UA Neural data preprocessing
 `batch_scripts/UA_BR_analysis_threshold.py`
@@ -141,22 +141,13 @@ Preprocessing and spike sorting are handled in Python using [SpikeInterface](htt
 3. Permute UA channel labels and UA peak dictionary
 2. Output `.npz` and `.mat` files in `~/results/checkpoints/Aligned`
 
-## 6. Create peri-IR baseline files
-`batch_scripts/extract_peri_IR_and_concat_baseline.py`
+## 6. Create peri-IR / peri-stim files
+`batch_scripts/extract_peri_stim.py`
+
+### There are three types of conditions that we need to separate. 1. Control reaches (No stim) 2. Stim condition reaches 3. At rest conditions (No reach) We separate these and process it separately
 
 **Steps:**
-1. Concatenate baseline files by port and by depth
-2. Extract peri-IR crossing traces
-3. Calculate velocity traces
-4. Deduplicate MUA peaks, binning, and firing rate estimation using Gaussian Kernel
-5. Reference to (substract mean of first 150 ms)
-6. Calculate mean, variance, and median traces
-7. PCA of the firing rate matrix (not used right now)
-8. Separate left and right reaches
-9. Output `.npz` and `.mat` files in `~results/checkpoints/PeriStim`
-
-## 7. Create peri-stim condition files
-1. Extract peri-stim crossing traces
+1. Extract peri-event traces
 2. Calculate velocity traces
 3. Deduplicate MUA peaks, binning, and firing rate estimation using Gaussian Kernel
 4. Reference to (substract mean of first 150 ms)
@@ -164,17 +155,20 @@ Preprocessing and spike sorting are handled in Python using [SpikeInterface](htt
 6. PCA of the firing rate matrix (not used right now)
 7. Separate left and right reaches
 8. Output `.npz` and `.mat` files in `~results/checkpoints/PeriStim`
+9. The process is repeated twice, once for control reaches (Use IR crossing as peri-event) and once for at rest conditions (No separation of left right reaches)
 
-## 8. Make baseline and peri-stim plots
+TODO: Concatenate control files by port and by depth
+## 7. Make plots
 `batch_scripts/plot_complete_shaded_BT.py`
 
 **Steps:**
 1. Plot aligned baseline traces
 2. Plot aligned condition traces
-3. These plots include (Median, variance, mean traces, median count traces, and chosen / best DLC coordinates)
+3. Plot aligned at rest traces
+4. These plots include (Median, variance, mean traces, median count traces, and chosen / best DLC coordinates)
 4, Plot first 4 trials
 
-## 9. LFP Band Analysis
+## 8. LFP Band Analysis
 `batch_scripts/analyze_lfp_bands.py`
 
 Performs blanking, cleaning, and bandpass filtering of LFP data for both NPRW and Utah arrays, aligned to stimulation events.
@@ -197,7 +191,7 @@ Performs blanking, cleaning, and bandpass filtering of LFP data for both NPRW an
 *   `scripts/plot_lfp_artifact_comparison.py`: Validates cleaning by comparing Raw vs. Blanked vs. Cleaned signals.
 *   `scripts/debug_lfp_pipeline_plots.py`: Generates step-by-step pipeline visualizations (Raw -> Blanked -> Filtered) for debugging.
 
-## 10. Kinematics Quantification
+## 9. Kinematics Quantification
 `batch_scripts/quantify_stim_kinematics.py`
 
 Analyzes reach kinematics (Duration, Peak Speed) comparing stimulation conditions to baseline.
@@ -219,7 +213,10 @@ Analyzes reach kinematics (Duration, Peak Speed) comparing stimulation condition
 - Walking analysis plots
 `scripts/plot_HPF_traces_with_peaks.ipynb`
 - Plot raw traces with peaks labeled
-
+`scripts/PCA_analysis.ipynb`
+- Visualize latent trajectories across conditions
+`scripts/W_inference.ipynb`
+- Extract low rank mapping from stim to latent responses from neural data (Using sessions 12-14 random stim trials)
 ---
 
 ## Intermediate outputs:
