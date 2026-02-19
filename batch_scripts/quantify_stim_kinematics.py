@@ -66,17 +66,17 @@ SPEED_EXCL_MIN = 0.005
 SPEED_EXCL_MAX = 0.02
 
 # Track only middle_x as requested
-SELECTED_KEYPOINTS = ["wrist_x"] 
+SELECTED_KEYPOINTS = ["middle_x"] 
 
 # Plotting Configuration
 FIG_OUT_DIR = OUT_BASE / "figures" / "quantify_kinematics"
 FIG_OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Output format: 'png' or 'svg'
-OUTPUT_FORMAT = 'png'  # Change to 'svg' for vector graphics
+OUTPUT_FORMAT = 'svg'  # Change to 'svg' for vector graphics
 
 # Set to True to generate 5x5 grid of traces for every trial (for debugging alignment)
-PLOT_DEBUG_TRACES = True 
+PLOT_DEBUG_TRACES = False 
 
 # Set to True to include Peak Speed plots in quantification figures
 PLOT_PEAK_SPEED = False
@@ -152,29 +152,31 @@ if "NRR_RW012" in PARAMS.session:
 
 
 elif "NRR_RW011" in PARAMS.session:
-    EXCLUDE_CONDITIONS = [2, 3, 5, 8, 9, 25]
+    # EXCLUDE_CONDITIONS = [2, 3, 5, 8, 9, 10, 11, 23, 24, 27, 25]
+    # EXCLUDE_CONDITIONS = [2, 3, 5, 8, 9, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 27, 25]
+    EXCLUDE_CONDITIONS = [2, 3, 5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 27, 25]
 
     # Custom labels for conditions
     CONDITION_LABELS = {
         "baseline": "Control",
         6: "32 ch \n (1-32)",
         7: "32 ch \n (33-64)",
-        9: "32 ch \n (Rest, 33-64)",
-        10: "130Hz \n (1-32)",
-        11: "130Hz \n (33-64)",
-        12: "1-8",
-        13: "5-12",
-        14: "9-16",
-        15: "13-20",
-        16: "17-24",
-        17: "21-28",
-        18: "25-32",
-        19: "29-36",
-        20: "33-40",
-        21: "37-44",
+        # 9: "32 ch \n (Rest, 33-64)",
+        # 10: "130Hz \n (1-32)",
+        # 11: "130Hz \n (33-64)",
+        # 12: "1-8",
+        # 13: "5-12",
+        # 14: "9-16",
+        # 15: "13-20",
+        # 16: "17-24",
+        # 17: "21-28",
+        # 18: "25-32",
+        # 19: "29-36",
+        # 20: "33-40",
+        # 21: "37-44",
         23: "32 ch \n (1-32) Later",
         24: "32 ch \n (32-64) Later",
-        27: "130Hz \n (1-32) Later",
+        # 27: "130Hz \n (1-32) Later",
     }
 
     # Labels for combined conditions
@@ -182,14 +184,14 @@ elif "NRR_RW011" in PARAMS.session:
         "baseline": "Control",
         6: "32 ch \n (1-32)",
         7: "32 ch \n (33-64)",
-        9: "32 ch \n (Rest, 33-64)",
-        10: "130Hz \n (1-32)",
-        11: "130Hz \n (33-64)",
-        "Combined_12-16": "Chs 1-24",
-        "Combined_17-21": "Chs 21-44",
-        23: "32 ch \n (1-32) Later",
-        24: "32 ch \n (32-64) Later",
-        27: "130Hz \n (1-32) Later",
+        # 9: "32 ch \n (Rest, 33-64)",
+        # 10: "130Hz \n (1-32)",
+        # 11: "130Hz \n (33-64)",
+        # "Combined_12-16": "Chs 1-24",
+        # "Combined_17-21": "Chs 21-44",
+        # 23: "32 ch \n (1-32) Later",
+        # 24: "32 ch \n (32-64) Later",
+        # 27: "130Hz \n (1-32) Later",
     }
 
     # Exclude specific trials within conditions (condition_id: [trial_indices])
@@ -755,20 +757,65 @@ def get_kinematics_id(filename: str) -> str:
     return stem
 
 def process_target(target: str, target_code: int):
-    results_dir = PERI_ROOT / f"Target_{target}"
-    if not results_dir.exists():
-        print(f"Skipping {target}: {results_dir} not found.")
+    # flexible search for directories
+    # 1. Nested (New)
+    # 2. Flat (Old) - try both case variants
+    # 3. Root (PeriStim directly)
+    candidate_subdirs = [
+        Path("stim_reaches") / f"target_{target}",
+        Path("control_reaches") / f"target_{target}",
+        Path("at_rest"), 
+        f"Target_{target}",
+        f"target_{target}",
+        Path(""), # Check root PeriStim directly
+    ]
+    
+    found_dirs = []
+    found_files_raw = []
+
+    for sub in candidate_subdirs:
+        d = PERI_ROOT / sub
+        if d.exists():
+            found_dirs.append(d)
+            # Glob files
+            files = sorted(d.glob("*.npz"))
+            # For root directory, we might want to filter by target if mixed files exist
+            # But the logic below filters by filename content anyway via get_kinematics_id logic?
+            # Actually no, get_kinematics_id doesn't filter.
+            # But duplicate IDs are handled.
+            # If files are mixed in root (target A and B), we need to ensure we only pick the right ones?
+            # The files are named `..._target_A.npz`. 
+            # So filtering by `*target_{target}*.npz` is safer for the root case.
+            
+            if sub == Path(""): # Root case
+                 # Be more specific for root to avoid picking up everything
+                 files = sorted(d.glob(f"*target_{target}*.npz"))
+                 # Also include baseline files which might use Target or target
+                 files.extend(sorted(d.glob(f"*Target_{target}*.npz"))) 
+                 # And standard files
+                 if not files: # if strict filter found nothing, try filtering by general
+                     pass 
+            
+            found_files_raw.extend(files)
+
+    if not found_files_raw:
+        print(f"Skipping {target}: No matching .npz files found in {PERI_ROOT} search paths.")
+        print(f"  Checked subdirs: {[str(d) for d in candidate_subdirs]}")
         return pd.DataFrame()
     
-    print(f"\nScanning {results_dir}...")
-    
-    print(f"\nScanning {results_dir}...")
+    print(f"\nScanning directories for Target {target}:")
+    for d in found_dirs:
+        print(f"  - {d}")
     
     all_metrics = []
     all_outliers = []
 
-    # Files
-    all_files_raw = sorted(results_dir.glob("*.npz"))
+    # Use the collected files
+    all_files_raw = sorted(list(set(found_files_raw))) # unique paths
+    
+    if not all_files_raw:
+        print(f"  No .npz files found.")
+        return pd.DataFrame()
     
     # Deduplicate: Only process one file per Behavioral Session
     all_files = []
@@ -781,7 +828,7 @@ def process_target(target: str, target_code: int):
         processed_ids.add(kid)
         all_files.append(p)
         
-    print(f"Found {len(all_files_raw)} files. Processing {len(all_files)} unique sessions.")
+    print(f"Found {len(all_files_raw)} total files. Processing {len(all_files)} unique sessions.")
     
     # Parallelize file processing
     # Use ThreadPoolExecutor for I/O bound tasks (loading large files over network)
@@ -1007,7 +1054,8 @@ def plot_stim_quantification(
     # Row 1: Peak Speed (Violin)
     
     # Prepare Data Reuse
-    plot_types = ['violin-box', 'box']
+    # plot_types = ['violin-box', 'box']
+    plot_types = ['box']
     n_conds = len(conditions)
     
     for p_type in plot_types:
@@ -1104,6 +1152,10 @@ def plot_stim_quantification(
             # Add margin for stars and remove hard cap
             ax.margins(y=0.15)
             ax.set_ylim(bottom=0)
+            
+            # Set Y-axis limits
+            if metric == "duration_ms":
+                ax.set_ylim(0, 800)
             
             # X Labels with custom mapping
             import textwrap
