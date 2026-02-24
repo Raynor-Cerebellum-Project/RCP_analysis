@@ -58,13 +58,6 @@ from .python.functions.br_preproc import (
     extract_br_aux_streams_npz,
 )
 
-# artifact correction (PCA template subtraction)
-from .python.functions.artifact_correction_template_matching import (
-    remove_stim_pca_offline,
-    cleaned_numpy_to_recording,
-    PCAArtifactParams,
-)
-
 # plotting
 from .python.plotting.plotting import (
     stacked_heatmaps_plus_behv,
@@ -129,12 +122,6 @@ __all__ = [
     "extract_intan_aux_streams_npz",
     "reorder_recording_to_geometry",
     "StimTriggerResult",
-    
-    # artifact correction
-    "PCAArtifactParams",
-    "remove_stim_pca_offline",
-    "cleaned_numpy_to_recording",
-    
     
     # plotting    
     "stacked_heatmaps_plus_behv",
