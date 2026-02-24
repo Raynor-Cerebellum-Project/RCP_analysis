@@ -12,12 +12,12 @@ from operator import itemgetter
 
 
 # Time window for plots
-WIN_PLOT_MS = (-200.0, 400.0)
+WIN_PLOT_MS = (-500.0, 500.0)
 
 # ──── Plot views: each is (win_ms, bin_ms_override, filename_suffix) ────
 # bin_ms_override=None means use the pre-computed bins from the .npz
 PLOT_VIEWS = [
-    ((-200.0, 400.0), None,  ''),        # standard view
+    ((-500.0, 500.0), None,  ''),        # standard view
     (None,            5.0,   '_zoom'),   # short / zoomed view with 5 ms bins (dynamic window)
 ]
 
@@ -37,7 +37,7 @@ DIFF_YLIM = (-5, 12)
 
 # Figure sizes
 FIG_SIZE_RW = (48, 24)  # Large horizontal figure for 128 channels
-FIG_SIZE_UA = (48, 24)
+FIG_SIZE_UA = (32, 24)
 
 # Output directory
 FIG_ROOT = OUT_BASE / "figures" / "peristim_raster"
@@ -473,8 +473,6 @@ def process_file(npz_path, best_controls=None):
         
         n_ch = 128
         cols = 16
-        rows = 8
-        
         # Sort keys reliably and filter bad channels
         valid_nprw_keys = []
         for ch in peaks_dict.keys():
@@ -488,6 +486,9 @@ def process_file(npz_path, best_controls=None):
             sorted_ch_ids = sorted(valid_nprw_keys, key=lambda x: int(x))
         except:
             sorted_ch_ids = sorted(valid_nprw_keys)
+            
+        rows = (min(len(sorted_ch_ids), n_ch) + cols - 1) // cols
+        if rows == 0: rows = 1
         
         # Determine output directories (computed once)
         base_folder = "other"
@@ -740,31 +741,7 @@ def process_file(npz_path, best_controls=None):
             regions[reg].append((ch, i, real_id))
             
         # Custom Region Order
-        REGION_ORDER = ["M1i", "M1s", "PMd", "SMA"]
-        
-        def get_region_priority(reg_name):
-            r_lower = reg_name.lower()
-            for idx, key in enumerate(REGION_ORDER):
-                if key.lower() == r_lower:
-                    return idx
-            return 999
-
-        # Layout
-        n_total = len(sorted_keys)
-        cols = 16
-        rows = (n_total + cols - 1) // cols
-
-        # Flattened list sorted by region
-        sorted_by_region = []
-        all_regions = sorted(regions.keys(), key=lambda r: (get_region_priority(r), r))
-        for reg in all_regions:
-            ch_list = regions[reg]
-            try:
-                ch_list.sort(key=lambda x: int(x[0]))
-            except:
-                ch_list.sort(key=lambda x: x[0])
-            for item in ch_list:
-                sorted_by_region.append((reg, item[0], item[1], item[2]))
+        REGION_ORDER = ["M1i", "M1s", "PMd", "SMA", "Unknown"]
 
         # Determine output directories (computed once)
         base_folder = "other"
@@ -802,40 +779,57 @@ def process_file(npz_path, best_controls=None):
                 edges_ms = edges_ms_orig
                 cur_ylim = PSTH_YLIM
 
-            fig_ua = plt.figure(figsize=FIG_SIZE_UA)
-            gs = gridspec.GridSpec(rows * 2, cols, figure=fig_ua, hspace=0.3, wspace=0.3)
-            
-            for i, (reg, ch_id, linear_idx, real_id) in enumerate(sorted_by_region):
-                r = (i // cols)
-                c = (i % cols)
+            for reg_target in REGION_ORDER:
+                if reg_target not in regions or not regions[reg_target]:
+                    continue
                 
-                ax_raster = fig_ua.add_subplot(gs[2*r, c])
-                ax_psth = fig_ua.add_subplot(gs[2*r+1, c], sharex=ax_raster)
+                ch_list = regions[reg_target]
+                try:
+                    ch_list.sort(key=lambda x: int(x[0]))
+                except:
+                    ch_list.sort(key=lambda x: x[0])
+                region_chs = [(reg_target, item[0], item[1], item[2]) for item in ch_list]
                 
-                if linear_idx < counts_data.shape[1]:
-                    binned = counts_data[:, linear_idx, :]
-                else:
-                    binned = None
-                
-                peak_times = peaks_dict.get(ch_id, [])
-                
-                plot_channel_group(ax_raster, ax_psth, peak_times, event_ms, binned, edges_ms,
-                                   f"{reg} - Ch {real_id}", stim_dur_ms=stim_dur_ms, 
-                                   blank_pre_ms=5.0, blank_post_ms=5.0, # UA default blanking
-                                   bin_centers=centers_ms,
-                                   n_trials_ref=n_trials_ref, win_ms=view_win, psth_ylim=cur_ylim)
-                if 2*r+1 < (rows*2 - 2):
-                    ax_psth.set_xticklabels([])
+                n_total = len(region_chs)
+                cols = 8
+                rows = (n_total + cols - 1) // cols
+                if rows == 0: rows = 1
 
-            fig_ua.suptitle(f"{overall_title} | Utah Array{stim_chs_str}", fontsize=20)
-            if len(stim_chs_str) > 0:
-                 plt.subplots_adjust(top=0.90)
-            
-            save_dir = FIG_ROOT / base_folder / target_folder
-            save_dir.mkdir(parents=True, exist_ok=True)
-            fig_name = f"[processed]_Cond{br_idx:03d}_{cond_type}_UA{view_suffix}.png"
-            fig_ua.savefig(save_dir / fig_name, dpi=100, bbox_inches='tight')
-            plt.close(fig_ua)
+                fig_h = max(12, rows * 1.5)
+                fig_ua = plt.figure(figsize=(48, fig_h))
+                gs = gridspec.GridSpec(rows * 2, cols, figure=fig_ua, hspace=0.3, wspace=0.3)
+                
+                for i, (reg, ch_id, linear_idx, real_id) in enumerate(region_chs):
+                    r = (i // cols)
+                    c = (i % cols)
+                    
+                    ax_raster = fig_ua.add_subplot(gs[2*r, c])
+                    ax_psth = fig_ua.add_subplot(gs[2*r+1, c], sharex=ax_raster)
+                    
+                    if linear_idx < counts_data.shape[1]:
+                        binned = counts_data[:, linear_idx, :]
+                    else:
+                        binned = None
+                    
+                    peak_times = peaks_dict.get(ch_id, [])
+                    
+                    plot_channel_group(ax_raster, ax_psth, peak_times, event_ms, binned, edges_ms,
+                                       f"{reg} - Ch {real_id}", stim_dur_ms=stim_dur_ms, 
+                                       blank_pre_ms=5.0, blank_post_ms=5.0, # UA default blanking
+                                       bin_centers=centers_ms,
+                                       n_trials_ref=n_trials_ref, win_ms=view_win, psth_ylim=cur_ylim)
+                    if 2*r+1 < (rows*2 - 2):
+                        ax_psth.set_xticklabels([])
+
+                fig_ua.suptitle(f"{overall_title} | Utah Array - {reg_target}{stim_chs_str}", fontsize=20)
+                if len(stim_chs_str) > 0:
+                     plt.subplots_adjust(top=0.90)
+                
+                save_dir = FIG_ROOT / base_folder / target_folder
+                save_dir.mkdir(parents=True, exist_ok=True)
+                fig_name = f"[processed]_Cond{br_idx:03d}_{cond_type}_UA_{reg_target}{view_suffix}.png"
+                fig_ua.savefig(save_dir / fig_name, dpi=100, bbox_inches='tight')
+                plt.close(fig_ua)
             
             # ---------------------------------------------------------
             # Stim - Control Difference Plot (Utah)
@@ -896,52 +890,69 @@ def process_file(npz_path, best_controls=None):
                                     if diff_norm.shape[1] == len(mask):
                                         diff_norm[:, mask] = np.nan
 
-                            fig_diff_ua = plt.figure(figsize=FIG_SIZE_UA)
-                            gs_diff = gridspec.GridSpec(rows, cols, figure=fig_diff_ua, hspace=0.3, wspace=0.3)
-                            
-                            for i, (reg, ch_id, linear_idx, real_id) in enumerate(sorted_by_region):
-                                r = (i // cols)
-                                c = (i % cols)
-                                ax_diff = fig_diff_ua.add_subplot(gs_diff[r, c])
+                            for reg_target in REGION_ORDER:
+                                if reg_target not in regions or not regions[reg_target]:
+                                    continue
                                 
-                                if linear_idx < diff_norm.shape[0]:
-                                    d_ch = diff_norm[linear_idx, :]
-                                    bar_colors = np.where(d_ch >= 0, 'tab:green', 'tab:red')
+                                ch_list = regions[reg_target]
+                                try:
+                                    ch_list.sort(key=lambda x: int(x[0]))
+                                except:
+                                    ch_list.sort(key=lambda x: x[0])
+                                region_chs = [(reg_target, item[0], item[1], item[2]) for item in ch_list]
+                                
+                                n_total = len(region_chs)
+                                cols = 8
+                                rows = (n_total + cols - 1) // cols
+                                if rows == 0: rows = 1
+
+                                fig_h = max(12, rows * 1.5)
+                                fig_diff_ua = plt.figure(figsize=(48, fig_h))
+                                gs_diff = gridspec.GridSpec(rows, cols, figure=fig_diff_ua, hspace=0.3, wspace=0.3)
+                                
+                                for i, (reg, ch_id, linear_idx, real_id) in enumerate(region_chs):
+                                    r = (i // cols)
+                                    c = (i % cols)
+                                    ax_diff = fig_diff_ua.add_subplot(gs_diff[r, c])
                                     
-                                    if centers_ms is not None:
-                                        width = view_bin_ms if view_bin_ms else 20.0
-                                        if view_bin_ms is None and len(centers_ms) > 1:
-                                            width = np.nanmedian(np.diff(centers_ms))
-                                        ax_diff.bar(centers_ms, d_ch, width=width, align='center',
-                                                    color=bar_colors, edgecolor='none')
-                                    elif edges_ms is not None:
-                                        ax_diff.bar(edges_ms[:-1], d_ch, width=np.diff(edges_ms), align='edge',
-                                                    color=bar_colors, edgecolor='none')
+                                    if linear_idx < diff_norm.shape[0]:
+                                        d_ch = diff_norm[linear_idx, :]
+                                        bar_colors = np.where(d_ch >= 0, 'tab:green', 'tab:red')
+                                        
+                                        if centers_ms is not None:
+                                            width = view_bin_ms if view_bin_ms else 20.0
+                                            if view_bin_ms is None and len(centers_ms) > 1:
+                                                width = np.nanmedian(np.diff(centers_ms))
+                                            ax_diff.bar(centers_ms, d_ch, width=width, align='center',
+                                                        color=bar_colors, edgecolor='none')
+                                        elif edges_ms is not None:
+                                            ax_diff.bar(edges_ms[:-1], d_ch, width=np.diff(edges_ms), align='edge',
+                                                        color=bar_colors, edgecolor='none')
+                                    
+                                    if stim_dur_ms > 0:
+                                        # UA default blanking: 5ms pre, 5ms post
+                                        rect_start = -5.0
+                                        rect_end = stim_dur_ms + 5.0
+                                        ax_diff.axvspan(rect_start, rect_end, color='gray', alpha=0.3, edgecolor=None)
+                                    ax_diff.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
+                                    ax_diff.set_title(f"{reg} - Ch {real_id}", fontsize=10, pad=4)
+                                    ax_diff.set_xlim(view_win)
+                                    ax_diff.set_ylim(DIFF_YLIM)
+                                    ax_diff.spines['top'].set_visible(False)
+                                    ax_diff.spines['right'].set_visible(False)
+                                    ax_diff.spines['left'].set_linewidth(0.5)
+                                    ax_diff.spines['bottom'].set_linewidth(0.5)
+                                    ax_diff.tick_params(axis='both', which='major', labelsize=6, width=0.5, length=2)
+                                    if r < rows-1:
+                                        ax_diff.set_xticklabels([])
                                 
-                                if stim_dur_ms > 0:
-                                    # UA default blanking: 5ms pre, 5ms post
-                                    rect_start = -5.0
-                                    rect_end = stim_dur_ms + 5.0
-                                    ax_diff.axvspan(rect_start, rect_end, color='gray', alpha=0.3, edgecolor=None)
-                                ax_diff.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
-                                ax_diff.set_title(f"{reg} - Ch {real_id}", fontsize=10, pad=4)
-                                ax_diff.set_xlim(view_win)
-                                ax_diff.set_ylim(DIFF_YLIM)
-                                ax_diff.spines['top'].set_visible(False)
-                                ax_diff.spines['right'].set_visible(False)
-                                ax_diff.spines['left'].set_linewidth(0.5)
-                                ax_diff.spines['bottom'].set_linewidth(0.5)
-                                ax_diff.tick_params(axis='both', which='major', labelsize=6, width=0.5, length=2)
-                                if r < rows-1:
-                                    ax_diff.set_xticklabels([])
-                            
-                            fig_diff_ua.suptitle(f"{overall_title} | Utah Diff (Stim - Ctrl){stim_chs_str}", fontsize=20)
-                            
-                            save_diff_dir = FIG_ROOT / "stim_diff" / target_folder
-                            save_diff_dir.mkdir(parents=True, exist_ok=True)
-                            fig_name = f"[diff]_Cond{br_idx:03d}_{cond_type}_UA{view_suffix}.png"
-                            fig_diff_ua.savefig(save_diff_dir / fig_name, dpi=100, bbox_inches='tight')
-                            plt.close(fig_diff_ua)
+                                fig_diff_ua.suptitle(f"{overall_title} | Utah Diff (Stim - Ctrl) - {reg_target}{stim_chs_str}", fontsize=20)
+                                
+                                save_diff_dir = FIG_ROOT / "stim_diff" / target_folder
+                                save_diff_dir.mkdir(parents=True, exist_ok=True)
+                                fig_name = f"[diff]_Cond{br_idx:03d}_{cond_type}_UA_{reg_target}{view_suffix}.png"
+                                fig_diff_ua.savefig(save_diff_dir / fig_name, dpi=100, bbox_inches='tight')
+                                plt.close(fig_diff_ua)
         
 
 

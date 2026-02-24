@@ -8,16 +8,17 @@ class Template:
     Store IPCA weights for each channel
     """
     def __init__(self, weights=None):
-        self.weights = weights if weights is not None else []
+        self.weights = weights
     
     def __getitem__(self, index):
-        return self.weights[index]
+        return self.weights[index] if self.weights is not None else None
     
     def __setitem__(self, index, value):
-        self.weights[index] = value
+        if self.weights is not None:
+            self.weights[index] = value
     
     def __len__(self):
-        return len(self.weights)
+        return len(self.weights) if self.weights is not None else 0
     
     def __repr__(self):
         return f"IPCA_Template({self.weights})"
@@ -53,12 +54,12 @@ class IPCA_Artifact_Correction:
         
         ipca = IncrementalPCA(n_components=self.rank)
 
-        for i in range(n_stim):
-            stim_data = signal[i:i+1, :]  # Keep 2D shape
-            ipca.partial_fit(stim_data)
+        # Pass the entire signal to partial_fit. If memory is a concern later, 
+        # this can be chunked, but chunk size must be >= self.rank
+        ipca.partial_fit(signal)
         
         V_new = ipca.components_
-        template._weights(V_new, learning_rate=0.5)
+        template.update_weights(V_new, learning_rate=learning_rate)
         
         artifact = signal @ template.weights.T @ template.weights
         signal_corrected = signal - artifact
@@ -85,7 +86,7 @@ class IPCA_Artifact_Correction:
             signal_ch = signal[:, :, ch]
             
             template = Template()
-            signal_corr, template = self.ipca_template_per_channel(signal, template)
+            signal_corr, template = self.ipca_template_per_channel(signal_ch, template)
 
             signal_all[:, :, ch] = signal_corr
             templates_all.append(template)
