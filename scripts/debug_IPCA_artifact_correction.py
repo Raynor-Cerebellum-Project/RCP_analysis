@@ -2,6 +2,7 @@ import json
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
+import spikeinterface as si
 import spikeinterface.preprocessing as spre
 import spikeinterface.extractors as se
 from probeinterface import Probe
@@ -61,6 +62,7 @@ def get_probe_geometry():
 
 def run_ipca_debug(
     condition=10, 
+    probe="NPRW",
     target_ch=10, 
     ipca_rank=3, 
     window_ms=(-10.0, 50.0), 
@@ -70,7 +72,7 @@ def run_ipca_debug(
     debug_single_pulse=True,
     stim_freq_override=None
 ):
-    print(f"Running IPCA Debug | Cond: {condition} | Ch: {target_ch} | Rank: {ipca_rank}")
+    print(f"Running IPCA Debug | Cond: {condition} | Probe: {probe} | Ch: {target_ch} | Rank: {ipca_rank}")
 
     # Load alignment metadata
     aligned_path = find_aligned_file(ALIGNED_CKPT, condition)
@@ -82,21 +84,36 @@ def run_ipca_debug(
         print("No stim events found.")
         return
 
-    pmeta = z["nprw_meta"].item() if "nprw_meta" in z.files else {}
-    rec_start_ms = float(pmeta.get("rec_start_ms_aligned", 0.0))
+    if probe == "UA":
+        pmeta = z["ua_meta"].item() if "ua_meta" in z.files else {}
+        rec_start_ms = 0.0
+    else:
+        pmeta = z["nprw_meta"].item() if "nprw_meta" in z.files else {}
+        rec_start_ms = float(pmeta.get("rec_start_ms_aligned", 0.0))
+        
     stim_local_ms = stim_ms - rec_start_ms
     stim_dur = float(meta.get("recording_stim_dur", 0.0))
 
     # Load and prep raw recording
-    intan_folder = find_intan_folder(INTAN_ROOT, meta.get("intan_filename", ""))
-    stream_name = PARAMS.probes.get("NPRW").get("neural_data_stream", "amplifier_data")
-    
-    rec_raw = se.read_split_intan_files(intan_folder, mode="concatenate", stream_name=stream_name, use_names_as_ids=True)
-    rec_raw = spre.unsigned_to_signed(rec_raw)
-    
-    probe_obj, map_idx = get_probe_geometry()
-    rec_raw = rec_raw.set_probe(probe_obj)
-    rec_proc = rcp.reorder_recording_to_geometry(rec_raw, map_idx)
+    if probe == "NPRW":
+        intan_folder = find_intan_folder(INTAN_ROOT, meta.get("intan_filename", ""))
+        stream_name = PARAMS.probes.get("NPRW").get("neural_data_stream", "amplifier_data")
+        
+        rec_raw = se.read_split_intan_files(intan_folder, mode="concatenate", stream_name=stream_name, use_names_as_ids=True)
+        rec_raw = spre.unsigned_to_signed(rec_raw)
+        
+        probe_obj, map_idx = get_probe_geometry()
+        rec_raw = rec_raw.set_probe(probe_obj)
+        rec_proc = rcp.reorder_recording_to_geometry(rec_raw, map_idx)
+    elif probe == "UA":
+        br_sess = pmeta.get("session")
+        if not br_sess: raise ValueError("No UA session found in metadata")
+        rec_raw = se.read_blackrock(BR_ROOT / br_sess, stream_name='nsx6', all_annotations=True)
+        ua_map = rcp.load_UA_mapping_from_excel(rcp.ua_excel_path(REPO_ROOT, PARAMS.probes))
+        rec_proc, _, ua_elec, _, _, _, _ = rcp.apply_ua_mapping_with_regions(rec_raw, ua_map, condition, METADATA_CSV)
+    else:
+        print(f"Probe {probe} not recognized.")
+        return
     
     if apply_hpf:
         rec_proc = spre.highpass_filter(rec_proc, freq_min=300.0)
@@ -130,15 +147,27 @@ def run_ipca_debug(
     rec_samples = rec_proc.get_total_samples()
     valid_stims = [s for s in stim_local_ms if 0 <= int(s/1000*fs) + fw_start and int(s/1000*fs) + fw_end < rec_samples]
     
-    ch_id = rec_proc.get_channel_ids()[target_ch]
+    if probe == "UA":
+        matches = np.where(ua_elec == target_ch)[0]
+        if matches.size == 0:
+            print(f"Warning: UA Channel {target_ch} not mapped in this recording.")
+            return
+        ch_id = rec_proc.get_channel_ids()[matches[0]]
+    else:
+        ch_id = rec_proc.get_channel_ids()[target_ch]
     
     # Pre-allocate arrays
     full_raw_array = np.zeros((len(valid_stims), full_n_time), dtype=np.float32)
-    micro_signal_array = np.zeros((len(valid_stims) * num_pulses, micro_n_time, 1), dtype=np.float32)
+    micro_signal_array = np.zeros((len(valid_stims) * (num_pulses + 10), micro_n_time, 1), dtype=np.float32)
     
     pulse_counter = 0
     micro_map = [] # Tracks (trial_idx, start_frame, end_frame)
+    interval_idx = int(pulse_interval_ms / 1000 * fs)
+    search_radius_idx = int((pulse_interval_ms * 0.4) / 1000 * fs)
     
+    train_start_idx = max(0, int((-5.0 - window_ms[0]) / 1000 * fs))
+    train_end_idx = min(full_n_time, int((stim_dur + 5.0 - window_ms[0]) / 1000 * fs))
+
     # Extract data
     for i, s_ms in enumerate(valid_stims):
         center = int(s_ms / 1000 * fs)
@@ -147,28 +176,56 @@ def run_ipca_debug(
         tr = rec_proc.get_traces(start_frame=start, end_frame=end, channel_ids=[ch_id], return_in_uV=True).squeeze()
         full_raw_array[i, :] = tr
         
-        for p in range(num_pulses):
-            pulse_offset_ms = p * pulse_interval_ms
-            # Theoretical start relative to the beginning of the full window
-            theoretical_center_ms = pulse_offset_ms - window_ms[0]
-            theo_center_idx = int(theoretical_center_ms / 1000 * fs)
+        if train_end_idx <= train_start_idx:
+            continue
             
-            # Real pulse could be slightly off due to hardware clock differences. 
-            # Search dynamically up to 40% of the interval away so we don't accidentally grab the NEXT pulse
-            search_radius_idx = int((pulse_interval_ms * 0.4) / 1000 * fs)
-            search_start = max(0, theo_center_idx - search_radius_idx)
-            search_end = min(full_n_time, theo_center_idx + search_radius_idx)
+        tr_diff = np.abs(np.diff(tr, prepend=tr[0]))
+        max_idx_in_train = np.argmax(tr_diff[train_start_idx:train_end_idx])
+        anchor_idx = train_start_idx + max_idx_in_train
+        max_diff_val = tr_diff[anchor_idx]
+        
+        if max_diff_val < 5.0:  # If signal is dead
+            continue
             
-            if search_end > search_start:
-                # Find the maximum absolute amplitude in the search window
-                search_window = tr[search_start:search_end]
-                true_peak_offset = np.argmax(np.abs(search_window))
-                pulse_center_idx = search_start + true_peak_offset
-            else:
-                pulse_center_idx = theo_center_idx  # Fallback
+        pulse_centers = [anchor_idx]
+        
+        # Walk forwards
+        curr = anchor_idx
+        while True:
+            nxt_theo = curr + interval_idx
+            if nxt_theo > train_end_idx: break
+            s_start = max(0, nxt_theo - search_radius_idx)
+            s_end = min(full_n_time, nxt_theo + search_radius_idx)
+            if s_end <= s_start: break
+            local_max = np.argmax(tr_diff[s_start:s_end])
+            curr = s_start + local_max
+            if tr_diff[curr] < 0.15 * max_diff_val: break
+            pulse_centers.append(curr)
             
-            p_start = pulse_center_idx + mw_start
-            p_end = pulse_center_idx + mw_end
+        # Walk backwards
+        curr = anchor_idx
+        while True:
+            prev_theo = curr - interval_idx
+            if prev_theo < train_start_idx: break
+            s_start = max(0, prev_theo - search_radius_idx)
+            s_end = min(full_n_time, prev_theo + search_radius_idx)
+            if s_end <= s_start: break
+            local_max = np.argmax(tr_diff[s_start:s_end])
+            curr = s_start + local_max
+            if tr_diff[curr] < 0.15 * max_diff_val: break
+            pulse_centers.append(curr)
+            
+        pulse_centers = sorted(list(set(pulse_centers)))
+        
+        for p_idx in pulse_centers:
+            # Refine peak to actual trace max, not diff max
+            r_start = max(0, p_idx - 3)
+            r_end = min(full_n_time, p_idx + 4)
+            if r_start >= r_end: continue
+            true_center = r_start + np.argmax(np.abs(tr[r_start:r_end]))
+            
+            p_start = true_center + mw_start
+            p_end = true_center + mw_end
             
             if p_start >= 0 and p_end <= full_n_time:
                 micro_signal_array[pulse_counter, :, 0] = tr[p_start:p_end]
@@ -196,21 +253,24 @@ def run_ipca_debug(
         axes_debug[0].axvline(0, color='g', ls='--')
         axes_debug[0].legend()
         
-        # Prepare micro-window signals for ALL pulses
+        # Prepare micro-window signals for ONLY the first trial (to prevent 50+ trials smearing the visualization)
+        first_trial = micro_map[0][0]
+        trial_micro_idxs = [idx for idx, (t, _, _) in enumerate(micro_map) if t == first_trial]
+        
         micro_time_axis = np.linspace(pulse_window_ms[0], pulse_window_ms[1], micro_n_time)
-        all_raw_micro = micro_signal_array[:, :, 0]
-        all_corr_micro = micro_corrected[:, :, 0]
-        all_art_micro = all_raw_micro - all_corr_micro
+        trial_raw_micro = micro_signal_array[trial_micro_idxs, :, 0]
+        trial_corr_micro = micro_corrected[trial_micro_idxs, :, 0]
+        trial_art_micro = trial_raw_micro - trial_corr_micro
 
-        mean_raw = np.mean(all_raw_micro, axis=0)
-        mean_art = np.mean(all_art_micro, axis=0)
-        mean_corr = np.mean(all_corr_micro, axis=0)
+        mean_raw = np.mean(trial_raw_micro, axis=0)
+        mean_art = np.mean(trial_art_micro, axis=0)
+        mean_corr = np.mean(trial_corr_micro, axis=0)
 
-        # Plot 2: Zoomed-in Micro-window trace (All Pulses COMBINED)
-        for i in range(pulse_counter):
-            axes_debug[1].plot(micro_time_axis, all_raw_micro[i], color='k', alpha=0.08)
-            axes_debug[1].plot(micro_time_axis, all_art_micro[i], color='r', alpha=0.08, ls='--')
-            axes_debug[1].plot(micro_time_axis, all_corr_micro[i], color='b', alpha=0.08)
+        # Plot 2: Zoomed-in Micro-window trace (Single Trial Pulses COMBINED)
+        for i in range(len(trial_micro_idxs)):
+            axes_debug[1].plot(micro_time_axis, trial_raw_micro[i], color='k', alpha=0.3)
+            axes_debug[1].plot(micro_time_axis, trial_art_micro[i], color='r', alpha=0.3, ls='--')
+            axes_debug[1].plot(micro_time_axis, trial_corr_micro[i], color='b', alpha=0.3)
 
         axes_debug[1].plot(micro_time_axis, mean_raw, color='k', lw=3, label='Mean Raw Pulse')
         axes_debug[1].plot(micro_time_axis, mean_art, color='r', lw=3, ls='--', label='Mean Learned Template')
@@ -272,10 +332,11 @@ def run_ipca_debug(
 if __name__ == "__main__":
     run_ipca_debug(
         condition=10, 
-        target_ch=10, 
+        probe="UA",
+        target_ch=124, 
         ipca_rank=3,
         window_ms=(-10.0, 50.0),
-        pulse_window_ms=(-0.5, 0.5),
+        pulse_window_ms=(-0.2, 0.3),
         apply_hpf=False,
         debug_single_pulse=True,
         stim_freq_override=400.0

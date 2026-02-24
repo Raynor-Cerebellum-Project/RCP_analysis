@@ -51,18 +51,18 @@ class IPCA_Artifact_Correction:
             template: updated template with new weights
         """
         n_stim, n_time = signal.shape
+        signal_mean = np.mean(signal, axis=0)
+        signal = signal - signal_mean
         
         ipca = IncrementalPCA(n_components=self.rank)
 
-        # Pass the entire signal to partial_fit. If memory is a concern later, 
-        # this can be chunked, but chunk size must be >= self.rank
         ipca.partial_fit(signal)
         
         V_new = ipca.components_
         template.update_weights(V_new, learning_rate=learning_rate)
         
         artifact = signal @ template.weights.T @ template.weights
-        signal_corrected = signal - artifact
+        signal_corrected = signal - artifact + signal_mean
         
         return signal_corrected, template
 
