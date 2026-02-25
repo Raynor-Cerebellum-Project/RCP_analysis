@@ -51,8 +51,9 @@ class IPCA_Artifact_Correction:
             template: updated template with new weights
         """
         n_stim, n_time = signal.shape
-        signal_mean = np.mean(signal, axis=0)
-        signal = signal - signal_mean
+
+        baseline_mean = np.mean(signal[:, :3], axis=1, keepdims=True)
+        signal = signal - baseline_mean
         
         ipca = IncrementalPCA(n_components=self.rank)
 
@@ -62,7 +63,7 @@ class IPCA_Artifact_Correction:
         template.update_weights(V_new, learning_rate=learning_rate)
         
         artifact = signal @ template.weights.T @ template.weights
-        signal_corrected = signal - artifact + signal_mean
+        signal_corrected = signal - artifact + baseline_mean
         
         return signal_corrected, template
 
