@@ -70,7 +70,9 @@ def run_ipca_debug(
     pulse_window_ms=(-0.5, 0.5),
     apply_hpf=False,
     debug_single_pulse=True,
-    stim_freq_override=None
+    stim_freq_override=None,
+    use_behavior_filter=True,
+    ua_refine_search_ms=0.15
 ):
     print(f"Running IPCA Debug | Cond: {condition} | Probe: {probe} | Ch: {target_ch} | Rank: {ipca_rank}")
 
@@ -79,46 +81,128 @@ def run_ipca_debug(
     z = np.load(aligned_path, allow_pickle=True)
     meta = json.loads(z["align_meta"].item()) if "align_meta" in z.files else {}
     
-    stim_ms = np.asarray(z.get("stim_ms", []), float).ravel()
-    if not stim_ms.size:
-        print("No stim events found.")
-        return
+    # ── Get True Stim Events from Intan Analog Traces ──
+    intan_filename = meta.get("intan_filename", "")
+    intan_folder = find_intan_folder(INTAN_ROOT, intan_filename)
+    sess_name = intan_folder.name
+    
+    fs_nprw = 30000.0 # Default Intan sampling rate
+    shift_samp_intan = 0.0
+    nprw_samps = np.array([], dtype=np.int64)
+    nprw_ends = np.array([], dtype=np.int64)
+    stim_dur = 0.0
 
-    if probe == "UA":
-        pmeta = z["ua_meta"].item() if "ua_meta" in z.files else {}
-        rec_start_ms = 0.0
-    else:
-        pmeta = z["nprw_meta"].item() if "nprw_meta" in z.files else {}
-        rec_start_ms = float(pmeta.get("rec_start_ms_aligned", 0.0))
-        
-    stim_local_ms = stim_ms - rec_start_ms
-    stim_dur = float(meta.get("recording_stim_dur", 0.0))
-
-    # Load and prep raw recording
     if probe == "NPRW":
-        intan_folder = find_intan_folder(INTAN_ROOT, meta.get("intan_filename", ""))
-        stream_name = PARAMS.probes.get("NPRW").get("neural_data_stream", "amplifier_data")
+        stim_npz_path = NPRW_AUX_DATA / f"{sess_name}_Intan_streams" / "stim_stream.npz"
+    else:
+        stim_npz_path, _ = rcp.stim_npz_path_from_br_idx(condition, METADATA_CSV, NPRW_AUX_DATA)
+        br_idx = condition
+        shifts_csv = METADATA_ROOT / "br_to_intan_shifts.csv"
         
+        if shifts_csv.exists():
+            br2fs_intan = rcp.get_metadata_mapping(shifts_csv, 'br_idx', 'fs_intan')
+            br2shift_samp_intan = rcp.get_metadata_mapping(shifts_csv, 'br_idx', 'shift_sample')
+            
+            fs_nprw = float(br2fs_intan.get(br_idx, 30000.0))
+            shift_raw = br2shift_samp_intan.get(br_idx, None)
+            if shift_raw is None or (isinstance(shift_raw, str) and shift_raw.strip() == ""):
+                raise ValueError(f"Missing anchor_sample for br_idx={br_idx} in {shifts_csv}. Cannot align UA probe.")
+            shift_samp_intan = float(shift_raw)
+        else:
+            raise FileNotFoundError("br_to_intan_shifts.csv missing")
+            
+    if stim_npz_path and stim_npz_path.exists():
+        stim = rcp.load_stim_detection(stim_npz_path)
+        block_bounds = stim.get("block_bounds_samples", np.empty((0, 2), dtype=np.int64))
+        if len(block_bounds) > 0:
+            if isinstance(block_bounds, list):
+                block_bounds = np.array(block_bounds, dtype=np.int64)
+            nprw_samps = block_bounds[:, 0].astype(np.int64)
+            nprw_ends = block_bounds[:, 1].astype(np.int64)
+            dur_samps = nprw_ends - nprw_samps
+            stim_dur = float(dur_samps.max() * 1000.0 / fs_nprw)
+    else:
+        raise FileNotFoundError(f"stim_stream.npz not found for Intan session: {sess_name} (Looked at: {stim_npz_path})")
+
+    if nprw_samps.size == 0:
+        raise ValueError("No stimulation blocks found in Intan auxiliary analog traces.")
+        
+    print(f"Extracted {len(nprw_samps)} raw hardware stimulation blocks. Max duration: {stim_dur:.2f}ms")
+
+    # ── Try to filter to behaviorally valid Target A trials ──
+    if use_behavior_filter:
+        try:
+            peri_dir = OUT_BASE / "checkpoints" / "PeriStim" / "stim_reaches" / "Target_A"
+            cands = list(peri_dir.glob(f"*BR_{condition:03d}*.npz"))
+            if cands:
+                pz = np.load(cands[0], allow_pickle=True)
+                valid_br_ms = pz['event_ms']
+                if "stim_ms" in z.files:
+                    br_ms_all = z["stim_ms"]
+                    
+                    # We need to map which of the raw Intan blocks corresponds to the valid Blackrock times
+                    keep_mask = np.zeros(len(nprw_samps), dtype=bool)
+                    for vms in valid_br_ms:
+                        idx = np.argmin(np.abs(br_ms_all - vms))
+                        if np.abs(br_ms_all[idx] - vms) < 2.0:
+                            keep_mask[idx] = True
+                    
+                    nprw_samps = nprw_samps[keep_mask]
+                    if len(nprw_ends) == len(keep_mask):
+                        nprw_ends = nprw_ends[keep_mask]
+                    print(f"-> Filtered down to {keep_mask.sum()} behaviorally valid Target A trials based on pipeline checkpoints!")
+                else:
+                    print("Could not filter: 'stim_ms' not found in aligned NPZ.")
+        except Exception as e:
+            print(f"Could not apply PeriStim behavior filter: {e}")
+        
+    # ── Load and prep raw recording ──
+    if probe == "NPRW":
+        stim_local_ms = nprw_samps * 1000.0 / fs_nprw
+        
+        stream_name = PARAMS.probes.get("NPRW").get("neural_data_stream", "amplifier_data")
         rec_raw = se.read_split_intan_files(intan_folder, mode="concatenate", stream_name=stream_name, use_names_as_ids=True)
         rec_raw = spre.unsigned_to_signed(rec_raw)
         
         probe_obj, map_idx = get_probe_geometry()
         rec_raw = rec_raw.set_probe(probe_obj)
         rec_proc = rcp.reorder_recording_to_geometry(rec_raw, map_idx)
+        fs = float(rec_proc.get_sampling_frequency())
+        
     elif probe == "UA":
-        br_sess = pmeta.get("session")
+        # We must align the Intan hardware blocks to the Blackrock recording.
+        br_sess = z["ua_meta"].item().get("session") if "ua_meta" in z.files else meta.get("br_session")
         if not br_sess: raise ValueError("No UA session found in metadata")
+
+        # Load raw Blackrock geometry so we can fetch its sampling rate
         rec_raw = se.read_blackrock(BR_ROOT / br_sess, stream_name='nsx6', all_annotations=True)
         ua_map = rcp.load_UA_mapping_from_excel(rcp.ua_excel_path(REPO_ROOT, PARAMS.probes))
         rec_proc, _, ua_elec, _, _, _, _ = rcp.apply_ua_mapping_with_regions(rec_raw, ua_map, condition, METADATA_CSV)
+        fs = rec_proc.get_sampling_frequency()
+
+        # The math from UA_BR_analysis_threshold to exactly map Intan block starts -> Blackrock starts
+        scale = fs / fs_nprw
+        starts_ua_samps = np.round((nprw_samps - shift_samp_intan) * scale).astype(np.int64)
+        ends_ua_samps = np.round((nprw_ends - shift_samp_intan) * scale).astype(np.int64)
+        
+        # validity + clipping
+        n_total = rec_proc.get_num_samples()
+        ends_ua_samps = np.minimum(ends_ua_samps, n_total)
+        valid = (ends_ua_samps > starts_ua_samps) & (starts_ua_samps >= 0) & (ends_ua_samps <= n_total)
+        starts_ua_samps = starts_ua_samps[valid]
+        
+        # Convert the Blackrock aligned samples back into Blackrock ms
+        stim_local_ms = starts_ua_samps * 1000.0 / fs
     else:
         print(f"Probe {probe} not recognized.")
         return
-    
+        
+    if not stim_local_ms.size:
+        print("No stim events found.")
+        return
+        
     if apply_hpf:
         rec_proc = spre.highpass_filter(rec_proc, freq_min=300.0)
-
-    fs = rec_proc.get_sampling_frequency()
     
     # Calculate pulse timing
     if stim_freq_override is not None:
@@ -146,7 +230,9 @@ def run_ipca_debug(
     # Filter valid stims that fully fit in the recording
     rec_samples = rec_proc.get_total_samples()
     valid_stims = [s for s in stim_local_ms if 0 <= int(s/1000*fs) + fw_start and int(s/1000*fs) + fw_end < rec_samples]
-    
+    print(stim_local_ms)
+    print(valid_stims)
+
     if probe == "UA":
         matches = np.where(ua_elec == target_ch)[0]
         if matches.size == 0:
@@ -169,28 +255,82 @@ def run_ipca_debug(
     train_end_idx = min(full_n_time, int((stim_dur + 5.0 - window_ms[0]) / 1000 * fs))
 
     # Extract data
+    drift_logs = []
+    
+    # We want to lock the anchor to the very start of the block. The block start maps to center (0ms offset)
+    # The center in our extracted `tr` array is exactly at `-fw_start` (since we extract fw_start to fw_end)
+    true_block_start_idx = -fw_start
+    
     for i, s_ms in enumerate(valid_stims):
-        center = int(s_ms / 1000 * fs)
-        start, end = center + fw_start, center + fw_end
+        center = int(s_ms / 1000 * fs) # exact start of the block
         
-        tr = rec_proc.get_traces(start_frame=start, end_frame=end, channel_ids=[ch_id], return_in_uV=True).squeeze()
+        # Extract a slightly larger search window to find the true first pulse
+        search_margin = int(20.0 / 1000 * fs) # 20 ms margin for drift
+        start_search = center + fw_start - search_margin
+        end_search = center + fw_end + search_margin
+        
+        if start_search < 0 or end_search > rec_samples:
+            continue
+            
+        tr_search = rec_proc.get_traces(start_frame=start_search, end_frame=end_search, channel_ids=[ch_id], return_in_uV=True).squeeze()
+        
+        tr_diff_search = np.abs(np.diff(tr_search, prepend=tr_search[0]))
+        predicted_center_idx = -fw_start + search_margin
+        
+        slop = int(5.0 / 1000 * fs)
+        search_window_start = max(0, predicted_center_idx - slop)
+        search_window_end   = min(len(tr_search), predicted_center_idx + slop)
+        
+        local_max = np.argmax(tr_diff_search[search_window_start:search_window_end])
+        anchor_idx = search_window_start + local_max
+        max_diff_val = tr_diff_search[anchor_idx]
+        
+        if max_diff_val < 5.0:
+            continue
+            
+        # Scan from left to right within the 10ms slop window to find the FIRST real pulse 
+        first_pulse_idx_in_search = None
+        for k in range(search_window_start, search_window_end):
+            if tr_diff_search[k] > 0.4 * max_diff_val:
+                first_pulse_idx_in_search = k
+                break
+                
+        if first_pulse_idx_in_search is None:
+            first_pulse_idx_in_search = anchor_idx
+            
+        # Coarse alignment: just get close enough to shift the extraction window.
+        # The precise centering will be done by the UA refine loop for ALL pulses equally.
+        refine_samp = int(round(ua_refine_search_ms / 1000.0 * fs)) if ua_refine_search_ms > 0 else 3
+        coarse_radius = max(refine_samp, 3)
+        r_start = max(0, first_pulse_idx_in_search - coarse_radius)
+        r_end = min(len(tr_search), first_pulse_idx_in_search + coarse_radius + 1)
+        local_diff = np.abs(np.diff(tr_search[r_start:r_end], prepend=tr_search[r_start]))
+        true_first_center_in_search = r_start + np.argmax(local_diff)
+        
+        # Now shift our extraction window so the FIRST peak sits APPROXIMATELY at -fw_start (time=0)
+        true_start_sample = start_search + true_first_center_in_search
+        final_start = true_start_sample + fw_start
+        final_end = true_start_sample + fw_end
+        
+        if final_start < 0 or final_end > rec_samples:
+            continue
+            
+        # Re-extract aligned trace
+        tr = rec_proc.get_traces(start_frame=final_start, end_frame=final_end, channel_ids=[ch_id], return_in_uV=True).squeeze()
         full_raw_array[i, :] = tr
         
         if train_end_idx <= train_start_idx:
             continue
             
         tr_diff = np.abs(np.diff(tr, prepend=tr[0]))
-        max_idx_in_train = np.argmax(tr_diff[train_start_idx:train_end_idx])
-        anchor_idx = train_start_idx + max_idx_in_train
-        max_diff_val = tr_diff[anchor_idx]
+        anchor_idx_final = -fw_start
+        max_diff_val = np.max(tr_diff[max(0, anchor_idx_final-refine_samp):min(full_n_time, anchor_idx_final+refine_samp+1)])
         
-        if max_diff_val < 5.0:  # If signal is dead
-            continue
-            
-        pulse_centers = [anchor_idx]
+        if i == 0 or i == len(valid_stims) - 1:
+             drift_logs.append(f"Trial {i}: Extracted window shifted by {(true_start_sample - center)/fs*1000.0:.2f} ms to align first pulse to 0.")
         
-        # Walk forwards
-        curr = anchor_idx
+        pulse_centers_final = [anchor_idx_final]
+        curr = anchor_idx_final
         while True:
             nxt_theo = curr + interval_idx
             if nxt_theo > train_end_idx: break
@@ -200,29 +340,20 @@ def run_ipca_debug(
             local_max = np.argmax(tr_diff[s_start:s_end])
             curr = s_start + local_max
             if tr_diff[curr] < 0.15 * max_diff_val: break
-            pulse_centers.append(curr)
+            pulse_centers_final.append(curr)
             
-        # Walk backwards
-        curr = anchor_idx
-        while True:
-            prev_theo = curr - interval_idx
-            if prev_theo < train_start_idx: break
-            s_start = max(0, prev_theo - search_radius_idx)
-            s_end = min(full_n_time, prev_theo + search_radius_idx)
-            if s_end <= s_start: break
-            local_max = np.argmax(tr_diff[s_start:s_end])
-            curr = s_start + local_max
-            if tr_diff[curr] < 0.15 * max_diff_val: break
-            pulse_centers.append(curr)
-            
-        pulse_centers = sorted(list(set(pulse_centers)))
+        pulse_centers_final = sorted(list(set(pulse_centers_final)))
         
-        for p_idx in pulse_centers:
-            # Refine peak to actual trace max, not diff max
-            r_start = max(0, p_idx - 3)
-            r_end = min(full_n_time, p_idx + 4)
+        # Refine ALL pulse centers (including first) identically on the actual UA trace
+        for p_idx in pulse_centers_final:
+            r_start = max(0, p_idx - refine_samp)
+            r_end = min(full_n_time, p_idx + refine_samp + 1)
             if r_start >= r_end: continue
-            true_center = r_start + np.argmax(np.abs(tr[r_start:r_end]))
+            
+            # Find the sharpest transient (max |derivative|) within the search window
+            local_diff = np.abs(np.diff(tr[r_start:r_end], prepend=tr[r_start]))
+            detected_offset = np.argmax(local_diff)
+            true_center = r_start + detected_offset
             
             p_start = true_center + mw_start
             p_end = true_center + mw_end
@@ -233,6 +364,11 @@ def run_ipca_debug(
                 pulse_counter += 1
 
     micro_signal_array = micro_signal_array[:pulse_counter]
+    print("\n--- DRIFT LOGS ---")
+    for log in drift_logs:
+        print(log)
+    print("------------------\n")
+    
     # Run IPCA
     corrector = IPCA_Artifact_Correction(rank=ipca_rank)
     micro_corrected, _ = corrector.ipca_all(micro_signal_array)
@@ -243,10 +379,17 @@ def run_ipca_debug(
         fig_debug, axes_debug = plt.subplots(1, 2, figsize=(24, 12), sharey=True)
         
         # Plot 1: Full Trial Trace (zoomed out) highlighting the micro-window
-        first_trial, p_start, p_end = micro_map[0]
+        first_trial = micro_map[0][0]
         full_time_axis = np.arange(fw_start, fw_end) / fs * 1000
         axes_debug[0].plot(full_time_axis, full_raw_array[first_trial], color='k', lw=1)
-        axes_debug[0].axvspan(full_time_axis[p_start - fw_start], full_time_axis[p_end - fw_start - 1], color='r', alpha=0.3, label='IPCA "Learning" Window')
+        
+        added_label = False
+        for t, p_start, p_end in micro_map:
+            if t == first_trial:
+                label = 'IPCA "Learning" Window' if not added_label else None
+                axes_debug[0].axvspan(full_time_axis[p_start], full_time_axis[p_end - 1], color='r', alpha=0.3, label=label)
+                added_label = True
+                
         axes_debug[0].set_title(f"Trial {first_trial + 1} | Full Trace")
         axes_debug[0].set_xlabel("Time (ms)")
         axes_debug[0].set_ylabel("Amplitude (uV)")
@@ -257,7 +400,7 @@ def run_ipca_debug(
         first_trial = micro_map[0][0]
         trial_micro_idxs = [idx for idx, (t, _, _) in enumerate(micro_map) if t == first_trial]
         
-        micro_time_axis = np.linspace(pulse_window_ms[0], pulse_window_ms[1], micro_n_time)
+        micro_time_axis = np.arange(mw_start, mw_end) / fs * 1000.0
         trial_raw_micro = micro_signal_array[trial_micro_idxs, :, 0]
         trial_corr_micro = micro_corrected[trial_micro_idxs, :, 0]
         trial_art_micro = trial_raw_micro - trial_corr_micro
@@ -329,13 +472,30 @@ def run_ipca_debug(
     print(f"Saved: {outname}")
     plt.close(fig)
 
+    return {
+        "full_raw_array":      full_raw_array,
+        "full_corr_array":     full_corr_array,
+        "full_artifact_array": full_artifact_array,
+        "micro_signal_array":  micro_signal_array,
+        "micro_corrected":     micro_corrected,
+        "micro_map":           micro_map,
+        "time_axis":           time_axis,
+        "mw_start":            mw_start,
+        "mw_end":              mw_end,
+        "fw_start":            fw_start,
+        "fw_end":              fw_end,
+        "fs":                  fs,
+        "window_ms":           window_ms,
+        "stim_dur":            stim_dur,
+    }
+
 if __name__ == "__main__":
     run_ipca_debug(
         condition=10, 
         probe="UA",
         target_ch=124, 
         ipca_rank=3,
-        window_ms=(-10.0, 50.0),
+        window_ms=(-10.0, 30.0),
         pulse_window_ms=(-0.2, 0.3),
         apply_hpf=False,
         debug_single_pulse=True,
