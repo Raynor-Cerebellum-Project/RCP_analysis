@@ -735,7 +735,10 @@ def run_ipca_debug(
             region_to_idxs["All Channels"] = list(range(n_channels))
             
         trial_to_plot = 0
-        col_labels = ["Raw Signal", "IPCA Artifact Template", "Corrected Signal"]
+        col_labels = ["Raw Signal", "IPCA Artifact Template", "Corrected Signal", "Filtered Corrected"]
+        
+        from scipy.signal import butter, sosfiltfilt
+        sos = butter(4, 300.0, btype='high', fs=fs, output='sos')
         
         for reg, sample_ch_idxs in region_to_idxs.items():
             if not sample_ch_idxs:
@@ -745,12 +748,19 @@ def run_ipca_debug(
             print(f"  Generating plot for region {reg} with {n_sample_channels} channels...")
             
             fig_multi, axes_multi = plt.subplots(
-                n_sample_channels, 3,
-                figsize=(15, 2.5 * n_sample_channels),
-                sharex=True, sharey=True,
+                n_sample_channels, 4,
+                figsize=(18, 2.5 * n_sample_channels),
+                sharex=True, sharey=False,
             )
             if n_sample_channels == 1:
                 axes_multi = np.array([axes_multi])
+                
+            # Manually share Y axes across all rows for the first 3 columns (matching previous sharey=True behaviour)
+            ref_ax = axes_multi[0, 0]
+            for r in range(n_sample_channels):
+                for c in range(3):
+                    if r == 0 and c == 0: continue
+                    axes_multi[r, c].sharey(ref_ax)
                 
             for r, ch_idx in enumerate(sample_ch_idxs):
                 ch_name = f"Ch {target_ch_elecs[ch_idx]}" if probe == "UA" else f"Ch {ch_idx}"
@@ -769,11 +779,18 @@ def run_ipca_debug(
                         chan_full_corr[ps:pe] = corr_mc
                         chan_full_art[ps:pe] = art_mc
                 
+                # Apply high-pass filter to the corrected signal
+                chan_full_filt = sosfiltfilt(sos, chan_full_corr)
+                
                 axes_multi[r, 0].plot(time_axis, chan_full_raw,      color="k", lw=1)
                 axes_multi[r, 1].plot(time_axis, chan_full_art,  color="r", lw=1)
                 axes_multi[r, 2].plot(time_axis, chan_full_corr,      color="b", lw=1)
+                axes_multi[r, 3].plot(time_axis, chan_full_filt,      color="purple", lw=1)
                 
-                for c in range(3):
+                # Enforce fixed y-limits for the filtered column
+                axes_multi[r, 3].set_ylim(-80, 80)
+                
+                for c in range(4):
                     ax = axes_multi[r, c]
                     ax.axvline(0, color="g", ls="--")
                     if stim_dur > 0:
@@ -817,12 +834,12 @@ def run_ipca_debug(
 
 if __name__ == "__main__":
     run_ipca_debug(
-        condition=12,
-        probe="UA",
-        target_ch="all",
+        condition=10, 
+        probe="NPRW",
+        target_ch=10, # or "all"
         ipca_rank=10,
-        window_ms=(-10.0, 130.0),
-        pulse_window_ms=(-0.2, 0.3),
+        window_ms=(-20.0, 40.0),
+        pulse_window_ms=(-0.4, 0.5), # utah - -0.2 to 0.3ms
         apply_hpf=False,
         debug_single_pulse=True,
         use_behavior_filter=False,

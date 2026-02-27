@@ -122,10 +122,10 @@ def _rebin_from_peaks(peaks_dict, events_ms, win_ms, bin_ms, stim_dur_ms=0.0,
             np.add.at(counts[t_i, ch_i], idx[valid], 1.0)
 
     # Blank bins inside stim artifact + pre/post
-    if stim_dur_ms > 0:
-        # Mask covers [-blank_pre_ms, stim_dur_ms + blank_post_ms]
-        blank_mask = (centers >= -blank_pre_ms) & (centers <= stim_dur_ms + blank_post_ms)
-        counts[:, :, blank_mask] = np.nan
+    # if stim_dur_ms > 0:
+    #     # Mask covers [-blank_pre_ms, stim_dur_ms + blank_post_ms]
+    #     blank_mask = (centers >= -blank_pre_ms) & (centers <= stim_dur_ms + blank_post_ms)
+    #     counts[:, :, blank_mask] = np.nan
 
     return counts, centers, edges
 
@@ -166,11 +166,11 @@ def plot_channel_group(ax_raster, ax_psth,
         n_trials = n_trials_ref
     
     # Stimulation shading
-    if stim_dur_ms > 0:
-        # Shade from -blank_pre_ms to stim_dur_ms + blank_post_ms
-        rect_start = -blank_pre_ms
-        rect_end = stim_dur_ms + blank_post_ms
-        ax_raster.axvspan(rect_start, rect_end, color='gray', alpha=0.3, edgecolor=None)
+    # if stim_dur_ms > 0:
+    #     # Shade from -blank_pre_ms to stim_dur_ms + blank_post_ms
+    #     rect_start = -blank_pre_ms
+    #     rect_end = stim_dur_ms + blank_post_ms
+    #     ax_raster.axvspan(rect_start, rect_end, color='gray', alpha=0.3, edgecolor=None)
 
     # Red line at 0
     ax_raster.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
@@ -187,16 +187,16 @@ def plot_channel_group(ax_raster, ax_psth,
         psth_counts = np.nansum(binned_counts, axis=0) # Sum across trials
         
         # Apply blanking mask if stim_dur_ms > 0
-        if stim_dur_ms > 0:
-            if bin_centers is not None:
-                mask = (bin_centers >= -blank_pre_ms) & (bin_centers <= stim_dur_ms + blank_post_ms)
-                if len(mask) == len(psth_counts):
-                     psth_counts[mask] = np.nan
-            elif len(psth_counts) == len(bin_edges) - 1:
-                # Use edges to find centers
-                ctrs = (bin_edges[:-1] + bin_edges[1:]) / 2
-                mask = (ctrs >= -blank_pre_ms) & (ctrs <= stim_dur_ms + blank_post_ms)
-                psth_counts[mask] = np.nan
+        # if stim_dur_ms > 0:
+        #     if bin_centers is not None:
+        #         mask = (bin_centers >= -blank_pre_ms) & (bin_centers <= stim_dur_ms + blank_post_ms)
+        #         if len(mask) == len(psth_counts):
+        #              psth_counts[mask] = np.nan
+        #     elif len(psth_counts) == len(bin_edges) - 1:
+        #         # Use edges to find centers
+        #         ctrs = (bin_edges[:-1] + bin_edges[1:]) / 2
+        #         mask = (ctrs >= -blank_pre_ms) & (ctrs <= stim_dur_ms + blank_post_ms)
+        #         psth_counts[mask] = np.nan
         
         # Plot using centers if available (Preferred)
         if bin_centers is not None and len(psth_counts) == len(bin_centers):
@@ -218,10 +218,10 @@ def plot_channel_group(ax_raster, ax_psth,
              pass
 
     # Stimulation shading
-    if stim_dur_ms > 0:
-        rect_start = -blank_pre_ms
-        rect_end = stim_dur_ms + blank_post_ms
-        ax_psth.axvspan(rect_start, rect_end, color='gray', alpha=0.3, edgecolor=None)
+    # if stim_dur_ms > 0:
+    #     rect_start = -blank_pre_ms
+    #     rect_end = stim_dur_ms + blank_post_ms
+    #     ax_psth.axvspan(rect_start, rect_end, color='gray', alpha=0.3, edgecolor=None)
 
     # Red line at 0
     ax_psth.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
@@ -610,17 +610,17 @@ def process_file(npz_path, best_controls=None):
                         
                         if diff_norm is not None:
                             # Apply blanking mask to diff_norm
-                            if stim_dur_ms > 0:
-                                t0, t1 = -20.0, stim_dur_ms + 20.0
-                                if centers_ms is not None:
-                                    mask = (centers_ms >= t0) & (centers_ms <= t1)
-                                    if diff_norm.shape[1] == len(mask):
-                                        diff_norm[:, mask] = np.nan
-                                elif edges_ms is not None:
-                                    ctrs = (edges_ms[:-1] + edges_ms[1:]) / 2
-                                    mask = (ctrs >= t0) & (ctrs <= t1)
-                                    if diff_norm.shape[1] == len(mask):
-                                        diff_norm[:, mask] = np.nan
+                            # if stim_dur_ms > 0:
+                            #     t0, t1 = -20.0, stim_dur_ms + 20.0
+                            #     if centers_ms is not None:
+                            #         mask = (centers_ms >= t0) & (centers_ms <= t1)
+                            #         if diff_norm.shape[1] == len(mask):
+                            #             diff_norm[:, mask] = np.nan
+                            #     elif edges_ms is not None:
+                            #         ctrs = (edges_ms[:-1] + edges_ms[1:]) / 2
+                            #         mask = (ctrs >= t0) & (ctrs <= t1)
+                            #         if diff_norm.shape[1] == len(mask):
+                            #             diff_norm[:, mask] = np.nan
 
                             fig_diff = plt.figure(figsize=FIG_SIZE_RW)
                             gs_diff = gridspec.GridSpec(rows, cols, figure=fig_diff, hspace=0.3, wspace=0.3)
@@ -646,11 +646,11 @@ def process_file(npz_path, best_controls=None):
                                         ax_diff.bar(edges_ms[:-1], d_ch, width=np.diff(edges_ms), align='edge',
                                                     color=bar_colors, edgecolor='none')
                                 
-                                if stim_dur_ms > 0:
-                                    # NPRW blanking: 20ms pre, 20ms post
-                                    rect_start = -20.0
-                                    rect_end = stim_dur_ms + 20.0
-                                    ax_diff.axvspan(rect_start, rect_end, color='gray', alpha=0.3, edgecolor=None)
+                                # if stim_dur_ms > 0:
+                                #     # NPRW blanking: 20ms pre, 20ms post
+                                #     rect_start = -20.0
+                                #     rect_end = stim_dur_ms + 20.0
+                                #     ax_diff.axvspan(rect_start, rect_end, color='gray', alpha=0.3, edgecolor=None)
                                 ax_diff.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
                                 ax_diff.set_title(f"Ch {ch}", fontsize=10, pad=4)
                                 ax_diff.set_xlim(view_win)

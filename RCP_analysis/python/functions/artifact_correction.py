@@ -38,7 +38,7 @@ class IPCA_Artifact_Correction:
         self.rank = rank
         
 
-    def ipca_template_per_channel(self, signal, template, learning_rate=0.5):
+    def ipca_template_per_channel(self, signal, template, learning_rate=0.9):
         """
         Incremental PCA to correct one channel
         
@@ -93,7 +93,7 @@ class IPCA_Artifact_Correction:
             templates_all.append(template)
             
         return signal_all, templates_all
-    
+
     def apply_template(self, signal, template):
         """
         Apply existing template to new signal WITHOUT updating the weight!
