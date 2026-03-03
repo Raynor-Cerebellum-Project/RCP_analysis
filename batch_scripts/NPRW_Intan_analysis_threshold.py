@@ -44,29 +44,29 @@ ARTRMV_TAIL_MS   = float(RATES.get("remove_tail_ms_after", 20.0))
 
 
 # Artifact correction parameters
-params = rcp.PCAArtifactParams(
-    # drift removal
-    rolling_median_ms=15.0,
-    gaussian_sigma_ms=5.0,
-    gaussian_len_ms=31.0,
+# params = rcp.PCAArtifactParams(
+#     # drift removal
+#     rolling_median_ms=15.0,
+#     gaussian_sigma_ms=5.0,
+#     gaussian_len_ms=31.0,
 
-    # pulse-aligned window: start = start-13, end = end+13+15
-    pre_samples=13,
-    post_pad_samples=40,
+#     # pulse-aligned window: start = start-13, end = end+13+15
+#     pre_samples=13,
+#     post_pad_samples=40,
 
-    # PCA/template
-    center_snippets=True,
-    first_pulse_special=True,
-    exclude_first_n_for_pca=1,
+#     # PCA/template
+#     center_snippets=True,
+#     first_pulse_special=True,
+#     exclude_first_n_for_pca=1,
 
-    # subtraction
-    scale_amplitude=True,
+#     # subtraction
+#     scale_amplitude=True,
 
-    # interp ramp
-    interp_ramp=True,
-    ramp_tail_ms=1.0,
-    ramp_fraction=1.0,
-)
+#     # interp ramp
+#     interp_ramp=True,
+#     ramp_tail_ms=1.0,
+#     ramp_fraction=1.0,
+# )
         
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
@@ -198,6 +198,7 @@ def main():
 
         save = dict(
             peaks=peaks,
+            noise_levels=noise_levels,
             ir_idx=ir_idx,
             ir_ms=ir_ms,
             meta=dict(

@@ -111,7 +111,7 @@ def extract_stim_triggers_and_blocks(
         block_bounds_samples = np.empty((0, 2), dtype=np.int64)
     else:
         pulse_size_ref = int(np.median(pulse_sizes))
-        repeat_gap_threshold = 50 * pulse_size_ref
+        repeat_gap_threshold = 50 * pulse_size_ref #TODO This right now categorizes everything higher than 10Hz stim as a "block"
 
         starts = trigger_pairs[:, 0]
         ends   = trigger_pairs[:, 1]

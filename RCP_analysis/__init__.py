@@ -42,6 +42,11 @@ from .python.functions.utils import (
     bin_counts_around_stim,
     smooth_counts_gauss,
 )
+# artifact correction
+from .python.functions.artifact_correction import (
+    IPCA_Artifact_Correction,
+    Template,
+)
 # intan
 from .python.functions.intan_preproc import (
     reorder_recording_to_geometry,
@@ -57,11 +62,16 @@ from .python.functions.br_preproc import (
     apply_ua_mapping_with_regions,
     extract_br_aux_streams_npz,
 )
+# impedance
+from .python.functions.impedance_utils import (
+    get_session_impedances,
+)
 
 # plotting
 from .python.plotting.plotting import (
     stacked_heatmaps_plus_behv,
 )
+
 
 __all__ = [
     # params
@@ -107,6 +117,13 @@ __all__ = [
     "dedup_peaks",
     "bin_counts_around_stim",
     "smooth_counts_gauss",
+    
+    # Impedance utils
+    "get_session_impedances",
+    
+    # artifact correction
+    "IPCA_Artifact_Correction",
+    "Template",
     
     # BR/UA
     "list_br_sessions",

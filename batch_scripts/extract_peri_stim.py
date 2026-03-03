@@ -1105,7 +1105,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         n_ts_state_trls_B = int(idx_B.size)
 
         # dedup peaks
-        ua_peak_ms_dedup, ua_amps_ms_dedup = _dedup_peaks(ua_peak_ms, ua_peak_amps, UA_DEDUP_MS, MAX_CLUSTER_MS)
+        ua_peak_ms_dedup, ua_amps_ms_dedup = rcp.dedup_peaks(ua_peak_ms, ua_peak_amps, UA_DEDUP_MS, MAX_CLUSTER_MS)
 
         # Blanking params (disable for controls)
         ua_ms_before = 0.0 if is_control else UA_MS_BEFORE
@@ -1120,7 +1120,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         ua_rates_hz_baselined = rcp.baseline_zero_each_trial(ua_rates_hz, ua_rel_t, normalize_first_ms=NORMALIZE_FIRST_MS)
 
     # dedup peaks
-    nprw_peak_ms_dedup, nprw_amps_ms_dedup = _dedup_peaks(nprw_peak_ms, nprw_peak_amps, NPRW_DEDUP_MS, MAX_CLUSTER_MS)
+    nprw_peak_ms_dedup, nprw_amps_ms_dedup = rcp.dedup_peaks(nprw_peak_ms, nprw_peak_amps, NPRW_DEDUP_MS, MAX_CLUSTER_MS)
 
     # Blanking params (disable for controls)
     nprw_ms_before = 0.0 if is_control else NPRW_MS_BEFORE
@@ -1306,9 +1306,9 @@ def main():
     if not control_files and not stim_files and not at_rest_files:
         raise SystemExit(f"[error] No combined aligned NPZs found at {ALIGNED_CKPT_ROOT}")
     
-    # # normal: per-file processing
-    # for file in stim_files:
-    #     extract_one_file(file, out_dir = STIM_PERI_ROOT, use_ir_ms=False, split_targets=True)
+    # normal: per-file processing
+    for file in stim_files:
+        extract_one_file(file, out_dir = STIM_PERI_ROOT, use_ir_ms=False, split_targets=True)
         # Extract files normally - done
         # Split A and B reaches - done
         # Aggregate and save - done
@@ -1317,15 +1317,15 @@ def main():
         # aggregate_and_save_normal(td, PERI_ROOT)
 
     # at_rest: per-file processing (no A/B)
-    # for file in at_rest_files:
-    #     extract_one_file(file, out_dir = AT_REST_PERI_ROOT, use_ir_ms=False, split_targets=False)
+    for file in at_rest_files:
+        extract_one_file(file, out_dir = AT_REST_PERI_ROOT, use_ir_ms=False, split_targets=False)
         # Extract files without splitting by target - done
         # Aggregate and save - done
         
         # td = extract_trials_from_npz(f)
         # aggregate_and_save_at_rest(td, PERI_ROOT)
 
-    # # control: split A/B, align to ir_ms
+    # control: split A/B, align to ir_ms
     for file in control_files:
         extract_one_file(file, out_dir = CONTROL_PERI_ROOT, use_ir_ms=True, split_targets=True, is_control=True)
         # Extract files normally but use ir_ms as alignment - done

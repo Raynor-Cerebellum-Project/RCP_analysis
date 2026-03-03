@@ -29,7 +29,7 @@ Y_LIM       = (-50, 50)         # µV range; set to None for auto-scale
 TRIAL_INDEX = 6#'all'                     # which trial (stim event) to plot; 'all' for overlay
 # ──────────────────────────────────────────────────
 
-REPO_ROOT   = Path(__file__).resolve().parents[1]
+REPO_ROOT   = Path().resolve().parents[1]
 PARAMS      = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
 SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
 SESSION     = getattr(PARAMS, "session", "UNKNOWN")
