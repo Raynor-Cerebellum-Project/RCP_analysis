@@ -1150,7 +1150,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         # bin ONLY on valid stims per stream
         ua_counts, ua_rel_t, ua_edges_ms, ua_left_bins = rcp.bin_counts_around_stim(
             ua_peak_ms_dedup, UA_BIN_MS, event_ms,
-            ua_ms_before, (stim_dur + ua_tail_ms), WIN_MS
+            ua_ms_before, ua_tail_ms, WIN_MS
         )
         ua_rates_hz = rcp.smooth_counts_gauss(ua_counts, ua_edges_ms, ua_rel_t, UA_SIGMA_MS, ua_left_bins)
         ua_rates_hz_baselined = rcp.baseline_zero_each_trial(ua_rates_hz, ua_rel_t, normalize_first_ms=NORMALIZE_FIRST_MS)

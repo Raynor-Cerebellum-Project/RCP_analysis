@@ -771,7 +771,7 @@ def process_file(npz_path, best_controls=None):
             if view_bin_ms is not None:
                 counts_data, centers_ms, edges_ms = _rebin_from_peaks(
                     peaks_dict, event_ms, view_win, view_bin_ms, stim_dur_ms,
-                    blank_pre_ms=5.0, blank_post_ms=5.0)
+                    blank_pre_ms=0.0, blank_post_ms=0.0)
                 cur_ylim = PSTH_YLIM_ZOOM
             else:
                 counts_data = counts_data_orig
@@ -814,8 +814,8 @@ def process_file(npz_path, best_controls=None):
                     peak_times = peaks_dict.get(ch_id, [])
                     
                     plot_channel_group(ax_raster, ax_psth, peak_times, event_ms, binned, edges_ms,
-                                       f"{reg} - Ch {real_id}", stim_dur_ms=stim_dur_ms, 
-                                       blank_pre_ms=5.0, blank_post_ms=5.0, # UA default blanking
+                                       f"{reg} - Ch {real_id}", stim_dur_ms=0.0, 
+                                       blank_pre_ms=0.0, blank_post_ms=0.0, # UA default blanking
                                        bin_centers=centers_ms,
                                        n_trials_ref=n_trials_ref, win_ms=view_win, psth_ylim=cur_ylim)
                     if 2*r+1 < (rows*2 - 2):
@@ -878,17 +878,17 @@ def process_file(npz_path, best_controls=None):
                         
                         if diff_norm is not None:
                             # Apply blanking mask to diff_norm
-                            if stim_dur_ms > 0:
-                                t0, t1 = -5.0, stim_dur_ms + 5.0
-                                if centers_ms is not None:
-                                    mask = (centers_ms >= t0) & (centers_ms <= t1)
-                                    if diff_norm.shape[1] == len(mask):
-                                        diff_norm[:, mask] = np.nan
-                                elif edges_ms is not None:
-                                    ctrs = (edges_ms[:-1] + edges_ms[1:]) / 2
-                                    mask = (ctrs >= t0) & (ctrs <= t1)
-                                    if diff_norm.shape[1] == len(mask):
-                                        diff_norm[:, mask] = np.nan
+                            # if stim_dur_ms > 0:
+                            #     t0, t1 = -5.0, stim_dur_ms + 5.0
+                            #     if centers_ms is not None:
+                            #         mask = (centers_ms >= t0) & (centers_ms <= t1)
+                            #         if diff_norm.shape[1] == len(mask):
+                            #             diff_norm[:, mask] = np.nan
+                            #     elif edges_ms is not None:
+                            #         ctrs = (edges_ms[:-1] + edges_ms[1:]) / 2
+                            #         mask = (ctrs >= t0) & (ctrs <= t1)
+                            #         if diff_norm.shape[1] == len(mask):
+                            #             diff_norm[:, mask] = np.nan
 
                             for reg_target in REGION_ORDER:
                                 if reg_target not in regions or not regions[reg_target]:
@@ -929,11 +929,11 @@ def process_file(npz_path, best_controls=None):
                                             ax_diff.bar(edges_ms[:-1], d_ch, width=np.diff(edges_ms), align='edge',
                                                         color=bar_colors, edgecolor='none')
                                     
-                                    if stim_dur_ms > 0:
-                                        # UA default blanking: 5ms pre, 5ms post
-                                        rect_start = -5.0
-                                        rect_end = stim_dur_ms + 5.0
-                                        ax_diff.axvspan(rect_start, rect_end, color='gray', alpha=0.3, edgecolor=None)
+                                    # if stim_dur_ms > 0:
+                                    #     # UA default blanking: 5ms pre, 5ms post
+                                    #     rect_start = -5.0
+                                    #     rect_end = stim_dur_ms + 5.0
+                                    #     ax_diff.axvspan(rect_start, rect_end, color='gray', alpha=0.3, edgecolor=None)
                                     ax_diff.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
                                     ax_diff.set_title(f"{reg} - Ch {real_id}", fontsize=10, pad=4)
                                     ax_diff.set_xlim(view_win)
