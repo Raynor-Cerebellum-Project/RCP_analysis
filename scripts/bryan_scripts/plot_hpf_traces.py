@@ -22,8 +22,8 @@ matplotlib.rcParams["svg.fonttype"] = "none"
 # USER SETTINGS
 # ──────────────────────────────────────────────────
 CONDITION   = 10             # BR index  (= condition number)
-PROBE       = "NPRW"        # "NPRW" or "UA"
-CHANNELS    = list(range(7, 16))   # 0-indexed channel rows to plot (7–15)
+PROBE       = "UA"        # "NPRW" or "UA"
+CHANNELS    = list(range(1, 128))   # 0-indexed channel rows to plot (7–15)
 WINDOW_MS   = (-50.0, 200.0)      # (start, end) relative to stim onset
 Y_LIM       = (-50, 50)         # µV range; set to None for auto-scale
 TRIAL_INDEX = 6#'all'                     # which trial (stim event) to plot; 'all' for overlay

@@ -1,7 +1,43 @@
 import re, json
 from scipy.io import savemat
 import RCP_analysis as rcp
+
 from RCP_analysis.python.functions.config_loading import *
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Helper Functions
+# ----------------------------------------------------------------------------------------------------------------------
+
+def _dedup_peaks(
+    peaks: dict[int, np.ndarray],
+    amps: dict[int, np.ndarray],
+    dedup_ms: float = 0.5,
+    max_cluster_ms: float = 1.0,
+):
+    """Deduplicate peaks per (segment, channel), keeping strongest within short windows"""
+    peaks_dedup = {}
+    amps_dedup = {}
+    for ch in peaks:
+        t_ch = peaks[ch]
+        a_ch = amps[ch]
+        num_peaks = len(t_ch)
+        keep = np.zeros(num_peaks, dtype = bool)
+        cluster_start = 0 # index counter
+        for i in range(1, num_peaks):
+            isi = t_ch[i] - t_ch[i - 1]
+            if isi > dedup_ms or (t_ch[i] - t_ch[cluster_start]) > max_cluster_ms: # If isi violation or cluster too big
+                best = cluster_start + np.argmax(a_ch[cluster_start: i]) # Find max and give index
+                keep[best] = True # Keep this spike
+                cluster_start = i
+
+        # finalize last cluster
+        if num_peaks > 0:
+            best = cluster_start + np.argmax(a_ch[cluster_start: num_peaks])
+            keep[best] = True
+            
+        peaks_dedup[ch] = peaks[ch][np.argwhere(keep == True).flatten()]
+        amps_dedup[ch] = amps[ch][np.argwhere(keep == True).flatten()]
+    return peaks_dedup, amps_dedup
 
 SHIFTS_CSV = METADATA_ROOT / "br_to_intan_shifts.csv"
 
@@ -33,8 +69,8 @@ NPRW_DEDUP_MS = float(NPRW_RATES.get("dedup_ms", 0.5))
 UA_RATES = PARAMS.UA_rate_est
 UA_BIN_MS     = UA_RATES.get("bin_ms")
 UA_SIGMA_MS   = UA_RATES.get("sigma_ms")
-UA_MS_BEFORE = float(UA_RATES.get("remove_ms_before", 5.0))
-UA_TAIL_MS   = float(UA_RATES.get("remove_tail_ms_after", 5.0))
+UA_MS_BEFORE = 0.0 # float(UA_RATES.get("remove_ms_before", 5.0))
+UA_TAIL_MS   = 0.0 # float(UA_RATES.get("remove_tail_ms_after", 5.0))
 UA_DEDUP_MS = float(UA_RATES.get("dedup_ms", 0.2))
 MAX_CLUSTER_MS = 0.5
 
@@ -1114,7 +1150,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         # bin ONLY on valid stims per stream
         ua_counts, ua_rel_t, ua_edges_ms, ua_left_bins = rcp.bin_counts_around_stim(
             ua_peak_ms_dedup, UA_BIN_MS, event_ms,
-            ua_ms_before, (stim_dur + ua_tail_ms), WIN_MS
+            ua_ms_before, ua_tail_ms, WIN_MS
         )
         ua_rates_hz = rcp.smooth_counts_gauss(ua_counts, ua_edges_ms, ua_rel_t, UA_SIGMA_MS, ua_left_bins)
         ua_rates_hz_baselined = rcp.baseline_zero_each_trial(ua_rates_hz, ua_rel_t, normalize_first_ms=NORMALIZE_FIRST_MS)
@@ -1306,7 +1342,7 @@ def main():
     if not control_files and not stim_files and not at_rest_files:
         raise SystemExit(f"[error] No combined aligned NPZs found at {ALIGNED_CKPT_ROOT}")
     
-    # normal: per-file processing
+    # # normal: per-file processing
     for file in stim_files:
         extract_one_file(file, out_dir = STIM_PERI_ROOT, use_ir_ms=False, split_targets=True)
         # Extract files normally - done
@@ -1317,6 +1353,8 @@ def main():
         # aggregate_and_save_normal(td, PERI_ROOT)
 
     # at_rest: per-file processing (no A/B)
+    for file in at_rest_files:
+        extract_one_file(file, out_dir = AT_REST_PERI_ROOT, use_ir_ms=False, split_targets=False)
     for file in at_rest_files:
         extract_one_file(file, out_dir = AT_REST_PERI_ROOT, use_ir_ms=False, split_targets=False)
         # Extract files without splitting by target - done

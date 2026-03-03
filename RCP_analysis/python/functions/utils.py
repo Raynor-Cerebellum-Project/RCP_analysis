@@ -986,7 +986,11 @@ def bin_counts_around_stim(
         if right_window_edges_ms.size > 1 else np.array([], float)
     )
 
-    bin_edges_ms   = np.concatenate([left_window_edges_ms, right_window_edges_ms])
+    if left_window_edges_ms.size > 0 and right_window_edges_ms.size > 0 and np.isclose(left_window_edges_ms[-1], right_window_edges_ms[0], atol=1e-6):
+        bin_edges_ms = np.concatenate([left_window_edges_ms[:-1], right_window_edges_ms])
+    else:
+        bin_edges_ms = np.concatenate([left_window_edges_ms, right_window_edges_ms])
+        
     bin_centers_ms = np.concatenate([left_bin_centers_ms, right_bin_centers_ms])
     n_bins         = bin_centers_ms.size
 
@@ -1119,9 +1123,14 @@ def smooth_counts_gauss(
     left_centers  = bin_centers_ms[:gap_bin]
     right_centers = bin_centers_ms[gap_bin:]
 
-    # edges is length (T+2): left edges (L+1) + right edges (R+1)
-    left_edges  = edges[:gap_bin + 1]
-    right_edges = edges[gap_bin + 1:]
+    if edges.size == counts.shape[-1] + 1:
+        # Edge array was safely deduplicated (T+1 edges for continuous T)
+        left_edges  = edges[:gap_bin + 1]
+        right_edges = edges[gap_bin:]
+    else:
+        # edges is length (T+2): left edges (L+1) + right edges (R+1)
+        left_edges  = edges[:gap_bin + 1]
+        right_edges = edges[gap_bin + 1:]
 
     left_sm  = _smooth_segment(left_counts,  left_edges,  left_centers,  sigma_ms)
     right_sm = _smooth_segment(right_counts, right_edges, right_centers, sigma_ms)

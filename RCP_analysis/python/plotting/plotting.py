@@ -622,3 +622,30 @@ def stacked_heatmaps_plus_behv(
     fig.subplots_adjust(top=0.96)           # pull axes up toward the top
     fig.savefig(out_svg, dpi=300, bbox_inches="tight", pad_inches=0.25)
     plt.close(fig)
+
+
+        # ax_probe.set_xticks([])
+        # ax_probe.set_yticks([])
+
+    # ---------- Sync x-lims ----------
+    x_ranges = []
+    if has_nprw: x_ranges.append((t_nprw[0], t_nprw[-1]))
+    if has_ua:    x_ranges.append((t_ua[0],    t_ua[-1]))
+    if beh_rel_time is not None and (have_cam0_pos or have_cam1_pos or have_cam0_vel or have_cam1_vel):
+        x_ranges.append((beh_rel_time[0], beh_rel_time[-1]))
+    if x_ranges:
+        xmin = float(min(lo for lo, _ in x_ranges))
+        xmax = float(max(hi for _, hi in x_ranges))
+        # Sync x-lims
+        for ax in [a for a in fig.axes if isinstance(a, plt.Axes)]:
+            if getattr(ax, "_is_time_axis", False):
+                ax.set_xlim(xmin, xmax)
+
+    # ---------- Overall title ----------
+    out_svg = Path(out_svg)
+    out_svg.parent.mkdir(parents=True, exist_ok=True)
+    if overall_title:
+        fig.suptitle(overall_title, fontsize=13, fontweight="bold", y=0.995, va="top")
+    fig.subplots_adjust(top=0.96)           # pull axes up toward the top
+    fig.savefig(out_svg, dpi=300, bbox_inches="tight", pad_inches=0.25)
+    plt.close(fig)

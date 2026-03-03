@@ -38,7 +38,7 @@ class IPCA_Artifact_Correction:
         self.rank = rank
         
 
-    def ipca_template_per_channel(self, signal, template, learning_rate=0.5):
+    def ipca_template_per_channel(self, signal, template, learning_rate=0.9):
         """
         Incremental PCA to correct one channel
         
@@ -51,18 +51,19 @@ class IPCA_Artifact_Correction:
             template: updated template with new weights
         """
         n_stim, n_time = signal.shape
+
+        baseline_mean = np.mean(signal[:, :3], axis=1, keepdims=True)
+        signal = signal - baseline_mean
         
         ipca = IncrementalPCA(n_components=self.rank)
 
-        # Pass the entire signal to partial_fit. If memory is a concern later, 
-        # this can be chunked, but chunk size must be >= self.rank
         ipca.partial_fit(signal)
         
         V_new = ipca.components_
         template.update_weights(V_new, learning_rate=learning_rate)
         
         artifact = signal @ template.weights.T @ template.weights
-        signal_corrected = signal - artifact
+        signal_corrected = signal - artifact + baseline_mean
         
         return signal_corrected, template
 
@@ -92,7 +93,7 @@ class IPCA_Artifact_Correction:
             templates_all.append(template)
             
         return signal_all, templates_all
-    
+
     def apply_template(self, signal, template):
         """
         Apply existing template to new signal WITHOUT updating the weight!
