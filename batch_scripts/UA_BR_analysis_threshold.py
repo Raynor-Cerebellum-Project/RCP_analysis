@@ -11,8 +11,83 @@ from RCP_analysis.python.functions.config_loading import *
 from RCP_analysis.python.functions.artifact_correction import IPCA_Artifact_Correction
 from RCP_analysis.python.functions.config_loading import *
 
+from spikeinterface.core import BaseRecording, BaseRecordingSegment
+
 # Suppress annoying SpikeInterface provenance warning when manually reconstructing memory arrays
 warnings.filterwarnings("ignore", message="The extractor is not serializable to file. The provenance will not be saved.")
+
+class IPCACorrectedRecordingSegment(BaseRecordingSegment):
+    def __init__(self, parent_recording_segment, micro_map, micro_corrected):
+        """
+        micro_map: list of tuples (p_start, p_end) indicating where artifacts are
+        micro_corrected: np.ndarray of shape (n_events, n_time, n_channels) holding the IPCA patches
+        """
+        BaseRecordingSegment.__init__(self, **parent_recording_segment.get_times_kwargs())
+        self.parent_recording_segment = parent_recording_segment
+        self.micro_map = micro_map
+        self.micro_corrected = micro_corrected
+
+    def get_num_samples(self):
+        return self.parent_recording_segment.get_num_samples()
+
+    def get_traces(self, start_frame, end_frame, channel_indices):
+        # 1. Ask the parent for the clean disk-backed chunk
+        traces = self.parent_recording_segment.get_traces(start_frame, end_frame, channel_indices)
+        
+        # We need a writeable copy to patch
+        traces = traces.copy() 
+        
+        if self.micro_map is None or len(self.micro_map) == 0:
+            return traces
+            
+        # 2. Find any artifacts that intersect with our current [start_frame, end_frame] chunk
+        for p, (p_start, p_end) in enumerate(self.micro_map):
+            # Check for overlap
+            overlap_start = max(start_frame, p_start)
+            overlap_end = min(end_frame, p_end)
+            
+            if overlap_start < overlap_end:
+                # Calculate indices relative to our current trace chunk
+                chunk_idx_start = overlap_start - start_frame
+                chunk_idx_end = overlap_end - start_frame
+                
+                # Calculate indices relative to the pre-computed artifact patch
+                patch_idx_start = overlap_start - p_start
+                patch_idx_end = overlap_end - p_start
+                
+                # Slice the micro_corrected patch (only for the requested channels)
+                if channel_indices is None:
+                    # All channels
+                    patch = self.micro_corrected[p, patch_idx_start:patch_idx_end, :]
+                else:
+                    # Specific channels
+                    patch = self.micro_corrected[p, patch_idx_start:patch_idx_end, channel_indices]
+                
+                # Overwrite the disk trace with the IPCA-corrected data
+                traces[chunk_idx_start:chunk_idx_end, :] = patch
+                
+        return traces
+
+class IPCACorrectedRecording(BaseRecording):
+    """
+    A SpikeInterface BaseRecording that lazily streams disk data 
+    and surgically inserts pre-computed IPCA artifact patches on the fly.
+    """
+    def __init__(self, parent_recording, micro_map, micro_corrected):
+        BaseRecording.__init__(self, 
+                               parent_recording.get_sampling_frequency(), 
+                               parent_recording.channel_ids, 
+                               parent_recording.get_dtype())
+        self.parent_recording = parent_recording
+        
+        # Copy properties and annotations
+        parent_recording.copy_metadata(self)
+        
+        # Create a matching segment
+        for segment_index in range(parent_recording.get_num_segments()):
+            parent_segment = parent_recording._recording_segments[segment_index]
+            self.add_recording_segment(IPCACorrectedRecordingSegment(parent_segment, micro_map, micro_corrected))
+
 
 """ 
     This script preprocesses the Blackrock data.
@@ -117,11 +192,13 @@ def main():
         out_dir = UA_CKPT_OUT / f"pp__{sess.name}__NS6"
         out_npz = UA_CKPT_OUT / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
         
-        # if out_dir.exists() and out_npz.exists():
-        #     print(f"[SKIP] Both outputs already exist for {sess.name}")
-        #     print(f"       - Preprocessed: {out_dir}")
-        #     print(f"       - Rates: {out_npz}")
-        #     continue
+        if out_dir.exists() and out_npz.exists():
+            print(f"[SKIP] Both outputs already exist for {sess.name}")
+            print(f"       - Preprocessed: {out_dir}")
+            print(f"       - Rates: {out_npz}")
+            continue
+        
+        temp_bin_path = None # Initialize temp_bin_path
         touchscreen_sig, hr_sig, vog_sig, meta_ns5, meta_ns2 = rcp.extract_br_aux_streams_npz(sess, UA_AUX_DATA, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH, TOUCHSCREEN_CH, HR_CH, VOG_CH) # Extract sync pulses and stuff
         fs_hr = meta_ns2["fs_hr"]
         fs_vog = meta_ns2["fs_vog"]
@@ -197,10 +274,7 @@ def main():
                     target_ch_regions = [int(ua_region[i]) for i in valid_idx]
                     ref_ch_id = target_ch_ids[0]
                     
-                    # Load the complete raw recording into memory for correction
-                    print("[IPCA] Loading full trace into memory...")
-                    full_traces = rec_ns6.get_traces(return_in_uV=True)
-                    corrected_traces = full_traces.copy()
+                    print("[IPCA] Scanning Blackrock raw file sequentially for artifact triggers...")
                     
                     micro_signal_list = []
                     micro_map = []  # (block_idx, p_start, p_end)
@@ -216,7 +290,7 @@ def main():
                         end_search    = st + fw_end + search_margin
                         if start_search < 0 or end_search > n_total: continue
                         
-                        tr_search = full_traces[start_search:end_search, valid_idx[0]]
+                        tr_search = rec_ns6.get_traces(start_frame=start_search, end_frame=end_search, channel_ids=[rec_ns6.get_channel_ids()[valid_idx[0]]], return_in_uV=True)[:, 0]
                         tr_diff_search  = np.abs(np.diff(tr_search, prepend=tr_search[0]))
                         
                         predicted_centre = -fw_start + search_margin
@@ -261,7 +335,7 @@ def main():
                             s_hi = min(n_total, nxt + search_radius_idx)
                             if s_hi <= s_lo: break
                             
-                            tr_diff = np.abs(np.diff(full_traces[s_lo:s_hi, valid_idx[0]]))
+                            tr_diff = np.abs(np.diff(rec_ns6.get_traces(start_frame=s_lo, end_frame=s_hi, channel_ids=[rec_ns6.get_channel_ids()[valid_idx[0]]], return_in_uV=True)[:, 0]))
                             peak_idx = np.argmax(tr_diff)
                             
                             if tr_diff[peak_idx] < 0.15 * max_diff: break
@@ -276,12 +350,12 @@ def main():
                             r_hi = min(n_total, p_idx + refine_samp + 1)
                             if r_lo >= r_hi: continue
                             
-                            true_centre = r_lo + _find_first_significant_peak(full_traces[r_lo:r_hi, valid_idx[0]])
+                            true_centre = r_lo + _find_first_significant_peak(rec_ns6.get_traces(start_frame=r_lo, end_frame=r_hi, channel_ids=[rec_ns6.get_channel_ids()[valid_idx[0]]], return_in_uV=True)[:, 0])
                             p_start = true_centre + mw_start
                             p_end   = true_centre + mw_end
                             
                             if p_start >= 0 and p_end <= n_total:
-                                micro_signal_list.append(full_traces[p_start:p_end, :])
+                                micro_signal_list.append(rec_ns6.get_traces(start_frame=p_start, end_frame=p_end, return_in_uV=True).copy())
                                 micro_map.append((p_start, p_end))
 
                     if not micro_signal_list:
@@ -303,7 +377,7 @@ def main():
                         # Cross-channel IPCA using existing artifact_correction.py methods,
                         # learned separately for each brain region (SMA, PMd, M1i, M1s).
                         from RCP_analysis.python.functions.artifact_correction import Template
-                        micro_corrected = np.zeros_like(micro_signal_array)
+                        micro_corrected = micro_signal_array.copy()
                         
                         n_stim, n_time, _ = micro_signal_array.shape
                         
@@ -334,21 +408,14 @@ def main():
                                 corr_ch = centered - artifact + baseline
                                 micro_corrected[:, :, ch_idx] = corr_ch
                                 
-                        # Write corrected data directly back to full trace
-                        for reg, idxs in region_to_idxs.items():
-                            for ch_idx in idxs:
-                                real_ch = valid_idx[ch_idx] # map from local idx to global channel
-                                for p, (p_start, p_end) in enumerate(micro_map):
-                                    corrected_traces[p_start:p_end, real_ch] = micro_corrected[p, :, ch_idx]
-                                    
-                        print("[IPCA] Building corrected NumpyRecording...")
-                        rec_corr_mem = se.NumpyRecording(corrected_traces, fs_ua, channel_ids=rec_ns6.get_channel_ids())
+                        print("[IPCA] Building dynamically-correcting IPCACorrectedRecording...")
+                        rec_corr_mem = IPCACorrectedRecording(rec_ns6, micro_map, micro_corrected)
                         
                         print("[IPCA] Filter after correction...")
                         rec_hp = spre.highpass_filter(rec_corr_mem, freq_min=float(PARAMS.highpass_hz))
                         rec_artif_removed = rec_hp
                         
-                        del full_traces, corrected_traces, micro_signal_array
+                        del micro_signal_array, micro_corrected
                         gc.collect()
 
                 else:
@@ -379,42 +446,48 @@ def main():
             
         out_dir = UA_CKPT_OUT / f"pp__{sess.name}__NS6"; out_dir.mkdir(parents=True, exist_ok=True)
         
-        # When IPCA is used, rec_artif_removed is an in-memory NumpyRecording.
-        # Multiproc save will pickle this entire array N times, causing MemoryErrors.
+        # Custom IPCA Nodes are not easily fork-serializable. Force sequential write.
         skip_multiproc = USE_IPCA_CORRECTION and block_bounds.size > 0
         if skip_multiproc:
-            print(f"[IPCA] Saving IPCA-corrected recording to disk sequentially to conserve memory...")
+            print("[IPCA] Saving sequentially (n_jobs=1) because custom nodes cannot be pickled...")
             rec_artif_removed.save(folder=out_dir, overwrite=True, n_jobs=1)
         else:
             rec_artif_removed.save(folder=out_dir, overwrite=True)
             
         print(f"[{sess.name}] (ns6) saved preprocessed -> {out_dir}")
         
-        # Free up the massive in-memory array and point directly to the new disk-backed chunks.
-        # This prevents MemoryErrors when detect_peaks spawns new processes.
-        if skip_multiproc:
-            del rec_artif_removed
-            gc.collect()
-            rec_artif_removed = si.load_extractor(out_dir)
-            
-        print(f"[{sess.name}] (ns6) saved preprocessed -> {out_dir}")
-        
-        del rec_hp
+        del rec_artif_removed
+        if 'rec_corr_mem' in locals(): del rec_corr_mem
+        if 'rec_hp' in locals(): del rec_hp
         gc.collect()
+                    
+        rec_artif_removed = si.load_extractor(out_dir)
         
         n_seg = rec_artif_removed.get_num_segments()
         # Detect peaks
         noise_levels = si.get_noise_levels(rec_artif_removed, method="mad", return_in_uV=False) # They didn't write return_in_uV in their documentation
         
         print(f"[INFO] Segments of recording: {n_seg}, Average noise level: {np.nanmean(noise_levels)}")
-        peaks = detect_peaks(
-            rec_artif_removed,
-            method="by_channel_torch",
-            detect_threshold=THRESH,
-            peak_sign=PEAK_SIGN,
-            noise_levels=noise_levels,
-            n_jobs=PARAMS.parallel_jobs,
-        )
+        try:
+            # Force n_jobs=1 for PyTorch backend to prevent GPU memory fragmentation / OOM
+            peaks = detect_peaks(
+                rec_artif_removed,
+                method="by_channel_torch",
+                detect_threshold=THRESH,
+                peak_sign=PEAK_SIGN,
+                noise_levels=noise_levels,
+                n_jobs=1,
+            )
+        except Exception as exc:
+            print(f"[WARN] Torch peak detection failed ({exc}). Falling back to CPU locally_exclusive...")
+            peaks = detect_peaks(
+                rec_artif_removed,
+                method="locally_exclusive",
+                detect_threshold=THRESH,
+                peak_sign=PEAK_SIGN,
+                noise_levels=noise_levels,
+                n_jobs=PARAMS.parallel_jobs,
+            )
         
         # Threshold to get touchscreen state
         ts_state_num = np.zeros(0, dtype=np.int8)

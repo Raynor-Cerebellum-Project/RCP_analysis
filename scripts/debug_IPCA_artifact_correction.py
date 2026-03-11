@@ -39,11 +39,12 @@ import json
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
-import spikeinterface as si
 import spikeinterface.preprocessing as spre
 import spikeinterface.extractors as se
 from probeinterface import Probe
 from scipy.io import loadmat
+from scipy.optimize import curve_fit
+from scipy.signal import butter, sosfiltfilt
 from pathlib import Path
 
 import RCP_analysis as rcp
@@ -134,6 +135,11 @@ def _find_first_significant_peak(signal_chunk: np.ndarray) -> int:
     return lo + int(np.argmax(centered[lo:hi]))
 
 
+def _exp_model(t: np.ndarray, A: float, tau: float) -> np.ndarray:
+    """Single-term exponential decay model: A * exp(-t / tau)."""
+    return A * np.exp(-t / tau)
+
+
 # ═════════════════════════════════════════════════════════════════════
 # Main entry point
 # ═════════════════════════════════════════════════════════════════════
@@ -151,6 +157,14 @@ def run_ipca_debug(
     use_behavior_filter: bool = True,
     ua_refine_search_ms: float = 0.15,
     reference_ch: int = None,
+    exp_subtract: bool = True,
+    exp_fit_guard_ms: float = 1.0,
+    exp_n_tau_fits: int = 5,
+    exp_tau_bounds_ms: tuple = (0.1, 30.0),
+    exp_tau_seed_ms: float = 5.0,
+    plot_rank_variance: bool = False,
+    plot_learning_rate_sweep: bool = False,
+    override_freq: float = None,
 ):
     """Run the full IPCA artifact-correction debug pipeline.
 
@@ -182,6 +196,12 @@ def run_ipca_debug(
     reference_ch : int or None
         When target_ch="all", which channel to use for pulse detection.
         Defaults to the first mapped channel.
+    plot_rank_variance : bool
+        If True and running in single-channel mode, plots the Cumulative 
+        Explained Variance vs IPCA Rank to help find the optimal elbow.
+    plot_learning_rate_sweep : bool
+        If True and running in single-channel mode, sweeps learning rates 
+        (0.1 to 1.0) and plots the residual temporal variance/MSE.
 
     Returns
     -------
@@ -190,8 +210,7 @@ def run_ipca_debug(
     """
     all_channels_mode = isinstance(target_ch, str) and target_ch.lower() == "all"
     ch_label = "ALL" if all_channels_mode else str(target_ch)
-    print(f"Running IPCA Debug | Cond: {condition} | Probe: {probe} "
-          f"| Ch: {ch_label} | Rank: {ipca_rank}")
+    print(f"Running IPCA Debug | Cond: {condition} | Probe: {probe} | Ch: {ch_label} | Rank: {ipca_rank}")
 
     # ─────────────────────────────────────────────────────────────────
     # §1  STIMULUS DISCOVERY
@@ -333,7 +352,11 @@ def run_ipca_debug(
         rec_proc = spre.highpass_filter(rec_proc, freq_min=300.0)
 
     # 2b. Timing constants
-    stim_freq        = float(meta.get("Freq", 300.0))
+    if override_freq is not None:
+        stim_freq = float(override_freq)
+    else:
+        stim_freq = float(meta.get("Freq", 400.0))
+        
     pulse_interval_ms = 1000.0 / stim_freq
     num_pulses       = int(np.floor(stim_dur / pulse_interval_ms)) + 1
     print(f"-> Stim frequency: {stim_freq} Hz")
@@ -392,28 +415,43 @@ def run_ipca_debug(
             if matches.size == 0:
                 print(f"Warning: UA ch {target_ch} not mapped in this recording.")
                 return
-            ref_ch_id = all_ch_ids[matches[0]]
+            target_ch_id = all_ch_ids[matches[0]]
+            
+            # Use reference channel for pulse detection if provided
+            if reference_ch is not None:
+                ref_matches = np.where(ua_elec == reference_ch)[0]
+                if ref_matches.size == 0:
+                    print(f"Warning: reference ch {reference_ch} not mapped; using target channel.")
+                    ref_ch_id = target_ch_id
+                else:
+                    ref_ch_id = all_ch_ids[ref_matches[0]]
+            else:
+                ref_ch_id = target_ch_id
         else:
-            ref_ch_id = all_ch_ids[target_ch]
-        target_ch_ids = [ref_ch_id]
+            target_ch_id = all_ch_ids[target_ch]
+            ref_ch_id = target_ch_id if reference_ch is None else all_ch_ids[reference_ch]
+            
+        target_ch_ids = [target_ch_id]
         target_ch_elecs = [target_ch]
         n_channels = 1
+        print(f"-> Single-channel mode: Target Ch {target_ch}, Pulse detection on ref ch {reference_ch or target_ch}")
 
     # 2d. Pre-allocate extraction buffers
     full_raw_array    = np.zeros((len(valid_stims), full_n_time), dtype=np.float32)
+    full_orig_array   = np.zeros((len(valid_stims), full_n_time), dtype=np.float32)  # true raw, never overwritten
     micro_signal_array = np.zeros(
         (len(valid_stims) * (num_pulses + 10), micro_n_time, n_channels),
         dtype=np.float32,
     )
-    pulse_counter    = 0
-    micro_map        = []          # (trial_idx, start_frame, end_frame)
-    interval_idx     = int(pulse_interval_ms / 1000 * fs)
+    pulse_counter     = 0
+    micro_map         = []          # (trial_idx, start_frame, end_frame)
+    interval_idx      = int(pulse_interval_ms / 1000 * fs)
     search_radius_idx = int((pulse_interval_ms * 0.4) / 1000 * fs)
-    train_start_idx  = max(0,  int((-5.0 - window_ms[0]) / 1000 * fs))
-    train_end_idx    = min(full_n_time, int((stim_dur + 5.0 - window_ms[0]) / 1000 * fs))
-    refine_samp      = (int(round(ua_refine_search_ms / 1000.0 * fs))
-                        if ua_refine_search_ms > 0 else 3)
-    coarse_radius    = max(refine_samp, 3)
+    train_start_idx   = max(0,  int((-5.0 - window_ms[0]) / 1000 * fs))
+    train_end_idx     = min(full_n_time, int((stim_dur + 5.0 - window_ms[0]) / 1000 * fs))
+    refine_samp       = (int(round(ua_refine_search_ms / 1000.0 * fs))
+                         if ua_refine_search_ms > 0 else 3)
+    coarse_radius     = max(refine_samp, 3)
 
     drift_logs = []
 
@@ -467,22 +505,24 @@ def run_ipca_debug(
         if final_start < 0 or final_end > rec_samples:
             continue
 
-        # Extract reference channel for pulse detection + full trace plot
+        # Extract reference channel for pulse detection ONLY
         tr = rec_proc.get_traces(
             start_frame=final_start, end_frame=final_end,
             channel_ids=[ref_ch_id], return_in_uV=True,
         ).squeeze()
-        full_raw_array[i, :] = tr
 
-        # If all-channels mode, also extract all channels for this window
-        if all_channels_mode:
-            tr_all = rec_proc.get_traces(
-                start_frame=final_start, end_frame=final_end,
-                channel_ids=target_ch_ids, return_in_uV=True,
-            )  # shape (n_time, n_channels)
-            
-            # Save the full trace of all channels for trial 0 to use in the geographic plot later
-            if i == 0:
+        # Extract actual target channels for processing and final plot
+        tr_all = rec_proc.get_traces(
+            start_frame=final_start, end_frame=final_end,
+            channel_ids=target_ch_ids, return_in_uV=True,
+        )  # shape (n_time, n_channels)
+        
+        # Store target channel 0 as the full raw array for visualisation
+        full_raw_array[i, :]  = tr_all[:, 0]
+        full_orig_array[i, :] = tr_all[:, 0]
+
+        # Save trial 0 raw all-channels for the geographic plot later.
+        if all_channels_mode and i == 0:
                 full_raw_array_all_t0 = tr_all.copy()
 
         if train_end_idx <= train_start_idx:
@@ -503,6 +543,9 @@ def run_ipca_debug(
         pulse_centres = [anchor_final]
         curr = anchor_final
         while True:
+            if len(pulse_centres) >= num_pulses:
+                break
+                
             nxt = curr + interval_idx
             if nxt > train_end_idx:
                 break
@@ -517,23 +560,113 @@ def run_ipca_debug(
 
         pulse_centres = sorted(set(pulse_centres))
 
-        # ── Refine each pulse centre to its first significant peak ───
+        # ── Pass 1: Refine each pulse centre to its first significant peak ───
+        true_centres = []   # refined pulse sample indices within full trial
         for p_idx in pulse_centres:
             r_lo = max(0, p_idx - refine_samp)
             r_hi = min(full_n_time, p_idx + refine_samp + 1)
             if r_lo >= r_hi:
                 continue
-            true_centre = r_lo + _find_first_significant_peak(tr[r_lo:r_hi])
+            tc = r_lo + _find_first_significant_peak(tr[r_lo:r_hi])
+            true_centres.append(tc)
 
-            p_start = true_centre + mw_start
-            p_end   = true_centre + mw_end
-            if p_start >= 0 and p_end <= full_n_time:
-                if all_channels_mode:
-                    micro_signal_array[pulse_counter, :, :] = tr_all[p_start:p_end, :]
+
+        # Per-pulse exponential decay subtraction.
+        # Fitting window for pulse k: [tc_k + mw_end, tc_{k+1} + mw_start],
+        # i.e. the gap between adjacent IPCA windows. Last pulse uses the same
+        # width (one stim interval). Fit is done on a DC-zeroed segment so that
+        # the large electrode baseline offset does not bias the tau estimate.
+        tr_exp_corrected = tr.copy()
+        tr_all_exp_corrected = tr_all.copy()
+
+        if exp_subtract and probe == "NPRW" and len(true_centres) > 0:
+            tau_lo      = float(exp_tau_bounds_ms[0]) / 1000.0
+            tau_hi      = float(exp_tau_bounds_ms[1]) / 1000.0
+            tau_seed    = float(exp_tau_seed_ms) / 1000.0
+            guard_samps = max(1, int(exp_fit_guard_ms / 1000.0 * fs))
+
+            # Re-fit (A, τ) at exp_n_tau_fits evenly spaced checkpoints across
+            # the pulse train; use fast linear A-fit between checkpoints.
+            n_pulses      = len(true_centres)
+            n_fits        = max(1, min(exp_n_tau_fits, n_pulses))
+            refit_interval = max(1, n_pulses // n_fits)
+            tau_fitted: float | None = None
+
+            # We build a continuous baseline for the entire trial to subtract, 
+            # so that no DC jumps are introduced at the IPCA micro-window boundaries.
+            baseline_single = np.zeros(full_n_time, dtype=float)
+            valid_mask      = np.zeros(full_n_time, dtype=bool)
+            baseline_all = np.zeros((full_n_time, n_channels), dtype=float)
+
+            for k, tc0 in enumerate(true_centres):
+                fit_start = tc0 + mw_end - guard_samps
+                if k + 1 < len(true_centres):
+                    fit_end = true_centres[k + 1] + mw_start + guard_samps
                 else:
-                    micro_signal_array[pulse_counter, :, 0] = tr[p_start:p_end]
+                    fit_end = min(tc0 + interval_idx + mw_start + guard_samps, full_n_time)
+
+                if fit_end <= fit_start + 3:
+                    continue
+
+                t_fit      = np.arange(fit_end - fit_start, dtype=float) / fs
+                ref_seg    = tr_exp_corrected[fit_start:fit_end].astype(float)
+                ref_zeroed = ref_seg - ref_seg[-1]
+
+                if tau_fitted is None or k % refit_interval == 0:
+                    # Checkpoint: full two-parameter fit to refresh τ.
+                    try:
+                        (A_ref, tau_fitted), _ = curve_fit(
+                            _exp_model, t_fit, ref_zeroed,
+                            p0=[float(ref_zeroed[0]), tau_fitted if tau_fitted else tau_seed],
+                            bounds=([-np.inf, tau_lo], [np.inf, tau_hi]),
+                            maxfev=500,
+                        )
+                    except Exception:
+                        if tau_fitted is None:
+                            tau_fitted = tau_seed
+                        A_ref = float(ref_zeroed[0])
+                else:
+                    # Between checkpoints: linear A-fit only (τ fixed).
+                    exp_vec = np.exp(-t_fit / tau_fitted)
+                    A_ref   = float(np.dot(ref_zeroed, exp_vec) / (np.dot(exp_vec, exp_vec) + 1e-12))
+
+                exp_vec   = np.exp(-t_fit / tau_fitted)
+                sub_curve = A_ref * exp_vec
+                
+                baseline_single[fit_start:fit_end] = sub_curve
+                valid_mask[fit_start:fit_end] = True
+
+                denom        = np.dot(exp_vec, exp_vec) + 1e-12
+                block        = tr_all_exp_corrected[fit_start:fit_end].astype(float)
+                block_zeroed = block - block[-1]               # endpoint-zero each channel
+                A_all        = (block_zeroed.T @ exp_vec) / denom   # (n_ch,)
+                sub_all      = np.outer(exp_vec, A_all)             # (n_samp, n_ch)
+                baseline_all[fit_start:fit_end, :] = sub_all
+
+            # Interpolate the baseline across the gaps (the IPCA windows) 
+            # to guarantee perfect continuity, then subtract.
+            x_all = np.arange(full_n_time)
+            valid_idx = np.where(valid_mask)[0]
+            if len(valid_idx) > 0:
+                baseline_single = np.interp(x_all, valid_idx, baseline_single[valid_idx])
+                tr_exp_corrected -= baseline_single.astype(tr_exp_corrected.dtype)
+                
+                for ch in range(n_channels):
+                    baseline_all[:, ch] = np.interp(x_all, valid_idx, baseline_all[valid_idx, ch])
+                tr_all_exp_corrected -= baseline_all.astype(tr_all_exp_corrected.dtype)
+
+        # Extract IPCA micro-windows from the exp-corrected trace.
+        for tc in true_centres:
+            p_start = tc + mw_start
+            p_end   = tc + mw_end
+            if p_start >= 0 and p_end <= full_n_time:
+                micro_signal_array[pulse_counter, :, :] = tr_all_exp_corrected[p_start:p_end, :]
                 micro_map.append((i, p_start, p_end))
                 pulse_counter += 1
+
+        # Store corrected full-trial trace for visualisation (single channel target trace)
+        full_raw_array[i, :] = tr_all_exp_corrected[:, 0]
+
 
     micro_signal_array = micro_signal_array[:pulse_counter]
 
@@ -543,71 +676,173 @@ def run_ipca_debug(
             print(f"  {entry}")
         print("------------------\n")
 
-    # ══════════════════════════════════════════════════════════════════
-    # §3  PCA ARTIFACT CORRECTION — portable to UA_BR_analysis_threshold
-    # ══════════════════════════════════════════════════════════════════
-    #
-    # INPUT:  micro_signal_array  — (n_pulses, n_time, n_channels)
-    #
-    # OUTPUT: micro_corrected     — (n_pulses, n_time, n_channels)
-    #
-    # When n_channels == 1: standard per-channel batch PCA.
-    # When n_channels  > 1: cross-channel IPCA — a single IncrementalPCA
-    #   model is shared across channels via sequential partial_fit.
-    #   Each channel is then corrected using the shared subspace.
-    # ──────────────────────────────────────────────────────────────────
+    # --- §3  PCA artifact correction (portable to UA_BR_analysis_threshold) ---
+    print("Running Pass 3: IPCA training and application...")
+    from RCP_analysis.python.functions.artifact_correction import Template
+
+    corrector = IPCA_Artifact_Correction(rank=ipca_rank)
+    micro_corrected = np.zeros_like(micro_signal_array)
 
     if n_channels == 1:
-        # Single-channel batch PCA (original behaviour)
-        corrector = IPCA_Artifact_Correction(rank=ipca_rank)
-        micro_corrected, _ = corrector.ipca_all(micro_signal_array)
+        sig      = micro_signal_array[:, :, 0]
+        baseline = np.mean(sig[:, :3], axis=1, keepdims=True)
+        centered = sig - baseline
+        # Train on reversed order: last trial first, trial 0 last. By the time
+        # the template encounters the first trial's first pulse, it is already
+        # well-established from all subsequent trials.
+        tpl = Template()
+        _, tpl = corrector.ipca_template_per_channel(centered[::-1], tpl)
+        micro_corrected[:, :, 0] = corrector.apply_template(centered, tpl) + baseline
+
+        # --- DIAGNOSTIC PLOTS (Single Channel Only) ---
+        if plot_rank_variance or plot_learning_rate_sweep:
+            from sklearn.decomposition import IncrementalPCA
+            import os
+            
+            # Use raw mean-centered pulses for diagnostics
+            X_diag = centered.copy()
+            n_samples_diag = X_diag.shape[0]
+
+            if plot_rank_variance:
+                print("  [Diag] Computing Cumulative Explained Variance vs Rank...")
+                max_rank_test = min(X_diag.shape[1], 30) # test up to 30 components
+                ipca_var = IncrementalPCA(n_components=max_rank_test)
+                ipca_var.fit(X_diag)
+                
+                cum_var = np.cumsum(ipca_var.explained_variance_ratio_)
+                
+                fig_var, ax_var = plt.subplots(figsize=(8, 6))
+                ax_var.plot(range(1, max_rank_test + 1), cum_var, marker='o', linestyle='-', color='b')
+                ax_var.axhline(0.90, color='r', linestyle='--', label='90% Variance')
+                ax_var.axhline(0.95, color='g', linestyle='--', label='95% Variance')
+                ax_var.set_xlabel('IPCA Rank (Number of Components)')
+                ax_var.set_ylabel('Cumulative Explained Variance Ratio')
+                ax_var.set_title(f'IPCA Rank Selection | Ch {ch_label}')
+                ax_var.set_ylim([0, 1.05])
+                ax_var.set_xticks(range(1, max_rank_test + 1, max(1, max_rank_test//10)))
+                ax_var.grid(True, alpha=0.3)
+                ax_var.legend()
+                
+                out_path_var = FIG_DIR / f"debug_IPCA_Ch{ch_label}_cond{condition}_variance_vs_rank.png"
+                fig_var.savefig(out_path_var, dpi=150)
+                plt.close(fig_var)
+                print(f"  [Diag] Saved Rank Variance plot -> {out_path_var.name}")
+
+            if plot_learning_rate_sweep:
+                print("  [Diag] Sweeping Learning Rates (0.1 to 1.0)...")
+                lr_rates = np.arange(0.1, 1.1, 0.1)
+                
+                # We need trial-level structure for online tracking. 
+                # micro_map maps pulse -> trial.
+                trial_indices = [item[0] for item in micro_map]
+                unique_trials = sorted(list(set(trial_indices)))
+                
+                mse_results = []
+                target_rank = corrector.rank
+                
+                for lr in lr_rates:
+                    # Fresh template for this learning rate
+                    test_tpl = Template()
+                    test_corrector = IPCA_Artifact_Correction(rank=target_rank)
+                    total_mse = 0.0
+                    total_pulses = 0
+                    
+                    pulse_buffer = []
+                    
+                    # Simulate streaming trial by trial
+                    for tr in unique_trials:
+                        # Pulses for this trial
+                        idx_tr = [i for i, t in enumerate(trial_indices) if t == tr]
+                        if not idx_tr: continue
+                        
+                        chunk = X_diag[idx_tr]
+                        
+                        # Apply OLD template to measure residual BEFORE updating
+                        # (To mimic real online performance where we only have past info)
+                        if test_tpl.weights is not None:
+                            # Use rank=test_tpl.weights.shape[0] just in case
+                            temp_corrector = IPCA_Artifact_Correction(rank=target_rank)
+                            corrected_chunk = temp_corrector.apply_template(chunk, test_tpl)
+                            total_mse += np.sum(corrected_chunk**2)
+                            total_pulses += len(chunk)
+                            
+                        # Buffer pulses until we have enough to satisfy IncrementalPCA rank math
+                        pulse_buffer.append(chunk)
+                        pooled_chunk = np.vstack(pulse_buffer)
+                        
+                        if len(pooled_chunk) >= target_rank:
+                            fresh_corrector = IPCA_Artifact_Correction(rank=target_rank)
+                            _, test_tpl = fresh_corrector.ipca_template_per_channel(pooled_chunk, test_tpl, learning_rate=lr)
+                            pulse_buffer = [] # Clear buffer after learning
+                        
+                    # Calculate mean MSE per pulse
+                    mean_mse = total_mse / max(1, total_pulses)
+                    mse_results.append(mean_mse)
+                    
+                fig_lr, ax_lr = plt.subplots(figsize=(8, 6))
+                ax_lr.plot(lr_rates, mse_results, marker='s', linestyle='-', color='m')
+                ax_lr.set_xlabel('Learning Rate (Alpha)')
+                ax_lr.set_ylabel('Sequential Residual MSE (Online Error)')
+                ax_lr.set_title(f'IPCA Learning Rate Optimization | Ch {ch_label}')
+                ax_lr.grid(True, alpha=0.3)
+                
+                # Mark minimum
+                best_idx = np.argmin(mse_results)
+                ax_lr.plot(lr_rates[best_idx], mse_results[best_idx], marker='*', color='gold', markersize=15, 
+                           label=f'Best LR = {lr_rates[best_idx]:.1f}')
+                ax_lr.legend()
+                
+                out_path_lr = FIG_DIR / f"debug_IPCA_Ch{ch_label}_cond{condition}_learning_rate_sweep.png"
+                fig_lr.savefig(out_path_lr, dpi=150)
+                plt.close(fig_lr)
+                print(f"  [Diag] Saved LR Sweep plot -> {out_path_lr.name}")
     else:
-        # Cross-channel IPCA using existing artifact_correction.py methods,
-        # learned separately for each brain region (SMA, PMd, M1i, M1s).
-        from RCP_analysis.python.functions.artifact_correction import Template
-        corrector = IPCA_Artifact_Correction(rank=ipca_rank)
-        micro_corrected = np.zeros_like(micro_signal_array)
-        
-        # Group channel indices by region
-        region_to_idxs = {}
+        # Group channels by brain region; learn one shared subspace per region.
+        region_to_idxs: dict = {}
         if probe == "UA":
             for ch_idx, reg_idx in enumerate(target_ch_regions):
                 reg_name = ua_region_names[reg_idx] if reg_idx >= 0 else "Unknown"
                 region_to_idxs.setdefault(reg_name, []).append(ch_idx)
         else:
             region_to_idxs["All Channels"] = list(range(n_channels))
-            
-        n_stim, n_time, _ = micro_signal_array.shape
-        
-        print("Cross-channel IPCA by region:")
+
         for reg, idxs in region_to_idxs.items():
-            if not idxs: continue
-            
-            # Pool all pulses from channels within this region
-            reg_signal = micro_signal_array[:, :, idxs]  # (n_stim, n_time, n_reg_ch)
-            pooled_signal = np.transpose(reg_signal, (0, 2, 1)).reshape(-1, n_time)
-            
-            # Learn the shared template for this specific region
+            if not idxs:
+                continue
+            n_time = micro_signal_array.shape[1]
+            # Pool all pulses reversed (last trial first): template is well-formed
+            # before encountering trial 0's first pulse.
+            reg_signal = micro_signal_array[::-1, :, idxs]
+            pooled_sig = np.transpose(reg_signal, (0, 2, 1)).reshape(-1, n_time)
             reg_template = Template()
-            _, reg_template = corrector.ipca_template_per_channel(pooled_signal, reg_template)
-            
-            print(f"  [{reg}] Shared subspace learned from {len(idxs)} channels.")
-            
-            # Apply this region's template to each channel in the region
+            _, reg_template = corrector.ipca_template_per_channel(pooled_sig, reg_template)
+            print(f"  [{reg}] template from {len(idxs)} ch.")
+
+
             for ch_idx in idxs:
-                signal_ch = micro_signal_array[:, :, ch_idx].copy()
-                baseline = np.mean(signal_ch[:, :3], axis=1, keepdims=True)
-                centered = signal_ch - baseline
-                
-                corrected_centered = corrector.apply_template(centered, reg_template)
-                micro_corrected[:, :, ch_idx] = corrected_centered + baseline
+                sig      = micro_signal_array[:, :, ch_idx].copy()
+                baseline = np.mean(sig[:, :3], axis=1, keepdims=True)
+                micro_corrected[:, :, ch_idx] = (
+                    corrector.apply_template(sig - baseline, reg_template) + baseline
+                )
 
-    # ══════════════════════════════════════════════════════════════════
-    # End of PCA artifact correction block
-    # ══════════════════════════════════════════════════════════════════
+    # --- §5  Full-trace reconstruction and summary figure ---
+    # Columns: Raw | Exp-removed | IPCA template | Corrected | BPF 300-10 kHz
 
-    # ─────────────────────────────────────────────────────────────────
-    # §4  DEBUG VISUALISATION — micro-window overlay
+    def _bandpass(sig, lo, hi, fs_hz):
+        sos = butter(4, [lo / (fs_hz / 2), hi / (fs_hz / 2)], btype='band', output='sos')
+        return sosfiltfilt(sos, sig.astype(float)).astype(np.float32)
+
+    full_corr_array     = full_raw_array.copy()   # exp-corrected, will be further updated by IPCA
+    full_artifact_array = np.zeros_like(full_raw_array)
+
+    for p_idx, (trial, ps, pe) in enumerate(micro_map):
+        full_corr_array[trial, ps:pe]     = micro_corrected[p_idx, :, 0]
+        full_artifact_array[trial, ps:pe] = (micro_signal_array[p_idx, :, 0]
+                                             - micro_corrected[p_idx, :, 0])
+
+
+
     # ─────────────────────────────────────────────────────────────────
     if debug_single_pulse and pulse_counter > 0:
         print("Saving debug overlay plot...")
@@ -667,66 +902,73 @@ def run_ipca_debug(
         plt.close(fig_dbg)
         print(f"Saved: {viz_path}")
 
-    # ─────────────────────────────────────────────────────────────────
-    # §5  FULL-TRACE RECONSTRUCTION & SUMMARY FIGURE
-    # ─────────────────────────────────────────────────────────────────
-    full_corr_array     = full_raw_array.copy()
-    full_artifact_array = np.zeros_like(full_raw_array)
+    # --- §5  Full-trace reconstruction and summary figure ---
+    # Columns: Raw | After IPCA | IPCA Template | Final Corrected | BPF 300-10 kHz
+    # For NPRW: Final = IPCA + Exp subtraction.  For UA: Final = IPCA only.
 
-    for p_idx, (trial, ps, pe) in enumerate(micro_map):
-        full_corr_array[trial, ps:pe]     = micro_corrected[p_idx, :, 0]
-        full_artifact_array[trial, ps:pe] = (micro_signal_array[p_idx, :, 0]
-                                             - micro_corrected[p_idx, :, 0])
+    def _bandpass(sig, lo, hi, fs_hz):
+        sos = butter(4, [lo / (fs_hz / 2), hi / (fs_hz / 2)], btype='band', output='sos')
+        return sosfiltfilt(sos, sig.astype(float)).astype(np.float32)
 
     plot_idxs = np.linspace(
         0, len(valid_stims) - 1, min(trials_plot, len(valid_stims)), dtype=int,
     )
     time_axis = np.arange(fw_start, fw_end) / fs * 1000
-    col_labels = ["Raw Signal", "IPCA Artifact Template", "Corrected Signal"]
+    col_labels = ["Raw Signal", "After Exp Subtraction",
+                  "IPCA Artifact Template", "Corrected Signal",
+                  "BPF 300–10kHz (Corrected)"]
+    n_cols = 5
 
     fig, axes = plt.subplots(
-        len(plot_idxs), 3,
-        figsize=(15, 3 * len(plot_idxs)),
-        sharex=True, sharey=True,
+        len(plot_idxs), n_cols,
+        figsize=(5 * n_cols, 3 * len(plot_idxs)),
+        sharex=True,
     )
     if len(plot_idxs) == 1:
         axes = np.array([axes])
 
     for r, ti in enumerate(plot_idxs):
-        axes[r, 0].plot(time_axis, full_raw_array[ti],      color="k", lw=1)
-        axes[r, 1].plot(time_axis, full_artifact_array[ti],  color="r", lw=1)
-        axes[r, 2].plot(time_axis, full_corr_array[ti],      color="b", lw=1)
-        for c in range(3):
+        bpf_sig = _bandpass(full_corr_array[ti], 300.0, 10000.0, fs)
+        row_data = [
+            full_orig_array[ti],       # col 0: true raw
+            full_raw_array[ti],        # col 1: after exp subtraction
+            full_artifact_array[ti],   # col 2: IPCA template
+            full_corr_array[ti],       # col 3: fully corrected
+            bpf_sig,                   # col 4: BPF of corrected
+        ]
+        row_colors = ["k", "darkorange", "r", "b", "purple"]
+        for c, (sig, col) in enumerate(zip(row_data, row_colors)):
             ax = axes[r, c]
-            ax.axvline(0, color="g", ls="--")
+            ax.plot(time_axis, sig, color=col, lw=0.7)
+            ax.axvline(0, color="g", ls="--", lw=0.8)
             if stim_dur > 0:
-                ax.axvline(stim_dur, color="g", ls=":", alpha=0.5)
+                ax.axvline(stim_dur, color="g", ls=":", alpha=0.5, lw=0.8)
             if r == 0:
-                ax.set_title(col_labels[c])
+                ax.set_title(col_labels[c], fontsize=9)
             if c == 0:
-                ax.set_ylabel(f"Trial {ti + 1}\n(µV)")
+                ax.set_ylabel(f"Trial {ti + 1}\n(µV)", fontsize=8)
+            ax.tick_params(labelsize=7)
+            ax.spines[["top", "right"]].set_visible(False)
 
-    axes[0, 0].set_xlim(window_ms)
+    axes[-1, 0].set_xlim(window_ms)
+    for c in range(n_cols):
+        axes[-1, c].set_xlabel("Time (ms)", fontsize=8)
     fig.suptitle(
         f"IPCA Artifact Correction (rank {ipca_rank}) "
         f"| Ch {ch_label} | Cond {condition}",
-        y=0.98,
+        y=0.99, fontsize=12,
     )
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
 
     out_path = FIG_DIR / f"debug_IPCA_Ch{ch_label}_cond{condition}_rank{ipca_rank}.png"
-    fig.savefig(out_path)
+    fig.savefig(out_path, dpi=120)
     print(f"Saved: {out_path}")
     plt.close(fig)
 
-    # ─────────────────────────────────────────────────────────────────
-    # §5B CROSS-CHANNEL SUMMARY FIGURE (ALL-CHANNELS MODE ONLY)
-    # ─────────────────────────────────────────────────────────────────
+    # --- §5b  Per-region multi-channel figure (all-channels mode only) ---
     if all_channels_mode and n_channels > 1:
         print("Saving multi-channel summary plots per region...")
-        
-        # Group channel indices by region again for plotting
-        region_to_idxs = {}
+        region_to_idxs: dict = {}
         if probe == "UA":
             for ch_idx, reg_idx in enumerate(target_ch_regions):
                 reg_name = ua_region_names[reg_idx] if reg_idx >= 0 else "Unknown"
@@ -735,10 +977,8 @@ def run_ipca_debug(
             region_to_idxs["All Channels"] = list(range(n_channels))
             
         trial_to_plot = 0
-        col_labels = ["Raw Signal", "IPCA Artifact Template", "Corrected Signal", "Filtered Corrected"]
-        
-        from scipy.signal import butter, sosfiltfilt
-        sos = butter(4, 300.0, btype='high', fs=fs, output='sos')
+        col_labels_multi = ["Raw Signal", "IPCA Template", "Corrected", "HPF Corrected"]
+        sos_hpf = butter(4, 300.0, btype='high', fs=fs, output='sos')
         
         for reg, sample_ch_idxs in region_to_idxs.items():
             if not sample_ch_idxs:
@@ -754,49 +994,42 @@ def run_ipca_debug(
             )
             if n_sample_channels == 1:
                 axes_multi = np.array([axes_multi])
-                
-            # Manually share Y axes across all rows for the first 3 columns (matching previous sharey=True behaviour)
+
+            # Share Y axis across the first 3 columns (raw / template / corrected).
             ref_ax = axes_multi[0, 0]
             for r in range(n_sample_channels):
-                for c in range(3):
-                    if r == 0 and c == 0: continue
+                for c in range(1, 3):
                     axes_multi[r, c].sharey(ref_ax)
-                
+
             for r, ch_idx in enumerate(sample_ch_idxs):
                 ch_name = f"Ch {target_ch_elecs[ch_idx]}" if probe == "UA" else f"Ch {ch_idx}"
-                
-                # Reconstruct the full trace for this specific channel for Trial 0
-                chan_full_raw = full_raw_array_all_t0[:, ch_idx].copy()
+
+                chan_full_raw  = full_raw_array_all_t0[:, ch_idx].copy()
                 chan_full_corr = chan_full_raw.copy()
-                chan_full_art = np.zeros(full_n_time, dtype=np.float32)
-                
+                chan_full_art  = np.zeros(full_n_time, dtype=np.float32)
+
                 for p_idx, (m_trial, ps, pe) in enumerate(micro_map):
                     if m_trial == trial_to_plot:
-                        raw_mc = micro_signal_array[p_idx, :, ch_idx]
+                        raw_mc  = micro_signal_array[p_idx, :, ch_idx]
                         corr_mc = micro_corrected[p_idx, :, ch_idx]
-                        art_mc = raw_mc - corr_mc
-                        
                         chan_full_corr[ps:pe] = corr_mc
-                        chan_full_art[ps:pe] = art_mc
-                
-                # Apply high-pass filter to the corrected signal
-                chan_full_filt = sosfiltfilt(sos, chan_full_corr)
-                
-                axes_multi[r, 0].plot(time_axis, chan_full_raw,      color="k", lw=1)
-                axes_multi[r, 1].plot(time_axis, chan_full_art,  color="r", lw=1)
-                axes_multi[r, 2].plot(time_axis, chan_full_corr,      color="b", lw=1)
-                axes_multi[r, 3].plot(time_axis, chan_full_filt,      color="purple", lw=1)
-                
-                # Enforce fixed y-limits for the filtered column
+                        chan_full_art[ps:pe]  = raw_mc - corr_mc
+
+                chan_full_filt = sosfiltfilt(sos_hpf, chan_full_corr)
+
+                axes_multi[r, 0].plot(time_axis, chan_full_raw,  color="k",      lw=1)
+                axes_multi[r, 1].plot(time_axis, chan_full_art,  color="r",      lw=1)
+                axes_multi[r, 2].plot(time_axis, chan_full_corr, color="b",      lw=1)
+                axes_multi[r, 3].plot(time_axis, chan_full_filt, color="purple", lw=1)
                 axes_multi[r, 3].set_ylim(-80, 80)
-                
+
                 for c in range(4):
                     ax = axes_multi[r, c]
                     ax.axvline(0, color="g", ls="--")
                     if stim_dur > 0:
                         ax.axvline(stim_dur, color="g", ls=":", alpha=0.5)
                     if r == 0:
-                        ax.set_title(col_labels[c])
+                        ax.set_title(col_labels_multi[c])
                     if c == 0:
                         ax.set_ylabel(f"{ch_name}\n(µV)")
     
@@ -812,9 +1045,7 @@ def run_ipca_debug(
             print(f"Saved: {multi_out_path}")
             plt.close(fig_multi)
 
-    # ─────────────────────────────────────────────────────────────────
-    # §6  RETURN DATA FOR NOTEBOOK / INTERACTIVE USE
-    # ─────────────────────────────────────────────────────────────────
+    # --- §6  Return data for notebook / interactive use ---
     return {
         "full_raw_array":      full_raw_array,
         "full_corr_array":     full_corr_array,
@@ -833,15 +1064,26 @@ def run_ipca_debug(
     }
 
 if __name__ == "__main__":
+
+    # target_ch = 'all' or int
+
     run_ipca_debug(
-        condition=10, 
-        probe="NPRW",
-        target_ch=10, # or "all"
+        condition=10,
+        probe="UA",
+        trials_plot=5,
+        target_ch=168,
         ipca_rank=10,
         window_ms=(-20.0, 40.0),
-        pulse_window_ms=(-0.4, 0.5), # utah - -0.2 to 0.3ms
+        pulse_window_ms=(-0.3, 0.4),
         apply_hpf=False,
         debug_single_pulse=True,
         use_behavior_filter=False,
         reference_ch=124,
+        plot_rank_variance=True,
+        plot_learning_rate_sweep=True,
+        exp_subtract=False,
+        exp_fit_guard_ms=0.1,
+        exp_n_tau_fits=10,
+        exp_tau_bounds_ms=(0.1, 20.0),
+        exp_tau_seed_ms=5.0,
     )

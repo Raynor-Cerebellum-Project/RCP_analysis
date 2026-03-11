@@ -20,15 +20,96 @@ from scipy.optimize import curve_fit, OptimizeWarning
 
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
+from RCP_analysis.python.functions.artifact_correction import IPCA_Artifact_Correction, Template
 
 # ---------- BASELINE TRIAL EXCLUSION ----------
+
+from spikeinterface.core import BaseRecording, BaseRecordingSegment
+
+class IPCACorrectedRecordingSegment(BaseRecordingSegment):
+    def __init__(self, parent_recording_segment, micro_map, micro_corrected):
+        """
+        micro_map: list of tuples (p_start, p_end) indicating where artifacts are
+        micro_corrected: np.ndarray of shape (n_events, n_time, n_channels) holding the IPCA patches
+        """
+        BaseRecordingSegment.__init__(self, **parent_recording_segment.get_times_kwargs())
+        self.parent_recording_segment = parent_recording_segment
+        self.micro_map = micro_map
+        self.micro_corrected = micro_corrected
+
+    def get_num_samples(self):
+        return self.parent_recording_segment.get_num_samples()
+
+    def get_traces(self, start_frame, end_frame, channel_indices):
+        # 1. Ask the parent for the clean disk-backed chunk
+        traces = self.parent_recording_segment.get_traces(start_frame, end_frame, channel_indices)
+        
+        # We need a writeable copy to patch
+        traces = traces.copy() 
+        
+        if self.micro_map is None or len(self.micro_map) == 0:
+            return traces
+            
+        # 2. Find any artifacts that intersect with our current [start_frame, end_frame] chunk
+        for p, (p_start, p_end) in enumerate(self.micro_map):
+            # Check for overlap
+            overlap_start = max(start_frame, p_start)
+            overlap_end = min(end_frame, p_end)
+            
+            if overlap_start < overlap_end:
+                # Calculate indices relative to our current trace chunk
+                chunk_idx_start = overlap_start - start_frame
+                chunk_idx_end = overlap_end - start_frame
+                
+                # Calculate indices relative to the pre-computed artifact patch
+                patch_idx_start = overlap_start - p_start
+                patch_idx_end = overlap_end - p_start
+                
+                # Fetch full patch for this event and time window: shape (time, all_channels)
+                patch_full = self.micro_corrected[p, patch_idx_start:patch_idx_end, :]
+                
+                # Slice the micro_corrected patch (only for the requested channels)
+                if channel_indices is None:
+                    # All channels
+                    patch = patch_full
+                else:
+                    # Specific channels
+                    patch = patch_full[:, channel_indices]
+                
+                # Overwrite the disk trace with the IPCA-corrected data
+                # traces is (time, channels)
+                traces[chunk_idx_start:chunk_idx_end, :] = patch
+                
+        return traces
+
+class IPCACorrectedRecording(BaseRecording):
+    """
+    A SpikeInterface BaseRecording that lazily streams disk data 
+    and surgically inserts pre-computed IPCA artifact patches on the fly.
+    """
+    def __init__(self, parent_recording, micro_map, micro_corrected):
+        BaseRecording.__init__(self, 
+                               parent_recording.get_sampling_frequency(), 
+                               parent_recording.channel_ids, 
+                               parent_recording.get_dtype())
+        self.parent_recording = parent_recording
+        
+        # Copy properties and annotations
+        parent_recording.copy_metadata(self)
+        
+        # Create a matching segment
+        for segment_index in range(parent_recording.get_num_segments()):
+            parent_segment = parent_recording._recording_segments[segment_index]
+            self.add_recording_segment(IPCACorrectedRecordingSegment(parent_segment, micro_map, micro_corrected))
+
+
 # Format: "baseline_port{A,B}_target{A,B}": [list of 0-based trial indices to skip]
 # Use this to remove false positive IR-triggered events (e.g., multiple triggers on same reach)
 EXCLUDE_BASELINE_TRIALS = {
-    "baseline_portA_targetA": [1, 3, 4, 6, 13, 14, 21, 24],
-    "baseline_portB_targetA": [2, 6, 7, 9, 13, 18],
-    "baseline_portA_targetB": [6, 10, 13, 15, 16, 17, 20, 21, 22, 24, 25, 30, 39, 40, 42, 47, 56, 57],
-    "baseline_portB_targetB": [2, 3, 4, 6, 8, 10, 12, 15, 17, 20, 22, 23, 24, 26, 28, 30, 31, 35],
+    # "baseline_portA_targetA": [1, 3, 4, 6, 13, 14, 21, 24],
+    # "baseline_portB_targetA": [2, 6, 7, 9, 13, 18],
+    # "baseline_portA_targetB": [6, 10, 13, 15, 16, 17, 20, 21, 22, 24, 25, 30, 39, 40, 42, 47, 56, 57],
+    # "baseline_portB_targetB": [2, 3, 4, 6, 8, 10, 12, 15, 17, 20, 22, 23, 24, 26, 28, 30, 31, 35],
 }
 
 """
@@ -61,8 +142,14 @@ BLANK_POST_MS = 101.0
 EPOCH_PRE_MS = 500.0
 EPOCH_POST_MS = 1000.0
 PAD_MS = 1000.0 # Padding for zero-phase filtering
-INTAN_IMPEDANCE_CUTOFF = 7000.0 # in kOhm
-UTAH_IMPEDANCE_CUTOFF = 1000.0 # in kOhm
+PLOT_1F_DEBUG = True # Optional flag to save figure comparing 1/f correction
+
+# --- IPCA Artifact Correction Settings ---
+USE_IPCA_CORRECTION  = True
+IPCA_RANK            = 10
+IPCA_PULSE_WINDOW_MS = (-0.2, 0.3)
+ARTRMV_MS_BEFORE = 5.0
+ARTRMV_TAIL_MS   = 5.0
 
 # ---------- CONFIG ----------
 # Bands of interest
@@ -79,20 +166,14 @@ LFP_BANDS = {
 FILTER_ORDER = 4
 
 # Output Directories
-NPRW_LFP_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW_LFP"
 UA_LFP_CKPT_ROOT = OUT_BASE / "checkpoints" / "UA_LFP"
 ALIGNED_CKPT_ROOT = OUT_BASE / "checkpoints" / "Aligned"
 PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStim"
-
-NPRW_LFP_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
 UA_LFP_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
 
-# NPRW Config
+# Stim / Intan Settings mapping
 NPRW_CFG = PARAMS.probes.get("NPRW")
-INTAN_STREAM = NPRW_CFG.get("neural_data_stream")
 STIM_STREAM = NPRW_CFG.get("stim_data_stream")
-AUX_STREAM = NPRW_CFG.get("aux_stream")
-RADII = (NPRW_CFG.get("local_radius_inner"), NPRW_CFG.get("local_radius_outer"))
 
 # Utah Config
 UA_CFG = PARAMS.probes.get("UA")
@@ -100,13 +181,6 @@ XLS = rcp.ua_excel_path(REPO_ROOT, PARAMS.probes)
 UA_MAP = rcp.load_UA_mapping_from_excel(XLS) if XLS else None
 METADATA_CSV = METADATA_ROOT / f"{PARAMS.session}_metadata.csv"
 SHIFT_CSV = METADATA_ROOT / "br_to_intan_shifts.csv"
-
-# Impedance Config (Utah)
-IMP_BASE = OUT_BASE.parents[0]  # One level above OUT_BASE (results)
-IMP_FILES = {
-    "A": IMP_BASE / "Impedances" / "Utah_imp_Bank_A_start",
-    "B": IMP_BASE / "Impedances" / "Utah_imp_Bank_B_start",
-}
 
 # Global job kwargs
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
@@ -165,9 +239,128 @@ def _find_baseline_groups(df_norm: pd.DataFrame) -> dict:
 # Core Cleaning Functions
 # =============================================================================
 
-def filter_zero_phase(epochs, fs, low, high, order=4):
+def apply_1f_detrending_chunked(epochs, rel_t_epoch, win_base=(-500, -50), fs=1000.0, chunk_size=32, plot_debug=False, debug_out_dir=None):
+    """
+    Applies adaptive 1/f spectral subtraction in the time-domain using a baseline period.
+    Processes channels in chunks to prevent OOM.
+
+    Args:
+        epochs (np.ndarray): (n_trials, n_ch, n_time)
+        rel_t_epoch (np.ndarray): Time axis in ms
+        win_base (tuple): Baseline window (start_ms, end_ms) for 1/f fitting
+        fs (float): Sampling rate (Hz)
+        chunk_size (int): Channels per chunk
+        
+    Returns:
+        np.ndarray: 1/f detrended epochs
+    """
+    out = np.empty_like(epochs)
+    n_trials, n_ch, n_time = epochs.shape
+    
+    # 1. Isolate Baseline Segment
+    mask_base = (rel_t_epoch >= win_base[0]) & (rel_t_epoch < win_base[1])
+    n_base = np.sum(mask_base)
+    
+    if n_base < 10:
+        print("    [1/f Detrend] Warning: Baseline window too short. Skipping 1/f detrending.")
+        return epochs.copy()
+        
+    print(f"    [1/f Detrend] Estimating 1/f curve from local baseline: {win_base} ms ({n_base} pts)")
+        
+    # Frequencies
+    f_base = np.fft.rfftfreq(n_base, 1/fs)
+    f_full = np.fft.rfftfreq(n_time, 1/fs)
+    
+    # Valid frequencies > 0 to avoid log(0)
+    valid_base = f_base > 0
+    f_valid_base = f_base[valid_base]
+    f_valid_full = f_full[f_full > 0]
+    
+    # Pre-compute design matrix for log-log linear regression (FOOOF-lite)
+    x_log = np.log10(f_valid_base)
+    X_mat = np.vstack([np.ones_like(x_log), x_log]).T  # (F, 2)
+    X_pinv = np.linalg.pinv(X_mat)                     # (2, F)
+    
+    # FFT magnitude scales cleanly by sqrt(N) for pink noise 
+    scale_factor = np.sqrt(n_time / n_base)
+    f_log_full = np.log10(f_valid_full)[np.newaxis, np.newaxis, :]
+    
+    for start_ch in range(0, n_ch, chunk_size):
+        end_ch = min(start_ch + chunk_size, n_ch)
+        chunk_epochs = epochs[:, start_ch:end_ch, :]
+        
+        # 2. Extract baseline chunk
+        chunk_base = chunk_epochs[:, :, mask_base]
+        
+        # 3. Compute Baseline Magnitude
+        X_base = np.fft.rfft(chunk_base, axis=2)
+        M_base = np.abs(X_base)[:, :, valid_base]
+        
+        # Avoid log(0) in magnitudes
+        M_base = np.maximum(M_base, 1e-10)
+        y_log = np.log10(M_base)
+        
+        # 4. Fit 1/f coefficients per trial/channel: log(M) = c + alpha * log(f)
+        n_tr, n_c = y_log.shape[0], y_log.shape[1]
+        y_reshaped = y_log.reshape(-1, len(f_valid_base)).T  # (F, T*C)
+        beta = X_pinv @ y_reshaped                           # (2, T*C)
+        beta = beta.reshape(2, n_tr, n_c)
+        
+        c = beta[0, :, :, np.newaxis]
+        alpha = beta[1, :, :, np.newaxis]
+        
+        # 5. Synthesize 1/f envelope for full time window
+        # log(M_1f) = c + alpha * log(f_full)
+        M_1f_log = c + alpha * f_log_full
+        
+        # Convert out of log space and apply sqrt(N) scaling to match the full FFT window
+        M_1f_valid = (10 ** M_1f_log) * scale_factor
+        
+        # Construct full 1/f magnitude (DC = 0 to preserve global mean voltage)
+        M_1f = np.zeros((n_tr, n_c, len(f_full)))
+        M_1f[:, :, f_full > 0] = M_1f_valid
+        
+        # 6. Apply Spectral Subtraction to Full Epoch
+        X_full = np.fft.rfft(chunk_epochs, axis=2)
+        M_full = np.abs(X_full)
+        Phase_full = np.angle(X_full)
+        
+        # Subtract the theoretical 1/f noise floor, floor at 0 to avoid negative amplitudes
+        M_clean = np.maximum(M_full - M_1f, 0)
+        
+        # Reconstruct complex FFT array
+        X_clean = M_clean * np.exp(1j * Phase_full)
+        
+        # Inverse FFT back to time domain
+        chunk_clean = np.fft.irfft(X_clean, n=n_time, axis=2)
+        
+        if plot_debug and start_ch == 0 and debug_out_dir is not None:
+            import matplotlib.pyplot as plt
+            from pathlib import Path
+            fig, ax = plt.subplots(1, 1, figsize=(10, 4))
+            ax.plot(rel_t_epoch, chunk_epochs[0, 0, :], label='Original', alpha=0.7)
+            ax.plot(rel_t_epoch, chunk_clean[0, 0, :], label='1/f Detrended', alpha=0.7)
+            ax.axvspan(win_base[0], win_base[1], color='gray', alpha=0.2, label='Baseline Window')
+            ax.set_xlabel("Time (ms)")
+            ax.set_ylabel("Amplitude")
+            ax.set_title("1/f Detrending Debug (Trial 0, Ch 0)")
+            ax.legend(loc="upper right")
+            
+            out_path = Path(debug_out_dir) / "debug_1f_detrend.png"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            plt.savefig(out_path, bbox_inches='tight')
+            plt.close(fig)
+            print(f"    [1/f Detrend] Saved debug plot to {out_path}")
+            
+        out[:, start_ch:end_ch, :] = chunk_clean
+        
+    return out
+
+def filter_zero_phase(epochs, fs, low, high, order=4, chunk_size=32):
     """
     Apply zero-phase bandpass filter using filtfilt along axis 2 (time).
+    Processes in chunks along the channel axis (axis=1) to prevent 
+    massive memory OOM spikes when filtering long continuous recordings.
     
     Args:
         epochs (np.ndarray): (n_trials, n_ch, n_time)
@@ -175,6 +368,7 @@ def filter_zero_phase(epochs, fs, low, high, order=4):
         low (float): Low cutoff (Hz)
         high (float): High cutoff (Hz)
         order (int): Filter order
+        chunk_size (int): Number of channels to filter at once
         
     Returns:
         np.ndarray: Filtered data
@@ -185,376 +379,192 @@ def filter_zero_phase(epochs, fs, low, high, order=4):
     
     b, a = signal.butter(order, [low_norm, high_norm], btype='band')
     
-    # Apply filtfilt along time axis (axis=2)
-    return signal.filtfilt(b, a, epochs, axis=2)
+    out = np.empty_like(epochs)
+    n_ch = epochs.shape[1]
+    
+    # Process channels in chunks to avoid allocating gigantic padded 
+    # copies of the entire matrix inside scipy.signal.filtfilt
+    for start_ch in range(0, n_ch, chunk_size):
+        end_ch = min(start_ch + chunk_size, n_ch)
+        out[:, start_ch:end_ch, :] = signal.filtfilt(b, a, epochs[:, start_ch:end_ch, :], axis=2)
+        
+    return out
 
 # =============================================================================
 # Helper Functions
 # =============================================================================
 
-def get_bad_channels_intan(sess_path, threshold_kohm=2000.0):
+def apply_ipca_correction(rec_ns6, starts_ua, ends_ua):
     """
-    Search for impedance.csv in the session path and identify bad channels.
-    Returns list of channel names (e.g. 'A-000') that exceed threshold.
+    Applies IPCA artifact removal to stimulation windows, using cross-channel templates 
+    learned individually per brain region.
     """
-    matches = list(sess_path.glob("*impedance*.csv"))
-    if not matches:
-        return []
-        
-    imp_file = matches[0]
-    bad_ch_names = []
-    print(f"  [Impedance] Loading {imp_file.name}...")
-    try:
-        # Intan impedance CSV: "Channel Name", "Impedance Magnitude at 1000 Hz (kOhm)", ...
-        # Skips header
-        with open(imp_file, 'r', encoding='utf-8', errors='ignore') as f:
-            reader = csv.reader(f)
-            # Intan often has some metadata lines before header? 
-            # Usually header starts with "Channel Name"
-            header = None
-            for row in reader:
-                if row and "Channel Name" in row[0]:
-                    header = row
-                    break
-            
-            if not header:
-                 print("  [Warn] No header found in impedance file.")
-                 return []
+    if not USE_IPCA_CORRECTION or not starts_ua.size:
+        return rec_ns6
 
-            # Find column
-            imp_col = -1
-            for i, h in enumerate(header):
-                if "kOhm" in h and "1000" in h:
-                    imp_col = i
-                    break
-            # Fallback if simplified header
-            if imp_col == -1:
-                 for i, h in enumerate(header):
-                     if "kOhm" in h:
-                         imp_col = i
-                         break
-            
-            if imp_col == -1:
-                print("  [Warn] Could not find kOhm column in impedance file.")
-                return []
-                
-            for row in reader:
-                if not row: continue
-                try:
-                    ch_name = row[0].strip()
-                    imp_val = float(row[imp_col])
-                    if imp_val > threshold_kohm:
-                        bad_ch_names.append(ch_name)
-                except:
-                    continue
-    except Exception as e:
-        print(f"  [Warn] Failed to read impedance file: {e}")
-        return []
-        
-    return bad_ch_names
-
-# =============================================================================
-# Utah Impedance Helper Functions
-# =============================================================================
-
-_imp_pat_elecnum = re.compile(
-    r"\belec\s*\d+\s*-\s*(\d{1,3})\s+([0-9]+(?:\.[0-9]+)?)\s*(k?ohms?|kΩ|ohms?|Ω)\b",
-    flags=re.IGNORECASE,
-)
-
-def _read_text_loose(p: Path) -> str:
-    if not p.exists():
-        raise FileNotFoundError(str(p))
-    b = p.read_bytes()
-    for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1", "mac_roman"):
-        try:
-            return b.decode(enc)
-        except Exception:
-            pass
-    filtered = bytes(ch for ch in b if 9 <= ch <= 126 or ch in (10, 13))
-    return filtered.decode("latin-1", errors="ignore")
-
-def _unit_to_kohm(val: float, unit: str) -> float:
-    u = (unit or "").lower()
-    if "k" in u:
-        return float(val)
-    return float(val) / 1000.0  # Ω → kΩ
-
-def load_impedances_from_textedit_dump(path_like: str | Path) -> dict[int, float]:
-    """
-    Parse lines like 'elec1-5   201 kOhm' from a loose text dump.
-    Returns { Elec#: impedance_kΩ }.
-    """
-    txt = _read_text_loose(Path(path_like))
-    out: dict[int, float] = {}
-    for m in _imp_pat_elecnum.finditer(txt):
-        elec_str, val_str, unit = m.groups()
-        try:
-            elec = int(elec_str)
-            val = float(val_str)
-        except Exception:
-            continue
-        out[elec] = _unit_to_kohm(val, unit)
-    return out
-
-def get_bad_channels_utah(imp_files_dict, ua_elec_ids, threshold_kohm=2000.0):
-    """
-    Load impedances from known Utah files and return indices of bad channels 
-    matching the current session's electrode IDs.
+    fs_ua = rec_ns6.get_sampling_frequency()
+    print(f"[IPCA] Starting Incremental PCA artifact correction on {starts_ua.size} blocks...")
     
-    Args:
-        imp_files_dict: dict {port: Path}, e.g. {"A": path_to_A, "B": path_to_B}
-        ua_elec_ids: (n_ch,) array of Electrode IDs (1-96 typically) corresponding to the data rows.
-        threshold_kohm: Exclusion threshold.
-        
-    Returns:
-        np.ndarray: Indices of rows in ua_elec_ids that have high impedance.
-    """
-    if ua_elec_ids is None or len(ua_elec_ids) == 0:
-        return np.array([], dtype=int)
-        
-    # Load all ports
-    imp_by_elec = {}
-    for port, p in imp_files_dict.items():
-        if p and p.exists():
-            try:
-                d = load_impedances_from_textedit_dump(p)
-                imp_by_elec.update(d)
-                print(f"  [Impedance] Parsed {len(d)} UA impedances from {p.name} (Port {port})")
-            except Exception as e:
-                print(f"  [Warn] Failed to parse UA impedance file {p}: {e}")
-                
-    bad_indices = []
-    for r, eid in enumerate(ua_elec_ids):
-        if eid is None or not np.isfinite(eid):
-            continue
-        z = imp_by_elec.get(int(eid)) # IDs are ints in the dict
-        if z is not None and z > threshold_kohm:
-            bad_indices.append(r)
-            
-    return np.array(bad_indices, dtype=int)
-
-def get_intan_geometry():
-    GEOM_PATH = rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT, session_key=None)
-    mat_probe = loadmat(Path(GEOM_PATH))
-    intan_geom = {}
-    intan_geom["x"] = mat_probe["xcoords"].ravel()
-    intan_geom["y"] = mat_probe["ycoords"].ravel()
+    # 1. Learn precise timestamps using derivative method
+    pulse_interval_ms = 1000.0 / PARAMS.stim_hz if hasattr(PARAMS, 'stim_hz') else 3.333
+    mw_start = int(IPCA_PULSE_WINDOW_MS[0] / 1000.0 * fs_ua)
+    mw_end   = int(IPCA_PULSE_WINDOW_MS[1] / 1000.0 * fs_ua)
     
-    if "chanMap0ind" in mat_probe:
-        intan_probe_mapping = intan_geom["device_index_0based"] = mat_probe["chanMap0ind"].ravel()
-    else:
-        raise ValueError("No 0-based chanmap in .mat geometry file.")
-    return intan_geom, intan_probe_mapping
-
-# --- Custom Blanking Implementation ---
-class BlankingRecording(si.BaseRecording):
-    def __init__(self, parent_recording, stim_indices, pre_ms=5.0, post_ms=20.0, mode='interp'):
-        si.BaseRecording.__init__(self, parent_recording.get_sampling_frequency(), 
-                               parent_recording.get_channel_ids(), 
-                               parent_recording.get_dtype())
+    fw_start = int(-ARTRMV_MS_BEFORE / 1000.0 * fs_ua)
+    fw_end   = int(ARTRMV_TAIL_MS / 1000.0 * fs_ua)
+    
+    # Identify active channels that belong to a region
+    ch_ids = np.asarray(rec_ns6.get_channel_ids(), dtype=int)
+    if len(ch_ids) == 0:
+        return rec_ns6
         
-        # Copy properties to self (channel gains/offsets)
-        parent_recording.copy_metadata(self)
+    def get_region(e):
+        if 1 <= e <= 64: return "SMA"
+        if 65 <= e <= 128: return "PMd"
+        if 129 <= e <= 192: return "M1i"
+        if 193 <= e <= 256: return "M1s"
+        return "Unknown"
         
-        self._parent = parent_recording
-        self._stim_indices = np.sort(stim_indices) # Ensure sorted
-        self._pre_samples = int(pre_ms * self.get_sampling_frequency() / 1000.0)
-        self._post_samples = int(post_ms * self.get_sampling_frequency() / 1000.0)
-        self._mode = mode
+    target_ch_regions = [get_region(e) for e in ch_ids]
+    
+    # Load raw
+    print("[IPCA] Scanning Blackrock raw file sequentially for artifact triggers...")
+    
+    micro_signal_list = []
+    micro_map = []  # (block_idx, p_start, p_end)
+    
+    n_total = rec_ns6.get_num_samples()
+    interval_idx = int(pulse_interval_ms / 1000 * fs_ua)
+    search_radius_idx = int((pulse_interval_ms * 0.4) / 1000 * fs_ua)
+    refine_samp = max(int(0.2 / 1000.0 * fs_ua), 3)
+    
+    def _find_first_significant_peak(tr_local, ref_ratio=0.5):
+        diff_abs = np.abs(np.diff(tr_local, prepend=tr_local[0]))
+        pk_idx = np.argmax(diff_abs)
+        max_d = diff_abs[pk_idx]
+        if max_d < 1e-6:
+            return pk_idx
+        for k in range(len(diff_abs)):
+            if diff_abs[k] > ref_ratio * max_d:
+                return k
+        return pk_idx
         
-        # Add segments
-        for i in range(parent_recording.get_num_segments()):
-            parent_segment = parent_recording._recording_segments[i]
-            self.add_recording_segment(BlankingRecordingSegment(
-                parent_segment, self._stim_indices, self._pre_samples, self._post_samples, mode=mode
-            ))
+    for i, (st, en) in enumerate(zip(starts_ua, ends_ua)):
+        # Coarse search
+        search_margin = int(20.0 / 1000 * fs_ua)
+        start_search  = st + fw_start - search_margin
+        end_search    = st + fw_end + search_margin
+        if start_search < 0 or end_search > n_total: continue
+        
+        tr_search = rec_ns6.get_traces(start_frame=start_search, end_frame=end_search, channel_ids=[rec_ns6.get_channel_ids()[0]], return_in_uV=True)[:, 0]
+        tr_diff_search  = np.abs(np.diff(tr_search, prepend=tr_search[0]))
+        
+        predicted_centre = -fw_start + search_margin
+        slop = int(5.0 / 1000 * fs_ua)
+        win_lo = max(0, predicted_centre - slop)
+        win_hi = min(len(tr_search), predicted_centre + slop)
+        
+        peak_in_win = np.argmax(tr_diff_search[win_lo:win_hi])
+        anchor_idx  = win_lo + peak_in_win
+        max_diff    = tr_diff_search[anchor_idx]
+        
+        if max_diff < 5.0: continue
+        
+        first_pulse_in_search = None
+        for k in range(win_lo, win_hi):
+            if tr_diff_search[k] > 0.4 * max_diff:
+                first_pulse_in_search = k
+                break
+        if first_pulse_in_search is None: continue
+        
+        coarse_radius = max(refine_samp, 3)
+        rc_lo = max(0, first_pulse_in_search - coarse_radius)
+        rc_hi = min(len(tr_search), first_pulse_in_search + coarse_radius + 1)
+        if rc_hi <= rc_lo: continue
+        offset = _find_first_significant_peak(tr_search[rc_lo:rc_hi])
+        
+        coarse_centre = rc_lo + offset
+        true_start = start_search + coarse_centre
+        
+        train_start_idx = true_start
+        train_end_idx   = en + fw_end
+        
+        if train_end_idx <= train_start_idx: continue
+        
+        anchor_final = true_start
+        pulse_centres = [anchor_final]
+        curr = anchor_final
+        while True:
+            nxt = curr + interval_idx
+            if nxt > train_end_idx: break
+            s_lo = max(0, nxt - search_radius_idx)
+            s_hi = min(n_total, nxt + search_radius_idx)
+            if s_hi <= s_lo: break
             
-        self._kwargs = {'parent_recording': parent_recording.to_dict(), 'stim_indices': stim_indices, 
-                        'pre_ms': pre_ms, 'post_ms': post_ms, 'mode': mode}
-
-class BlankingRecordingSegment(si.BaseRecordingSegment):
-    """
-    Custom SI segment that zeros out or interpolates over stir-related artifacts 
-    defined by stim_indices.
-    """
-    def __init__(self, parent_segment, stim_indices, pre_samples, post_samples, mode='interp'):
-        si.BaseRecordingSegment.__init__(self, **parent_segment.get_times_kwargs())
-        self._parent_segment = parent_segment
-        self._stim_indices = stim_indices
-        self._pre = pre_samples
-        self._post = post_samples
-        self._mode = mode
-        self._n_samples = parent_segment.get_num_samples() # Cache
-        
-    def get_num_samples(self):
-        return self._parent_segment.get_num_samples()
-        
-    def get_traces(self, start_frame, end_frame, channel_indices):
-        traces = self._parent_segment.get_traces(start_frame, end_frame, channel_indices)
-        traces = traces.copy() # Make writable
-        
-        # Search range
-        if len(self._stim_indices) == 0:
-            return traces
+            tr_diff = np.abs(np.diff(rec_ns6.get_traces(start_frame=s_lo, end_frame=s_hi, channel_ids=[rec_ns6.get_channel_ids()[0]], return_in_uV=True)[:, 0]))
+            peak_idx = np.argmax(tr_diff)
             
-        # We need to consider blanking window
-        pad = self._pre + self._post
-        i_start = np.searchsorted(self._stim_indices, start_frame - pad) 
-        i_end = np.searchsorted(self._stim_indices, end_frame + pad)
-        
-        relevant = self._stim_indices[i_start:i_end]
-        n_chunk = traces.shape[0]
-        
-        blank_duration = self._pre + self._post
-        
-        for t in relevant:
-            # t is absolute sample of stim
-            rel_t = int(t - start_frame)
+            if tr_diff[peak_idx] < 0.15 * max_diff: break
             
-            # Blanking Window Indices (Relative to chunk start)
-            idx_L = rel_t - self._pre
-            idx_R = rel_t + self._post
+            curr = s_lo + peak_idx
+            pulse_centres.append(curr)
             
-            # Determine overlap with current chunk
-            fill_start = max(0, idx_L)
-            fill_end = min(n_chunk, idx_R)
+        pulse_centres = sorted(set(pulse_centres))
+        
+        for p_idx in pulse_centres:
+            r_lo = max(0, p_idx - refine_samp)
+            r_hi = min(n_total, p_idx + refine_samp + 1)
+            if r_lo >= r_hi: continue
             
-            if fill_start >= fill_end:
-                 continue
-                 
-            # --- Logic per Mode ---
-            if self._mode == 'copy_baseline':
-                # Source Window (Absolute)
-                # Ideally: [blank_start - duration, blank_start]
-                abs_blank_start = t - self._pre
-                abs_src_start = abs_blank_start - blank_duration
-                abs_src_end = abs_blank_start
-                
-                # We need to map the 'fill' region (which is a subset of blanking window)
-                # to the valid source region.
-                # fill_start is relative index in chunk.
-                # offset from blank_start = fill_start - idx_L
-                offset = fill_start - idx_L
-                length = fill_end - fill_start
-                
-                s_req_start = abs_src_start + offset
-                s_req_end = s_req_start + length
-                
-                # Fetch baseline data (Source)
-                # Handle edge case: src < 0
-                if s_req_start < 0:
-                     # Partial fetch not easily supported, just zero out?
-                     # Or fetch what we can.
-                     if s_req_end <= 0:
-                          traces[fill_start:fill_end] = 0
-                          continue
-                     else:
-                          # Split zero and valid
-                          valid_len = s_req_end
-                          traces[fill_start:fill_start + (length-valid_len)] = 0
-                          try:
-                              bsl = self._parent_segment.get_traces(0, s_req_end, channel_indices)
-                              traces[fill_end-valid_len:fill_end] = bsl
-                          except:
-                              pass
-                          continue
-
-                try:
-                    baseline = self._parent_segment.get_traces(s_req_start, s_req_end, channel_indices)
-                    if baseline.shape[0] == length:
-                         traces[fill_start:fill_end] = baseline
-                except Exception:
-                    pass # Safety
-                continue
-
-            elif self._mode == 'zero':
-                 traces[fill_start:fill_end] = 0.0
-                 continue
+            true_centre = r_lo + _find_first_significant_peak(rec_ns6.get_traces(start_frame=r_lo, end_frame=r_hi, channel_ids=[rec_ns6.get_channel_ids()[0]], return_in_uV=True)[:, 0])
+            p_start = true_centre + mw_start
+            p_end   = true_centre + mw_end
             
-            else:
-                # Default: Linear Interpolation ('interp')
-                # Determine Anchor Values (Edge of blanking)
-                # If idx_L is within chunk, use it. If < 0, use trace[0] (best effort)
-                
-                # We need one sample BEFORE the fill start effectively for slope?
-                # Actually standard linear interp uses idx_L and idx_R values as anchors.
-                
-                # Anchor L
-                if idx_L >= 0 and idx_L < n_chunk:
-                    val_L = traces[idx_L]
-                else:
-                    # If anchor is outside, we can't easily get it without fetching.
-                    # Fallback to nearest in chunk
-                    val_L = traces[0]
-                    
-                # Anchor R
-                if idx_R >= 0 and idx_R < n_chunk:
-                    val_R = traces[idx_R]
-                else:
-                    val_R = traces[-1]
-                
-                width_total = idx_R - idx_L
-                if width_total == 0: continue
-                
-                slope = (val_R - val_L) / width_total # Shape (N_ch,)
-                
-                # X coordinates for the fill region
-                x_vals = np.arange(fill_start, fill_end) - idx_L
-                
-                # Vectorized fill
-                traces[fill_start:fill_end, :] = val_L[None, :] + x_vals[:, None] * slope[None, :]
+            if p_start >= 0 and p_end <= n_total:
+                micro_signal_list.append(rec_ns6.get_traces(start_frame=p_start, end_frame=p_end, return_in_uV=True).copy())
+                micro_map.append((p_start, p_end))
+
+    if not micro_signal_list:
+        print("[IPCA] No pulses successfully extracted, skipping correction.")
+        return rec_ns6
+        
+    micro_signal_array = np.stack(micro_signal_list) # (n_pulses, n_time, n_all_channels)
+    print(f"[IPCA] Extracted {len(micro_signal_array)} artifacts. Correcting...")
+    
+    corrector = IPCA_Artifact_Correction(rank=IPCA_RANK)
+    
+    region_to_idxs = {}
+    for valid_ch_idx, reg_name in enumerate(target_ch_regions):
+        region_to_idxs.setdefault(reg_name, []).append(valid_ch_idx)
+    micro_corrected = micro_signal_array.copy()
+    n_stim, n_time, _ = micro_signal_array.shape
+    
+    print("Cross-channel IPCA by region:")
+    for reg, idxs in region_to_idxs.items():
+        if not idxs: continue
+        
+        reg_signal = micro_signal_array[:, :, idxs]
+        pooled_signal = np.transpose(reg_signal, (0, 2, 1)).reshape(-1, n_time)
+        
+        reg_template = Template()
+        _, reg_template = corrector.ipca_template_per_channel(pooled_signal, reg_template)
+        
+        print(f"  [{reg}] Shared subspace learned from {len(idxs)} channels.")
+        
+        for ch_idx in idxs:
+            signal_ch = micro_signal_array[:, :, ch_idx].copy()
+            baseline = np.mean(signal_ch[:, :3], axis=1, keepdims=True)
+            centered = signal_ch - baseline
             
-        return traces
-
-
-# --- Time Reversal Wrapper for Backward Filtering ---
-class TimeReversedRecordingSegment(si.BaseRecordingSegment):
-    def __init__(self, parent_segment):
-        si.BaseRecordingSegment.__init__(self, **parent_segment.get_times_kwargs())
-        self._parent_segment = parent_segment
-        self._n_samples = parent_segment.get_num_samples()
-
-    def get_num_samples(self):
-        return self._n_samples
-
-    def get_traces(self, start_frame, end_frame, channel_indices):
-        # Time Reversal Logic:
-        # Requesting [start, end) in reversed time
-        # corresponds to [N - end, N - start) in original time
-        # Then flip the result.
-        
-        N = self._n_samples
-        if start_frame is None: start_frame = 0
-        if end_frame is None: end_frame = N
-        
-        # Original indices
-        orig_start = N - end_frame
-        orig_end = N - start_frame
-        
-        # Handle negatives/bounds if caller requests out of bounds (though SI handles bounds usually)
-        # Assuming valid inputs or handling by parent
-        
-        traces = self._parent_segment.get_traces(orig_start, orig_end, channel_indices)
-        
-        # Flip along time axis (axis 0)
-        return traces[::-1, :]
-
-class TimeReversedRecording(si.BaseRecording):
-    def __init__(self, parent_recording):
-        si.BaseRecording.__init__(self, parent_recording.get_sampling_frequency(), 
-                               parent_recording.get_channel_ids(), 
-                               parent_recording.get_dtype())
-        
-        parent_recording.copy_metadata(self)
-        self._parent = parent_recording
-        
-        for i in range(parent_recording.get_num_segments()):
-            self.add_recording_segment(TimeReversedRecordingSegment(
-                parent_recording._recording_segments[i]
-            ))
+            artifact = centered @ reg_template.weights.T @ reg_template.weights
+            corr_ch = centered - artifact + baseline
+            micro_corrected[:, :, ch_idx] = corr_ch
             
-        self._kwargs = {'parent_recording': parent_recording.to_dict()}
+    print("[IPCA] Building dynamically-correcting IPCACorrectedRecording...")
+    rec_corr_mem = IPCACorrectedRecording(rec_ns6, micro_map, micro_corrected)
+    return rec_corr_mem
+
+
 
 # --- Debug Plotting ---
 def build_lfp_preprocessing_pipeline(
@@ -563,47 +573,19 @@ def build_lfp_preprocessing_pipeline(
     curr_sess_name: str = "unknown",
     local_radii: tuple | None = None) -> si.BaseRecording:
     """
-    Custom pipeline with Manual Blanking Class.
-    
-    Args:
-        local_radii: If set, use local CMR with these radii (inner, outer). 
-                     If None, skip CMR (for Utah).
+    Custom pipeline with purely Bandpass and Resampling operations.
+    Blanking / CMR are bypassed heavily for Utah IPCA.
     """
-    # 1. Blanking (Custom) - On RAW Data (30kHz)
-    if len(stim_indices_native) > 0:
-        print(f"    [SI Pipeline] Custom Blanking (Copy Baseline) ({len(stim_indices_native)} events, -{BLANK_PRE_MS}ms to +{BLANK_POST_MS}ms) on RAW...")
-        rec_blanked = BlankingRecording(
-            recording,
-            stim_indices_native,
-            pre_ms=BLANK_PRE_MS,
-            post_ms=BLANK_POST_MS,
-            mode='copy_baseline'
-        )
-    else:
-        rec_blanked = recording
-        
-    # 2. CMR (Local for Intan, None for Utah)
-    if local_radii is not None:
-        r_in, r_out = local_radii
-        print(f"    [SI Pipeline] Local CMR (Median, radius {r_in}-{r_out} um) ENABLED...")
-        rec_cmr = spre.common_reference(rec_blanked, reference='local', local_radius=(r_in, r_out), operator='median')
-        
-    else:
-        print("    [SI Pipeline] CMR Skipped (Utah or Config)...")
-        rec_cmr = rec_blanked
-        
-    # 3. Resampling (30k -> 1k)
+    # 1. Bandpass (1-200 Hz) BEFORE resampling
+    print(f"    [SI Pipeline] Bandpass filter (1-200 Hz)...")
+    rec_filtered = spre.bandpass_filter(recording, freq_min=1.0, freq_max=200.0)
+    
+    # 2. Resampling (30k -> 1k)
     # SI resample includes anti-aliasing filter
     print(f"    [SI Pipeline] Resampling to {TARGET_FS} Hz...")
-    rec_resampled = spre.resample(rec_cmr, resample_rate=TARGET_FS)
+    rec_resampled = spre.resample(rec_filtered, resample_rate=TARGET_FS)
     
-    rec_clean = rec_resampled
-    
-    return rec_clean
-    
-    rec_clean = rec_resampled
-    
-    return rec_clean
+    return rec_resampled
 
 
 def extract_single_epoch(rec_obj, center_idx, pre_samps, post_samps):
@@ -646,549 +628,7 @@ def slice_epoch(data, t_axis, target_win):
     return data[:, :, mask], t_axis[mask]
 
 
-def process_nprw_session(sess_name: str, br_idx: int, intan_idx: int, shift_ms: float = 0.0):
-    """
-    Process one Intan session: lazy load, SI clean/filter/DS, epoch.
-    """
-    # Identify session folder
-    matches = list(INTAN_ROOT.glob(f"*{sess_name}*"))
-    valid_folders = [p for p in matches if p.is_dir()]
-    if not valid_folders:
-        print(f"[NPRW] Session folder not found for {sess_name}")
-        return
-    sess_path = valid_folders[0] # Take first match
-    
-    out_npz = NPRW_LFP_CKPT_ROOT / f"aligned_lfp__{sess_name}.npz"
-    if out_npz.exists():
-        print(f"[NPRW] Skipping {sess_name}, output exists.")
-        return
-        
-    print(f"[NPRW] Processing {sess_name}")
 
-    # Geometry
-    intan_geom, intan_probe_mapping = get_intan_geometry()
-    
-    nprw_probe = Probe(ndim=2)
-    nprw_probe.set_contacts(positions=np.c_[intan_geom["x"], intan_geom["y"]], shape_params={"width": 12.0})
-    nprw_probe.set_device_channel_indices(intan_probe_mapping)
-    
-    # 2. Load Raw Recording (Lazy)
-    rec = se.read_split_intan_files(sess_path, mode="concatenate", stream_name=INTAN_STREAM, use_names_as_ids=True)
-    rec = spre.unsigned_to_signed(rec)
-    rec_reordered = rcp.reorder_recording_to_geometry(rec, intan_probe_mapping)
-    rec_reordered = rec_reordered.set_probe(nprw_probe)
-    
-    fs_native = rec_reordered.get_sampling_frequency()
-
-    # 1. Load Resulting Stim Times
-    stim = {}
-    stim_start_samps_native = np.array([])
-    stim_channels_meta = ["Stim_Trigger"]
-
-    # Try loading from ALIGNED file first (as requested)
-    aligned_path = ALIGNED_CKPT_ROOT / f"aligned__{sess_name}__Intan_{intan_idx:03d}__BR_{br_idx:03d}.npz"
-    
-    if aligned_path.exists():
-        print(f"    [Stim] Loading from aligned file: {aligned_path.name}")
-        try:
-             aln = np.load(aligned_path, allow_pickle=True)
-             if "stim_ms" in aln:
-                 stim_ms_aligned = aln["stim_ms"]
-                 if stim_ms_aligned.size > 0:
-                      # Convert back to native samples
-                      # stim_ms in aligned file is (sample / fs * 1000 - shift)
-                      # So: sample = (ms + shift) * fs / 1000
-                      stim_start_samps_native = ((stim_ms_aligned + shift_ms) * fs_native / 1000.0).astype(np.int64)
-                      print(f"    [Stim] Found {len(stim_start_samps_native)} events in aligned file.")
-                      stim_channels_meta = ["Aligned_Stim_MS"]
-                      
-                      # Metadata
-                      if 'stim_channels' in aln: stim['stim_channels'] = aln['stim_channels']
-                      if 'stim_amplitudes' in aln: stim['amplitudes'] = aln['stim_amplitudes']
-                      if 'amplitudes' in aln: stim['amplitudes'] = aln['amplitudes']
-                      if 'notes' in aln: stim['notes'] = aln['notes']
-        except Exception as e:
-            print(f"    [WARN] Failed to load aligned file: {e}")
-
-    # Fallback to standard Stim stream if aligned failed
-    # Fallback to standard Stim stream if aligned failed
-    if len(stim_start_samps_native) == 0:
-        stim_npz_dir = NPRW_AUX_DATA / f"{sess_path.name}_Intan_streams"
-        stim_npz_path = stim_npz_dir / "stim_stream.npz"
-        
-        if stim_npz_path.exists():
-            print(f"    [Stim] Loading existing stim file: {stim_npz_path.name}")
-            # Use existing function or load npz directly
-            try:
-                 stim_data = rcp.load_stim_detection(stim_npz_path)
-                 stim = stim_data # Assign for metadata usage later
-                 # stim_data is dict, block_bounds_samples is key
-                 block_bounds = stim_data.get("block_bounds_samples")
-            except Exception as e:
-                 print(f"    [Stim] Error loading existing file ({e}), re-extracting...")
-                 stim_ext_arrays = rcp.extract_stim_npz(sess=sess_path, out_dir=NPRW_AUX_DATA, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
-                 stim = stim_ext_arrays # Assign for metadata
-                 block_bounds = stim_ext_arrays.get("block_bounds_samples")
-        else:
-             print(f"    [Stim] Extracting stim stream (first run)...")
-             stim_ext_arrays = rcp.extract_stim_npz(sess=sess_path, out_dir=NPRW_AUX_DATA, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
-             stim = stim_ext_arrays # Assign for metadata
-             block_bounds = stim_ext_arrays.get("block_bounds_samples")
-
-        stim_start_samps_native = block_bounds[:, 0] if (block_bounds is not None and block_bounds.size) else np.array([])
-    
-    # -------------------------------------------------------------------------
-    # [Control/IR Fallback]
-    # If no stim triggers found, load IR events from baseline PeriStim files
-    # -------------------------------------------------------------------------
-    stim_channels_meta = ["Stim_Trigger"]
-    if len(stim_start_samps_native) == 0:
-        print(f"    [Stim] No standard stim triggers found. Checking for baseline PeriStim files...")
-        
-        for target in ["Target_A", "Target_B"]:
-            if len(stim_start_samps_native) > 0:
-                break  # Already found
-                
-            target_dir = PERI_ROOT / target
-            if not target_dir.exists():
-                continue
-                
-            # Pattern: baseline__{session}*_target_{A,B}.npz
-            pattern = f"baseline__*{sess_name}*_target_{target[-1]}.npz"
-            matches = list(target_dir.glob(pattern))
-            
-            if matches:
-                baseline_file = matches[0]
-                print(f"    [Stim] Loading IR from baseline file: {baseline_file.name}")
-                try:
-                    bl_data = np.load(baseline_file, allow_pickle=True)
-                    if "stim_ms" in bl_data and bl_data["stim_ms"].size > 0:
-                        stim_ms_baseline = bl_data["stim_ms"]
-                        # Convert ms back to native samples
-                        # stim_ms in baseline file is in BR time (aligned)
-                        # So: sample = (ms + shift) * fs / 1000
-                        stim_start_samps_native = ((stim_ms_baseline + shift_ms) * fs_native / 1000.0).astype(np.int64)
-                        stim_channels_meta = ["Baseline_IR"]
-                        print(f"    [Stim] Found {len(stim_start_samps_native)} IR events from baseline file.")
-                except Exception as e:
-                    print(f"    [WARN] Failed to load baseline file: {e}")
-        
-        if len(stim_start_samps_native) == 0:
-            print(f"    [WARN] No IR events found in baseline files for {sess_name}.")
-
-    
-    # (Raw Loading moved up)
-    # rec = se.read_split_intan_files(...) 
-    # already done above to get fs_native for conversion
-    
-    
-    # 3. Build SI Pipeline
-    # Blank(-5, +20) -> Local CMR -> DS(1000)
-    rec_proc = build_lfp_preprocessing_pipeline(
-        rec_reordered, 
-        stim_indices_native=stim_start_samps_native,
-        curr_sess_name=sess_name,
-        local_radii=RADII
-    )
-    
-    # 4. Get Traces (Parallel Epoch Extraction)
-    # Be sure to extract PADDED epochs for zero-phase filtering
-    print("  [NPRW] Extracting PADDED epochs directly from Lazy Recording (Parallel)...")
-    
-    # We need stim indices in the TARGET_FS domain
-    # stim_start_samps_native are in fs_native (30000)
-    # The pipeline resamples to TARGET_FS (typically 1000)
-    stim_indices_res = (stim_start_samps_native * TARGET_FS / fs_native).astype(int)
-    
-    # Define generic parallel extractor
-    def extract_single_epoch(rec_obj, center_idx, pre_samps, post_samps):
-        start = center_idx - pre_samps
-        end = center_idx + post_samps
-        
-        # Check bounds
-        if start < 0 or end > rec_obj.get_num_samples():
-            return None # Skip
-            
-        # return_in_uV=True handles scaling
-        return rec_obj.get_traces(start_frame=start, end_frame=end, return_in_uV=True).T
-
-    pad_samps = int(PAD_MS * TARGET_FS / 1000.0)
-    pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000.0) + pad_samps
-    post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000.0) + pad_samps
-    
-    exclusion_list = MANUAL_EXCLUSION.get(sess_name, [])
-    if exclusion_list:
-        print(f"  [NPRW] Excluding {len(exclusion_list)} trials manually: {exclusion_list}")
-
-    segs_list = Parallel(n_jobs=-int(os.cpu_count() or 1), batch_size='auto')(
-        delayed(extract_single_epoch)(rec_proc, idx, pre_samps, post_samps) 
-        for i, idx in enumerate(stim_indices_res)
-        if i not in exclusion_list
-    )
-    
-    # Filter out Nones
-    segs_list = [s for s in segs_list if s is not None]
-    
-    if not segs_list:
-        print("  [Warn] No valid epochs found.")
-        return
-
-    segs_bb = np.stack(segs_list, axis=0) # (n_trials, n_ch, n_time)
-    n_trials, n_ch, n_time = segs_bb.shape
-    
-    # Construct rel_t_epoch (With padding included)
-    rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
-    
-    print(f"  [NPRW] Extracted {n_trials} epochs. Shape: {segs_bb.shape}")
-
-    # Stim times to ms (just for meta)
-    stim_ms = stim_start_samps_native * 1000.0 / fs_native
-    
-    # 6. Epoching: Extract Broadband (-500 to +1000)
-    # Already done above!
-    WIN_EPOCH = (-EPOCH_PRE_MS, EPOCH_POST_MS)
-    
-    # Sub-windows for final saving
-    WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
-    WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS) # 500ms post-blank
-    
-    # Valid stim times
-    valid_stim = stim_ms 
-    
-    results = {}
-    
-    if len(segs_bb) == 0:
-        print(f"  [WARN] No valid segments found for {sess_name}. Skipping.")
-        return
-        
-    # 7. Per-Trial Cleaning - DISABLED (Baseline/Exp Removal)
-    print(f"  [Cleaning] Using RAW (resampled) epochs (Baseline/Exp/Template removal DISABLED).")
-    segs_bb_clean = segs_bb # Use padded, raw
-    
-    # --- Step 7.5: Reject Bad Channels ---
-    # Convert Channel IDs to Indices
-    chan_ids = rec_proc.get_channel_ids()
-    bad_ch_indices = []
-
-    # 1. Impedance Check (ONLY)
-    bad_names_imp = get_bad_channels_intan(sess_path, threshold_kohm=INTAN_IMPEDANCE_CUTOFF)
-    if bad_names_imp:
-         print(f"  [Rejection] Found {len(bad_names_imp)} bad channels from impedance file.")
-         # map to index
-         for name in bad_names_imp:
-             # Assume channel IDs match names?
-             # When use_names_as_ids=True, IDs are strings.
-             idx = np.where(chan_ids == name)[0]
-             if len(idx) > 0:
-                 bad_ch_indices.extend(idx)
-    
-    # Combined Bad Channels
-    bad_ch_indices = np.array(bad_ch_indices, dtype=int)
-    bad_ch_indices = np.unique(bad_ch_indices)
-    
-    if len(bad_ch_indices) > 0:
-         print(f"  [Rejection] Removing {len(bad_ch_indices)} bad channels (Impedance > 2000kOhm or file-spec).")
-         segs_bb_clean[:, bad_ch_indices, :] = np.nan
-    
-    results['bad_channels'] = bad_ch_indices
-    
-    # Helper to slice extracted epoch into sub-windows
-    def slice_epoch(data, t_axis, target_win):
-        # find indices in t_axis
-        mask = (t_axis >= target_win[0]) & (t_axis < target_win[1])
-        return data[:, :, mask], t_axis[mask]
-        
-    # Slice Broadband Results (Crop Padding)
-    results['broadband_pre'], t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
-    results['broadband_post'], t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
-    
-    results['broadband_pre'], t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
-    results['broadband_post'], t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
-    
-    # 9. Band Analysis (Zero-Phase Filter Cleaned Epochs)
-    for band_name, (low, high) in LFP_BANDS.items():
-        print(f"  Filtering Epochs {band_name} ({low}-{high} Hz)...", flush=True)
-        # Apply filter to the FULL PADDED epochs
-        filt_epochs = filter_zero_phase(segs_bb_clean, TARGET_FS, low, high)
-        
-        # Slice (Crop Padding)
-        results[f'{band_name}_pre'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_PRE)
-        results[f'{band_name}_post'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_POST)
-    
-    # Save
-    save_dict = {
-        "fs_lfp": TARGET_FS,
-        "channel_geom_x": intan_geom["x"],
-        "channel_geom_y": intan_geom["y"],
-        "session": sess_name,
-        "stim_ms": valid_stim, # Original indices relative to full recording
-        "rel_time_pre": t_pre,
-        "rel_time_post": t_post,
-        # Metadata
-        "stim_channels": stim_channels_meta if stim_channels_meta == ["Control_IR"] else stim.get('stim_channels', stim_channels_meta),
-        "stim_amplitudes": stim.get('amplitudes', []),
-        "stim_notes": stim.get('notes', ""),
-        **results
-    }
-    
-    print(f"  [DEBUG] Keys to save: {list(save_dict.keys())}", flush=True)
-    
-    np.savez_compressed(out_npz, **save_dict)
-    print(f"  Saved -> {out_npz}")
-    
-    # Cleanup memory
-    try:
-        del rec, rec_reordered, rec_proc, results
-        if 'traces' in locals(): del traces
-    except:
-        pass
-    gc.collect()
-
-
-# =============================================================================
-# Grouped Baseline LFP Processing
-# =============================================================================
-
-def process_baseline_group(
-    group_key: tuple,  # (port, depth)
-    session_infos: list,  # List of dicts with session info
-):
-    """
-    Process a group of baseline/control sessions by loading IR events from
-    existing baseline PeriStim files and concatenating LFP epochs.
-    
-    Args:
-        group_key: Tuple of (ua_port, depth_mm)
-        session_infos: List of dicts with keys: session, br_idx, intan_idx, shift_ms
-    """
-    port, depth = group_key
-    
-    # Sanitize for filename
-    def _sanitize(s):
-        return str(s).replace(".", "_").replace("/", "_").replace("\\", "_").replace(" ", "_")
-    
-    depth_str = _sanitize(depth)
-    port_str = _sanitize(port)
-    
-    out_npz = NPRW_LFP_CKPT_ROOT / f"aligned_lfp__baseline__Depth_{depth_str}_port_{port_str}.npz"
-    
-    if out_npz.exists():
-        print(f"[Baseline LFP] Skipping group Depth={depth}, Port={port}, output exists.")
-        return
-        
-    print(f"\n[Baseline LFP] Processing group: Depth={depth}, Port={port}")
-    print(f"    Sessions: {[s['session'] for s in session_infos]}")
-    
-    # 1. Load IR events from baseline PeriStim file
-    # Try Target_A first, then Target_B
-    # Use glob to handle different naming conventions (e.g., 43.0 vs 43_0)
-    ir_events_ms = None
-    loaded_target = None  # Track which target was loaded
-    for target in ["Target_A", "Target_B"]:
-        target_dir = PERI_ROOT / target
-        if not target_dir.exists():
-            continue
-            
-        # Use flexible glob pattern for depth (handles 43.0 and 43_0)
-        # Pattern: baseline__*_Depth_*{depth}*_port_{port}_target_{A,B}.npz
-        pattern = f"baseline__*Depth*{depth.replace('.', '*')}*port*{port}*target_{target[-1]}.npz"
-        matches = list(target_dir.glob(pattern))
-        
-        if matches:
-            baseline_file = matches[0]
-            print(f"    Loading IR events from: {baseline_file.name}")
-            try:
-                bl_data = np.load(baseline_file, allow_pickle=True)
-                if "stim_ms" in bl_data and bl_data["stim_ms"].size > 0:
-                    ir_events_ms = bl_data["stim_ms"]
-                    loaded_target = target[-1]  # 'A' or 'B'
-                    print(f"    Found {len(ir_events_ms)} IR events in baseline file (Target {loaded_target}).")
-                    break
-            except Exception as e:
-                print(f"    [WARN] Failed to load baseline file: {e}")
-    
-    if ir_events_ms is None or len(ir_events_ms) == 0:
-        print(f"    [WARN] No IR events found for group. Skipping.")
-        return
-    
-    # 1.5. Apply Baseline Trial Exclusions
-    exclusion_key = f"baseline_port{port}_target{loaded_target}"
-    exclude_indices = EXCLUDE_BASELINE_TRIALS.get(exclusion_key, [])
-    if exclude_indices:
-        print(f"    [Exclusion] Removing {len(exclude_indices)} trials from {exclusion_key}: {exclude_indices}")
-        # Create mask for valid trials
-        valid_mask = np.ones(len(ir_events_ms), dtype=bool)
-        for idx in exclude_indices:
-            if 0 <= idx < len(ir_events_ms):
-                valid_mask[idx] = False
-        ir_events_ms = ir_events_ms[valid_mask]
-        print(f"    [Exclusion] Remaining trials: {len(ir_events_ms)}")
-    
-    # 2. Set up probe geometry
-    intan_geom, intan_probe_mapping = get_intan_geometry()
-    
-    nprw_probe = Probe(ndim=2)
-    nprw_probe.set_contacts(positions=np.c_[intan_geom["x"], intan_geom["y"]], shape_params={"width": 12.0})
-    nprw_probe.set_device_channel_indices(intan_probe_mapping)
-    
-    # 3. Process each session in the group
-    all_epochs_bb = []
-    all_epochs_raw = []
-    
-    for sess_info in session_infos:
-        sess_name = sess_info["session"]
-        shift_ms = sess_info["shift_ms"]
-        
-        # Find session folder
-        matches = list(INTAN_ROOT.glob(f"*{sess_name}*"))
-        valid_folders = [p for p in matches if p.is_dir()]
-        if not valid_folders:
-            print(f"    [WARN] Session folder not found: {sess_name}")
-            continue
-            
-        sess_path = valid_folders[0]
-        print(f"    Processing session: {sess_name}")
-        
-        try:
-            # Load raw recording
-            rec = se.read_split_intan_files(sess_path, mode="concatenate", stream_name=INTAN_STREAM, use_names_as_ids=True)
-            rec = spre.unsigned_to_signed(rec)
-            rec_reordered = rcp.reorder_recording_to_geometry(rec, intan_probe_mapping)
-            rec_reordered = rec_reordered.set_probe(nprw_probe)
-            
-            fs_native = rec_reordered.get_sampling_frequency()
-            rec_duration_ms = rec_reordered.get_total_duration() * 1000.0
-            
-            # Filter IR events for this session's recording duration
-            # IR events are in BR-aligned ms, convert back to session time
-            sess_ir_ms = ir_events_ms + shift_ms  # Add shift to get Intan time
-            
-            # Only keep events within this recording's duration
-            valid_mask = (sess_ir_ms >= 0) & (sess_ir_ms < rec_duration_ms)
-            sess_ir_ms_valid = sess_ir_ms[valid_mask]
-            
-            if len(sess_ir_ms_valid) == 0:
-                print(f"        No valid IR events for this session. Skipping.")
-                continue
-                
-            print(f"        Found {len(sess_ir_ms_valid)} valid IR events for this session.")
-            
-            # Convert to samples
-            stim_start_samps = (sess_ir_ms_valid * fs_native / 1000.0).astype(np.int64)
-            
-            # Build preprocessing pipeline (no blanking for baseline)
-            rec_proc = build_lfp_preprocessing_pipeline(
-                rec_reordered,
-                stim_indices_native=np.array([]),  # No blanking for control
-                curr_sess_name=sess_name,
-                local_radii=RADII
-            )
-            
-            # Convert to resampled indices
-            stim_indices_res = (stim_start_samps * TARGET_FS / fs_native).astype(np.int64)
-            
-            # Calculate epoch samples (PADDED)
-            pad_samps = int(PAD_MS * TARGET_FS / 1000.0)
-            pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000) + pad_samps
-            post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000) + pad_samps
-            
-            n_samps_total = rec_proc.get_total_samples()
-            
-            # Extract epochs (sequential to avoid joblib pickling issues)
-            segs_list = []
-            for idx in stim_indices_res:
-                if (idx - pre_samps >= 0) and (idx + post_samps <= n_samps_total):
-                    seg = extract_single_epoch(rec_proc, idx, pre_samps, post_samps)
-                    if seg is not None:
-                        segs_list.append(seg)
-            
-            if len(segs_list) > 0:
-                sess_epochs = np.stack(segs_list, axis=0)
-                
-                # --- Reject Bad Channels (Impedance Only) ---
-                bad_names_imp = get_bad_channels_intan(sess_path)
-                if bad_names_imp:
-                     chan_ids = rec_proc.get_channel_ids()
-                     bad_ch_indices = []
-                     for name in bad_names_imp:
-                         idx = np.where(chan_ids == name)[0]
-                         if len(idx) > 0:
-                             bad_ch_indices.extend(idx)
-                     
-                     if bad_ch_indices:
-                         print(f"        [Rejection] Masking {len(bad_ch_indices)} bad channels (Imp).")
-                         bad_ch_indices = np.unique(bad_ch_indices)
-                         sess_epochs[:, bad_ch_indices, :] = np.nan
-                
-                all_epochs_bb.append(sess_epochs)
-                print(f"        Extracted {len(segs_list)} epochs from session.")
-            else:
-                print(f"        [WARN] No valid epochs extracted from session.")
-                
-            del rec, rec_reordered, rec_proc
-            gc.collect()
-            
-        except Exception as e:
-            print(f"        [ERROR] Failed to process session {sess_name}: {e}")
-            import traceback
-            traceback.print_exc()
-            continue
-    
-    # 4. Concatenate epochs across sessions
-    if len(all_epochs_bb) == 0:
-        print(f"    [WARN] No epochs extracted from any session in group. Skipping.")
-        return
-        
-    concat_epochs = np.concatenate(all_epochs_bb, axis=0)
-    print(f"    Concatenated epochs: {concat_epochs.shape} (trials, channels, time)")
-    
-    # 5. Clean epochs (DISABLED)
-    print(f"    [Cleaning] Using RAW (resampled) epochs (Baseline/Exp/Template removal DISABLED).")
-    concat_epochs_clean = concat_epochs # Use padded, raw
-    
-    # 6. Compute time vectors and slice
-    # rel_t_epoch needs to account for padding
-    n_time = concat_epochs_clean.shape[2]
-    rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
-    
-    WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
-    WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)
-    
-    bb_pre, t_pre = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_PRE)
-    bb_post, t_post = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_POST)
-    
-    results = {
-        "broadband_pre": bb_pre,
-        "broadband_post": bb_post,
-    }
-    
-    # 7. Band analysis
-    for band_name, (low, high) in LFP_BANDS.items():
-        print(f"    Filtering {band_name} ({low}-{high} Hz)...")
-        filt_epochs = filter_zero_phase(concat_epochs_clean, TARGET_FS, low, high)
-        results[f'{band_name}_pre'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_PRE)
-        results[f'{band_name}_post'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_POST)
-    
-    # 8. Save
-    save_dict = {
-        "fs_lfp": TARGET_FS,
-        "channel_geom_x": intan_geom["x"],
-        "channel_geom_y": intan_geom["y"],
-        "group_port": port,
-        "group_depth": depth,
-        "sessions": [s["session"] for s in session_infos],
-        "stim_ms": ir_events_ms,  # All IR events from baseline file
-        "n_trials": concat_epochs_clean.shape[0],
-        "rel_time_pre": t_pre,
-        "rel_time_post": t_post,
-        "stim_channels": ["Baseline_IR"],
-        **results
-    }
-    
-    np.savez_compressed(out_npz, **save_dict)
-    print(f"    Saved -> {out_npz}")
-    
-    gc.collect()
 
 
 # =============================================================================
@@ -1228,27 +668,37 @@ def process_baseline_group_utah(
     # 1. Load IR events from baseline PeriStim file
     ir_events_ms = None
     loaded_target = None  # Track which target was loaded
-    for target in ["Target_A", "Target_B"]:
-        target_dir = PERI_ROOT / target
+    for target in ["target_A", "target_B"]:
+        target_dir = PERI_ROOT / "control_reaches" / target
         if not target_dir.exists():
+            print(f"    [Info] Dir not found: {target_dir}")
             continue
             
-        # Use flexible glob pattern for depth
-        pattern = f"baseline__*Depth*{depth.replace('.', '*')}*port*{port}*target_{target[-1]}.npz"
-        matches = list(target_dir.glob(pattern))
+        # Match actual peristim file naming convention
+        # Files are like: peristim__NRR_RW012_260116_140816__BR_002_target_A.npz
+        matches = list(target_dir.glob("peristim__*.npz"))
         
         if matches:
-            baseline_file = matches[0]
-            print(f"    Loading IR events from: {baseline_file.name}")
-            try:
-                bl_data = np.load(baseline_file, allow_pickle=True)
-                if "stim_ms" in bl_data and bl_data["stim_ms"].size > 0:
-                    ir_events_ms = bl_data["stim_ms"]
-                    loaded_target = target[-1]  # 'A' or 'B'
-                    print(f"    Found {len(ir_events_ms)} IR events in baseline file (Target {loaded_target}).")
-                    break
-            except Exception as e:
-                print(f"    [WARN] Failed to load baseline file: {e}")
+            # Collect IR events from ALL baseline files for this target
+            all_events = []
+            for baseline_file in matches:
+                print(f"    Loading IR events from: {baseline_file.name}")
+                try:
+                    bl_data = np.load(str(baseline_file), allow_pickle=True)
+                    if "event_ms" in bl_data and bl_data["event_ms"].size > 0:
+                        all_events.append(bl_data["event_ms"].flatten())
+                        print(f"      Found {bl_data['event_ms'].size} IR events.")
+                    else:
+                        print(f"      [WARN] No 'event_ms' key or empty in {baseline_file.name}")
+                except Exception as e:
+                    print(f"      [WARN] Failed to load: {e}")
+            
+            if all_events:
+                ir_events_ms = np.concatenate(all_events)
+                ir_events_ms = np.sort(ir_events_ms)
+                loaded_target = target[-1]  # 'A' or 'B'
+                print(f"    Total: {len(ir_events_ms)} IR events from {len(all_events)} files (Target {loaded_target}).")
+                break
     
     if ir_events_ms is None or len(ir_events_ms) == 0:
         print(f"    [WARN] No IR events found for group. Skipping.")
@@ -1268,10 +718,7 @@ def process_baseline_group_utah(
     
     # 2. Process each session in the group
     all_epochs_bb = []
-    ua_region_global = None
-    ua_region_names_global = None
-    ua_elec_global = None
-    ua_nsp_global = None
+    ua_ids_global = None
     
     for sess_info in session_infos:
         br_idx = sess_info["br_idx"]
@@ -1292,17 +739,15 @@ def process_baseline_group_utah(
             # Load Blackrock recording
             rec_raw = se.read_blackrock(str(sess_path), stream_name='nsx6', all_annotations=True)
             
-            # Apply UA mapping
-            rec_mapped, idx_rows, ua_elec, ua_nsp, ua_region, ua_region_names, ua_port_from_map = rcp.apply_ua_mapping_with_regions(
-                rec_raw, UA_MAP, br_idx, METADATA_CSV
-            )
+            # Apply UA mapping natively
+            rec_mapped, ua_ids_1based = _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, METADATA_CSV)
+            if rec_mapped is None:
+                print(f"        [WARN] No mapped channels found for BR {br_idx}. Skipping.")
+                continue
             
-            # Store region info from first session
-            if ua_region_global is None:
-                ua_region_global = ua_region
-                ua_region_names_global = ua_region_names
-                ua_elec_global = ua_elec
-                ua_nsp_global = ua_nsp
+            # Store ID info from first session
+            if ua_ids_global is None:
+                ua_ids_global = ua_ids_1based
             
             fs_native = rec_mapped.get_sampling_frequency()
             rec_duration_ms = rec_mapped.get_total_duration() * 1000.0
@@ -1371,30 +816,30 @@ def process_baseline_group_utah(
     concat_epochs = np.concatenate(all_epochs_bb, axis=0)
     print(f"    Concatenated epochs: {concat_epochs.shape} (trials, channels, time)")
     
-    # 4. Clean epochs (DISABLED)
-    print(f"    [Cleaning] Using RAW (resampled) epochs (Baseline/Exp/Template removal DISABLED).")
-    concat_epochs_clean = concat_epochs
-    
-    # --- Step 4.5: Reject Bad Channels (Impedance Only) ---
-    # Need ua_elec_global which was stored in the loop
-    bad_ch_indices = get_bad_channels_utah(IMP_FILES, ua_elec_global, threshold_kohm=UTAH_IMPEDANCE_CUTOFF)
-    
-    if len(bad_ch_indices) > 0:
-         print(f"    [Rejection] Removing {len(bad_ch_indices)} bad channels (Imp > 1000kOhm).")
-         concat_epochs_clean[:, bad_ch_indices, :] = np.nan
-    
-    # 5. Compute time vectors and slice
-    # rel_t_epoch needs to account for padding
-    n_time = concat_epochs_clean.shape[2]
+    # 4. Clean epochs — build rel_t_epoch FIRST (needed by the detrending call)
+    n_time = concat_epochs.shape[2]
     rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
+
+    print(f"    [Cleaning] Applying 1/f Detrending to baseline epochs...")
+    concat_epochs_clean = apply_1f_detrending_chunked(
+        concat_epochs, rel_t_epoch, win_base=(-EPOCH_PRE_MS + 100.0, EPOCH_POST_MS - 100.0), fs=TARGET_FS,
+        plot_debug=PLOT_1F_DEBUG, debug_out_dir=UA_LFP_CKPT_ROOT.parent.parent / "figures" / "UA_LFP" / "debug"
+    )
+
+    # --- Step 4.5: Reject Bad Channels Disabled ---
+    bad_ch_indices = np.array([], dtype=int)
     
     WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
     WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)
     
+    # Save the FULL continuous corrected window for UA
+    WIN_FULL = (-EPOCH_PRE_MS, EPOCH_POST_MS)
+    bb_full, t_full = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_FULL)
     bb_pre, t_pre = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_PRE)
     bb_post, t_post = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_POST)
     
     results = {
+        "broadband_full": bb_full,
         "broadband_pre": bb_pre,
         "broadband_post": bb_post,
     }
@@ -1403,6 +848,7 @@ def process_baseline_group_utah(
     for band_name, (low, high) in LFP_BANDS.items():
         print(f"    Filtering {band_name} ({low}-{high} Hz)...")
         filt_epochs = filter_zero_phase(concat_epochs_clean, TARGET_FS, low, high)
+        results[f'{band_name}_full'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_FULL)
         results[f'{band_name}_pre'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_PRE)
         results[f'{band_name}_post'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_POST)
     
@@ -1419,10 +865,7 @@ def process_baseline_group_utah(
         "rel_time_post": t_post,
         "stim_channels": ["Baseline_IR"],
         # UA-specific metadata
-        "ua_region": ua_region_global,
-        "ua_region_names": ua_region_names_global,
-        "ua_elec": ua_elec_global,
-        "ua_nsp": ua_nsp_global,
+        "ua_ids_1based": ua_ids_global,
         **results
     }
     
@@ -1431,6 +874,47 @@ def process_baseline_group_utah(
     
     gc.collect()
 
+
+def _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, metadata_csv):
+    ua_port = "A"
+    if metadata_csv.exists():
+        try:
+            df_meta_raw = pd.read_csv(metadata_csv)
+            df_meta = _normalize_metadata(df_meta_raw)
+            if "br_file" in df_meta.columns:
+                br_col = pd.to_numeric(df_meta["br_file"], errors="coerce")
+                mask = br_col == br_idx
+                if mask.any():
+                    row_meta = df_meta.loc[mask].iloc[0]
+                    port_val = row_meta.get("_ua_port_norm") if "_ua_port_norm" in row_meta else (
+                        str(row_meta.get("ua_port", "UNKNOWN")).upper().strip() or "UNKNOWN"
+                    )
+                    if port_val in ("A", "B"):
+                        ua_port = port_val
+        except Exception as e:
+            print(f"    [WARN] Failed to read UA port: {e}")
+            
+    raw_ch_ids = np.asarray(rec_raw.get_channel_ids(), int)
+    if ua_port == "B":
+        raw_ch_ids += 128
+        
+    id_to_row = {ch: i for i, ch in enumerate(raw_ch_ids)}
+    active_elecs, active_rows = [], []
+    for elec_zero_idx, nsp_id in enumerate(UA_MAP):
+        if nsp_id is not None and not np.isnan(nsp_id) and nsp_id > 0 and int(nsp_id) in id_to_row:
+            active_elecs.append(elec_zero_idx + 1)
+            active_rows.append(id_to_row[int(nsp_id)])
+            
+    if len(active_rows) > 0:
+        rec_mapped = rec_raw.select_channels(
+            channel_ids=[rec_raw.channel_ids[r] for r in active_rows]
+        ).rename_channels(
+            new_channel_ids=[str(e) for e in active_elecs]
+        )
+        ua_ids_1based = np.array(active_elecs, dtype=int)
+        return rec_mapped, ua_ids_1based
+    else:
+        return None, None
 
 def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan: float, shift_sample: float):
     matches = [p for p in BR_ROOT.iterdir() if p.is_dir() and f"_{br_idx:03d}" in p.name]
@@ -1481,7 +965,6 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     print(f"[UA] Processing {sess_id} (Source: {sess_path.name})")
     
     # Load Recording
-    # Load Recording
     try:
         # User requested to use nsx6
         print(f"  Loading Blackrock stream: nsx6")
@@ -1491,9 +974,10 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         return
 
     # Mapping
-    rec_mapped, idx_rows, ua_elec, ua_nsp, ua_region, ua_region_names, ua_port = rcp.apply_ua_mapping_with_regions(
-        rec_raw, UA_MAP, br_idx, METADATA_CSV
-    )
+    rec_mapped, ua_ids_1based = _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, METADATA_CSV)
+    if rec_mapped is None:
+        print("[WARN] No mapped channels found.")
+        return
     
     # Load Stim for Blanking AND Alignment (Using Intan info mapped to UA time)
     stim_npz_path, intan_session_name = rcp.stim_npz_path_from_br_idx(br_idx, METADATA_CSV, NPRW_AUX_DATA)
@@ -1517,6 +1001,27 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         
         fs_native = rec_mapped.get_sampling_frequency()
         stim_indices_native = np.floor(stim_ms_ua * fs_native / 1000.0).astype(int)
+        
+        # IPCA Artifact Correction before going into the LFP pipeline
+        starts_intan = block_bounds[:, 0].astype(np.int64)
+        ends_intan   = block_bounds[:, 1].astype(np.int64)
+        scale = fs_native / fs_intan
+        starts_ua = np.round((starts_intan - shift_sample) * scale).astype(np.int64)
+        ends_ua   = np.round((ends_intan   - shift_sample) * scale).astype(np.int64)
+        
+        n_total = rec_mapped.get_num_samples()
+        ends_ua = np.minimum(ends_ua, n_total)
+        valid = (ends_ua > starts_ua) & (starts_ua >= 0) & (ends_ua <= n_total)
+        starts_ua = starts_ua[valid]
+        ends_ua   = ends_ua[valid]
+        
+        rec_mapped = apply_ipca_correction(
+            rec_mapped, starts_ua, ends_ua
+        )
+        
+        # Override stim_indices_native so that basic blanking doesn't run,
+        # since IPCA handled it cleanly.
+        stim_indices_native = np.array([], dtype=int)
 
     # 2. Build SI Pipeline
     # Blank(-5, +20) -> Local CMR (None) -> DS(1000)
@@ -1528,14 +1033,17 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         local_radii=None 
     )
     
-    # 3. Get Traces (Eager Load)
-    print("  [UA] Loading processed traces into memory...")
-    traces = rec_proc.get_traces(return_in_uV=True).T
-    n_channels, n_samples = traces.shape
-
-    # Segment
-    t_ms = np.arange(n_samples, dtype=float) * 1000.0 / TARGET_FS
+    # 3. Get Traces Memory-Safely (No Eager Load)
+    print("  [UA] Segmenting traces lazily from SpikeInterface pipeline...")
     
+    pad_samps = int(PAD_MS * TARGET_FS / 1000.0)
+    pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000) + pad_samps
+    post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000) + pad_samps
+    n_samps_total = rec_proc.get_total_samples()
+    
+    # Convert native stim ms to resampled indices for segmentation
+    stim_indices_res = (stim_ms_ua * TARGET_FS / 1000.0).astype(np.int64)
+
     # --- Parameters ---
     WIN_EPOCH = (-EPOCH_PRE_MS, EPOCH_POST_MS)   # Epoch Window
     WIN_PRE   = (-EPOCH_PRE_MS, -BLANK_PRE_MS)    # Baseline Window
@@ -1543,76 +1051,74 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     
     results = {}
     
-    print(f"  Segmenting Broadband Epochs ({WIN_EPOCH} ms)...", flush=True)
-    segs_bb, _, rel_t_epoch, valid_stim = rcp.extract_peristim_segments(
-        rate_hz=traces.astype(np.float32), 
-        counts=None,
-        t_ms=t_ms,
-        stim_ms=stim_ms_ua,
-        win_ms=WIN_EPOCH
-    )
-    
-    if valid_stim is None:
+    print(f"  Segmenting Broadband Epochs ({WIN_EPOCH} ms PAD={PAD_MS}ms)...", flush=True)
+    segs_list_bb = []
+    valid_stim_ms = []
+
+    for idx_res, stim_time in zip(stim_indices_res, stim_ms_ua):
+        if (idx_res - pre_samps >= 0) and (idx_res + post_samps <= n_samps_total):
+            seg = extract_single_epoch(rec_proc, idx_res, pre_samps, post_samps)
+            if seg is not None:
+                segs_list_bb.append(seg)
+                valid_stim_ms.append(stim_time)
+
+    if not segs_list_bb:
         print(f"  [WARN] No valid segments found for {sess_path.name}. Skipping.")
         return
 
-    # 7. Per-Trial Cleaning - DISABLED
-    print(f"  [Cleaning] Using RAW (resampled) epochs (Baseline/Exp/Template removal DISABLED).")
-    segs_bb_clean = segs_bb
+    segs_bb = np.stack(segs_list_bb, axis=0) # (n_trials, n_channels, n_time)
+    valid_stim = np.array(valid_stim_ms)
     
-    # --- Step 7.5: Reject Bad Channels ---
-    # 1. Impedance (Utah specific)
-    # Use global IMP_FILES and get_bad_channels_utah
-    bad_ch_indices = get_bad_channels_utah(IMP_FILES, ua_elec, threshold_kohm=UTAH_IMPEDANCE_CUTOFF)
+    n_time = pre_samps + post_samps
+    rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
+
+    # 7. Per-Trial Cleaning
+    print(f"  [Cleaning] Applying 1/f Detrending to broadband epochs...")
+    segs_bb_clean = apply_1f_detrending_chunked(
+        segs_bb, rel_t_epoch, win_base=(-EPOCH_PRE_MS + 100.0, EPOCH_POST_MS - 100.0), fs=TARGET_FS,
+        plot_debug=PLOT_1F_DEBUG, debug_out_dir=UA_LFP_CKPT_ROOT.parent.parent / "figures" / "UA_LFP" / "debug"
+    )
     
-    if len(bad_ch_indices) > 0:
-         print(f"  [Rejection] Removing {len(bad_ch_indices)} bad channels (Imp > {UTAH_IMPEDANCE_CUTOFF}kOhm).")
-         # We set them to NaN in the SEGMENTS (broadband)
-         segs_bb_clean[:, bad_ch_indices, :] = np.nan
-    
+    # --- Step 7.5: Reject Bad Channels Disabled ---
+    bad_ch_indices = np.array([], dtype=int)
     results['bad_channels'] = bad_ch_indices
-    
-    def slice_epoch(data, t_axis, target_win):
-        mask = (t_axis >= target_win[0]) & (t_axis < target_win[1])
-        return data[:, :, mask], t_axis[mask]
         
+    WIN_FULL = (-EPOCH_PRE_MS, EPOCH_POST_MS)
+    results['broadband_full'], t_full = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_FULL)
     results['broadband_pre'], t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
     results['broadband_post'], t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
     
     # 9. Band Analysis (Filter Continuous -> Segment)
     # This avoids padding issues for segments since we have continuous data
     for band_name, (low, high) in LFP_BANDS.items():
-        print(f"  Filtering Continuous Trace {band_name} ({low}-{high} Hz)...", flush=True)
-        # traces: (n_ch, n_samples). filter_zero_phase expects (trials, ch, time).
-        # We pass fake trial dim: (1, n_ch, n_samples)
-        filt_traces = filter_zero_phase(traces[None, :, :], TARGET_FS, low, high)[0] # Extract back
+        print(f"  [SI Pipeline] Filtering Continuous Trace {band_name} ({low}-{high} Hz)...", flush=True)
         
-        # Segment fitlered traces
-        # Use same valid_stim
-        segs_filt, _, _, _ = rcp.extract_peristim_segments(
-            rate_hz=filt_traces.astype(np.float32), 
-            counts=None,
-            t_ms=t_ms,
-            stim_ms=valid_stim,
-            win_ms=WIN_EPOCH
-        )
+        # Use SpikeInterface directly for filtering memory-safely
+        rec_filtered = spre.bandpass_filter(rec_proc, freq_min=low, freq_max=high)
         
-        if segs_filt is not None:
-             # Apply Rejection
-             if len(bad_ch_indices) > 0:
-                 segs_filt[:, bad_ch_indices, :] = np.nan
+        segs_list_filt = []
+        for idx_res in stim_indices_res:
+            if (idx_res - pre_samps >= 0) and (idx_res + post_samps <= n_samps_total):
+                seg = extract_single_epoch(rec_filtered, idx_res, pre_samps, post_samps)
+                if seg is not None:
+                    segs_list_filt.append(seg)
+        
+        if len(segs_list_filt) > 0:
+            segs_filt = np.stack(segs_list_filt, axis=0)
+            # Apply Rejection
+            if len(bad_ch_indices) > 0:
+                segs_filt[:, bad_ch_indices, :] = np.nan
              
-             results[f'{band_name}_pre'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_PRE)
-             results[f'{band_name}_post'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_POST)
+            results[f'{band_name}_full'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_FULL)
+            results[f'{band_name}_pre'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_PRE)
+            results[f'{band_name}_post'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_POST)
 
-        
+        del rec_filtered, segs_list_filt
+        gc.collect()
     # Save
     save_dict = {
         "fs_lfp": TARGET_FS,
-        "ua_region": ua_region,
-        "ua_region_names": ua_region_names,
-        "ua_elec": ua_elec,
-        "ua_nsp": ua_nsp,
+        "ua_ids_1based": ua_ids_1based,
         "session": sess_path.name,
         "stim_ms": valid_stim,
         "rel_time_pre": t_pre,
@@ -1627,7 +1133,7 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     gc.collect()
 
 
-def quick_check_stim(sess_path: Path, stream_name: str, chanmap: np.ndarray, intan_idx: int, br_idx: int) -> bool:
+def quick_check_stim(sess_path: Path, stream_name: str, intan_idx: int, br_idx: int) -> bool:
     """
     Check if stim file or aligned file exists and has events.
     """
@@ -1671,7 +1177,7 @@ def quick_check_stim(sess_path: Path, stream_name: str, chanmap: np.ndarray, int
     if not has_stim and not stim_npz.exists():
         try:
             print(f"    [Check] Extracting new stim file...")
-            stim_ext = rcp.extract_stim_npz(sess_path, out_dir=NPRW_AUX_DATA, stim_stream_name=stream_name, chanmap_perm=chanmap)
+            stim_ext = rcp.extract_stim_npz(sess_path, out_dir=NPRW_AUX_DATA, stim_stream_name=stream_name, chanmap_perm=None)
             if stim_ext is not None:
                 bounds = stim_ext.get("block_bounds_samples")
                 if bounds is not None and bounds.size > 0:
@@ -1729,13 +1235,6 @@ def main():
         
     print(f"Found {len(rows)} sessions in shift CSV.")
     
-    # Pre-load geometry for stim checking
-    try:
-        intan_geom, intan_probe_mapping = get_intan_geometry()
-    except Exception as e:
-        print(f"[ERROR] Could not load Intan geometry: {e}")
-        return
-    
     # =========================================================================
     # Load Metadata to Identify Baseline Sessions
     # =========================================================================
@@ -1776,7 +1275,14 @@ def main():
     # Per-Session Loop (Skip Baseline Sessions)
     # =========================================================================
     for row in rows:
-        session_name = row["session"]
+        # The CSV has 'intan_filename' (e.g., NRR_RW012_260116_something). We want the session name.
+        if "session" in row:
+            session_name = row["session"]
+        elif "intan_filename" in row:
+            session_name = "_".join(row["intan_filename"].split("_")[:3])  # E.g. "NRR_RW012_260116"
+        else:
+            continue
+            
         intan_idx = int(row["intan_idx"])
         br_idx = int(row["br_idx"])
         shift_ms = float(row["shift_ms"])
@@ -1842,20 +1348,13 @@ def main():
         # --- Pre-Check Stim ---
         # We check stim BEFORE running either NPRW or UA analysis
         print(f"\nChecking stim for {session_name}...")
-        has_stim = quick_check_stim(sess_path, STIM_STREAM, intan_probe_mapping, intan_idx, br_idx)
+        has_stim = quick_check_stim(sess_path, STIM_STREAM, intan_idx, br_idx)
         
         if not has_stim:
             print(f"  -> No valid stim events found. Skipping both NPRW and UA for this session.")
             continue
             
         print(f"  -> Stim OK. Proceeding...")
-
-        try:
-            process_nprw_session(session_name, br_idx, intan_idx, shift_ms)
-        except Exception as e:
-            print(f"[ERROR] NPRW {session_name}: {e}")
-            import traceback
-            traceback.print_exc()
 
         try:
             process_utah_session(session_name, br_idx, shift_ms, fs_intan, shift_sample)
@@ -1876,15 +1375,6 @@ def main():
             if not session_infos:
                 continue
             
-            # Process NPRW (Intan) baseline
-            try:
-                process_baseline_group(group_key, session_infos)
-            except Exception as e:
-                print(f"[ERROR] Baseline NPRW group {group_key}: {e}")
-                import traceback
-                traceback.print_exc()
-            
-            # Process Utah Array baseline
             try:
                 process_baseline_group_utah(group_key, session_infos)
             except Exception as e:

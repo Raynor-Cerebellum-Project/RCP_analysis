@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import RCP_analysis.python.functions.config_loading as cfg
 import RCP_analysis.python.functions.utils as rcp
 import RCP_analysis.python.functions.br_preproc as br_preproc
+import RCP_analysis.python.functions.impedance_utils as imp_utils
 import warnings
 from pathlib import Path
 from scipy import signal, stats
@@ -27,16 +28,21 @@ UA_FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- Global Plotting Configuration ---
 FIGURE_CONFIG = {
-    'process_original': True,          # The existing heatmap/trace plot
-    'process_power_spectra': True,      # PSD (Pre vs Post)
-    'process_lfp_coherence': False,     # (Stage 2: Disabled) Mag Squared Coherence 
-    'process_phase_coherence': False,    # ITPC (Phase consistency across trials)
-    'process_ersp': False,               # (Stage 2: New) Event-Related Spectral Perturbation
-    'process_band_stats': True,         # (Stage 2: New) Band Power Stats (Pre vs Post)
-    'process_csd': True,                # Current Source Density (CSD) Analysis
+    'process_original': False,          # The existing heatmap/trace plot
+    'process_power_spectra': False,      # PSD (Pre vs Post)
+    'process_power_vs_time': False,      # Band power vs time (all arrays overlaid)
+    'process_band_stats': False,         # (Stage 2: New) Band Power Stats (Pre vs Post)
+    'process_inter_array_coherence': False, # 4x4 inter-array coherence grid (Utah only)
+    'process_csd': False,                # Current Source Density (CSD) Analysis
+    'process_single_channel_traces': False, # Isolated multi-band trace plot for one channel 
+    'process_spectrograms': True,            # Per-channel ERSP spectrograms (Utah only)
 }
 
+y_scaler = 1
+
 PLOT_CONFIG = {
+    "single_channel_target": 168, # Target channel ID to isolate for the single-channel trace figure
+    
     # Opacity for individual trial traces
     "trace_alpha": 0.4,
     
@@ -45,13 +51,13 @@ PLOT_CONFIG = {
     
     # Heatmap Scales (uV): Set value to enforce fixed scale, or None for dynamic (percentile)
     "scales": {
-        'broadband': 30.0,
-        'delta': 10.0,
-        'theta': 10.0,
-        'alpha': 10.0,
-        'beta': 10.0,
-        'low_gamma': 10.0,
-        'high_gamma': 10.0
+        'broadband': 30.0*y_scaler,
+        'delta': None,
+        'theta': 100.0*y_scaler,
+        'alpha': 50.0*y_scaler,
+        'beta': 50.0*y_scaler,
+        'low_gamma': 30.0*y_scaler,
+        'high_gamma': 30.0*y_scaler
     },
     
     # Trace Y-Axis Scales (uV): Set value for fixed +/- limit, or None for dynamic
@@ -67,10 +73,110 @@ PLOT_CONFIG = {
 
     # X-Axis Limits (ms): Set tuple (min, max) or None for default
     "x_limits": {
-        "pre": (-500, -5), 
-        "post": (101, 605)
+        "pre": (-400, -5), 
+        "post": (101, 600)
+    },
+
+    # Spectrogram Settings
+    "spectrogram": {
+        "stft_nperseg": 256,        # Window size in samples (= ms at 1 kHz)
+        "stft_overlap_frac": 0.90,  # Fraction of window that overlaps with next
+        "window_type": "hamming",      # Tapering window applied to each segment
+        # "freq_min": 1,              # Hz — lower bound for frequency axis
+        "freq_max": 120,            # Hz — upper bound for frequency axis
+        "log_freq": False,          # If True, plot frequency axis on log scale
+        "vmin_db": -15,             # dB — colormap floor (full cold color)
+        "vmax_db": 40,              # dB — colormap ceiling (full hot color)
+        "time_range": (-400, 500),  # ms — display time window
+        "baseline_window": (None, -300),  # ms (start, end). None = epoch start
+        "normalization": "baseline", # 'baseline' (ERSP, dB relative to pre-stim) or 'absolute' (raw dB power)
+        "per_trial_norm": False,    # If True, normalize each trial then average; else average then normalize
+        "cmap": "RdBu_r",          # Colormap name
+        "shading": "gouraud",       # 'nearest' (fast) or 'gouraud' (smooth, slow) or 'flat' (requires edge coords)
+        "dpi": 150,                 # Output DPI for saved figures
     }
 }
+"""
+SPECTROGRAM SETTINGS REFERENCE
+==============================
+
+stft_nperseg (int, samples)
+    Window length for the Short-Time FFT. Controls the time-frequency tradeoff:
+      64  → freq_res = 15.6 Hz, time_smear = 64 ms   (fast transients, blurry bands)
+      128 → freq_res =  7.8 Hz, time_smear = 128 ms  (balanced)
+      256 → freq_res =  3.9 Hz, time_smear = 256 ms  (sharp bands, blurry timing)
+    Frequency resolution = fs / nperseg.  Time resolution ≈ nperseg / fs.
+
+stft_overlap_frac (float, 0.0 – 0.99)
+    Fraction of each window overlapping the next. Controls time-bin density:
+      0.50 → step = nperseg/2    (fewest bins, fastest render)
+      0.75 → step = nperseg/4    (smooth)
+      0.90 → step = nperseg/10   (very smooth, slow render)
+    Does NOT improve actual time resolution — only interpolates between windows.
+
+window_type (str)
+    Tapering function applied to each segment before FFT.
+      'hann'     — good all-around, low spectral leakage (DEFAULT)
+      'hamming'  — similar to Hann, slightly less side-lobe suppression
+      'blackman' — excellent leakage suppression, wider main lobe
+      'kaiser'   — tunable via beta parameter (not exposed here)
+      'boxcar'   — no taper (rectangular), maximum leakage — avoid
+
+freq_min / freq_max (float, Hz)
+    Frequency display bounds. The STFT computes up to Nyquist (fs/2 = 500 Hz)
+    but only the selected range is displayed.
+
+log_freq (bool)
+    If True, the frequency axis is displayed on a log scale, giving more visual
+    space to low-frequency bands (delta, theta, alpha). Useful when nperseg is
+    large enough to resolve them.
+
+vmin_db / vmax_db (float, dB)
+    Colormap saturation limits. Values outside this range clip to the edge color.
+      Too wide (e.g. ±30)  → washed out, actual modulations invisible
+      Too tight (e.g. ±2)  → everything saturates, lose dynamic range
+      Typical range: ±5 to ±15 dB for ERSP
+
+time_range (tuple of float, ms)
+    (start_ms, end_ms) — controls which portion of the epoch is displayed.
+    Data outside this window is computed but not plotted.
+
+baseline_window (tuple, ms)
+    (start_ms, end_ms) — time window used to compute the baseline power for
+    minimum: -500ms
+    ERSP normalization. Each channel's power in this window becomes 0 dB.
+    Use None for either bound to default to epoch start or 0 ms.
+
+normalization (str)
+    Controls how power values are expressed:
+      'baseline' — ERSP: dB relative to pre-stim baseline (DEFAULT). Shows modulation.
+                   Use with diverging colormaps (RdBu_r) and vmin/vmax like ±5 to ±15.
+      'absolute' — Raw power: 10*log10(|X|²). Shows overall spectral content.
+                   Use with sequential colormaps (viridis) and vmin/vmax like -30 to 10.
+
+per_trial_norm (bool)  [only applies when normalization='baseline']
+    False (default): average power across trials, THEN normalize to baseline.
+        → Standard ERSP. Cleaner but sensitive to outlier trials.
+    True: normalize each trial to baseline, THEN average the dB values.
+        → More robust to outlier trials. Shows consistent modulations.
+
+cmap (str)
+    Matplotlib colormap name.
+      'RdBu_r'   — diverging: blue=suppression, white=0, red=enhancement (BEST for ERSP)
+      'jet'      — rainbow, high contrast but perceptually non-uniform
+      'viridis'  — sequential, good for absolute power but bad for ERSP
+      'seismic'  — diverging alternative to RdBu_r
+
+shading (str)
+    Rendering mode for pcolormesh:
+      'nearest' — fast, each cell maps to nearest data point (recommended)
+      'flat'    — fast, but requires coordinate arrays one larger than data
+      'gouraud' — smooth Gouraud interpolation, much slower render
+
+dpi (int)
+    Resolution of saved PNG files. 150 is good for review, 300 for publication.
+"""
+
 
 def get_representative_channel(data_array):
     """
@@ -249,6 +355,90 @@ def calculate_ersp(data_pre, data_post, fs, nperseg=128, noverlap=100):
     
     return f_post, t_post, ersp_matrix
 
+def compute_ersp_spectrogram(broadband_full, t_full_ms, fs, spec_cfg):
+    """
+    Compute per-channel ERSP spectrogram from broadband_full data.
+    
+    Args:
+        broadband_full: (n_trials, n_ch, n_time) broadband LFP epochs
+        t_full_ms: (n_time,) time axis in ms
+        fs: sampling rate (Hz)
+        spec_cfg: dict — see SPECTROGRAM SETTINGS REFERENCE above
+    
+    Returns:
+        ersp: (n_ch, n_freq_crop, n_time_crop) power in dB (baseline-normalized or absolute)
+        freqs: (n_freq_crop,) frequency axis
+        t_bins_ms: (n_time_crop,) time axis in ms
+    """
+    nperseg = spec_cfg['stft_nperseg']
+    noverlap = int(nperseg * spec_cfg['stft_overlap_frac'])
+    window_type = spec_cfg.get('window_type', 'hann')
+    freq_min = spec_cfg.get('freq_min', 0)
+    freq_max = spec_cfg['freq_max']
+    t_range = spec_cfg['time_range']
+    per_trial_norm = spec_cfg.get('per_trial_norm', False)
+    
+    n_trials, n_ch, n_time = broadband_full.shape
+    
+    # 1. Compute STFT: scipy.signal.stft along time axis
+    f, t_bins, Zxx = signal.stft(broadband_full, fs=fs, nperseg=nperseg,
+                                  noverlap=noverlap, window=window_type, axis=2)
+    # Zxx shape: (n_trials, n_ch, n_freq, n_time_bins)
+    
+    # 2. Power per trial
+    P = np.abs(Zxx) ** 2  # (n_trials, n_ch, n_freq, n_time_bins)
+    
+    # 3. Convert STFT time bins (in seconds from start of segment) to ms
+    #    t_full_ms[0] is the epoch start time (e.g. -500 ms)
+    t_bins_ms = t_bins * 1000.0 + t_full_ms[0]
+    
+    # 4. Compute baseline mask
+    bl_win = spec_cfg.get('baseline_window', (None, 0))
+    bl_start = bl_win[0] if bl_win[0] is not None else t_bins_ms[0]
+    bl_end = bl_win[1] if bl_win[1] is not None else 0
+    baseline_mask = (t_bins_ms >= bl_start) & (t_bins_ms <= bl_end)
+    if not np.any(baseline_mask):
+        print(f"  [WARN] No time bins in baseline window ({bl_start}, {bl_end}). Using first 25% of bins.")
+        n_bl = max(1, len(t_bins_ms) // 4)
+        baseline_mask = np.zeros(len(t_bins_ms), dtype=bool)
+        baseline_mask[:n_bl] = True
+    
+    # 5. Normalize
+    normalization = spec_cfg.get('normalization', 'baseline')
+    
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        
+        if normalization == 'absolute':
+            # Absolute power in dB: 10 * log10(mean_power)
+            P_mean = np.nanmean(P, axis=0)  # (n_ch, n_freq, n_time_bins)
+            P_mean[P_mean == 0] = 1e-10
+            ersp = 10.0 * np.log10(P_mean)
+        elif per_trial_norm:
+            # Normalize each trial individually, then average dB values
+            # baseline per trial: (n_trials, n_ch, n_freq)
+            bl_power = np.nanmean(P[:, :, :, baseline_mask], axis=3)
+            bl_power[bl_power == 0] = 1e-10
+            ersp_trials = 10.0 * np.log10(P / bl_power[:, :, :, None])
+            ersp = np.nanmean(ersp_trials, axis=0)  # (n_ch, n_freq, n_time_bins)
+        else:
+            # Average power across trials, then normalize (standard ERSP)
+            P_mean = np.nanmean(P, axis=0)  # (n_ch, n_freq, n_time_bins)
+            baseline_power = np.nanmean(P_mean[:, :, baseline_mask], axis=2)  # (n_ch, n_freq)
+            baseline_power[baseline_power == 0] = 1e-10
+            ersp = 10.0 * np.log10(P_mean / baseline_power[:, :, None])
+    
+    # 6. Crop to requested frequency and time range
+    freq_mask = (f >= freq_min) & (f <= freq_max)
+    freqs = f[freq_mask]
+    ersp = ersp[:, freq_mask, :]
+    
+    time_mask = (t_bins_ms >= t_range[0]) & (t_bins_ms <= t_range[1])
+    t_bins_ms = t_bins_ms[time_mask]
+    ersp = ersp[:, :, time_mask]
+    
+    return ersp, freqs, t_bins_ms
+
 def calculate_band_power_stats(data_pre, data_post, fs):
     """
     Compare band power between Pre and Post using Paired T-Test.
@@ -423,6 +613,14 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
     else:
         print(f"Warning: Stimulation summary not found at {summary_csv}")
 
+    # Load Impedance Data to exclude bad channels
+    bad_ch_map = imp_utils.get_session_impedances(cfg.SESSION_LOC)
+    bad_ua_ids = bad_ch_map.get('utah', set())
+    bad_nprw_ids = bad_ch_map.get('nprw', set())
+    print(f"  [Impedance] Bad Utah channels: {len(bad_ua_ids)}, Bad NPRW channels: {len(bad_nprw_ids)}")
+    if bad_ua_ids: print(f"    Utah excluded NSP IDs: {sorted(bad_ua_ids)}")
+    if bad_nprw_ids: print(f"    NPRW excluded IDs: {sorted(bad_nprw_ids)}")
+
     # Load Probe Map for CSD (if enabled and labeled Intan)
     y_coords = None
     if FIGURE_CONFIG.get('process_csd', False) and "Intan" in label:
@@ -576,175 +774,11 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
         # --- Pick Representative Channel ---
         rep_ch_idx = get_representative_channel(data.get('broadband_post'))
         
-        # --- 1. Original Plot (Heatmaps + Traces) ---
-        if FIGURE_CONFIG.get('process_original', True):
-            print("  Generating Original Heatmap/Trace Plot...")
-            bands = ['broadband', 'delta', 'theta', 'alpha', 'beta', 'low_gamma', 'high_gamma']
-            n_rows = len(bands)
-            
-            # Combine Pre/Post into single heatmap
-            fig, axes = plt.subplots(n_rows, 3, figsize=(18, 3 * n_rows), constrained_layout=True,
-                                    gridspec_kw={'width_ratios': [3, 1, 1]})
-            fig.suptitle(f"{session}\n{title_str}\n(N={n_trials})", fontsize=14)
-            
-            for i, band in enumerate(bands):
-                # Keys
-                key_pre = f"{band}_pre"
-                key_post = f"{band}_post"
-                
-                # Prepare Data
-                d_pre = data.get(key_pre) # (N, Ch, T)
-                d_post = data.get(key_post)
-                
-                # Calc Means
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    m_pre = np.nanmean(d_pre, axis=0) if d_pre is not None else None
-                    m_post = np.nanmean(d_post, axis=0) if d_post is not None else None
-                
-                # --- Scales ---
-                limit = PLOT_CONFIG['scales'].get(band)
-                
-                if limit is None:
-                    # Dynamic Shared Scale
-                    vals_for_scale = []
-                    if m_pre is not None: vals_for_scale.append(m_pre.flatten())
-                    if m_post is not None: vals_for_scale.append(m_post.flatten())
-                    
-                    if len(vals_for_scale) > 0:
-                        all_vals = np.concatenate(vals_for_scale)
-                        valid_vals = all_vals[np.isfinite(all_vals)]
-                        if valid_vals.size > 0:
-                            vmin, vmax = np.percentile(valid_vals, [2, 98])
-                            limit = max(abs(vmin), abs(vmax))
-                        else:
-                            limit = 50.0
-                    else:
-                        limit = 50.0
-                
-                cmap = PLOT_CONFIG['heatmap_cmap']
-
-                # Time
-                t_pre = data.get('rel_time_pre')
-                if t_pre is None and d_pre is not None: t_pre = np.arange(d_pre.shape[2])
-                
-                t_post = data.get('rel_time_post')
-                if t_post is None and d_post is not None: t_post = t_ms
-                
-                # --- HEATMAPS (Combined) ---
-                t_gap_start = t_pre[-1]
-                t_gap_end = t_post[0]
-                
-                if len(t_pre) > 1: dt_est = t_pre[1] - t_pre[0]
-                else: dt_est = 1.0 
-                
-                n_gap = int(np.round((t_gap_end - t_gap_start) / dt_est)) - 1
-                if n_gap < 1: n_gap = 1 
-                
-                # Concatenate Data
-                ax = axes[i, 0]
-                
-                if m_pre is not None and m_post is not None:
-                    gap_data = np.full((n_ch, n_gap), np.nan)
-                    m_comb = np.hstack([m_pre[sort_idx, :], gap_data, m_post[sort_idx, :]])
-                    
-                    t_start = t_pre[0]
-                    t_end = t_post[-1]
-                    
-                    im = ax.imshow(m_comb, aspect='auto', origin='upper', cmap=cmap, 
-                                   vmin=-limit, vmax=limit, extent=[t_start, t_end, n_ch - 0.5, -0.5]) 
-                    
-                    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="uV")
-                    ax.axvspan(t_gap_start, t_gap_end, color='gray', alpha=0.3, hatch='///')
-
-                ax.set_ylabel(f"{band.capitalize()}\nCh Index")
-                ax.set_title(f"Combined Activity")
-                
-                if i == n_rows - 1: ax.set_xlabel("Time (ms)")
-                else: ax.set_xticklabels([])
-                    
-                if PLOT_CONFIG['x_limits']['pre'] and PLOT_CONFIG['x_limits']['post']:
-                     ax.set_xlim(PLOT_CONFIG['x_limits']['pre'][0], PLOT_CONFIG['x_limits']['post'][1])
-
-                # --- TRACES (Shared Y-Axis) ---
-                rep_pre = d_pre[:, rep_ch_idx, :] if d_pre is not None else None
-                rep_post = d_post[:, rep_ch_idx, :] if d_post is not None else None
-                
-                forced_ylim = PLOT_CONFIG['trace_scales'].get(band)
-                
-                if forced_ylim is not None:
-                    y_range = (-forced_ylim, forced_ylim)
-                else:
-                    ylims = []
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        if rep_pre is not None and np.any(np.isfinite(rep_pre)): 
-                            ylims.extend([np.nanmin(rep_pre), np.nanmax(rep_pre)])
-                        if rep_post is not None and np.any(np.isfinite(rep_post)):
-                            ylims.extend([np.nanmin(rep_post), np.nanmax(rep_post)])
-                    
-                    ylims = [y for y in ylims if np.isfinite(y)]
-                    if not ylims: y_range = (-100, 100)
-                    else:
-                         ymin, ymax = min(ylims), max(ylims)
-                         if ymin == ymax: pad = 10.0
-                         else: pad = (ymax - ymin) * 0.05
-                         y_range = (ymin - pad, ymax + pad)
-                
-                t_alpha = PLOT_CONFIG['trace_alpha']
-
-                # Pre Traces
-                ax = axes[i, 1]
-                if rep_pre is not None:
-                    ax.plot(t_pre, rep_pre.T, color='gray', alpha=t_alpha, lw=0.5)
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        rm = np.nanmean(rep_pre, axis=0)
-                    ax.plot(t_pre, rm, color='blue', lw=1.5, label='Mean')
-                ax.set_ylim(y_range)
-                ax.set_title(f"Pre (Ch {rep_ch_idx})")
-                ax.set_ylabel("uV")
-                
-                if PLOT_CONFIG['x_limits']['pre'] is not None: ax.set_xlim(PLOT_CONFIG['x_limits']['pre'])
-                elif t_pre is not None: ax.set_xlim(t_pre[0], t_pre[-1])
-                
-                if i == 0: ax.legend(loc='upper right', fontsize='x-small')
-                
-                # Post Traces
-                ax = axes[i, 2]
-                if rep_post is not None:
-                    ax.plot(t_post, rep_post.T, color='gray', alpha=t_alpha, lw=0.5)
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        rm = np.nanmean(rep_post, axis=0)
-                    ax.plot(t_post, rm, color='red', lw=1.5, label='Mean')
-                ax.set_ylim(y_range)
-                ax.set_title(f"Post (Ch {rep_ch_idx})")
-                ax.set_ylabel("uV")
-                
-                if PLOT_CONFIG['x_limits']['post'] is not None: ax.set_xlim(PLOT_CONFIG['x_limits']['post'])
-                elif t_post is not None: ax.set_xlim(t_post[0], t_post[-1])
-
-            out_path = fig_dir / f"check_lfp_heatmap_{session}.png"
-            try:
-                 plt.savefig(out_path, dpi=150)
-                 print(f"  Saved plot to {out_path}")
-            except Exception as e:
-                 print(f"  Error saving {out_path}: {e}")
-            plt.close(fig)
-
-        # --- Grab Broadband Data Single Time for Advanced Plots ---
-        bb_pre = data.get("broadband_pre") # (N, Ch, T)
-        bb_post = data.get("broadband_post")
-
-        # --- Prepare Groups ---
+        # need to check if utah array or nprw
         groups = []
         is_utah = (label == "Utah_Array")
         
-        # --- Prepare Groups ---
-        groups = []
-        is_utah = (label == "Utah_Array")
-        
+
         if is_utah:
             import csv
             
@@ -774,7 +808,6 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 print(f"  [Warn] Failed to lookup metadata for port/intan_session: {e}")
 
             # 2. Load Mapping from Excel
-            # The 'ua_ids_1based' in file might be missing or wrong, so we rebuild it using the master Excel map.
             try:
                 xls_path = br_preproc.ua_excel_path(cfg.REPO_ROOT, cfg.PARAMS.probes)
                 mapped_nsp = br_preproc.load_UA_mapping_from_excel(xls_path) # index=elec-1, val=nsp_id
@@ -783,19 +816,18 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 nsp_to_elec = {int(nsp): i+1 for i, nsp in enumerate(mapped_nsp) if nsp > 0}
                 
                 # 3. Map Channels to Regions
-                # If Port A: Ch 0..127 -> NSP 1..128
-                # If Port B: Ch 0..127 -> NSP 129..256
                 offset = 128 if ua_port == 'B' else 0
                 print(f"  [Info] Utah Array Port: {ua_port} (Offset: {offset})")
                 
                 sma_idxs, pmd_idxs, m1i_idxs, m1s_idxs = [], [], [], []
                 
                 for ch_idx in range(n_ch):
-                    # Current NSP ID for this channel
                     curr_nsp = ch_idx + 1 + offset
-                    
-                    # Look up Electrode ID
                     elec_id = nsp_to_elec.get(curr_nsp, -1)
+                    
+                    # Skip bad impedance channels
+                    if curr_nsp in bad_ua_ids:
+                        continue
                     
                     if elec_id > 0:
                         if elec_id <= 64: sma_idxs.append(ch_idx)
@@ -808,6 +840,8 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 if m1i_idxs: groups.append((m1i_idxs, f"M1 Inf (n={len(m1i_idxs)})"))
                 if m1s_idxs: groups.append((m1s_idxs, f"M1 Sup (n={len(m1s_idxs)})"))
                 
+                print(f"  [Info] Region mapping: SMA={len(sma_idxs)}, PMd={len(pmd_idxs)}, M1i={len(m1i_idxs)}, M1s={len(m1s_idxs)} channels")
+                
                 if not groups:
                     print(f"  [Warn] No valid channel mappings found for Port {ua_port}. Check Excel map.")
                     is_utah = False
@@ -817,7 +851,6 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 is_utah = False
 
         if not is_utah:
-            # Default 16-ch blocks (Intan)
             n_groups_default = 8
             ch_per_group = 16
             for g in range(n_groups_default):
@@ -825,7 +858,379 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 end = start + ch_per_group
                 if start < n_ch:
                     actual_end = min(end, n_ch)
-                    groups.append((range(start, actual_end), f"Ch {start}-{actual_end-1}"))
+                    grp_chs = [c for c in range(start, actual_end) if c not in bad_nprw_ids]
+                    if grp_chs:
+                        groups.append((grp_chs, f"Ch {start}-{actual_end-1}"))
+        session = session.replace('.ns6', '')
+        # --- 1. Original Plot (Heatmaps + Traces) ---
+        if FIGURE_CONFIG.get('process_original', True):
+            print("  Generating Original Heatmap/Trace Plots...")
+            bands = ['broadband', 'delta', 'theta', 'alpha', 'beta', 'low_gamma', 'high_gamma']
+            
+            # Pre-compute GLOBAL scales from ALL channels so every region figure shares the same limits
+            global_scales = {}
+            for band in bands:
+                limit = PLOT_CONFIG['scales'].get(band)
+                if limit is None:
+                    d_pre_full = data.get(f"{band}_pre")
+                    d_post_full = data.get(f"{band}_post")
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        m_pre_full = np.nanmean(d_pre_full, axis=0) if d_pre_full is not None else None
+                        m_post_full = np.nanmean(d_post_full, axis=0) if d_post_full is not None else None
+                    vals = []
+                    if m_pre_full is not None: vals.append(m_pre_full.flatten())
+                    if m_post_full is not None: vals.append(m_post_full.flatten())
+                    if vals:
+                        all_v = np.concatenate(vals)
+                        valid_v = all_v[np.isfinite(all_v)]
+                        if valid_v.size > 0:
+                            vmin, vmax = np.percentile(valid_v, [2, 98])
+                            limit = max(abs(vmin), abs(vmax))
+                        else: limit = 50.0
+                    else: limit = 50.0
+                global_scales[band] = limit
+            
+            plot_groups = groups if is_utah else [(list(range(n_ch)), "AllChannels")]
+            
+            for grp_idxs, grp_name in plot_groups:
+                safe_name = grp_name.split(' (')[0].replace(' ', '_')
+                n_grp_ch = len(grp_idxs)
+                if n_grp_ch == 0: continue
+                
+                grp_fig_dir = fig_dir / safe_name if is_utah else fig_dir
+                grp_fig_dir.mkdir(parents=True, exist_ok=True)
+                
+                n_rows = len(bands)
+                fig, axes = plt.subplots(n_rows, 3, figsize=(18, 3 * n_rows), constrained_layout=True, gridspec_kw={'width_ratios': [3, 1, 1]})
+                fig.suptitle(f"{session} - {safe_name}\n{title_str}\n(N={n_trials})", fontsize=14)
+                
+                for i, band in enumerate(bands):
+                    key_pre = f"{band}_pre"
+                    key_post = f"{band}_post"
+                    
+                    d_pre = data.get(key_pre)
+                    if d_pre is not None: d_pre = d_pre[:, grp_idxs, :]
+                    
+                    d_post = data.get(key_post)
+                    if d_post is not None: d_post = d_post[:, grp_idxs, :]
+                    
+                    rep_ch_idx_local = get_representative_channel(d_post)
+                    abs_ch_idx = grp_idxs[rep_ch_idx_local]
+                    
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        # Restrict data to x_limits for scaling
+                        pre_lim = PLOT_CONFIG['x_limits']['pre']
+                        post_lim = PLOT_CONFIG['x_limits']['post']
+                        
+                        m_pre, m_post = None, None
+                        if d_pre is not None:
+                            t_p = data.get('rel_time_pre')
+                            if t_p is None: t_p = np.arange(d_pre.shape[2])
+                            idx_pre = (t_p >= pre_lim[0]) & (t_p <= pre_lim[1]) if pre_lim else np.ones(len(t_p), dtype=bool)
+                            if np.any(idx_pre):
+                                m_pre = np.nanmean(d_pre[:, :, idx_pre], axis=0)
+                            else:
+                                m_pre = np.nanmean(d_pre, axis=0) # fallback
+                                
+                        if d_post is not None:
+                            t_p = data.get('rel_time_post')
+                            if t_p is None: t_p = t_ms
+                            idx_post = (t_p >= post_lim[0]) & (t_p <= post_lim[1]) if post_lim else np.ones(len(t_p), dtype=bool)
+                            if np.any(idx_post):
+                                m_post = np.nanmean(d_post[:, :, idx_post], axis=0)
+                            else:
+                                m_post = np.nanmean(d_post, axis=0) # fallback
+                    
+                    limit = global_scales[band]
+                    
+                    cmap = PLOT_CONFIG['heatmap_cmap']
+                    t_pre = data.get('rel_time_pre')
+                    if t_pre is None and d_pre is not None: t_pre = np.arange(d_pre.shape[2])
+                    
+                    t_post = data.get('rel_time_post')
+                    if t_post is None and d_post is not None: t_post = t_ms
+                    
+                    t_gap_start = t_pre[-1]
+                    t_gap_end = t_post[0]
+                    dt_est = t_pre[1] - t_pre[0] if len(t_pre) > 1 else 1.0 
+                    n_gap = max(1, int(np.round((t_gap_end - t_gap_start) / dt_est)) - 1)
+                    
+                    ax = axes[i, 0]
+                    
+                    if is_utah:
+                        key_full = f"{band}_full"
+                        d_full = data.get(key_full)
+                        if d_full is not None:
+                            d_full_view = d_full[:, grp_idxs, :]
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore")
+                                m_full = np.nanmean(d_full_view, axis=0)
+                            
+                            t_start = t_pre[0]
+                            t_end = t_post[-1]
+                            im = ax.imshow(m_full, aspect='auto', origin='upper', cmap=cmap, 
+                                           vmin=-limit, vmax=limit, extent=[t_start, t_end, n_grp_ch - 0.5, -0.5])
+                            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="uV")
+                    else:
+                        if m_pre is not None and m_post is not None:
+                            gap_data = np.full((n_grp_ch, n_gap), np.nan)
+                            m_comb = np.hstack([m_pre, gap_data, m_post])
+                            
+                            t_start = t_pre[0]
+                            t_end = t_post[-1]
+                            im = ax.imshow(m_comb, aspect='auto', origin='upper', cmap=cmap, vmin=-limit, vmax=limit, extent=[t_start, t_end, n_grp_ch - 0.5, -0.5]) 
+                            
+                            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="uV")
+                            ax.axvspan(t_gap_start, t_gap_end, color='gray', alpha=0.3, hatch='///')
+
+                    ax.set_ylabel(f"{band.capitalize()}\nCh Index")
+                    ax.set_title(f"Combined Activity")
+                    if i == n_rows - 1: ax.set_xlabel("Time (ms)")
+                    else: ax.set_xticklabels([])
+                    if PLOT_CONFIG['x_limits']['pre'] and PLOT_CONFIG['x_limits']['post']:
+                         ax.set_xlim(PLOT_CONFIG['x_limits']['pre'][0], PLOT_CONFIG['x_limits']['post'][1])
+
+                    # --- TRACES (Shared Y-Axis) ---
+                    rep_pre = d_pre[:, rep_ch_idx_local, :] if d_pre is not None else None
+                    rep_post = d_post[:, rep_ch_idx_local, :] if d_post is not None else None
+                    
+                    forced_ylim = PLOT_CONFIG['trace_scales'].get(band)
+                    if forced_ylim is not None:
+                        y_range = (-forced_ylim, forced_ylim)
+                    else:
+                        ylims = []
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore")
+                            pre_lim = PLOT_CONFIG['x_limits']['pre']
+                            post_lim = PLOT_CONFIG['x_limits']['post']
+                            
+                            if rep_pre is not None:
+                                t_p = data.get('rel_time_pre')
+                                if t_p is None: t_p = np.arange(rep_pre.shape[1])
+                                idx_pre = (t_p >= pre_lim[0]) & (t_p <= pre_lim[1]) if pre_lim else np.ones(len(t_p), dtype=bool)
+                                valid_pre = rep_pre[:, idx_pre]
+                                if np.any(np.isfinite(valid_pre)): 
+                                    ylims.extend([np.nanmin(valid_pre), np.nanmax(valid_pre)])
+                                    
+                            if rep_post is not None:
+                                t_p = data.get('rel_time_post')
+                                if t_p is None: t_p = t_ms
+                                idx_post = (t_p >= post_lim[0]) & (t_p <= post_lim[1]) if post_lim else np.ones(len(t_p), dtype=bool)
+                                valid_post = rep_post[:, idx_post]
+                                if np.any(np.isfinite(valid_post)): 
+                                    ylims.extend([np.nanmin(valid_post), np.nanmax(valid_post)])
+                        
+                        ylims = [y for y in ylims if np.isfinite(y)]
+                        if not ylims: y_range = (-100, 100)
+                        else:
+                             ymin, ymax = min(ylims), max(ylims)
+                             y_range = (ymin - 10.0, ymax + 10.0) if ymin == ymax else (ymin - (ymax - ymin)*0.05, ymax + (ymax - ymin)*0.05)
+                    
+                    t_alpha = PLOT_CONFIG['trace_alpha']
+
+                    if is_utah:
+                        # Plot full unbroken trace explicitly using GridSpec
+                        ax_pre = axes[i, 1]
+                        ax_full = axes[i, 2]
+                        
+                        gs = ax_pre.get_subplotspec().get_gridspec()
+                        ax_pre.remove()
+                        ax_full.remove()
+                        
+                        ax_full = fig.add_subplot(gs[i, 1:])
+                        key_full = f"{band}_full"
+                        d_full = data.get(key_full)
+                        if d_full is not None:
+                            rep_full = d_full[:, grp_idxs[rep_ch_idx_local], :]
+                            t_full_axis = np.linspace(t_pre[0], t_post[-1], rep_full.shape[1])
+                            
+                            ax_full.plot(t_full_axis, rep_full.T, color='gray', alpha=t_alpha, lw=0.5)
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore")
+                                rm = np.nanmean(rep_full, axis=0)
+                            ax_full.plot(t_full_axis, rm, color='green', lw=1.5, label='Mean Corrected')
+                            ax_full.axvspan(0, 100, color='grey', alpha=0.3, label='Stimulation')
+                            ax_full.axvline(0, color='red', linestyle='--', alpha=0.5)
+                        
+                        ax_full.set_ylim(y_range)
+                        ax_full.set_title(f"Continuous (Ch {abs_ch_idx})")
+                        ax_full.set_ylabel("uV")
+                        if PLOT_CONFIG['x_limits']['pre'] is not None and PLOT_CONFIG['x_limits']['post'] is not None:
+                            ax_full.set_xlim(PLOT_CONFIG['x_limits']['pre'][0], PLOT_CONFIG['x_limits']['post'][1])
+                    else:
+                        ax = axes[i, 1]
+                        if rep_pre is not None:
+                            ax.plot(t_pre, rep_pre.T, color='gray', alpha=t_alpha, lw=0.5)
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore")
+                                rm = np.nanmean(rep_pre, axis=0)
+                            ax.plot(t_pre, rm, color='blue', lw=1.5, label='Mean')
+                        ax.set_ylim(y_range)
+                        ax.set_title(f"Pre (Ch {abs_ch_idx})")
+                        ax.set_ylabel("uV")
+                        if PLOT_CONFIG['x_limits']['pre'] is not None: ax.set_xlim(PLOT_CONFIG['x_limits']['pre'])
+                        elif t_pre is not None: ax.set_xlim(t_pre[0], t_pre[-1])
+                        if i == 0: ax.legend(loc='upper right', fontsize='x-small')
+                        
+                        ax = axes[i, 2]
+                        if rep_post is not None:
+                            ax.plot(t_post, rep_post.T, color='gray', alpha=t_alpha, lw=0.5)
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore")
+                                rm = np.nanmean(rep_post, axis=0)
+                            ax.plot(t_post, rm, color='red', lw=1.5, label='Mean')
+                        ax.set_ylim(y_range)
+                        ax.set_title(f"Post (Ch {abs_ch_idx})")
+                        ax.set_ylabel("uV")
+                        if PLOT_CONFIG['x_limits']['post'] is not None: ax.set_xlim(PLOT_CONFIG['x_limits']['post'])
+                        elif t_post is not None: ax.set_xlim(t_post[0], t_post[-1])
+
+                out_path = grp_fig_dir / f"check_lfp_heatmap_{session}.png" if not is_utah else grp_fig_dir / f"check_lfp_heatmap_{safe_name}_{session}.png"
+                try:
+                     plt.savefig(out_path, dpi=150)
+                     print(f"  Saved plot to {out_path}")
+                except Exception as e:
+                     print(f"  Error saving {out_path}: {e}")
+                plt.close(fig)
+
+        # --- 1.5. Single Channel Trace Plot ---
+        if FIGURE_CONFIG.get('process_single_channel_traces', False):
+            target_ch = PLOT_CONFIG.get("single_channel_target", 168)
+            ch_idx = None
+            
+            if is_utah:
+                ua_ids = data.get('ua_ids_1based')
+                if ua_ids is not None:
+                    # Find the index where ua_ids == target_ch
+                    idx_arr = np.where(ua_ids == target_ch)[0]
+                    if len(idx_arr) > 0:
+                        ch_idx = int(idx_arr[0])
+                        print(f"  [Single Ch] Found target mapped channel {target_ch} at internal index {ch_idx}.")
+                    else:
+                        print(f"  [Single Ch] Warning: Channel {target_ch} not found in this dataset mapping.")
+            else:
+                # Direct indexing for NPRW
+                if 0 <= target_ch < n_ch:
+                    ch_idx = target_ch
+                else:
+                    print(f"  [Single Ch] Warning: Target channel {target_ch} out of bounds.")
+                    
+            if ch_idx is not None:
+                print(f"  Generating Isolated Trace Plot for Channel {target_ch}...")
+                bands = ['broadband', 'delta', 'theta', 'alpha', 'beta', 'low_gamma', 'high_gamma']
+                n_rows = len(bands)
+                
+                fig_sc, axes_sc = plt.subplots(n_rows, 1, figsize=(10, 2 * n_rows), constrained_layout=True)
+                if n_rows == 1: axes_sc = [axes_sc]
+                fig_sc.suptitle(f"{session} | Channel {target_ch}\n(N={n_trials} trials)", fontsize=14)
+                
+                for i, band in enumerate(bands):
+                    d_pre = data.get(f"{band}_pre")
+                    d_post = data.get(f"{band}_post")
+                    
+                    rep_pre = d_pre[:, ch_idx, :] if d_pre is not None else None
+                    rep_post = d_post[:, ch_idx, :] if d_post is not None else None
+                    
+                    forced_ylim = PLOT_CONFIG['trace_scales'].get(band)
+                    if forced_ylim is not None:
+                        y_range = (-forced_ylim, forced_ylim)
+                    else:
+                        ylims = []
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore")
+                            pre_lim = PLOT_CONFIG['x_limits']['pre']
+                            post_lim = PLOT_CONFIG['x_limits']['post']
+                            
+                            if rep_pre is not None:
+                                t_p = data.get('rel_time_pre')
+                                if t_p is None: t_p = np.arange(rep_pre.shape[1])
+                                idx_pre = (t_p >= pre_lim[0]) & (t_p <= pre_lim[1]) if pre_lim else np.ones(len(t_p), dtype=bool)
+                                valid_pre = rep_pre[:, idx_pre]
+                                if np.any(np.isfinite(valid_pre)): 
+                                    ylims.extend([np.nanmin(valid_pre), np.nanmax(valid_pre)])
+                                    
+                            if rep_post is not None:
+                                t_p = data.get('rel_time_post')
+                                if t_p is None: t_p = t_ms
+                                idx_post = (t_p >= post_lim[0]) & (t_p <= post_lim[1]) if post_lim else np.ones(len(t_p), dtype=bool)
+                                valid_post = rep_post[:, idx_post]
+                                if np.any(np.isfinite(valid_post)):
+                                    ylims.extend([np.nanmin(valid_post), np.nanmax(valid_post)])
+                        
+                        ylims = [y for y in ylims if np.isfinite(y)]
+                        if not ylims: y_range = (-100, 100)
+                        else:
+                             ymin, ymax = min(ylims), max(ylims)
+                             pad = 10.0 if ymin == ymax else (ymax - ymin) * 0.05
+                             y_range = (ymin - pad, ymax + pad)
+                             
+                    ax = axes_sc[i]
+                    t_alpha = PLOT_CONFIG['trace_alpha']
+                    
+                    t_pre_ax = data.get('rel_time_pre')
+                    t_post_ax = data.get('rel_time_post')
+                    
+                    if is_utah:
+                        d_full = data.get(f"{band}_full")
+                        if d_full is not None:
+                            rep_full = d_full[:, ch_idx, :]
+                            t_full_axis = np.linspace(t_pre_ax[0], t_post_ax[-1], rep_full.shape[1])
+                            
+                            ax.plot(t_full_axis, rep_full.T, color='gray', alpha=t_alpha, lw=0.5)
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore")
+                                rm = np.nanmean(rep_full, axis=0)
+                            ax.plot(t_full_axis, rm, color='green', lw=1.5, label='Mean Corrected')
+                            ax.axvspan(0, 100, color='grey', alpha=0.3, label='Stimulation')
+                            ax.axvline(0, color='red', linestyle='--', alpha=0.5)
+                            
+                            if PLOT_CONFIG['x_limits']['pre'] is not None and PLOT_CONFIG['x_limits']['post'] is not None:
+                                ax.set_xlim(PLOT_CONFIG['x_limits']['pre'][0], PLOT_CONFIG['x_limits']['post'][1])
+                    else:
+                        # Dual pre/post rendering on the same axis
+                        if rep_pre is not None:
+                            ax.plot(t_pre_ax, rep_pre.T, color='gray', alpha=t_alpha, lw=0.5)
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore")
+                                rm = np.nanmean(rep_pre, axis=0)
+                            ax.plot(t_pre_ax, rm, color='blue', lw=1.5, label='Mean Pre')
+                            
+                        if rep_post is not None:
+                            ax.plot(t_post_ax, rep_post.T, color='gray', alpha=t_alpha, lw=0.5)
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore")
+                                rm = np.nanmean(rep_post, axis=0)
+                            ax.plot(t_post_ax, rm, color='red', lw=1.5, label='Mean Post')
+                            
+                        if PLOT_CONFIG['x_limits']['pre'] is not None and PLOT_CONFIG['x_limits']['post'] is not None:
+                            ax.set_xlim(PLOT_CONFIG['x_limits']['pre'][0], PLOT_CONFIG['x_limits']['post'][1])
+                        ax.axvspan(t_pre_ax[-1], t_post_ax[0], color='gray', alpha=0.3, hatch='///')
+                        
+                    ax.set_ylim(y_range)
+                    ax.set_title(f"{band.capitalize()}")
+                    ax.set_ylabel("uV")
+                    if i == 0: ax.legend(loc='upper right', fontsize='x-small')
+                    if i == n_rows - 1: ax.set_xlabel("Time (ms)")
+                    else: ax.set_xticklabels([])
+                    
+                if is_utah:
+                    comb_dir = fig_dir / "Combined_Analysis"
+                    comb_dir.mkdir(parents=True, exist_ok=True)
+                    out_path_sc = comb_dir / f"check_lfp_single_ch{target_ch}_{session}.png"
+                else:
+                    out_path_sc = fig_dir / f"check_lfp_single_ch{target_ch}_{session}.png"
+                try:
+                    plt.savefig(out_path_sc, dpi=150)
+                    print(f"  Saved single channel plot to {out_path_sc}")
+                except Exception as e:
+                    print(f"  Error saving {out_path_sc}: {e}")
+                plt.close(fig_sc)
+
+        # --- Grab Broadband Data Single Time for Advanced Plots ---
+        bb_pre = data.get("broadband_pre") # (N, Ch, T)
+        bb_post = data.get("broadband_post")
 
         # Setup Dynamic Grid
         n_plots = len(groups)
@@ -850,31 +1255,9 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 f_post, psd_post_all, sem_post_all = calculate_psd(bb_post, fs)
             else: psd_post_all = None
 
-            # Pre-calculate Global Y-Limits for PSD (Log Scale -> need min > 0)
-            y_max_psd = 0
-            y_min_psd = np.inf
-            
-            for grp_idxs, _ in groups:
-                if psd_pre_all is not None:
-                     v = np.nanmean(psd_pre_all[grp_idxs, :], axis=0)
-                     if np.any(np.isfinite(v)): 
-                         y_max_psd = max(y_max_psd, np.nanmax(v))
-                         v_pos = v[v > 0]
-                         if v_pos.size > 0: y_min_psd = min(y_min_psd, np.nanmin(v_pos))
-                         
-                if psd_post_all is not None:
-                     v = np.nanmean(psd_post_all[grp_idxs, :], axis=0)
-                     if np.any(np.isfinite(v)): 
-                         y_max_psd = max(y_max_psd, np.nanmax(v))
-                         v_pos = v[v > 0]
-                         if v_pos.size > 0: y_min_psd = min(y_min_psd, np.nanmin(v_pos))
-            
-            # Apply padding for log scale
-            if y_max_psd > 0:
-                y_max_psd = y_max_psd * 1.5 # More headroom for log
-                y_min_psd = y_min_psd * 0.5 if y_min_psd != np.inf else 1e-3
-            else:
-                y_max_psd = 1.0; y_min_psd = 1e-3
+            # Fixed Y-Limits for PSD (Log Scale)
+            y_min_psd = 1e-1
+            y_max_psd = 1e2
 
             for i, (grp_idxs, grp_name) in enumerate(groups):
                 if i >= len(axes_flat): break
@@ -909,8 +1292,12 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             for j in range(len(groups), len(axes_flat)):
                 axes_flat[j].axis('off')
 
-            out_path = fig_dir / f"check_lfp_psd_grouped_{session}.png"
-            plt.savefig(out_path, dpi=150)
+            if is_utah:
+                comb_dir = fig_dir / "Combined_Analysis"
+                comb_dir.mkdir(parents=True, exist_ok=True)
+                plt.savefig(comb_dir / f"check_lfp_psd_grouped_{session}.png", dpi=150)
+            else:
+                plt.savefig(fig_dir / f"check_lfp_psd_grouped_{session}.png", dpi=150)
             plt.close(fig)
 
             # --- 2b. PSD Ratio (Pre vs Post) ---
@@ -970,75 +1357,295 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             for j in range(len(groups), len(axes_flat)):
                 axes_flat[j].axis('off')
             
-            out_path = fig_dir / f"check_lfp_psd_ratio_{session}.png"
-            plt.savefig(out_path, dpi=150)
+            if is_utah:
+                comb_dir = fig_dir / "Combined_Analysis"
+                comb_dir.mkdir(parents=True, exist_ok=True)
+                plt.savefig(comb_dir / f"check_lfp_psd_ratio_{session}.png", dpi=150)
+            else:
+                plt.savefig(fig_dir / f"check_lfp_psd_ratio_{session}.png", dpi=150)
             plt.close(fig)
 
-        # --- 3. LFP Coherence (Grouped: Channels vs Group Mean) ---
-        if FIGURE_CONFIG.get('process_lfp_coherence', False):
-            print("  Generating Grouped LFP Coherence...")
+        # --- 3. Power vs Time (All Arrays Overlaid per Band) ---
+        if FIGURE_CONFIG.get('process_power_vs_time', False) and is_utah and len(groups) > 0:
+            print("  Generating Power vs Time (all arrays overlaid)...")
+            
+            pvt_bands = {
+                'Broadband':  'broadband',
+                'Delta':      'delta',
+                'Theta':      'theta',
+                'Alpha':      'alpha',
+                'Beta':       'beta',
+                'Low Gamma':  'low_gamma',
+                'High Gamma': 'high_gamma',
+            }
+            
+            # Determine which time epoch to use (prefer full)
+            if 'broadband_full' in data:
+                epoch_suffix = 'full'
+                t_pre_ax  = data.get('rel_time_pre')
+                t_post_ax = data.get('rel_time_post')
+                if t_pre_ax is not None and t_post_ax is not None:
+                    pvt_t_axis = np.concatenate([t_pre_ax, t_post_ax])
+                else:
+                    pvt_t_axis = None
+                pvt_label = "Full (Pre+Post)"
+            elif 'broadband_post' in data:
+                epoch_suffix = 'post'
+                pvt_t_axis = data.get('rel_time_post')
+                pvt_label = "Post-Stim"
+            elif 'broadband_pre' in data:
+                epoch_suffix = 'pre'
+                pvt_t_axis = data.get('rel_time_pre')
+                pvt_label = "Pre-Stim"
+            else:
+                pvt_label = None
 
-            fig, axes = plt.subplots(4, 2, figsize=(8, 16), constrained_layout=True)
-            fig.suptitle(f"{session} - LFP Coherence (Channel vs Group Mean)\n{title_str}", fontsize=14)
-            axes_flat = axes.flatten()
+            if pvt_label is not None:
+                # Provide fallback time axis just in case
+                if pvt_t_axis is None:
+                    n_samps_bb = data[f'broadband_{epoch_suffix}'].shape[2]
+                    pvt_t_axis = np.arange(n_samps_bb) * 1000.0 / fs
+                    
+                # Crop the time axis to x_limits here to avoid Hilbert edge effects
+                valid_time_idx = np.ones(len(pvt_t_axis), dtype=bool)
+                pre_lim = PLOT_CONFIG['x_limits']['pre']
+                post_lim = PLOT_CONFIG['x_limits']['post']
+                if pre_lim is not None and post_lim is not None:
+                    valid_time_idx = (pvt_t_axis >= pre_lim[0]) & (pvt_t_axis <= post_lim[1])
+                
+                pvt_t_axis_cropped = pvt_t_axis[valid_time_idx]
+                
+                # Pre-compute per-band envelope from the saved waveforms:
+                band_envelopes = {}
+                for display_name, file_prefix in pvt_bands.items():
+                    key = f"{file_prefix}_{epoch_suffix}"
+                    if key in data:
+                        # shape: (n_trials, n_ch, n_time)
+                        waveforms = data[key]
+                        # Crop waveforms using valid_time_idx (but we will pad it before Hilbert)
+                        if waveforms.shape[2] == len(valid_time_idx):
+                            waveforms = waveforms[:, :, valid_time_idx]
+                            
+                        # Compute instantaneous power via Hilbert envelope
+                        # Apply trial-by-trial with reflection padding to avoid massive edge artifacts
+                        n_pvt_trials = waveforms.shape[0]
+                        env_all = np.empty_like(waveforms, dtype=np.float32)
+                        
+                        # Pad by 200 ms (or length of waveform if shorter) to absorb edge effects
+                        pad_len = min(200, waveforms.shape[2] // 2)
+                        
+                        for tr_i in range(n_pvt_trials):
+                            # Pad the 1D time series for each channel
+                            padded_wave = np.pad(waveforms[tr_i], ((0, 0), (pad_len, pad_len)), mode='reflect')
+                            analytic = signal.hilbert(padded_wave, axis=1)
+                            # Crop back to original valid size and calculate power
+                            valid_analytic = analytic[:, pad_len:-pad_len] if pad_len > 0 else analytic
+                            env_all[tr_i] = np.abs(valid_analytic)**2
+                        band_envelopes[display_name] = env_all
+                    else:
+                        print(f"    [PvT] {display_name}: key '{key}' not found in npz. Skipping.")
+                        band_envelopes[display_name] = None
+                
+                # --- Plot ---
+                n_pvt_bands = len(pvt_bands)
+                fig_pvt, axes_pvt = plt.subplots(n_pvt_bands, 1,
+                                                  figsize=(12, 2.5 * n_pvt_bands),
+                                                  constrained_layout=True)
+                if n_pvt_bands == 1:
+                    axes_pvt = [axes_pvt]
+                fig_pvt.suptitle(f"{session} - Band Power vs Time ({pvt_label})\n{title_str}", fontsize=14)
 
-            # We need to calculate this per group.
-            # Warning: This is computationally intensive (8 groups * 16 channels).
-            # bb_post usually sufficient. User didn't specify Pre or Post.
-            # Assuming Post-Stim is of interest.
+                array_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
+
+                for band_i, (band_name, _) in enumerate(pvt_bands.items()):
+                    ax = axes_pvt[band_i]
+                    env = band_envelopes.get(band_name)
+                    if env is None:
+                        ax.set_title(f"{band_name} (skipped)")
+                        continue
+
+                    band_ylims = []
+                    for grp_i, (grp_idxs, grp_name) in enumerate(groups):
+                        # Safely index channels that exist
+                        valid_grp_idxs = [idx for idx in grp_idxs if idx < env.shape[1]]
+                        if not valid_grp_idxs:
+                            continue
+                            
+                        grp_env = env[:, valid_grp_idxs, :]           # (n_trials, n_grp_ch, n_time)
+                        grp_mean_ch = np.nanmean(grp_env, axis=1)  # avg channels -> (n_trials, n_time)
+                        
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", RuntimeWarning)
+                            trial_mean = np.nanmean(grp_mean_ch, axis=0)
+                            trial_sem  = (np.nanstd(grp_mean_ch, axis=0)
+                                          / np.sqrt(np.sum(~np.isnan(grp_mean_ch[:, 0]))))
+
+                        color = array_colors[grp_i % len(array_colors)]
+                        short_name = grp_name.split(' (')[0]
+                        
+                        # Fix dimension mismatch: generate a time axis that exactly matches the data length
+                        # The data length might be slightly different than the concatenated pvt_t_axis due to 
+                        # filtering/resampling artifacts in analyze_lfp_bands.
+                        n_points = trial_mean.shape[0]
+                        if pvt_t_axis_cropped is not None and len(pvt_t_axis_cropped) >= 2:
+                            if n_points == len(pvt_t_axis_cropped):
+                                t_plot = pvt_t_axis_cropped
+                            else:
+                                t_start = pvt_t_axis_cropped[0]
+                                t_plot = np.arange(n_points) * (1000.0 / fs) + t_start
+                        else:
+                            t_plot = np.arange(n_points) * (1000.0 / fs)
+
+                        ax.plot(t_plot, trial_mean, color=color, lw=1.2, label=short_name)
+                        ax.fill_between(t_plot,
+                                        trial_mean - trial_sem,
+                                        trial_mean + trial_sem,
+                                        color=color, alpha=0.2)
+                                        
+                        # Calculate ylims strictly within x_limits
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore")
+                            pre_lim = PLOT_CONFIG['x_limits']['pre']
+                            post_lim = PLOT_CONFIG['x_limits']['post']
+                            
+                            valid_idx = np.ones(len(t_plot), dtype=bool)
+                            if pre_lim is not None and post_lim is not None:
+                                valid_idx = (t_plot >= pre_lim[0]) & (t_plot <= post_lim[1])
+                                
+                            if np.any(valid_idx):
+                                top = (trial_mean + trial_sem)[valid_idx]
+                                bot = (trial_mean - trial_sem)[valid_idx]
+                                if np.any(np.isfinite(top)) and np.any(np.isfinite(bot)):
+                                    band_ylims.extend([np.nanmin(bot), np.nanmax(top)])
+
+                    # Apply targeted y-axis limit
+                    if band_ylims:
+                        band_ylims = [y for y in band_ylims if np.isfinite(y)]
+                        if band_ylims:
+                            ymin, ymax = min(band_ylims), max(band_ylims)
+                            pad = (ymax - ymin) * 0.05 if ymin != ymax else 10.0
+                            ax.set_ylim(max(0, ymin - pad), ymax + pad) # Power is inherently >= 0
+
+                    ax.set_title(band_name, fontsize=10)
+                    ax.set_ylabel("Power (µV²)")
+                    ax.axvspan(0, 100, color='grey', alpha=0.3, label='Stimulation' if band_i == 0 else "")
+                    ax.axvline(0, color='k', linestyle='--', alpha=0.5, lw=0.8)
+                    if band_i == 0:
+                        ax.legend(loc='upper right', fontsize='small', ncol=2)
+                    if band_i == n_pvt_bands - 1:
+                        ax.set_xlabel("Time (ms)")
+                    ax.grid(True, alpha=0.3)
+                    
+                    if (PLOT_CONFIG['x_limits']['pre'] is not None
+                            and PLOT_CONFIG['x_limits']['post'] is not None):
+                        ax.set_xlim(PLOT_CONFIG['x_limits']['pre'][0],
+                                    PLOT_CONFIG['x_limits']['post'][1])
+
+                comb_dir = fig_dir / "Combined_Analysis"
+                comb_dir.mkdir(parents=True, exist_ok=True)
+                plt.savefig(comb_dir / f"check_lfp_power_vs_time_{session}.png", dpi=150)
+                plt.close(fig_pvt)
+
+        # --- 3b. Inter-Array Coherence (4x4 Grid, Utah Only) ---
+        if FIGURE_CONFIG.get('process_inter_array_coherence', False) and is_utah and len(groups) >= 2:
+            print("  Generating Inter-Array Coherence (4x4 grid)...")
             
             target_data = bb_post if bb_post is not None else bb_pre
             t_label = "Post-Stim" if bb_post is not None else "Pre-Stim"
+            ua_ids = data.get('ua_ids_1based')
             
             if target_data is not None:
+                n_grps = len(groups)
                 nperseg = min(target_data.shape[2], 256)
                 
-                for i, (grp_idxs, grp_name) in enumerate(groups):
-                    if i >= len(axes_flat): break
-                    ax = axes_flat[i]
-                    
-                    # 1. Get Group Mean Signal (n_trials, n_time)
-                    # Use index slicing
-                    # target_data: (N, Ch, T)
+                # Find representative channel for each group
+                rep_ch_per_group = []
+                for grp_idxs, grp_name in groups:
                     grp_data = target_data[:, grp_idxs, :]
-                    grp_mean_sig = np.nanmean(grp_data, axis=1) # (N, T)
+                    local_rep = get_representative_channel(grp_data)
+                    abs_rep = grp_idxs[local_rep]
+                    rep_ch_per_group.append(abs_rep)
+                
+                # Build group short names
+                grp_short_names = [gn.split(' (')[0] for _, gn in groups]
+                
+                fig_coh, axes_coh = plt.subplots(n_grps, n_grps, figsize=(4 * n_grps, 3.5 * n_grps),
+                                                  constrained_layout=True)
+                fig_coh.suptitle(f"{session} - Inter-Array Coherence ({t_label})\n{title_str}", fontsize=14)
+                
+                # If only 2 groups, axes_coh might be 1D; ensure 2D
+                if n_grps == 1:
+                    axes_coh = np.array([[axes_coh]])
+                elif axes_coh.ndim == 1:
+                    axes_coh = axes_coh.reshape(1, -1)
+                
+                for row_i in range(n_grps):
+                    rep_abs_idx = rep_ch_per_group[row_i]
+                    rep_sig = target_data[:, rep_abs_idx, :]  # (n_trials, n_time)
                     
-                    # 2. Coherence of each channel in group vs grp_mean_sig
-                    grp_coh_list = []
-                    freqs = None
+                    rep_label = ""
+                    if ua_ids is not None:
+                        rep_label = f" (Ch {ua_ids[rep_abs_idx]})"
                     
-                    for ch_idx in range(len(grp_idxs)):
-                        # Single channel data
-                        ch_sig = grp_data[:, ch_idx, :]
+                    for col_i in range(n_grps):
+                        ax = axes_coh[row_i, col_i]
+                        col_grp_idxs = groups[col_i][0]
                         
-                        f, Cxy = signal.coherence(ch_sig, grp_mean_sig, fs=fs, nperseg=nperseg, axis=1)
-                        # Mean across trials
-                        m_cxy = np.nanmean(Cxy, axis=0) # (n_freq,)
-                        grp_coh_list.append(m_cxy)
-                        if freqs is None: freqs = f
-                    
-                    coh_matrix = np.stack(grp_coh_list, axis=0) # (n_ch_in_grp, n_freq)
-                    
-                    # Plot
-                    im = ax.imshow(coh_matrix, aspect='auto', origin='upper', cmap='inferno',
-                                   extent=[freqs[0], freqs[-1], len(grp_idxs)-0.5, -0.5], vmin=0, vmax=1)
-                    
-                    # Bands
-                    for b_start, b_end, b_col, _ in [(4, 13, 'green', 'A'), (13, 30, 'yellow', 'B'), (30, 60, 'orange', 'LG'), (60, 120, 'red', 'HG')]:
-                        ax.axvline(b_start, color=b_col, linestyle='--', alpha=0.5)
-                        ax.axvline(b_end, color=b_col, linestyle='--', alpha=0.5)
-
-                    ax.set_title(f"{grp_name} ({t_label})")
-                    ax.set_xlim(0, 120)
-                    ax.set_yticks(range(0, len(grp_idxs), 4)) # Sparse ticks
-                    # Correct labels to relative range 0-15? yes.
-                    
-                    if i >= 6: ax.set_xlabel("Freq (Hz)")
-                    if i % 2 == 0: ax.set_ylabel("Ch (within group)")
-            
-            out_path = fig_dir / f"check_lfp_coherence_grouped_{session}.png"
-            plt.savefig(out_path, dpi=150)
-            plt.close(fig)
+                        # Compute coherence: rep channel vs each channel in column group
+                        coh_list = []
+                        freqs = None
+                        
+                        for ch_idx in col_grp_idxs:
+                            ch_sig = target_data[:, ch_idx, :]
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore")
+                                f, Cxy = signal.coherence(ch_sig, rep_sig, fs=fs,
+                                                          nperseg=nperseg, axis=1)
+                                m_cxy = np.nanmean(Cxy, axis=0)
+                            coh_list.append(m_cxy)
+                            if freqs is None: freqs = f
+                        
+                        coh_matrix = np.stack(coh_list, axis=0)  # (n_ch_in_col_grp, n_freq)
+                        
+                        # Plot heatmap
+                        im = ax.imshow(coh_matrix, aspect='auto', origin='upper', cmap='inferno',
+                                       extent=[freqs[0], freqs[-1], len(col_grp_idxs)-0.5, -0.5],
+                                       vmin=0, vmax=1)
+                        
+                        # Band boundary lines
+                        for b_s, b_e, b_c, _ in [(4, 13, 'green', 'A'), (13, 30, 'yellow', 'B'),
+                                                   (30, 60, 'orange', 'LG'), (60, 120, 'red', 'HG')]:
+                            ax.axvline(b_s, color=b_c, linestyle='--', alpha=0.4)
+                            ax.axvline(b_e, color=b_c, linestyle='--', alpha=0.4)
+                        
+                        ax.set_xlim(0, 120)
+                        
+                        # Diagonal highlight
+                        if row_i == col_i:
+                            ax.set_title(f"{grp_short_names[row_i]}{rep_label}\nvs Self", fontsize=9,
+                                         fontweight='bold')
+                        else:
+                            ax.set_title(f"{grp_short_names[row_i]}{rep_label}\nvs {grp_short_names[col_i]}", fontsize=9)
+                        
+                        # Y-ticks: channel IDs from column group
+                        if ua_ids is not None:
+                            labels = [str(ua_ids[idx]) for idx in col_grp_idxs]
+                            step = max(1, len(labels) // 6)
+                            ax.set_yticks(range(0, len(col_grp_idxs), step))
+                            ax.set_yticklabels(labels[::step], fontsize=7)
+                        
+                        # Axis labels on edges only
+                        if row_i == n_grps - 1: ax.set_xlabel("Freq (Hz)", fontsize=8)
+                        else: ax.set_xticklabels([])
+                        if col_i == 0: ax.set_ylabel(f"Target Ch in\n{grp_short_names[col_i]}", fontsize=8)
+                
+                # Add a shared colorbar
+                fig_coh.colorbar(im, ax=axes_coh, shrink=0.6, label="Coherence", pad=0.02)
+                
+                comb_dir = fig_dir / "Combined_Analysis"
+                comb_dir.mkdir(parents=True, exist_ok=True)
+                plt.savefig(comb_dir / f"check_lfp_inter_array_coherence_{session}.png", dpi=150)
+                plt.close(fig_coh)
 
         # --- 4. Time-Frequency ITPC (Grouped 4x2) ---
         if FIGURE_CONFIG.get('process_phase_coherence', False):
@@ -1242,8 +1849,12 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             for j in range(len(groups), len(axes_flat)):
                 axes_flat[j].axis('off')
 
-            out_path = fig_dir / f"check_lfp_band_stats_{session}.png"
-            plt.savefig(out_path, dpi=150)
+            if is_utah:
+                comb_dir = fig_dir / "Combined_Analysis"
+                comb_dir.mkdir(parents=True, exist_ok=True)
+                plt.savefig(comb_dir / f"check_lfp_band_stats_{session}.png", dpi=150)
+            else:
+                plt.savefig(fig_dir / f"check_lfp_band_stats_{session}.png", dpi=150)
             plt.close(fig)
 
         # --- 7. CSD Analysis (NPRW Only) ---
@@ -1327,6 +1938,112 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                     out_path = fig_dir / f"check_lfp_csd_{session}.png"
                     plt.savefig(out_path, dpi=150)
                     plt.close(fig_csd)
+
+        # --- 7. Per-Channel ERSP Spectrograms (Utah Only) ---
+        if FIGURE_CONFIG.get('process_spectrograms', False) and is_utah:
+            print("  Generating Per-Channel ERSP Spectrograms...")
+            
+            d_bb_full = data.get('broadband_full')
+            if d_bb_full is None:
+                print("  [Skip] No broadband_full data for spectrograms.")
+            else:
+                spec_cfg = PLOT_CONFIG['spectrogram']
+                
+                # Reconstruct time axis for broadband_full
+                # broadband_full spans WIN_FULL = (-EPOCH_PRE_MS, EPOCH_POST_MS)
+                # from analyze_lfp_bands.py
+                t_pre_arr = data.get('rel_time_pre')
+                t_post_arr = data.get('rel_time_post')
+                if t_pre_arr is not None and t_post_arr is not None:
+                    t_full_start = t_pre_arr[0]
+                    t_full_end = t_post_arr[-1]
+                else:
+                    t_full_start = -500.0
+                    t_full_end = 1000.0
+                
+                n_time_full = d_bb_full.shape[2]
+                t_full_ms = np.linspace(t_full_start, t_full_end, n_time_full)
+                
+                # Compute ERSP for ALL channels at once
+                try:
+                    ersp_all, freqs, t_bins_ms = compute_ersp_spectrogram(
+                        d_bb_full, t_full_ms, fs, spec_cfg
+                    )
+                except Exception as e:
+                    print(f"  [ERROR] ERSP computation failed: {e}")
+                    ersp_all = None
+                
+                if ersp_all is not None:
+                    spec_fig_dir = fig_dir / "Spectrograms"
+                    spec_fig_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    for grp_idxs, grp_name in groups:
+                        safe_name = grp_name.split(' (')[0].replace(' ', '_')
+                        n_grp_ch = len(grp_idxs)
+                        if n_grp_ch == 0:
+                            continue
+                        
+                        # Create tall single-column figure
+                        subplot_h = 2.0  # inches per channel
+                        fig_h = max(6, subplot_h * n_grp_ch + 1.5)
+                        fig_sg, axes_sg = plt.subplots(
+                            n_grp_ch, 1, figsize=(10, fig_h),
+                            sharex=True, sharey=True,
+                            constrained_layout=True
+                        )
+                        if n_grp_ch == 1:
+                            axes_sg = [axes_sg]
+                        
+                        fig_sg.suptitle(
+                            f"{session} — {safe_name}\n{title_str}\n"
+                            f"ERSP Spectrogram (N={n_trials} trials)",
+                            fontsize=13
+                        )
+                        
+                        for ax_i, ch_idx in enumerate(grp_idxs):
+                            ax = axes_sg[ax_i]
+                            ersp_ch = ersp_all[ch_idx]  # (n_freq, n_time)
+                            
+                            shading = spec_cfg.get('shading', 'flat')
+                            im = ax.pcolormesh(
+                                t_bins_ms, freqs, ersp_ch,
+                                cmap=spec_cfg['cmap'],
+                                vmin=spec_cfg['vmin_db'],
+                                vmax=spec_cfg['vmax_db'],
+                                shading=shading
+                            )
+                            
+                            ax.axvline(0, color='white', linewidth=0.8,
+                                       linestyle='--', alpha=0.8)
+                            
+                            # Log frequency scale
+                            if spec_cfg.get('log_freq', False):
+                                ax.set_yscale('log')
+                                ax.set_ylim(max(spec_cfg.get('freq_min', 1), 1), spec_cfg['freq_max'])
+                            
+                            # Channel label
+                            nsp_id = ch_idx + 1 + (128 if ua_port == 'B' else 0)
+                            ax.set_ylabel(f"Ch {nsp_id}\nFreq (Hz)", fontsize=7)
+                            ax.tick_params(labelsize=6)
+                            
+                            if ax_i < n_grp_ch - 1:
+                                ax.set_xlabel('')
+                        
+                        # Bottom axis label
+                        axes_sg[-1].set_xlabel("Time (ms)", fontsize=9)
+                        
+                        # Shared colorbar
+                        cb = fig_sg.colorbar(im, ax=axes_sg, fraction=0.02,
+                                             pad=0.02, label="Power (dB)")
+                        cb.ax.tick_params(labelsize=7)
+                        
+                        out_path = spec_fig_dir / f"spectrogram__{session}__{safe_name}.png"
+                        fig_dpi = spec_cfg.get('dpi', 150)
+                        plt.savefig(out_path, dpi=fig_dpi)
+                        plt.close(fig_sg)
+                        print(f"    Saved spectrogram -> {out_path.name}")
+                    
+                    del ersp_all
 
 
 

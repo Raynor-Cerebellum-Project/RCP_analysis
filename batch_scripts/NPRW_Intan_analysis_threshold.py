@@ -98,6 +98,12 @@ def main():
         # 3) Extract stim sessions and aux channels
         print(f"[RUN] session {sess.name}")
 
+        out_dir = NPRW_CKPT_ROOT / f"pp_local_{int(RADII[0])}_{int(RADII[1])}__interp_{sess.name}"
+        out_npz = NPRW_CKPT_ROOT / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
+        if out_dir.exists() and out_npz.exists():
+            print(f"[SKIP] Both outputs already exist for {sess.name}")
+            continue
+
         # aux streams (sync channels etc.)
         rcp.extract_intan_aux_streams_npz(sess=sess, out_dir=NPRW_AUX_DATA, aux_streams=AUX_STREAM)
         
@@ -185,14 +191,26 @@ def main():
         noise_levels = si.get_noise_levels(rec_artif_removed, method="mad", return_in_uV=False) # They didn't write return_in_uV in their documentation
         
         print(f"[INFO] Segments of recording: {n_seg}, Average noise level: {np.nanmean(noise_levels)}")
-        peaks = detect_peaks(
-            rec_artif_removed,
-            method="by_channel_torch",
-            detect_threshold=THRESH,
-            peak_sign=PEAK_SIGN,
-            noise_levels=noise_levels,
-            n_jobs=PARAMS.parallel_jobs,
-        )
+        try:
+            # Force n_jobs=1 for PyTorch backend to prevent GPU memory fragmentation / OOM
+            peaks = detect_peaks(
+                rec_artif_removed,
+                method="by_channel_torch",
+                detect_threshold=THRESH,
+                peak_sign=PEAK_SIGN,
+                noise_levels=noise_levels,
+                n_jobs=1,
+            )
+        except Exception as exc:
+            print(f"[WARN] Torch peak detection failed ({exc}). Falling back to CPU locally_exclusive...")
+            peaks = detect_peaks(
+                rec_artif_removed,
+                method="locally_exclusive",
+                detect_threshold=THRESH,
+                peak_sign=PEAK_SIGN,
+                noise_levels=noise_levels,
+                n_jobs=PARAMS.parallel_jobs,
+            )
         
         out_npz = NPRW_CKPT_ROOT / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
 
