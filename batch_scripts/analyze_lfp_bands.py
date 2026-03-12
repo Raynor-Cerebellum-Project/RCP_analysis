@@ -139,7 +139,7 @@ EXCLUDE_BASELINE_TRIALS = {
 TARGET_FS = 1000
 BLANK_PRE_MS = 5.0
 BLANK_POST_MS = 101.0 
-EPOCH_PRE_MS = 500.0
+EPOCH_PRE_MS = 1000.0
 EPOCH_POST_MS = 1000.0
 PAD_MS = 1000.0 # Padding for zero-phase filtering
 PLOT_1F_DEBUG = True # Optional flag to save figure comparing 1/f correction
@@ -668,15 +668,24 @@ def process_baseline_group_utah(
     # 1. Load IR events from baseline PeriStim file
     ir_events_ms = None
     loaded_target = None  # Track which target was loaded
-    for target in ["target_A", "target_B"]:
-        target_dir = PERI_ROOT / "control_reaches" / target
+    for target in ["target_A", "target_B", ""]:
+        if target:
+            target_dir = PERI_ROOT / "control_reaches" / target
+        else:
+            target_dir = PERI_ROOT / "control_reaches"
+
         if not target_dir.exists():
-            print(f"    [Info] Dir not found: {target_dir}")
+            if target:
+                print(f"    [Info] Dir not found: {target_dir}")
             continue
             
         # Match actual peristim file naming convention
         # Files are like: peristim__NRR_RW012_260116_140816__BR_002_target_A.npz
-        matches = list(target_dir.glob("peristim__*.npz"))
+        if target:
+            matches = list(target_dir.glob("peristim__*.npz"))
+        else:
+            # Avoid matching files in subdirectories, just the control_reaches folder
+            matches = [f for f in target_dir.glob("peristim__*.npz") if f.is_file()]
         
         if matches:
             # Collect IR events from ALL baseline files for this target
@@ -696,7 +705,7 @@ def process_baseline_group_utah(
             if all_events:
                 ir_events_ms = np.concatenate(all_events)
                 ir_events_ms = np.sort(ir_events_ms)
-                loaded_target = target[-1]  # 'A' or 'B'
+                loaded_target = target[-1] if target else "N"  # 'A', 'B', or 'N'
                 print(f"    Total: {len(ir_events_ms)} IR events from {len(all_events)} files (Target {loaded_target}).")
                 break
     
@@ -1197,13 +1206,13 @@ def quick_check_stim(sess_path: Path, stream_name: str, intan_idx: int, br_idx: 
         # Look for baseline files in PERI_ROOT / Target_A and Target_B
         sess_name = sess_path.name
         
-        for target in ["Target_A", "Target_B"]:
+        for target in ["control_reaches/target_A", "control_reaches/target_B", "control_reaches"]:
             target_dir = PERI_ROOT / target
             if not target_dir.exists():
                 continue
                 
-            # Pattern: baseline__{session}*_target_{A,B}.npz
-            pattern = f"baseline__*{sess_name}*_target_{target[-1]}.npz"
+            # Pattern: peristim__*{sess_name}*.npz
+            pattern = f"peristim__*{sess_name}*.npz"
             matches = list(target_dir.glob(pattern))
             
             if matches:

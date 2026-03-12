@@ -1172,10 +1172,14 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
 
     # 2) Define subsets: A/B or all-events
     if split_targets and HAS_BR:
-        subsets = [
-            ("A", np.where(trial_labels == "A")[0]),
-            ("B", np.where(trial_labels == "B")[0]),
-        ]
+        if np.any((trial_labels == "A") | (trial_labels == "B")):
+            subsets = [
+                ("A", np.where(trial_labels == "A")[0]),
+                ("B", np.where(trial_labels == "B")[0]),
+            ]
+        else:
+            print(f"[info] No A/B targets found for {aligned_path.name}, saving all trials together.")
+            subsets = [(None, np.arange(event_ms.size))]
     else:
         subsets = [(None, np.arange(event_ms.size))]
 

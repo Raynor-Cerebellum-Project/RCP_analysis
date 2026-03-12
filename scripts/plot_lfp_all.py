@@ -79,20 +79,20 @@ PLOT_CONFIG = {
 
     # Spectrogram Settings
     "spectrogram": {
-        "stft_nperseg": 256,        # Window size in samples (= ms at 1 kHz)
-        "stft_overlap_frac": 0.90,  # Fraction of window that overlaps with next
-        "window_type": "hamming",      # Tapering window applied to each segment
-        # "freq_min": 1,              # Hz — lower bound for frequency axis
-        "freq_max": 120,            # Hz — upper bound for frequency axis
+        "stft_nperseg": 258,        # Window size in samples. Increased from 128 for sharper frequency bands (3.9 Hz res)
+        "stft_overlap_frac": 0.98,  # Increased overlap for smoother time steps (~12ms steps)
+        "window_type": "hann",      # Tapering window applied to each segment
+        "freq_min": 0.5,            # Hz — lower bound for frequency axis
+        "freq_max": 60,             # Hz — upper bound for frequency axis
         "log_freq": False,          # If True, plot frequency axis on log scale
-        "vmin_db": -15,             # dB — colormap floor (full cold color)
-        "vmax_db": 40,              # dB — colormap ceiling (full hot color)
+        "vmin_db": -5,              # dB — colormap floor 
+        "vmax_db": 5,               # dB — colormap ceiling
         "time_range": (-400, 500),  # ms — display time window
-        "baseline_window": (None, -300),  # ms (start, end). None = epoch start
-        "normalization": "baseline", # 'baseline' (ERSP, dB relative to pre-stim) or 'absolute' (raw dB power)
-        "per_trial_norm": False,    # If True, normalize each trial then average; else average then normalize
-        "cmap": "RdBu_r",          # Colormap name
-        "shading": "gouraud",       # 'nearest' (fast) or 'gouraud' (smooth, slow) or 'flat' (requires edge coords)
+        "baseline_window": (-375, -125), # ms (start, end). Moved closer to stim for stability
+        "normalization": "baseline", # 'baseline' (ERSP, dB relative to pre-stim)
+        "per_trial_norm": False,    # Match paper: average then normalize
+        "cmap": "RdBu_r",           # Changed from jet to RdBu_r for proper ERSP visualization (blue=suppression, red=enhancement)
+        "shading": "nearest",       # 'nearest' (fast) or 'gouraud' (smooth, slow) or 'flat' (requires edge coords)
         "dpi": 150,                 # Output DPI for saved figures
     }
 }
@@ -1989,7 +1989,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                         fig_sg, axes_sg = plt.subplots(
                             n_grp_ch, 1, figsize=(10, fig_h),
                             sharex=True, sharey=True,
-                            constrained_layout=True
+                            layout='tight'
                         )
                         if n_grp_ch == 1:
                             axes_sg = [axes_sg]
