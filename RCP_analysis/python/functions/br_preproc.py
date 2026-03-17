@@ -369,6 +369,69 @@ def load_UA_mapping_from_excel(
 
     return mapped_nsp
 
+def load_electrode_mapping(csv_path: Path):
+    """
+    Load electrode mapping from CSV.
+    Returns:
+        nsp_to_elec: {nsp_id: electrode_id} mapping.
+        region_grids: {region: 8x8_array} of electrode IDs.
+        elec_to_region: {electrode_id: region} mapping.
+    """
+    nsp_to_elec = {}
+    region_grids = {}
+    elec_to_region = {}
+
+    if not csv_path.exists():
+        print(f"  [Warn] Electrode mapping CSV not found: {csv_path}")
+        return nsp_to_elec, region_grids, elec_to_region
+
+    try:
+        df = pd.read_csv(csv_path)
+        for _, row in df.iterrows():
+            elec_id = int(row['ElectrodeID'])
+            nsp_id = int(row['NSP_ID'])
+            region = str(row['Array']).strip()
+            r = int(row['GridRow'])
+            c = int(row['GridCol'])
+
+            nsp_to_elec[nsp_id] = elec_id
+            elec_to_region[elec_id] = region
+
+            if region not in region_grids:
+                region_grids[region] = np.zeros((8, 8), dtype=int)
+            region_grids[region][r, c] = elec_id
+            
+    except Exception as e:
+        print(f"  [Error] Failed to load electrode mapping from {csv_path}: {e}")
+
+    return nsp_to_elec, region_grids, elec_to_region
+
+def get_region_from_group_name(grp_name: str) -> str:
+    """Extracts region name from group string like 'M1s (n=45)' -> 'M1s'."""
+    return grp_name.split(" (")[0].strip()
+
+def get_region_grid(region_name: str, utah_elec_grids: dict):
+    """Gets the 8x8 grid for a given region."""
+    aliases = {"M1 Inf": "M1i", "M1 Sup": "M1s"}
+    target = aliases.get(region_name, region_name)
+    return utah_elec_grids.get(target, None)
+
+def build_elec_to_data_idx(ua_ids_1based, nsp_to_elec):
+    """Builds electrode_id -> channel index mapping based on valid NSP IDs."""
+    if ua_ids_1based is None or nsp_to_elec is None:
+        return {}
+    
+    elec_to_idx = {}
+    for ch_idx, nsp_id in enumerate(ua_ids_1based):
+        nsp_id = int(nsp_id)
+        elec_id = nsp_to_elec.get(nsp_id, -1)
+        if elec_id > 0:
+            elec_to_idx[elec_id] = ch_idx
+    
+    return elec_to_idx
+
 __all__ = [
-    "list_br_sessions", "ua_excel_path", "extract_br_aux_streams_npz", "apply_ua_mapping_with_regions", "load_UA_mapping_from_excel"
+    "list_br_sessions", "ua_excel_path", "extract_br_aux_streams_npz", "apply_ua_mapping_with_regions", 
+    "load_UA_mapping_from_excel", "load_electrode_mapping", "get_region_from_group_name", 
+    "get_region_grid", "build_elec_to_data_idx"
 ]

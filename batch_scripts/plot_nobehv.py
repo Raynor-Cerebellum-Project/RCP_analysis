@@ -33,60 +33,18 @@ VMIN_UA_COUNTS,   VMAX_UA_COUNTS   = 0.0, 10.0
 
 COLORMAP = "jet"
 
-# --- UTAH ELECTRODE MAPPING ---
-def load_electrode_mapping(csv_path: Path):
-    nsp_to_elec = {}
-    region_grids = {}
-    elec_to_region = {}
-
-    if not csv_path.exists():
-        print(f"  [Warn] Electrode mapping CSV not found: {csv_path}")
-        return nsp_to_elec, region_grids, elec_to_region
-
-    try:
-        df = pd.read_csv(csv_path)
-        for _, row in df.iterrows():
-            elec_id = int(row['ElectrodeID'])
-            nsp_id = int(row['NSP_ID'])
-            region = str(row['Array']).strip()
-            r = int(row['GridRow'])
-            c = int(row['GridCol'])
-
-            nsp_to_elec[nsp_id] = elec_id
-            elec_to_region[elec_id] = region
-
-            if region not in region_grids:
-                region_grids[region] = np.zeros((8, 8), dtype=int)
-            region_grids[region][r, c] = elec_id
-            
-    except Exception as e:
-        print(f"  [Error] Failed to load electrode mapping from {csv_path}: {e}")
-
-    return nsp_to_elec, region_grids, elec_to_region
+from RCP_analysis.python.functions.br_preproc import (
+    load_electrode_mapping, 
+    get_region_from_group_name as _region_from_group_name, 
+    get_region_grid, 
+    build_elec_to_data_idx
+)
 
 MAPPING_CSV = REPO_ROOT / "scripts" / "electrode_port_mapping.csv"
 nsp_to_elec_global, UTAH_ELEC_GRIDS, elec_to_region_global = load_electrode_mapping(MAPPING_CSV)
 
-def _region_from_group_name(grp_name: str) -> str:
-    return grp_name.split(" (")[0].strip()
-
 def _region_grid(region_name: str):
-    aliases = {"M1 Inf": "M1i", "M1 Sup": "M1s"}
-    target = aliases.get(region_name, region_name)
-    return UTAH_ELEC_GRIDS.get(target, None)
-
-def build_elec_to_data_idx(ua_ids_1based, nsp_to_elec):
-    if ua_ids_1based is None or nsp_to_elec is None:
-        return {}
-    
-    elec_to_idx = {}
-    for ch_idx, nsp_id in enumerate(ua_ids_1based):
-        nsp_id = int(nsp_id)
-        elec_id = nsp_to_elec.get(nsp_id, -1)
-        if elec_id > 0:
-            elec_to_idx[elec_id] = ch_idx
-    
-    return elec_to_idx
+    return get_region_grid(region_name, UTAH_ELEC_GRIDS)
 
 def render_spatial_grid(ax, data_slice, grid_elec, elec_to_idx, vmin, vmax, smoothing=False):
     grid = np.full((8, 8), np.nan)
