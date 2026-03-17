@@ -46,18 +46,30 @@ SHIFTS_CSV = METADATA_ROOT / "br_to_intan_shifts.csv"
 CONTROL_ROOT = ALIGNED_CKPT_ROOT / "control_reaches"
 AT_REST_ROOT  = ALIGNED_CKPT_ROOT / "at_rest"
 STIM_ROOT  = ALIGNED_CKPT_ROOT / "stim_reaches"
+GRASP_ROOT = ALIGNED_CKPT_ROOT / "Grasp"
+IMU_ROOT = ALIGNED_CKPT_ROOT / "IMU"
+CONTINUOUS_STIM_ROOT = ALIGNED_CKPT_ROOT / "continuous_stim"
 
 CONTROL_ROOT.mkdir(parents=True, exist_ok=True)
 AT_REST_ROOT.mkdir(parents=True, exist_ok=True)
 STIM_ROOT.mkdir(parents=True, exist_ok=True)
+GRASP_ROOT.mkdir(parents=True, exist_ok=True)
+IMU_ROOT.mkdir(parents=True, exist_ok=True)
+CONTINUOUS_STIM_ROOT.mkdir(parents=True, exist_ok=True)
 
 CONTROL_PERI_ROOT = PERI_ROOT / "control_reaches"
 AT_REST_PERI_ROOT  = PERI_ROOT / "at_rest"
 STIM_PERI_ROOT  = PERI_ROOT / "stim_reaches"
+GRASP_PERI_ROOT  = PERI_ROOT / "Grasp"
+IMU_PERI_ROOT  = PERI_ROOT / "IMU"
+CONTINUOUS_STIM_PERI_ROOT = PERI_ROOT / "continuous_stim"
 
 CONTROL_PERI_ROOT.mkdir(parents=True, exist_ok=True)
 AT_REST_PERI_ROOT.mkdir(parents=True, exist_ok=True)
 STIM_PERI_ROOT.mkdir(parents=True, exist_ok=True)
+GRASP_PERI_ROOT.mkdir(parents=True, exist_ok=True)
+IMU_PERI_ROOT.mkdir(parents=True, exist_ok=True)
+CONTINUOUS_STIM_PERI_ROOT.mkdir(parents=True, exist_ok=True)
 
 NPRW_RATES = PARAMS.NPRW_rate_est
 NPRW_BIN_MS     = NPRW_RATES.get("bin_ms")
@@ -1342,42 +1354,35 @@ def main():
     control_files = sorted(CONTROL_ROOT.glob("aligned__*.npz"))
     stim_files = sorted(STIM_ROOT.glob("aligned__*.npz"))
     at_rest_files = sorted(AT_REST_ROOT.glob("aligned__*.npz"))
+    grasp_files = sorted(GRASP_ROOT.glob("aligned__*.npz"))
+    imu_files = sorted(IMU_ROOT.glob("aligned__*.npz"))
+    continuous_stim_files = sorted(CONTINUOUS_STIM_ROOT.glob("aligned__*.npz"))
     
-    if not control_files and not stim_files and not at_rest_files:
+    if not any([control_files, stim_files, at_rest_files, grasp_files, imu_files, continuous_stim_files]):
         raise SystemExit(f"[error] No combined aligned NPZs found at {ALIGNED_CKPT_ROOT}")
     
-    # # normal: per-file processing
+    # normal: per-file processing
     for file in stim_files:
         extract_one_file(file, out_dir = STIM_PERI_ROOT, use_ir_ms=False, split_targets=True)
-        # Extract files normally - done
-        # Split A and B reaches - done
-        # Aggregate and save - done
+
+    # grasp & imu: per-file processing (like at_rest, no A/B)
+    for file in grasp_files:
+        extract_one_file(file, out_dir = GRASP_PERI_ROOT, use_ir_ms=False, split_targets=False)
         
-        # td = extract_trials_from_npz(f)
-        # aggregate_and_save_normal(td, PERI_ROOT)
+    for file in imu_files:
+        extract_one_file(file, out_dir = IMU_PERI_ROOT, use_ir_ms=False, split_targets=False)
+
+    # continuous_stim: per-file processing (align to ir_ms, no A/B)
+    for file in continuous_stim_files:
+        extract_one_file(file, out_dir = CONTINUOUS_STIM_PERI_ROOT, use_ir_ms=True, split_targets=False)
 
     # at_rest: per-file processing (no A/B)
     for file in at_rest_files:
         extract_one_file(file, out_dir = AT_REST_PERI_ROOT, use_ir_ms=False, split_targets=False)
-    for file in at_rest_files:
-        extract_one_file(file, out_dir = AT_REST_PERI_ROOT, use_ir_ms=False, split_targets=False)
-        # Extract files without splitting by target - done
-        # Aggregate and save - done
-        
-        # td = extract_trials_from_npz(f)
-        # aggregate_and_save_at_rest(td, PERI_ROOT)
 
     # control: split A/B, align to ir_ms
     for file in control_files:
         extract_one_file(file, out_dir = CONTROL_PERI_ROOT, use_ir_ms=True, split_targets=True, is_control=True)
-        # Extract files normally but use ir_ms as alignment - done
-        # Concatenate trials across files per group - TODO
-        # Split A and B reaches - done
-        # Aggregate and save per group - done
-        
-        # tds = [extract_trials_from_npz(f) for f in group_files]
-        # td_concat = concat_trials(tds)
-        # aggregate_and_save_baseline(td_concat, PERI_ROOT)
 
 if __name__ == "__main__":
     main()

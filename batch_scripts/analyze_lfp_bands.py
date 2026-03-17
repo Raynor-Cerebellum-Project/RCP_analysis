@@ -186,6 +186,30 @@ SHIFT_CSV = METADATA_ROOT / "br_to_intan_shifts.csv"
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
 
+# Cache for stim file checks to avoid redundant disk I/O
+STIM_CACHE = {}
+
+def find_peristim_files(sess_name, br_idx):
+    found = []
+    # Loop through categories
+    for cat in ["control_reaches", "stim_reaches", "at_rest", "Grasp", "IMU", "continuous_stim"]:
+        cat_dir = PERI_ROOT / cat
+        if not cat_dir.exists(): continue
+        
+        # Check main cat dir
+        pattern = f"peristim__*{sess_name}*BR_{br_idx:03d}*.npz"
+        for p in cat_dir.glob(pattern):
+             found.append((cat, None, p))
+             
+        # Check target subdirs
+        for target in ["target_A", "target_B"]:
+            t_dir = cat_dir / target
+            if t_dir.exists():
+                for p in t_dir.glob(pattern):
+                    found.append((cat, target, p))
+    return found
+
+
 
 # =============================================================================
 # Metadata Helpers (for Baseline Grouping)
@@ -640,12 +664,8 @@ def process_baseline_group_utah(
     session_infos: list,  # List of dicts with session info
 ):
     """
-    Process a group of baseline/control sessions for Utah Array by loading IR events from
-    existing baseline PeriStim files and concatenating LFP epochs.
-    
-    Args:
-        group_key: Tuple of (ua_port, depth_mm)
-        session_infos: List of dicts with keys: session, br_idx, intan_idx, shift_ms, fs_intan
+    Process multiple baseline sessions for the same Port/Depth, aggregating epochs.
+    Optimized to load each recording only once for all targets (A, B, None).
     """
     port, depth = group_key
     
@@ -656,233 +676,179 @@ def process_baseline_group_utah(
     depth_str = _sanitize(depth)
     port_str = _sanitize(port)
     
-    out_npz = UA_LFP_CKPT_ROOT / f"aligned_lfp__baseline__Depth_{depth_str}_port_{port_str}.npz"
-    
-    if out_npz.exists():
-        print(f"[Baseline UA] Skipping group Depth={depth}, Port={port}, output exists.")
-        return
-        
-    print(f"\n[Baseline UA] Processing group: Depth={depth}, Port={port}")
-    print(f"    Sessions: {[s['session'] for s in session_infos]}")
-    
-    # 1. Load IR events from baseline PeriStim file
-    ir_events_ms = None
-    loaded_target = None  # Track which target was loaded
-    for target in ["target_A", "target_B", ""]:
-        if target:
-            target_dir = PERI_ROOT / "control_reaches" / target
-        else:
-            target_dir = PERI_ROOT / "control_reaches"
-
-        if not target_dir.exists():
-            if target:
-                print(f"    [Info] Dir not found: {target_dir}")
-            continue
-            
-        # Match actual peristim file naming convention
-        # Files are like: peristim__NRR_RW012_260116_140816__BR_002_target_A.npz
-        if target:
-            matches = list(target_dir.glob("peristim__*.npz"))
-        else:
-            # Avoid matching files in subdirectories, just the control_reaches folder
-            matches = [f for f in target_dir.glob("peristim__*.npz") if f.is_file()]
-        
-        if matches:
-            # Collect IR events from ALL baseline files for this target
-            all_events = []
-            for baseline_file in matches:
-                print(f"    Loading IR events from: {baseline_file.name}")
-                try:
-                    bl_data = np.load(str(baseline_file), allow_pickle=True)
-                    if "event_ms" in bl_data and bl_data["event_ms"].size > 0:
-                        all_events.append(bl_data["event_ms"].flatten())
-                        print(f"      Found {bl_data['event_ms'].size} IR events.")
-                    else:
-                        print(f"      [WARN] No 'event_ms' key or empty in {baseline_file.name}")
-                except Exception as e:
-                    print(f"      [WARN] Failed to load: {e}")
-            
-            if all_events:
-                ir_events_ms = np.concatenate(all_events)
-                ir_events_ms = np.sort(ir_events_ms)
-                loaded_target = target[-1] if target else "N"  # 'A', 'B', or 'N'
-                print(f"    Total: {len(ir_events_ms)} IR events from {len(all_events)} files (Target {loaded_target}).")
-                break
-    
-    if ir_events_ms is None or len(ir_events_ms) == 0:
-        print(f"    [WARN] No IR events found for group. Skipping.")
-        return
-    
-    # 1.5. Apply Baseline Trial Exclusions
-    exclusion_key = f"baseline_port{port}_target{loaded_target}"
-    exclude_indices = EXCLUDE_BASELINE_TRIALS.get(exclusion_key, [])
-    if exclude_indices:
-        print(f"    [Exclusion] Removing {len(exclude_indices)} trials from {exclusion_key}: {exclude_indices}")
-        valid_mask = np.ones(len(ir_events_ms), dtype=bool)
-        for idx in exclude_indices:
-            if 0 <= idx < len(ir_events_ms):
-                valid_mask[idx] = False
-        ir_events_ms = ir_events_ms[valid_mask]
-        print(f"    [Exclusion] Remaining trials: {len(ir_events_ms)}")
-    
-    # 2. Process each session in the group
-    all_epochs_bb = []
-    ua_ids_global = None
-    
+    # 1. Discovery phase: Identify which targets have data for each session
+    all_events_by_br = {} # {br_idx: {target_label: event_ms}}
     for sess_info in session_infos:
         br_idx = sess_info["br_idx"]
-        shift_ms = sess_info["shift_ms"]
-        fs_intan = sess_info.get("fs_intan", 30000.0)
+        all_events_by_br[br_idx] = {}
+        for target in ["target_A", "target_B", ""]:
+            cat_dir = PERI_ROOT / "control_reaches"
+            if target: cat_dir = cat_dir / target
+            if not cat_dir.exists(): continue
+            
+            pattern = f"peristim__*{sess_info['session']}*BR_{br_idx:03d}*.npz"
+            matches = list(cat_dir.glob(pattern))
+            for p in matches:
+                try:
+                    bl_data = np.load(str(p), allow_pickle=True)
+                    if "event_ms" in bl_data and bl_data["event_ms"].size > 0:
+                        label = target[-1] if target else "N"
+                        all_events_by_br[br_idx][label] = bl_data["event_ms"].flatten()
+                except:
+                    pass
+
+    # 2. Session-major loop: Load each recording once and extract epochs for all labels
+    all_epochs_by_label = {"A": [], "B": [], "N": []}
+    active_sessions_by_label = {"A": [], "B": [], "N": []}
+    ua_ids_global = None
+
+    for sess_info in session_infos:
+        br_idx = sess_info["br_idx"]
+        if not all_events_by_br.get(br_idx):
+            continue
+            
+        labels_to_proc = list(all_events_by_br[br_idx].keys())
         
         # Find Blackrock ns6 file
         ns6_files = [p for p in BR_ROOT.iterdir() if p.is_file() and f"_{br_idx:03d}" in p.name and p.suffix == '.ns6']
+        if not ns6_files: continue
         
-        if not ns6_files:
-            print(f"    [WARN] No .ns6 file found for BR {br_idx:03d}")
-            continue
-            
         sess_path = ns6_files[0]
-        print(f"    Processing BR {br_idx:03d}: {sess_path.name}")
-        
         try:
-            # Load Blackrock recording
+            print(f"      [Baseline] Loading BR {br_idx:03d} for labels: {labels_to_proc}")
             rec_raw = se.read_blackrock(str(sess_path), stream_name='nsx6', all_annotations=True)
-            
-            # Apply UA mapping natively
             rec_mapped, ua_ids_1based = _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, METADATA_CSV)
-            if rec_mapped is None:
-                print(f"        [WARN] No mapped channels found for BR {br_idx}. Skipping.")
-                continue
+            if rec_mapped is None: continue
             
-            # Store ID info from first session
-            if ua_ids_global is None:
-                ua_ids_global = ua_ids_1based
+            if ua_ids_global is None: ua_ids_global = ua_ids_1based
             
             fs_native = rec_mapped.get_sampling_frequency()
-            rec_duration_ms = rec_mapped.get_total_duration() * 1000.0
+            rec_duration_ms = rec_raw.get_total_duration() * 1000.0
             
-            # Convert IR events (in BR-aligned ms) to session time
-            # IR events are relative to BR time, shift_ms converts Intan->BR
-            # So for BR time we don't need to shift, IR events are already in BR time
-            sess_ir_ms_valid = ir_events_ms[(ir_events_ms >= 0) & (ir_events_ms < rec_duration_ms)]
-            
-            if len(sess_ir_ms_valid) == 0:
-                print(f"        No valid IR events for this session. Skipping.")
-                continue
-                
-            print(f"        Found {len(sess_ir_ms_valid)} valid IR events for this session.")
-            
-            # Convert to samples
-            stim_start_samps = (sess_ir_ms_valid * fs_native / 1000.0).astype(np.int64)
-            
-            # Build preprocessing pipeline (no blanking for baseline)
-            # local_radii=None (default) -> Skips CMR which is correct for Utah per user request
+            # SI Pipeline (LFP Preprocessing)
             rec_proc = build_lfp_preprocessing_pipeline(
                 rec_mapped,
-                stim_indices_native=np.array([]),  # No blanking for control
+                stim_indices_native=np.array([]),
                 curr_sess_name=sess_path.name
             )
+            n_samps_total = rec_proc.get_total_samples()
             
-            # Convert to resampled indices
-            stim_indices_res = (stim_start_samps * TARGET_FS / fs_native).astype(np.int64)
-            
-            # Calculate epoch samples (PADDED)
             pad_samps = int(PAD_MS * TARGET_FS / 1000.0)
             pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000) + pad_samps
             post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000) + pad_samps
-            
-            n_samps_total = rec_proc.get_total_samples()
-            
-            # Extract epochs (sequential to avoid joblib pickling issues)
-            segs_list = []
-            for idx in stim_indices_res:
-                if (idx - pre_samps >= 0) and (idx + post_samps <= n_samps_total):
-                    seg = extract_single_epoch(rec_proc, idx, pre_samps, post_samps)
-                    if seg is not None:
-                        segs_list.append(seg)
-            
-            if len(segs_list) > 0:
-                sess_epochs = np.stack(segs_list, axis=0)
-                all_epochs_bb.append(sess_epochs)
-                print(f"        Extracted {len(segs_list)} epochs from session.")
-            else:
-                print(f"        [WARN] No valid epochs extracted from session.")
+
+            for label in labels_to_proc:
+                sess_ir_ms = all_events_by_br[br_idx][label]
                 
+                # Filter events to session duration
+                sess_ir_ms_valid = sess_ir_ms[(sess_ir_ms >= 0) & (sess_ir_ms < rec_duration_ms)]
+                if len(sess_ir_ms_valid) == 0: continue
+                
+                # Apply Baseline Trial Exclusions
+                exclusion_key = f"baseline_port{port}_target{label}"
+                exclude_indices = EXCLUDE_BASELINE_TRIALS.get(exclusion_key, [])
+                if exclude_indices:
+                    valid_mask = np.ones(len(sess_ir_ms_valid), dtype=bool)
+                    for e_idx in exclude_indices:
+                        if 0 <= e_idx < len(sess_ir_ms_valid):
+                            valid_mask[e_idx] = False
+                    sess_ir_ms_valid = sess_ir_ms_valid[valid_mask]
+
+                if len(sess_ir_ms_valid) == 0: continue
+                
+                # Extract epochs
+                stim_start_samps = (sess_ir_ms_valid * fs_native / 1000.0).astype(np.int64)
+                stim_indices_res = (stim_start_samps * TARGET_FS / fs_native).astype(np.int64)
+                
+                segs_list = []
+                for idx in stim_indices_res:
+                    if (idx - pre_samps >= 0) and (idx + post_samps <= n_samps_total):
+                        seg = extract_single_epoch(rec_proc, idx, pre_samps, post_samps)
+                        if seg is not None:
+                            segs_list.append(seg)
+                
+                if segments := segs_list:
+                    all_epochs_by_label[label].append(np.stack(segments, axis=0))
+                    active_sessions_by_label[label].append(sess_info)
+            
             del rec_raw, rec_mapped, rec_proc
             gc.collect()
             
         except Exception as e:
-            print(f"        [ERROR] Failed to process BR {br_idx:03d}: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"        [ERROR] BR {br_idx}: {e}")
+
+    # 3. Final processing per target label
+    for label in ["A", "B", "N"]:
+        if not all_epochs_by_label[label]:
             continue
-    
-    # 3. Concatenate epochs across sessions
-    if len(all_epochs_bb) == 0:
-        print(f"    [WARN] No epochs extracted from any session in group. Skipping.")
-        return
+            
+        target_suffix = f"_target_{'target_'+label if label != 'N' else ''}".replace("target_target_", "target_")
+        if label == "N": target_suffix = ""
+        else: target_suffix = f"_target_{label}"
         
-    concat_epochs = np.concatenate(all_epochs_bb, axis=0)
-    print(f"    Concatenated epochs: {concat_epochs.shape} (trials, channels, time)")
-    
-    # 4. Clean epochs — build rel_t_epoch FIRST (needed by the detrending call)
-    n_time = concat_epochs.shape[2]
-    rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
+        out_name = f"aligned_lfp__baseline__Depth_{depth_str}_port_{port_str}{target_suffix}.npz"
+        out_dir = UA_LFP_CKPT_ROOT / "control_reaches"
+        if label != "N":
+            out_dir = out_dir / f"target_{label}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        final_out_npz = out_dir / out_name
+        if final_out_npz.exists():
+            print(f"  [Baseline] Skipping {out_name}, output exists.")
+            continue
 
-    print(f"    [Cleaning] Applying 1/f Detrending to baseline epochs...")
-    concat_epochs_clean = apply_1f_detrending_chunked(
-        concat_epochs, rel_t_epoch, win_base=(-EPOCH_PRE_MS + 100.0, EPOCH_POST_MS - 100.0), fs=TARGET_FS,
-        plot_debug=PLOT_1F_DEBUG, debug_out_dir=UA_LFP_CKPT_ROOT.parent.parent / "figures" / "UA_LFP" / "debug"
-    )
+        print(f"\n[Baseline UA] Aggregating Target {label}: {len(all_epochs_by_label[label])} sessions involved.")
+        concat_epochs = np.concatenate(all_epochs_by_label[label], axis=0)
+        n_time = concat_epochs.shape[2]
+        rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
 
-    # --- Step 4.5: Reject Bad Channels Disabled ---
-    bad_ch_indices = np.array([], dtype=int)
-    
-    WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
-    WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)
-    
-    # Save the FULL continuous corrected window for UA
-    WIN_FULL = (-EPOCH_PRE_MS, EPOCH_POST_MS)
-    bb_full, t_full = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_FULL)
-    bb_pre, t_pre = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_PRE)
-    bb_post, t_post = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_POST)
-    
-    results = {
-        "broadband_full": bb_full,
-        "broadband_pre": bb_pre,
-        "broadband_post": bb_post,
-    }
-    
-    # 6. Band analysis
-    for band_name, (low, high) in LFP_BANDS.items():
-        print(f"    Filtering {band_name} ({low}-{high} Hz)...")
-        filt_epochs = filter_zero_phase(concat_epochs_clean, TARGET_FS, low, high)
-        results[f'{band_name}_full'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_FULL)
-        results[f'{band_name}_pre'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_PRE)
-        results[f'{band_name}_post'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_POST)
-    
-    # 7. Save
-    save_dict = {
-        "fs_lfp": TARGET_FS,
-        "group_port": port,
-        "group_depth": depth,
-        "sessions": [s["session"] for s in session_infos],
-        "br_indices": [s["br_idx"] for s in session_infos],
-        "stim_ms": ir_events_ms,
-        "n_trials": concat_epochs_clean.shape[0],
-        "rel_time_pre": t_pre,
-        "rel_time_post": t_post,
-        "stim_channels": ["Baseline_IR"],
-        # UA-specific metadata
-        "ua_ids_1based": ua_ids_global,
-        **results
-    }
-    
-    np.savez_compressed(out_npz, **save_dict)
-    print(f"    Saved -> {out_npz}")
+        print(f"    [Cleaning] 1/f Detrending baseline epochs...")
+        concat_epochs_clean = apply_1f_detrending_chunked(
+            concat_epochs, rel_t_epoch, win_base=(-EPOCH_PRE_MS + 100.0, EPOCH_POST_MS - 100.0), fs=TARGET_FS,
+            plot_debug=PLOT_1F_DEBUG, debug_out_dir=UA_LFP_CKPT_ROOT.parent.parent / "figures" / "UA_LFP" / "debug"
+        )
+
+        WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
+        WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)
+        WIN_FULL = (-EPOCH_PRE_MS, EPOCH_POST_MS)
+        
+        bb_full, t_full = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_FULL)
+        bb_pre, t_pre = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_PRE)
+        bb_post, t_post = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_POST)
+        
+        results = {
+            "broadband_full": bb_full,
+            "broadband_pre": bb_pre,
+            "broadband_post": bb_post,
+        }
+        
+        for band_name, (low, high) in LFP_BANDS.items():
+            print(f"    Filtering {band_name}...")
+            filt_epochs = filter_zero_phase(concat_epochs_clean, TARGET_FS, low, high)
+            results[f'{band_name}_full'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_FULL)
+            results[f'{band_name}_pre'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_PRE)
+            results[f'{band_name}_post'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_POST)
+        
+        active_sessions = active_sessions_by_label[label]
+        save_dict = {
+            "fs_lfp": TARGET_FS,
+            "group_port": port,
+            "group_depth": depth,
+            "category": "control_reaches",
+            "target": label if label != "N" else None,
+            "sessions": [s["session"] for s in active_sessions],
+            "br_indices": [s["br_idx"] for s in active_sessions],
+            "n_trials": concat_epochs_clean.shape[0],
+            "rel_time_pre": t_pre,
+            "rel_time_post": t_post,
+            "ua_ids_1based": ua_ids_global,
+            **results
+        }
+        
+        np.savez_compressed(final_out_npz, **save_dict)
+        print(f"    Saved -> {final_out_npz}")
     
     gc.collect()
-
 
 def _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, metadata_csv):
     ua_port = "A"
@@ -966,9 +932,28 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     # If it's a file, sess_path.name includes extension. removing it for cleanliness in filename
     sess_id = sess_path.stem if sess_path.is_file() else sess_path.name
     
-    out_npz = UA_LFP_CKPT_ROOT / f"aligned_lfp__{sess_id}.npz"
-    if out_npz.exists():
-        print(f"[UA] Skipping {sess_id}, output exists.")
+    # Identfy all peristim files to process
+    peristim_files = find_peristim_files(sess_name, br_idx)
+    
+    # Pre-check: if all potential outputs already exist, skip loading raw data
+    all_outputs_exist = True
+    if not peristim_files:
+        # Check standard stim name
+        out_name = f"aligned_lfp__{sess_id}_stim_reaches.npz"
+        if not (UA_LFP_CKPT_ROOT / "stim_reaches" / out_name).exists():
+            all_outputs_exist = False
+    else:
+        for cat, target, _ in peristim_files:
+            target_str = f"_target_{target}" if target else ""
+            out_name = f"aligned_lfp__{sess_id}_{cat}{target_str}.npz"
+            target_dir = UA_LFP_CKPT_ROOT / cat
+            if target: target_dir = target_dir / target
+            if not (target_dir / out_name).exists():
+                all_outputs_exist = False
+                break
+    
+    if all_outputs_exist:
+        # print(f"[UA] Skipping {sess_id}, all target-specific outputs exist.")
         return
         
     print(f"[UA] Processing {sess_id} (Source: {sess_path.name})")
@@ -988,157 +973,188 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         print("[WARN] No mapped channels found.")
         return
     
-    # Load Stim for Blanking AND Alignment (Using Intan info mapped to UA time)
-    stim_npz_path, intan_session_name = rcp.stim_npz_path_from_br_idx(br_idx, METADATA_CSV, NPRW_AUX_DATA)
-    if not stim_npz_path or not stim_npz_path.exists():
-        print("[UA] No stim stream found (Intan). Skipping.")
-        return
-        
-    stim = rcp.load_stim_detection(stim_npz_path)
-    block_bounds = stim.get("block_bounds_samples", [])
+    # Identfy all peristim files to process
+    peristim_files = find_peristim_files(sess_name, br_idx)
     
-    if block_bounds.size == 0:
-        print("[UA] No stim events found.")
-        stim_indices_native = np.array([], dtype=int)
-        stim_ms_ua = np.array([])
+    # If no peristim files found, fallback to standard stim detection for this session
+    # or skip if it's a known session type that SHOULD have peristim files.
+    if not peristim_files:
+        print(f"  [UA] No peristim files found for {sess_id}. Falling back to standard stim detection.")
+        # Load Stim for Blanking AND Alignment (Using Intan info mapped to UA time)
+        stim_npz_path, intan_session_name = rcp.stim_npz_path_from_br_idx(br_idx, METADATA_CSV, NPRW_AUX_DATA)
+        if not stim_npz_path or not stim_npz_path.exists():
+            print("[UA] No stim stream found (Intan). Skipping.")
+            return
+            
+        stim = rcp.load_stim_detection(stim_npz_path)
+        block_bounds = stim.get("block_bounds_samples", [])
+        
+        if block_bounds.size == 0:
+            print("[UA] No stim events found.")
+            stim_indices_native = np.array([], dtype=int)
+            stim_ms_ua_list = [np.array([])]
+            cat_target_list = [("stim_reaches", None)]
+        else:
+            intan_stim_samps = block_bounds[:, 0]
+            intan_stim_ms = intan_stim_samps * 1000.0 / fs_intan
+            stim_ms_ua = intan_stim_ms - shift_ms
+            stim_ms_ua_list = [stim_ms_ua]
+            cat_target_list = [("stim_reaches", None)]
+            
+            # For IPCA Correction Triggers (always use main stim)
+            fs_native = rec_mapped.get_sampling_frequency()
+            scale = fs_native / fs_intan
+            starts_ua = np.round((block_bounds[:, 0].astype(np.int64) - shift_sample) * scale).astype(np.int64)
+            ends_ua   = np.round((block_bounds[:, 1].astype(np.int64) - shift_sample) * scale).astype(np.int64)
+            
+            n_total = rec_mapped.get_num_samples()
+            ends_ua = np.minimum(ends_ua, n_total)
+            valid = (ends_ua > starts_ua) & (starts_ua >= 0) & (ends_ua <= n_total)
+            starts_ua = starts_ua[valid]
+            ends_ua   = ends_ua[valid]
+            
+            if len(starts_ua) > 0:
+                rec_mapped = apply_ipca_correction(rec_mapped, starts_ua, ends_ua)
     else:
-        # Intan Samples -> Time -> Shift -> UA Time -> UA Native Samples
-        # We need triggers in *native* UA samples for processing
-        intan_stim_samps = block_bounds[:, 0]
-        intan_stim_ms = intan_stim_samps * 1000.0 / fs_intan
-        stim_ms_ua = intan_stim_ms - shift_ms
-        
-        fs_native = rec_mapped.get_sampling_frequency()
-        stim_indices_native = np.floor(stim_ms_ua * fs_native / 1000.0).astype(int)
-        
-        # IPCA Artifact Correction before going into the LFP pipeline
-        starts_intan = block_bounds[:, 0].astype(np.int64)
-        ends_intan   = block_bounds[:, 1].astype(np.int64)
-        scale = fs_native / fs_intan
-        starts_ua = np.round((starts_intan - shift_sample) * scale).astype(np.int64)
-        ends_ua   = np.round((ends_intan   - shift_sample) * scale).astype(np.int64)
-        
-        n_total = rec_mapped.get_num_samples()
-        ends_ua = np.minimum(ends_ua, n_total)
-        valid = (ends_ua > starts_ua) & (starts_ua >= 0) & (ends_ua <= n_total)
-        starts_ua = starts_ua[valid]
-        ends_ua   = ends_ua[valid]
-        
-        rec_mapped = apply_ipca_correction(
-            rec_mapped, starts_ua, ends_ua
-        )
-        
-        # Override stim_indices_native so that basic blanking doesn't run,
-        # since IPCA handled it cleanly.
-        stim_indices_native = np.array([], dtype=int)
+        # We have peristim files. Use the events from them.
+        # But we STILL need stim bounds for IPCA correction if this is a stim session.
+        stim_npz_path, _ = rcp.stim_npz_path_from_br_idx(br_idx, METADATA_CSV, NPRW_AUX_DATA)
+        if stim_npz_path and stim_npz_path.exists():
+            stim = rcp.load_stim_detection(stim_npz_path)
+            block_bounds = stim.get("block_bounds_samples", [])
+            if block_bounds.size > 0:
+                fs_native = rec_mapped.get_sampling_frequency()
+                scale = fs_native / fs_intan
+                starts_ua = np.round((block_bounds[:, 0].astype(np.int64) - shift_sample) * scale).astype(np.int64)
+                ends_ua   = np.round((block_bounds[:, 1].astype(np.int64) - shift_sample) * scale).astype(np.int64)
+                
+                n_total = rec_mapped.get_num_samples()
+                ends_ua = np.minimum(ends_ua, n_total)
+                valid = (ends_ua > starts_ua) & (starts_ua >= 0) & (ends_ua <= n_total)
+                if valid.any():
+                    rec_mapped = apply_ipca_correction(rec_mapped, starts_ua[valid], ends_ua[valid])
+
+        stim_ms_ua_list = []
+        cat_target_list = []
+        for cat, target, p in peristim_files:
+            try:
+                ps = np.load(p, allow_pickle=True)
+                if "event_ms" in ps and ps["event_ms"].size > 0:
+                    stim_ms_ua_list.append(ps["event_ms"])
+                    cat_target_list.append((cat, target))
+            except Exception as e:
+                print(f"  [UA] Failed to load peristim {p.name}: {e}")
+
+    if not stim_ms_ua_list:
+        print(f"  [UA] No valid event sets found for {sess_id}. Skipping.")
+        return
 
     # 2. Build SI Pipeline
-    # Blank(-5, +20) -> Local CMR (None) -> DS(1000)
-    # local_radii=None -> No CMR for Utah
+    # No blanking here (handled by IPCA or not needed for control)
     rec_proc = build_lfp_preprocessing_pipeline(
         rec_mapped, 
-        stim_indices_native=stim_indices_native,
+        stim_indices_native=np.array([], dtype=int),
         curr_sess_name=sess_path.name,
         local_radii=None 
     )
     
-    # 3. Get Traces Memory-Safely (No Eager Load)
-    print("  [UA] Segmenting traces lazily from SpikeInterface pipeline...")
-    
-    pad_samps = int(PAD_MS * TARGET_FS / 1000.0)
-    pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000) + pad_samps
-    post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000) + pad_samps
-    n_samps_total = rec_proc.get_total_samples()
-    
-    # Convert native stim ms to resampled indices for segmentation
-    stim_indices_res = (stim_ms_ua * TARGET_FS / 1000.0).astype(np.int64)
-
-    # --- Parameters ---
-    WIN_EPOCH = (-EPOCH_PRE_MS, EPOCH_POST_MS)   # Epoch Window
-    WIN_PRE   = (-EPOCH_PRE_MS, -BLANK_PRE_MS)    # Baseline Window
-    WIN_POST  = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)   # Analysis Window (Post-Blank)
-    
-    results = {}
-    
-    print(f"  Segmenting Broadband Epochs ({WIN_EPOCH} ms PAD={PAD_MS}ms)...", flush=True)
-    segs_list_bb = []
-    valid_stim_ms = []
-
-    for idx_res, stim_time in zip(stim_indices_res, stim_ms_ua):
-        if (idx_res - pre_samps >= 0) and (idx_res + post_samps <= n_samps_total):
-            seg = extract_single_epoch(rec_proc, idx_res, pre_samps, post_samps)
-            if seg is not None:
-                segs_list_bb.append(seg)
-                valid_stim_ms.append(stim_time)
-
-    if not segs_list_bb:
-        print(f"  [WARN] No valid segments found for {sess_path.name}. Skipping.")
-        return
-
-    segs_bb = np.stack(segs_list_bb, axis=0) # (n_trials, n_channels, n_time)
-    valid_stim = np.array(valid_stim_ms)
-    
-    n_time = pre_samps + post_samps
-    rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
-
-    # 7. Per-Trial Cleaning
-    print(f"  [Cleaning] Applying 1/f Detrending to broadband epochs...")
-    segs_bb_clean = apply_1f_detrending_chunked(
-        segs_bb, rel_t_epoch, win_base=(-EPOCH_PRE_MS + 100.0, EPOCH_POST_MS - 100.0), fs=TARGET_FS,
-        plot_debug=PLOT_1F_DEBUG, debug_out_dir=UA_LFP_CKPT_ROOT.parent.parent / "figures" / "UA_LFP" / "debug"
-    )
-    
-    # --- Step 7.5: Reject Bad Channels Disabled ---
-    bad_ch_indices = np.array([], dtype=int)
-    results['bad_channels'] = bad_ch_indices
-        
-    WIN_FULL = (-EPOCH_PRE_MS, EPOCH_POST_MS)
-    results['broadband_full'], t_full = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_FULL)
-    results['broadband_pre'], t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
-    results['broadband_post'], t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
-    
-    # 9. Band Analysis (Filter Continuous -> Segment)
-    # This avoids padding issues for segments since we have continuous data
+    # Pre-calculate filtered recordings lazily
+    filtered_recs = {}
     for band_name, (low, high) in LFP_BANDS.items():
-        print(f"  [SI Pipeline] Filtering Continuous Trace {band_name} ({low}-{high} Hz)...", flush=True)
+        filtered_recs[band_name] = spre.bandpass_filter(rec_proc, freq_min=low, freq_max=high)
+
+    # 3. Process each event set
+    for stim_ms_ua, (cat, target) in zip(stim_ms_ua_list, cat_target_list):
+        target_str = f"_target_{target}" if target else ""
+        out_name = f"aligned_lfp__{sess_id}_{cat}{target_str}.npz"
         
-        # Use SpikeInterface directly for filtering memory-safely
-        rec_filtered = spre.bandpass_filter(rec_proc, freq_min=low, freq_max=high)
+        # Determine output directory
+        target_dir = UA_LFP_CKPT_ROOT / cat
+        if target:
+            target_dir = target_dir / target
+        target_dir.mkdir(parents=True, exist_ok=True)
         
-        segs_list_filt = []
-        for idx_res in stim_indices_res:
+        final_out_npz = target_dir / out_name
+        if final_out_npz.exists():
+            print(f"  [UA] Skipping {out_name}, output exists.")
+            continue
+
+        print(f"  [UA] Segmenting {cat}{target_str} ({len(stim_ms_ua)} events)...")
+        
+        # Convert native stim ms to resampled indices for segmentation
+        stim_indices_res = (stim_ms_ua * TARGET_FS / 1000.0).astype(np.int64)
+        n_samps_total = rec_proc.get_total_samples()
+        pad_samps = int(PAD_MS * TARGET_FS / 1000.0)
+        pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000) + pad_samps
+        post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000) + pad_samps
+
+        WIN_PRE   = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
+        WIN_POST  = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)
+        WIN_FULL  = (-EPOCH_PRE_MS, EPOCH_POST_MS)
+        
+        results = {}
+        valid_indices = []
+        valid_stim_ms = []
+        
+        segs_list_bb = []
+        for idx_res, stim_time in zip(stim_indices_res, stim_ms_ua):
             if (idx_res - pre_samps >= 0) and (idx_res + post_samps <= n_samps_total):
+                seg = extract_single_epoch(rec_proc, idx_res, pre_samps, post_samps)
+                if seg is not None:
+                    segs_list_bb.append(seg)
+                    valid_stim_ms.append(stim_time)
+                    valid_indices.append(idx_res)
+
+        if not segs_list_bb:
+            print(f"    [WARN] No valid segments for {cat}{target_str}.")
+            continue
+
+        segs_bb = np.stack(segs_list_bb, axis=0)
+        n_time = pre_samps + post_samps
+        rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
+
+        print(f"    [Cleaning] 1/f Detrending broadband...")
+        segs_bb_clean = apply_1f_detrending_chunked(
+            segs_bb, rel_t_epoch, win_base=(-EPOCH_PRE_MS + 100.0, EPOCH_POST_MS - 100.0), fs=TARGET_FS,
+            plot_debug=PLOT_1F_DEBUG, debug_out_dir=UA_LFP_CKPT_ROOT.parent.parent / "figures" / "UA_LFP" / "debug"
+        )
+        
+        results['broadband_full'], t_full = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_FULL)
+        results['broadband_pre'], t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
+        results['broadband_post'], t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
+        
+        # Band Analysis
+        for band_name, rec_filtered in filtered_recs.items():
+            segs_list_filt = []
+            for idx_res in valid_indices:
                 seg = extract_single_epoch(rec_filtered, idx_res, pre_samps, post_samps)
                 if seg is not None:
                     segs_list_filt.append(seg)
-        
-        if len(segs_list_filt) > 0:
-            segs_filt = np.stack(segs_list_filt, axis=0)
-            # Apply Rejection
-            if len(bad_ch_indices) > 0:
-                segs_filt[:, bad_ch_indices, :] = np.nan
-             
-            results[f'{band_name}_full'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_FULL)
-            results[f'{band_name}_pre'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_PRE)
-            results[f'{band_name}_post'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_POST)
+            
+            if segs_list_filt:
+                segs_filt = np.stack(segs_list_filt, axis=0)
+                results[f'{band_name}_full'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_FULL)
+                results[f'{band_name}_pre'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_PRE)
+                results[f'{band_name}_post'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_POST)
 
-        del rec_filtered, segs_list_filt
-        gc.collect()
-    # Save
-    save_dict = {
-        "fs_lfp": TARGET_FS,
-        "ua_ids_1based": ua_ids_1based,
-        "session": sess_path.name,
-        "stim_ms": valid_stim,
-        "rel_time_pre": t_pre,
-        "rel_time_post": t_post,
-        **results
-    }
-    
-    np.savez_compressed(out_npz, **save_dict)
-    print(f"  Saved -> {out_npz}")
-    
-    del rec_raw, rec_mapped, traces, results
+        # Save
+        save_dict = {
+            "fs_lfp": TARGET_FS,
+            "ua_ids_1based": ua_ids_1based,
+            "session": sess_path.name,
+            "category": cat,
+            "target": target if target else "none",
+            "stim_ms": np.array(valid_stim_ms),
+            "rel_time_pre": t_pre,
+            "rel_time_post": t_post,
+            **results
+        }
+        
+        np.savez_compressed(final_out_npz, **save_dict)
+        print(f"    Saved -> {final_out_npz}")
+
+    # Cleanup
+    del filtered_recs, rec_proc, rec_mapped, rec_raw
     gc.collect()
 
 
@@ -1161,8 +1177,13 @@ def quick_check_stim(sess_path: Path, stream_name: str, intan_idx: int, br_idx: 
 
     stim_npz = NPRW_AUX_DATA / f"{sess_name}_Intan_streams" / "stim_stream.npz"
     
+    # Check cache first
+    if stim_npz in STIM_CACHE:
+        return STIM_CACHE[stim_npz]
+    
+    print(f"\nChecking stim for {sess_name}...")
+
     # 1. Standard Stim Check
-    has_stim = False
     
     # Try loading existing fast
     if stim_npz.exists():
@@ -1177,6 +1198,9 @@ def quick_check_stim(sess_path: Path, stream_name: str, intan_idx: int, br_idx: 
                 print("    [Check] Existing file has 0 stim blocks.")
         except Exception as e:
             print(f"    [Check] Failed to load existing: {e}")
+    
+    STIM_CACHE[stim_npz] = has_stim
+    return has_stim
 
     # Fallback to extraction if not found or empty?? 
     # Actually, if existing file is empty, it means we already tried extracting and found nothing.
@@ -1206,7 +1230,7 @@ def quick_check_stim(sess_path: Path, stream_name: str, intan_idx: int, br_idx: 
         # Look for baseline files in PERI_ROOT / Target_A and Target_B
         sess_name = sess_path.name
         
-        for target in ["control_reaches/target_A", "control_reaches/target_B", "control_reaches"]:
+        for target in ["control_reaches/target_A", "control_reaches/target_B", "control_reaches", "Grasp", "IMU", "continuous_stim"]:
             target_dir = PERI_ROOT / target
             if not target_dir.exists():
                 continue
@@ -1288,7 +1312,8 @@ def main():
         if "session" in row:
             session_name = row["session"]
         elif "intan_filename" in row:
-            session_name = "_".join(row["intan_filename"].split("_")[:3])  # E.g. "NRR_RW012_260116"
+            # Use the stem of the intan_filename to preserve unique session IDs (e.g. _004, _005)
+            session_name = Path(row["intan_filename"]).stem
         else:
             continue
             
@@ -1356,7 +1381,6 @@ def main():
         
         # --- Pre-Check Stim ---
         # We check stim BEFORE running either NPRW or UA analysis
-        print(f"\nChecking stim for {session_name}...")
         has_stim = quick_check_stim(sess_path, STIM_STREAM, intan_idx, br_idx)
         
         if not has_stim:

@@ -11,20 +11,10 @@ import pandas as pd
 import csv
 import scipy.io
 from scipy.ndimage import gaussian_filter1d
-from scipy.interpolate import interp1d
+from scipy.interpolate import interp1d, griddata, Rbf
+import imageio
+import io
 
-# Define output directory from config
-NPRW_LFP_DIR = cfg.OUT_BASE / "checkpoints" / "NPRW_LFP"
-UA_LFP_DIR = cfg.OUT_BASE / "checkpoints" / "UA_LFP"
-
-# Probe Geometry Map for CSD
-PROBE_MAP_FILE = cfg.REPO_ROOT / "config" / "ImecPrimateStimRec128_BT_corrected_091525.mat"
-
-NPRW_FIG_DIR = cfg.OUT_BASE / "figures" / "NPRW_LFP"
-UA_FIG_DIR = cfg.OUT_BASE / "figures" / "UA_LFP"
-
-NPRW_FIG_DIR.mkdir(parents=True, exist_ok=True)
-UA_FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- Global Plotting Configuration ---
 FIGURE_CONFIG = {
@@ -35,7 +25,10 @@ FIGURE_CONFIG = {
     'process_inter_array_coherence': False, # 4x4 inter-array coherence grid (Utah only)
     'process_csd': False,                # Current Source Density (CSD) Analysis
     'process_single_channel_traces': False, # Isolated multi-band trace plot for one channel 
-    'process_spectrograms': True,            # Per-channel ERSP spectrograms (Utah only)
+    'process_spectrograms': False,            # Per-channel ERSP spectrograms (Utah only)
+    'process_band_overlays': False,          # Per-channel trial overlays for one band
+    'process_spatial_heatmaps': True,       # 8x8 spatial heatmaps at key timepoints
+    'process_spatial_gif': True,            # Animated GIF of spatial heatmaps
 }
 
 y_scaler = 1
@@ -85,15 +78,26 @@ PLOT_CONFIG = {
         "freq_min": 0.5,            # Hz — lower bound for frequency axis
         "freq_max": 60,             # Hz — upper bound for frequency axis
         "log_freq": False,          # If True, plot frequency axis on log scale
-        "vmin_db": -5,              # dB — colormap floor 
-        "vmax_db": 5,               # dB — colormap ceiling
-        "time_range": (-400, 500),  # ms — display time window
-        "baseline_window": (-375, -125), # ms (start, end). Moved closer to stim for stability
+        "vmin_db": -6,              # dB — colormap floor 
+        "vmax_db": 6,               # dB — colormap ceiling
+        "time_range": (-500, 500),  # ms — display time window
+        "baseline_window": (-950, -650), # ms (start, end). Moved closer to stim for stability
         "normalization": "baseline", # 'baseline' (ERSP, dB relative to pre-stim)
-        "per_trial_norm": False,    # Match paper: average then normalize
-        "cmap": "RdBu_r",           # Changed from jet to RdBu_r for proper ERSP visualization (blue=suppression, red=enhancement)
+        "per_trial_norm": True,    # Match paper: average then normalize
+        "cmap": "jet",           # Changed from jet to RdBu_r for proper ERSP visualization (blue=suppression, red=enhancement)
         "shading": "nearest",       # 'nearest' (fast) or 'gouraud' (smooth, slow) or 'flat' (requires edge coords)
         "dpi": 150,                 # Output DPI for saved figures
+    },
+
+    # --- New Integrated Band Plotting Settings ---
+    "band_plots": {
+        "selected_band": "beta",     # Options: 'delta', 'theta', 'alpha', 'beta', 'low_gamma', 'high_gamma'
+        "time_points_ms": [-400, -200, -50, 10, 50, 100, 150, 300],
+        "overlay_alpha": 0.3,        # Opacity for individual trial lines 
+        "heatmap_vmin": -6.0,        # dB lower bound
+        "heatmap_vmax": 6.0,         # dB upper bound
+        "gif_time_range": (-500, 500), # ms range for GIF
+        "gif_step_ms": 10,              # ms step for each frame
     }
 }
 """
@@ -176,6 +180,99 @@ shading (str)
 dpi (int)
     Resolution of saved PNG files. 150 is good for review, 300 for publication.
 """
+
+bands = {
+        'Delta': (1, 4),
+        'Theta': (4, 8),
+        'Alpha': (8, 12),
+        'Beta': (12, 25),
+        'Low Gamma': (25, 60),
+        'High Gamma': (60, 120)
+    }
+
+
+
+# --- UTAH ELECTRODE MAPPING (Loaded from CSV) ---
+def load_electrode_mapping(csv_path: Path):
+    """
+    Load electrode mapping from CSV.
+    Returns:
+        nsp_to_elec: {nsp_id: electrode_id} mapping.
+        region_grids: {region: 8x8_array} of electrode IDs.
+        elec_to_region: {electrode_id: region} mapping.
+    """
+    nsp_to_elec = {}
+    region_grids = {}
+    elec_to_region = {}
+
+    if not csv_path.exists():
+        print(f"  [Warn] Electrode mapping CSV not found: {csv_path}")
+        return nsp_to_elec, region_grids, elec_to_region
+
+    try:
+        df = pd.read_csv(csv_path)
+        for _, row in df.iterrows():
+            elec_id = int(row['ElectrodeID'])
+            nsp_id = int(row['NSP_ID'])
+            region = str(row['Array']).strip()
+            r = int(row['GridRow'])
+            c = int(row['GridCol'])
+
+            nsp_to_elec[nsp_id] = elec_id
+            elec_to_region[elec_id] = region
+
+            if region not in region_grids:
+                region_grids[region] = np.zeros((8, 8), dtype=int)
+            region_grids[region][r, c] = elec_id
+            
+    except Exception as e:
+        print(f"  [Error] Failed to load electrode mapping from {csv_path}: {e}")
+
+    return nsp_to_elec, region_grids, elec_to_region
+
+# Load mapping globally (or it will be reloaded in the main loop if preferred)
+MAPPING_CSV = Path(__file__).parent / "electrode_port_mapping.csv"
+nsp_to_elec_global, UTAH_ELEC_GRIDS, elec_to_region_global = load_electrode_mapping(MAPPING_CSV)
+
+def _region_from_group_name(grp_name: str) -> str:
+    # "M1s (n=45)" -> "M1s"
+    return grp_name.split(" (")[0].strip()
+
+def _region_grid(region_name: str):
+    aliases = {"M1 Inf": "M1i", "M1 Sup": "M1s"}
+    target = aliases.get(region_name, region_name)
+    return UTAH_ELEC_GRIDS.get(target, None)
+
+def build_elec_to_data_idx(ua_ids_1based, nsp_to_elec):
+    """
+    Build electrode_id -> channel index mapping.
+    ua_ids_1based contains NSP IDs (1-256), we need to convert to electrode IDs.
+    """
+    if ua_ids_1based is None or nsp_to_elec is None:
+        return {}
+    
+    elec_to_idx = {}
+    for ch_idx, nsp_id in enumerate(ua_ids_1based):
+        nsp_id = int(nsp_id)
+        elec_id = nsp_to_elec.get(nsp_id, -1)
+        if elec_id > 0:
+            elec_to_idx[elec_id] = ch_idx
+    
+    return elec_to_idx
+
+
+# Define output directory from config
+NPRW_LFP_DIR = cfg.OUT_BASE / "checkpoints" / "NPRW_LFP"
+UA_LFP_DIR = cfg.OUT_BASE / "checkpoints" / "UA_LFP"
+
+# Probe Geometry Map for CSD
+PROBE_MAP_FILE = cfg.REPO_ROOT / "config" / "ImecPrimateStimRec128_BT_corrected_091525.mat"
+
+NPRW_FIG_DIR = cfg.OUT_BASE / "figures" / "NPRW_LFP"
+UA_FIG_DIR = cfg.OUT_BASE / "figures" / "UA_LFP"
+
+NPRW_FIG_DIR.mkdir(parents=True, exist_ok=True)
+UA_FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def get_representative_channel(data_array):
@@ -366,10 +463,16 @@ def compute_ersp_spectrogram(broadband_full, t_full_ms, fs, spec_cfg):
         spec_cfg: dict — see SPECTROGRAM SETTINGS REFERENCE above
     
     Returns:
-        ersp: (n_ch, n_freq_crop, n_time_crop) power in dB (baseline-normalized or absolute)
-        freqs: (n_freq_crop,) frequency axis
-        t_bins_ms: (n_time_crop,) time axis in ms
+        If return_power_trials is False:
+            ersp: (n_ch, n_freq_crop, n_time_crop) power in dB
+            freqs: (n_freq_crop,) frequency axis
+            t_bins_ms: (n_time_crop,) time axis in ms
+        If return_power_trials is True:
+            ersp, freqs, t_bins_ms, P (per-trial power)
+            NOTE: When return_power_trials=True, time is NOT cropped to time_range
+                  so that baseline normalization can be applied later.
     """
+    return_power_trials = spec_cfg.get('return_power_trials', False)
     nperseg = spec_cfg['stft_nperseg']
     noverlap = int(nperseg * spec_cfg['stft_overlap_frac'])
     window_type = spec_cfg.get('window_type', 'hann')
@@ -392,7 +495,7 @@ def compute_ersp_spectrogram(broadband_full, t_full_ms, fs, spec_cfg):
     #    t_full_ms[0] is the epoch start time (e.g. -500 ms)
     t_bins_ms = t_bins * 1000.0 + t_full_ms[0]
     
-    # 4. Compute baseline mask
+    # 4. Compute baseline mask (on FULL time axis, before any cropping)
     bl_win = spec_cfg.get('baseline_window', (None, 0))
     bl_start = bl_win[0] if bl_win[0] is not None else t_bins_ms[0]
     bl_end = bl_win[1] if bl_win[1] is not None else 0
@@ -403,7 +506,12 @@ def compute_ersp_spectrogram(broadband_full, t_full_ms, fs, spec_cfg):
         baseline_mask = np.zeros(len(t_bins_ms), dtype=bool)
         baseline_mask[:n_bl] = True
     
-    # 5. Normalize
+    # 5. Crop to requested frequency range (apply to all cases)
+    freq_mask = (f >= freq_min) & (f <= freq_max)
+    freqs = f[freq_mask]
+    P = P[:, :, freq_mask, :]  # Crop frequency dimension
+    
+    # 6. Normalize
     normalization = spec_cfg.get('normalization', 'baseline')
     
     with warnings.catch_warnings():
@@ -428,30 +536,394 @@ def compute_ersp_spectrogram(broadband_full, t_full_ms, fs, spec_cfg):
             baseline_power[baseline_power == 0] = 1e-10
             ersp = 10.0 * np.log10(P_mean / baseline_power[:, :, None])
     
-    # 6. Crop to requested frequency and time range
-    freq_mask = (f >= freq_min) & (f <= freq_max)
-    freqs = f[freq_mask]
-    ersp = ersp[:, freq_mask, :]
+    # 7. Handle time cropping differently based on return mode
+    if return_power_trials:
+        # Return UNCROPPED time axis and power for later processing
+        # Caller is responsible for cropping after baseline normalization
+        return ersp, freqs, t_bins_ms, P
+    else:
+        # Crop to requested time range for display
+        time_mask = (t_bins_ms >= t_range[0]) & (t_bins_ms <= t_range[1])
+        t_bins_ms_cropped = t_bins_ms[time_mask]
+        ersp_cropped = ersp[:, :, time_mask]
+        return ersp_cropped, freqs, t_bins_ms_cropped
+
+def extract_band_power_trials(P, f, band_name, baseline_mask):
+    """
+    Extracts per-trial band power over time and converts to dB relative to baseline.
+    P: (n_trials, n_ch, n_freq, n_time)
+    f: (n_freq,)
+    band_name: str
+    baseline_mask: (n_time,) bool
+    """
+    # Normalize band_name to match the bands dictionary (capitalize first letter)
+    band_name_normalized = band_name.lower()
     
-    time_mask = (t_bins_ms >= t_range[0]) & (t_bins_ms <= t_range[1])
-    t_bins_ms = t_bins_ms[time_mask]
-    ersp = ersp[:, :, time_mask]
+    # Create a lowercase lookup dictionary
+    bands_lower = {k.lower(): v for k, v in bands.items()}
     
-    return ersp, freqs, t_bins_ms
+    if band_name_normalized not in bands_lower:
+        print(f"  [WARN] Band '{band_name}' not found in bands dictionary. Available: {list(bands.keys())}")
+        return None
+    
+    freq_min, freq_max = bands_lower[band_name_normalized]
+    f_mask = (f >= freq_min) & (f <= freq_max)
+    
+    if not np.any(f_mask):
+        print(f"  [WARN] No frequencies in range ({freq_min}, {freq_max}) Hz for band '{band_name}'")
+        print(f"         Available frequencies: {f.min():.1f} to {f.max():.1f} Hz")
+        return None
+    
+    # print(f"  [DEBUG] Band '{band_name}': freq range ({freq_min}, {freq_max}) Hz, {np.sum(f_mask)} freq bins selected")
+    
+    # Average over frequency range: (n_trials, n_ch, n_time)
+    band_P = np.nanmean(P[:, :, f_mask, :], axis=2)
+    
+    # Baseline power per trial/channel: (n_trials, n_ch, 1)
+    if not np.any(baseline_mask):
+        # Fallback to first 25% of bins
+        n_bl = max(1, band_P.shape[2] // 4)
+        baseline_mask = np.zeros(band_P.shape[2], dtype=bool)
+        baseline_mask[:n_bl] = True
+    
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        bl_power = np.nanmean(band_P[:, :, baseline_mask], axis=2, keepdims=True)
+        bl_power[bl_power == 0] = 1e-10
+        
+        # Convert to dB relative to baseline
+        band_dB = 10.0 * np.log10(band_P / bl_power)
+    
+    # print(f"  [DEBUG] Band power extracted: shape {band_dB.shape}, range [{np.nanmin(band_dB):.2f}, {np.nanmax(band_dB):.2f}] dB")
+    
+    return band_dB
+
+def plot_band_overlays(band_dB, fs, t_ms, ua_ids_1based, session, fig_dir, config, groups, nsp_to_elec, ua_port):
+    # n_time = band_dB.shape[-1]
+    # implied_t = np.arange(n_time) / 1000 * 1000 - 1000.0
+    # print(f"  [DEBUG plot_band_overlays] band_dB shape: {band_dB.shape}, implied time: {implied_t.min():.1f} to {implied_t.max():.1f}")
+
+    band_name = config['band_plots']['selected_band']
+    vmin = config['band_plots']['heatmap_vmin']
+    vmax = config['band_plots']['heatmap_vmax']
+
+    overlay_dir = fig_dir / "Band_Power_Overlays"
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+
+    n_trials = band_dB.shape[0]
+
+    # print(f"debug n_trials: {n_trials}, n_ch: {band_dB.shape[1]}, n_time: {band_dB.shape[2]}")
+
+    # Build electrode_id -> channel_index mapping
+    elec_to_idx = build_elec_to_data_idx(ua_ids_1based, nsp_to_elec)
+
+    # print(f"\n  === CHANNEL MAPPING DIAGNOSTIC ({session}) ===")
+    # print(f"  Data shape: {band_dB.shape} (n_trials, n_ch, n_time)")
+    # print(f"  Total channels in data: {band_dB.shape[1]}")
+    # print(f"  UA Port: {ua_port}")
+    # print(f"  ua_ids_1based (NSP IDs): {list(ua_ids_1based)}")
+    # print(f"  nsp_to_elec mapping entries: {len(nsp_to_elec)}")
+    # print(f"  elec_to_idx mapping entries: {len(elec_to_idx)}")
+
+
+    # print(f"debug elec_to_idx: {list(elec_to_idx.items())[:10]}... (total {len(elec_to_idx)})")
+
+    for grp_idxs, grp_name in groups:
+        region_name = _region_from_group_name(grp_name)
+        grid_elec = _region_grid(region_name)
+
+        # print(f"debug Region '{region_name}': grid_elec is {'None' if grid_elec is None else 'found'}, grp_idxs len={len(grp_idxs)}")
+        if grid_elec is None or len(grp_idxs) == 0:
+            continue
+
+        safe_region = region_name.replace(' ', '_')
+
+        fig, axes = plt.subplots(8, 8, figsize=(24, 20), sharex=True, sharey=True)
+        fig.suptitle(
+            f"{session} — {region_name}\n{band_name.upper()} Trials (dB relative to baseline)",
+            fontsize=16
+        )
+
+        found_data = False
+        im = None
+
+        for r in range(8):
+            for c in range(8):
+                ax = axes[r, c]
+                elec_id = int(grid_elec[r, c])
+
+                # Get channel index for this electrode
+                idx = elec_to_idx.get(elec_id, None)
+
+                # print(f"  [DEBUG] Electrode {elec_id} at grid ({r},{c}): channel index in data = {idx}")
+
+                if idx is None:
+                    # Electrode not present in recording (bad channel or not connected)
+                    ax.set_facecolor('#fffafa')
+                    ax.text(0.5, 0.5, f"E{elec_id}\nN/A", ha='center', va='center',
+                            fontsize=6, alpha=0.3, transform=ax.transAxes)
+                else:
+                    # FIXED: No need to check if idx in grp_idxs!
+                    # The grid_elec already defines which electrodes belong to this region.
+                    # If elec_id is in grid_elec for this region, and we have data for it,
+                    # then we should plot it.
+                    
+                    # Validate index is within data bounds
+                    if 0 <= idx < band_dB.shape[1]:
+                        found_data = True
+                        ch_data = band_dB[:, idx, :]  # (n_trials, n_time)
+
+                        im = ax.imshow(
+                            ch_data, aspect='auto', origin='upper',
+                            extent=[t_ms[0], t_ms[-1], n_trials, 1],
+                            cmap='RdBu_r', vmin=vmin, vmax=vmax
+                        )
+                        ax.axvline(0, color='k', linestyle='--', alpha=0.5, lw=0.5)
+
+                        nsp_id = int(ua_ids_1based[idx])
+                        ax.set_title(f"E{elec_id} (NSP{nsp_id})", fontsize=7)
+
+                ax.tick_params(labelsize=6)
+                if r == 7:
+                    ax.set_xlabel("ms", fontsize=6)
+                if c == 0:
+                    ax.set_ylabel("Trial", fontsize=6)
+
+        if not found_data:
+            plt.close(fig)
+            continue
+
+        fig.subplots_adjust(right=0.9, top=0.92, bottom=0.05, left=0.05, wspace=0.1, hspace=0.3)
+        if im is not None:
+            cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+            fig.colorbar(im, cax=cbar_ax, label="dB")
+
+        out_path = overlay_dir / f"band_overlay_{band_name}_{session}_{safe_region}.png"
+        plt.savefig(out_path, dpi=100)
+        plt.close(fig)
+        print(f"    Saved band overlay -> {out_path.name}")
+
+def render_spatial_grid(ax, mean_band_dB, t_bin_idx, grid_elec, elec_to_idx, vmin, vmax, smoothing=False):
+    """
+    Renders a spatial grid onto an axis, optionally with smoothing (interpolation).
+    """
+    grid = np.full((8, 8), np.nan)
+    points = []
+    values = []
+    
+    for r in range(8):
+        for c in range(8):
+            elec_id = int(grid_elec[r, c])
+            idx = elec_to_idx.get(elec_id, None)
+            if idx is not None and 0 <= idx < mean_band_dB.shape[0]:
+                val = mean_band_dB[idx, t_bin_idx]
+                grid[r, c] = val
+                if not np.isnan(val):
+                    points.append((r, c))
+                    values.append(val)
+
+    if smoothing and len(points) >= 4:
+        # Diffusion-based smoothing (Laplace equation solver)
+        # We start with the 8x8 grid, keep known points fixed, and "diffuse" values into NaNs.
+        filled_grid = np.copy(grid)
+        mask = np.isnan(filled_grid)
+        
+        # Initial guess for NaNs: Mean of all known points
+        if len(values) > 0:
+            filled_grid[mask] = np.nanmean(np.asarray(values))
+        
+        # Iterative solver (Laplace/Jacobi method)
+        # Known points (mask == False) are "Dirichlet" boundaries - they stay fixed.
+        for _ in range(10):
+            prev_grid = np.copy(filled_grid)
+            # 4-point adjacency average
+            for r in range(8):
+                for c in range(8):
+                    if mask[r, c]: # Only update if it's a "missing" channel
+                        neighbors = []
+                        if r > 0: neighbors.append(prev_grid[r-1, c])
+                        if r < 7: neighbors.append(prev_grid[r+1, c])
+                        if c > 0: neighbors.append(prev_grid[r, c-1])
+                        if c < 7: neighbors.append(prev_grid[r, c+1])
+                        if neighbors:
+                            filled_grid[r, c] = np.nanmean(np.asarray(neighbors))
+        
+        # Plot the 8x8 result with bicubic interpolation on top for high-res look
+        im = ax.imshow(filled_grid, cmap='RdBu_r', vmin=vmin, vmax=vmax, 
+                       origin='upper', aspect='equal', interpolation='bicubic')
+    else:
+        # Plot blocky
+        im = ax.imshow(grid, cmap='RdBu_r', vmin=vmin, vmax=vmax, 
+                       origin='upper', aspect='equal')
+    
+    return im
+
+def plot_spatial_heatmaps(band_dB, t_ms, ua_ids_1based, session, fig_dir, config, groups, nsp_to_elec, ua_port):
+    band_name = config['band_plots']['selected_band']
+    time_pts = config['band_plots']['time_points_ms']
+    vmin = config['band_plots']['heatmap_vmin']
+    vmax = config['band_plots']['heatmap_vmax']
+
+    heatmap_dir = fig_dir / "Spatial_Heatmaps"
+    heatmap_dir.mkdir(parents=True, exist_ok=True)
+
+    n_trials = band_dB.shape[0]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        mean_band_dB = np.nanmean(band_dB, axis=0)  # (n_ch, n_time)
+
+    elec_to_idx = build_elec_to_data_idx(ua_ids_1based, nsp_to_elec)
+
+    # print(f"    [DEBUG] elec_to_idx has {len(elec_to_idx)} entries")
+    # print(f"    [DEBUG] ua_ids_1based: {ua_ids_1based[:10] if len(ua_ids_1based) > 10 else ua_ids_1based}...")
+    # print(f"    [DEBUG] nsp_to_elec sample: {dict(list(nsp_to_elec.items())[:5]) if nsp_to_elec else 'None'}")
+    # print(f"    [DEBUG] groups: {[(len(g), n) for g, n in groups]}")
+
+
+    for grp_idxs, grp_name in groups:
+        region_name = _region_from_group_name(grp_name)
+        grid_elec = _region_grid(region_name)
+
+        print(f"    [DEBUG] Region '{region_name}': grid_elec is {'None' if grid_elec is None else 'found'}, grp_idxs len={len(grp_idxs)}")
+
+        if grid_elec is None or len(grp_idxs) == 0:
+            continue
+        safe_region = region_name.replace(' ', '_')
+
+        # Generate both Blocky and Smoothed versions
+        render_modes = [('blocky', False), ('smoothed', True)]
+        
+        for mode_label, use_smoothing in render_modes:
+            fig, axes = plt.subplots(1, len(time_pts), figsize=(3.5 * len(time_pts), 4))
+            if len(time_pts) == 1:
+                axes = [axes]
+            fig.suptitle(
+                f"{session} — {region_name} ({mode_label.capitalize()})\n"
+                f"{band_name.upper()} Spatial Heatmap — Mean of {n_trials} Trials (dB rel. baseline)",
+                fontsize=14
+            )
+
+            found_data = False
+            im = None
+
+            for t_idx, t_target in enumerate(time_pts):
+                ax = axes[t_idx]
+                t_bin_idx = int(np.argmin(np.abs(t_ms - t_target)))
+                t_actual = float(t_ms[t_bin_idx])
+
+                im = render_spatial_grid(ax, mean_band_dB, t_bin_idx, grid_elec, elec_to_idx, vmin, vmax, smoothing=use_smoothing)
+                
+                # If we rendered anything, mark found_data
+                if im is not None:
+                    found_data = True
+
+                ax.set_title(f"T = {t_actual:.0f} ms", fontsize=11)
+                ax.set_xticks(np.arange(8))
+                ax.set_yticks(np.arange(8))
+                ax.set_xticklabels(np.arange(1, 9), fontsize=7)  # 1-indexed columns
+                ax.set_yticklabels(np.arange(1, 9), fontsize=7)  # 1-indexed rows
+                if t_idx == 0:
+                    ax.set_ylabel("Row", fontsize=9)
+                ax.set_xlabel("Col", fontsize=8)
+
+            if not found_data:
+                plt.close(fig)
+                continue
+
+            fig.subplots_adjust(right=0.92, top=0.85, bottom=0.15, left=0.05, wspace=0.3)
+            if im is not None:
+                cbar_ax = fig.add_axes([0.94, 0.25, 0.01, 0.5])
+                fig.colorbar(im, cax=cbar_ax, label="dB")
+
+            out_path = heatmap_dir / f"spatial_heatmap_{band_name}_{session}_{safe_region}_{mode_label}.png"
+            plt.savefig(out_path, dpi=120)
+            plt.close(fig)
+            print(f"    Saved spatial heatmap -> {out_path.name}")
+
+def generate_spatial_gif(band_dB, t_ms, ua_ids_1based, session, fig_dir, config, groups, nsp_to_elec, ua_port):
+    """
+    Generate an animated GIF of the spatial heatmap over time.
+    """
+    band_name = config['band_plots']['selected_band']
+    gif_cfg = config['band_plots']
+    t_start, t_end = gif_cfg.get('gif_time_range', (-500, 500))
+    t_step = gif_cfg.get('gif_step_ms', 10)
+    vmin = gif_cfg['heatmap_vmin']
+    vmax = gif_cfg['heatmap_vmax']
+
+    heatmap_dir = fig_dir / "Spatial_Heatmaps"
+    heatmap_dir.mkdir(parents=True, exist_ok=True)
+
+    n_trials = band_dB.shape[0]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        mean_band_dB = np.nanmean(band_dB, axis=0)  # (n_ch, n_time)
+
+    elec_to_idx = build_elec_to_data_idx(ua_ids_1based, nsp_to_elec)
+    
+    # Define time points for GIF frames
+    gif_time_pts = np.arange(t_start, t_end + t_step, t_step)
+    
+    for grp_idxs, grp_name in groups:
+        region_name = _region_from_group_name(grp_name)
+        grid_elec = _region_grid(region_name)
+
+        if grid_elec is None or len(grp_idxs) == 0:
+            continue
+
+        safe_region = region_name.replace(' ', '_')
+        
+        # Generate both Blocky and Smoothed GIF
+        render_modes = [('blocky', False), ('smoothed', True)]
+        
+        for mode_label, use_smoothing in render_modes:
+            frames = []
+            print(f"    Generating GIF ({mode_label}) for {region_name} ({len(gif_time_pts)} frames)...")
+            
+            # Create a single figure and reuse it for frames to save time/memory
+            fig, ax = plt.subplots(figsize=(6, 5))
+            
+            for t_target in gif_time_pts:
+                t_bin_idx = int(np.argmin(np.abs(t_ms - t_target)))
+                t_actual = float(t_ms[t_bin_idx])
+                
+                # Skip if we are outside the actual data range
+                if t_actual < t_ms[0] or t_actual > t_ms[-1]:
+                    continue
+
+                ax.clear()
+                im = render_spatial_grid(ax, mean_band_dB, t_bin_idx, grid_elec, elec_to_idx, vmin, vmax, smoothing=use_smoothing)
+                
+                ax.set_title(f"{region_name} | {band_name.upper()} ({mode_label.capitalize()})\nT = {t_actual:.0f} ms", fontsize=12)
+                ax.set_xticks(np.arange(8))
+                ax.set_yticks(np.arange(8))
+                ax.set_xticklabels(np.arange(1, 9), fontsize=8)
+                ax.set_yticklabels(np.arange(1, 9), fontsize=8)
+                ax.set_ylabel("Row", fontsize=10)
+                ax.set_xlabel("Col", fontsize=10)
+                
+                # Add colorbar only once or handle it carefully
+                if not fig.axes[1:]:# If no colorbar exists
+                    fig.colorbar(im, ax=ax, label="dB")
+
+                # Convert plot to image array
+                buf = io.BytesIO()
+                plt.savefig(buf, format='png', dpi=80)
+                buf.seek(0)
+                frames.append(imageio.v3.imread(buf))
+
+            plt.close(fig)
+
+            if frames:
+                out_path = heatmap_dir / f"spatial_heatmap_{band_name}_{session}_{safe_region}_{mode_label}.gif"
+                imageio.mimsave(out_path, frames, fps=10)
+                print(f"    Saved spatial GIF -> {out_path.name}")
 
 def calculate_band_power_stats(data_pre, data_post, fs):
     """
     Compare band power between Pre and Post using Paired T-Test.
     Returns: Dict of results per band
     """
-    bands = {
-        'Delta': (1, 4),
-        'Theta': (4, 8),
-        'Alpha': (8, 12), # Match analyze_lfp_bands range
-        'Beta': (12, 25),
-        'Low Gamma': (25, 60),
-        'High Gamma': (60, 120)
-    }
     
     results = {}
     
@@ -591,7 +1063,8 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
         return
 
     # Find latest aligned file
-    files = sorted(lfp_dir.glob("aligned_lfp__*.npz"))
+    # Use rglob to find pre-segmented target-specific files in subdirectories
+    files = sorted(lfp_dir.rglob("aligned_lfp__*.npz"))
     if not files:
         print(f"No aligned LFP npz files found in {lfp_dir}")
         return
@@ -643,6 +1116,13 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
         
         try:
             data = np.load(npz_file, allow_pickle=True)
+
+            # # DEBUG: Check actual time ranges
+            # print(f"  [DEBUG] rel_time_pre range: {data['rel_time_pre'].min():.1f} to {data['rel_time_pre'].max():.1f} ms")
+            # print(f"  [DEBUG] rel_time_post range: {data['rel_time_post'].min():.1f} to {data['rel_time_post'].max():.1f} ms")
+            # if 'broadband_full' in data:
+            #     t_full = np.arange(data['broadband_full'].shape[2]) / data['fs_lfp'] * 1000 - 1000
+            #     print(f"  [DEBUG] broadband_full implied time: {t_full.min():.1f} to {t_full.max():.1f} ms")
         except Exception as e:
             print(f"Error loading {npz_file}: {e}")
             continue
@@ -662,9 +1142,24 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                  print(f"  [Skip] Missing broadband_post in {npz_file.name}")
                  continue
         
-        # Session Name
+        # Session Name and Category/Target Info
         if 'session' in data: session = str(data['session'])
         else: session = npz_file.stem.replace("aligned_lfp__", "")
+        
+        category = data.get('category', 'unknown')
+        target = data.get('target', 'none')
+        
+        # Determine unique session/target identifier for filenames
+        target_suffix = f"_{category}"
+        if target and target != 'none':
+            target_suffix += f"_target_{target}"
+        
+        # Update session for unique artifacts
+        session_id = f"{session}{target_suffix}"
+        
+        # update display label
+        disp_cat = str(category).replace("_", " ").title()
+        disp_target = f" - Target {target}" if target and target != 'none' else ""
         
         # --- Detect Baseline Files ---
         is_baseline = "baseline" in npz_file.stem
@@ -766,10 +1261,10 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
 
         # Title Construction
         if is_baseline:
-            title_str = f"Baseline | Port {baseline_port} | Depth {baseline_depth} mm"
-            session = f"Baseline_Depth_{baseline_depth}_port_{baseline_port}"  # For filename
+            title_str = f"Baseline | Port {baseline_port} | Depth {baseline_depth} mm | {disp_target}"
+            session = f"Baseline_Depth_{baseline_depth}_port_{baseline_port}"  # Base for filename
         else:
-            title_str = f"Stim: {active_str} | {freq_str} {amp_str}"
+            title_str = f"{label} | {session}\n{disp_cat}{disp_target} | {active_str} @ {freq_str} Hz {amp_str}"
         
         # --- Pick Representative Channel ---
         rep_ch_idx = get_representative_channel(data.get('broadband_post'))
@@ -807,47 +1302,47 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             except Exception as e:
                 print(f"  [Warn] Failed to lookup metadata for port/intan_session: {e}")
 
-            # 2. Load Mapping from Excel
+            # 2. Use Mapping from CSV
+            nsp_to_elec = None  # Initialize to prevent scope issues
             try:
-                xls_path = br_preproc.ua_excel_path(cfg.REPO_ROOT, cfg.PARAMS.probes)
-                mapped_nsp = br_preproc.load_UA_mapping_from_excel(xls_path) # index=elec-1, val=nsp_id
-                
-                # Build Inverse Map: NSP_ID -> Elec_ID
-                nsp_to_elec = {int(nsp): i+1 for i, nsp in enumerate(mapped_nsp) if nsp > 0}
-                
-                # 3. Map Channels to Regions
-                offset = 128 if ua_port == 'B' else 0
-                print(f"  [Info] Utah Array Port: {ua_port} (Offset: {offset})")
-                
-                sma_idxs, pmd_idxs, m1i_idxs, m1s_idxs = [], [], [], []
-                
-                for ch_idx in range(n_ch):
-                    curr_nsp = ch_idx + 1 + offset
-                    elec_id = nsp_to_elec.get(curr_nsp, -1)
-                    
-                    # Skip bad impedance channels
-                    if curr_nsp in bad_ua_ids:
-                        continue
-                    
-                    if elec_id > 0:
-                        if elec_id <= 64: sma_idxs.append(ch_idx)
-                        elif elec_id <= 128: pmd_idxs.append(ch_idx)
-                        elif elec_id <= 192: m1i_idxs.append(ch_idx)
-                        elif elec_id <= 256: m1s_idxs.append(ch_idx)
-                
-                if sma_idxs: groups.append((sma_idxs, f"SMA (n={len(sma_idxs)})"))
-                if pmd_idxs: groups.append((pmd_idxs, f"PMd (n={len(pmd_idxs)})"))
-                if m1i_idxs: groups.append((m1i_idxs, f"M1 Inf (n={len(m1i_idxs)})"))
-                if m1s_idxs: groups.append((m1s_idxs, f"M1 Sup (n={len(m1s_idxs)})"))
-                
-                print(f"  [Info] Region mapping: SMA={len(sma_idxs)}, PMd={len(pmd_idxs)}, M1i={len(m1i_idxs)}, M1s={len(m1s_idxs)} channels")
-                
-                if not groups:
-                    print(f"  [Warn] No valid channel mappings found for Port {ua_port}. Check Excel map.")
-                    is_utah = False
+                # Use the globally loaded mappings from CSV
+                nsp_to_elec = nsp_to_elec_global
+                elec_to_region = elec_to_region_global
 
+                ua_ids_1based = data.get('ua_ids_1based')  # IMPORTANT: real NSP ids per channel index
+
+                if ua_ids_1based is None:
+                    print("  [Warn] ua_ids_1based missing; cannot do correct Utah grouping.")
+                    is_utah = False
+                else:
+                    sma_idxs, pmd_idxs, m1i_idxs, m1s_idxs = [], [], [], []
+
+                    for ch_idx in range(n_ch):
+                        nsp_id = int(ua_ids_1based[ch_idx])  # Get NSP ID
+                        elec_id = nsp_to_elec.get(nsp_id, -1)  # Look up electrode ID
+
+                        if elec_id < 1:
+                            continue
+
+                        region = elec_to_region.get(elec_id)
+                        if region == "SMA":
+                            sma_idxs.append(ch_idx)
+                        elif region == "PMd":
+                            pmd_idxs.append(ch_idx)
+                        elif region in ["M1i", "M1 Inf"]:
+                            m1i_idxs.append(ch_idx)
+                        elif region in ["M1s", "M1 Sup"]:
+                            m1s_idxs.append(ch_idx)
+
+                    groups = []
+                    if sma_idxs: groups.append((sma_idxs, f"SMA (n={len(sma_idxs)})"))
+                    if pmd_idxs: groups.append((pmd_idxs, f"PMd (n={len(pmd_idxs)})"))
+                    if m1i_idxs: groups.append((m1i_idxs, f"M1i (n={len(m1i_idxs)})"))
+                    if m1s_idxs: groups.append((m1s_idxs, f"M1s (n={len(m1s_idxs)})"))
+
+                    print(f"  [Info] Region mapping (UA): SMA={len(sma_idxs)}, PMd={len(pmd_idxs)}, M1i={len(m1i_idxs)}, M1s={len(m1s_idxs)}")
             except Exception as e:
-                print(f"  [Warn] Failed to load/apply Excel mapping: {e}. Fallback to linear blocks.")
+                print(f"  [Warn] Failed to apply CSV mapping: {e}. Fallback to linear blocks.")
                 is_utah = False
 
         if not is_utah:
@@ -861,7 +1356,22 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                     grp_chs = [c for c in range(start, actual_end) if c not in bad_nprw_ids]
                     if grp_chs:
                         groups.append((grp_chs, f"Ch {start}-{actual_end-1}"))
+        if is_baseline:
+            title_str = f"Baseline | Port {baseline_port} | Depth {baseline_depth} mm"
+            session = f"Baseline_Depth_{baseline_depth}_port_{baseline_port}"  # For filename
+        else:
+            title_str = f"Stim: {active_str} | {freq_str} {amp_str}"
+            # Include port in session name if utah array
+            if label == "Utah_Array":
+                # Need to determine port first... (happens below)
+                pass 
+
         session = session.replace('.ns6', '')
+        # Ensure session_id is used for all saved figures to avoid overwriting
+        # but keep 'session' for display/legacy if needed.
+        # Note: if is_baseline, we might want to update session_id to include baseline specific tags
+        if is_baseline:
+             session_id = f"{session}{target_suffix}"
         # --- 1. Original Plot (Heatmaps + Traces) ---
         if FIGURE_CONFIG.get('process_original', True):
             print("  Generating Original Heatmap/Trace Plots...")
@@ -898,7 +1408,13 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 n_grp_ch = len(grp_idxs)
                 if n_grp_ch == 0: continue
                 
-                grp_fig_dir = fig_dir / safe_name if is_utah else fig_dir
+                # Use category/target subdirectories for figure organization
+                grp_fig_dir = fig_dir / category
+                if target and target != 'none':
+                    grp_fig_dir = grp_fig_dir / target
+                if is_utah:
+                    grp_fig_dir = grp_fig_dir / safe_name
+                
                 grp_fig_dir.mkdir(parents=True, exist_ok=True)
                 
                 n_rows = len(bands)
@@ -1087,7 +1603,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                         if PLOT_CONFIG['x_limits']['post'] is not None: ax.set_xlim(PLOT_CONFIG['x_limits']['post'])
                         elif t_post is not None: ax.set_xlim(t_post[0], t_post[-1])
 
-                out_path = grp_fig_dir / f"check_lfp_heatmap_{session}.png" if not is_utah else grp_fig_dir / f"check_lfp_heatmap_{safe_name}_{session}.png"
+                out_path = grp_fig_dir / f"check_lfp_heatmap_{session_id}.png" if not is_utah else grp_fig_dir / f"check_lfp_heatmap_{safe_name}_{session_id}.png"
                 try:
                      plt.savefig(out_path, dpi=150)
                      print(f"  Saved plot to {out_path}")
@@ -1103,13 +1619,28 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             if is_utah:
                 ua_ids = data.get('ua_ids_1based')
                 if ua_ids is not None:
-                    # Find the index where ua_ids == target_ch
-                    idx_arr = np.where(ua_ids == target_ch)[0]
-                    if len(idx_arr) > 0:
-                        ch_idx = int(idx_arr[0])
-                        print(f"  [Single Ch] Found target mapped channel {target_ch} at internal index {ch_idx}.")
+                    # Treat target_ch as ElectrodeID and find its NSP ID
+                    # nsp_to_elec is {nsp: elec}, we need {elec: nsp}
+                    elec_to_nsp = {v: k for k, v in nsp_to_elec.items()}
+                    target_nsp = elec_to_nsp.get(target_ch)
+                    
+                    if target_nsp is not None:
+                        # Find the index where ua_ids == target_nsp
+                        idx_arr = np.where(ua_ids == target_nsp)[0]
+                        if len(idx_arr) > 0:
+                            ch_idx = int(idx_arr[0])
+                            print(f"  [Single Ch] Found Electrode {target_ch} (NSP {target_nsp}) at internal index {ch_idx}.")
+                        else:
+                            print(f"  [Single Ch] Warning: NSP {target_nsp} (Electrode {target_ch}) not found in this recording.")
                     else:
-                        print(f"  [Single Ch] Warning: Channel {target_ch} not found in this dataset mapping.")
+                        # Fallback: maybe target_ch was already an NSP ID? 
+                        # Or just warn that electrode ID is unrecognized.
+                        idx_arr = np.where(ua_ids == target_ch)[0]
+                        if len(idx_arr) > 0:
+                            ch_idx = int(idx_arr[0])
+                            print(f"  [Single Ch] Warning: Electrode {target_ch} not in mapping CSV. Using as NSP ID: found at index {ch_idx}.")
+                        else:
+                             print(f"  [Single Ch] Warning: Channel {target_ch} not found in mapping or data.")
             else:
                 # Direct indexing for NPRW
                 if 0 <= target_ch < n_ch:
@@ -1124,7 +1655,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 
                 fig_sc, axes_sc = plt.subplots(n_rows, 1, figsize=(10, 2 * n_rows), constrained_layout=True)
                 if n_rows == 1: axes_sc = [axes_sc]
-                fig_sc.suptitle(f"{session} | Channel {target_ch}\n(N={n_trials} trials)", fontsize=14)
+                fig_sc.suptitle(f"{session_id} | Channel {target_ch}\n(N={n_trials} trials)", fontsize=14)
                 
                 for i, band in enumerate(bands):
                     d_pre = data.get(f"{band}_pre")
@@ -1218,9 +1749,9 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 if is_utah:
                     comb_dir = fig_dir / "Combined_Analysis"
                     comb_dir.mkdir(parents=True, exist_ok=True)
-                    out_path_sc = comb_dir / f"check_lfp_single_ch{target_ch}_{session}.png"
+                    out_path_sc = comb_dir / f"check_lfp_single_ch{target_ch}_{session_id}.png"
                 else:
-                    out_path_sc = fig_dir / f"check_lfp_single_ch{target_ch}_{session}.png"
+                    out_path_sc = fig_dir / f"check_lfp_single_ch{target_ch}_{session_id}.png"
                 try:
                     plt.savefig(out_path_sc, dpi=150)
                     print(f"  Saved single channel plot to {out_path_sc}")
@@ -1243,7 +1774,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             print("  Generating Grouped Power Spectra...")
             # Dynamic Grid
             fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, constrained_layout=True)
-            fig.suptitle(f"{session} - Power Spectra (Group Mean ± SEM)\n{title_str}", fontsize=14)
+            fig.suptitle(f"{session_id} - Power Spectra (Group Mean ± SEM)\n{title_str}", fontsize=14)
             axes_flat = axes.flatten()
             
             # Pre-calculate to avoid redundant calls if possible, but simplicity first.
@@ -1295,15 +1826,15 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             if is_utah:
                 comb_dir = fig_dir / "Combined_Analysis"
                 comb_dir.mkdir(parents=True, exist_ok=True)
-                plt.savefig(comb_dir / f"check_lfp_psd_grouped_{session}.png", dpi=150)
+                plt.savefig(comb_dir / f"check_lfp_psd_grouped_{session_id}.png", dpi=150)
             else:
-                plt.savefig(fig_dir / f"check_lfp_psd_grouped_{session}.png", dpi=150)
+                plt.savefig(fig_dir / f"check_lfp_psd_grouped_{session_id}.png", dpi=150)
             plt.close(fig)
 
             # --- 2b. PSD Ratio (Pre vs Post) ---
             print("  Generating Grouped PSD Ratio...")
             fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, constrained_layout=True)
-            fig.suptitle(f"{session} - PSD Ratio 10*log10(Post/Pre)\n{title_str}", fontsize=14)
+            fig.suptitle(f"{session_id} - PSD Ratio 10*log10(Post/Pre)\n{title_str}", fontsize=14)
             axes_flat = axes.flatten()
 
             # Pre-calculate Global Min/Max for Ratio
@@ -1360,9 +1891,9 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             if is_utah:
                 comb_dir = fig_dir / "Combined_Analysis"
                 comb_dir.mkdir(parents=True, exist_ok=True)
-                plt.savefig(comb_dir / f"check_lfp_psd_ratio_{session}.png", dpi=150)
+                plt.savefig(comb_dir / f"check_lfp_psd_ratio_{session_id}.png", dpi=150)
             else:
-                plt.savefig(fig_dir / f"check_lfp_psd_ratio_{session}.png", dpi=150)
+                plt.savefig(fig_dir / f"check_lfp_psd_ratio_{session_id}.png", dpi=150)
             plt.close(fig)
 
         # --- 3. Power vs Time (All Arrays Overlaid per Band) ---
@@ -1453,7 +1984,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                                                   constrained_layout=True)
                 if n_pvt_bands == 1:
                     axes_pvt = [axes_pvt]
-                fig_pvt.suptitle(f"{session} - Band Power vs Time ({pvt_label})\n{title_str}", fontsize=14)
+                fig_pvt.suptitle(f"{session_id} - Band Power vs Time ({pvt_label})\n{title_str}", fontsize=14)
 
                 array_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
 
@@ -1543,7 +2074,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
 
                 comb_dir = fig_dir / "Combined_Analysis"
                 comb_dir.mkdir(parents=True, exist_ok=True)
-                plt.savefig(comb_dir / f"check_lfp_power_vs_time_{session}.png", dpi=150)
+                plt.savefig(comb_dir / f"check_lfp_power_vs_time_{session_id}.png", dpi=150)
                 plt.close(fig_pvt)
 
         # --- 3b. Inter-Array Coherence (4x4 Grid, Utah Only) ---
@@ -1571,7 +2102,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 
                 fig_coh, axes_coh = plt.subplots(n_grps, n_grps, figsize=(4 * n_grps, 3.5 * n_grps),
                                                   constrained_layout=True)
-                fig_coh.suptitle(f"{session} - Inter-Array Coherence ({t_label})\n{title_str}", fontsize=14)
+                fig_coh.suptitle(f"{session_id} - Inter-Array Coherence ({t_label})\n{title_str}", fontsize=14)
                 
                 # If only 2 groups, axes_coh might be 1D; ensure 2D
                 if n_grps == 1:
@@ -1644,14 +2175,14 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 
                 comb_dir = fig_dir / "Combined_Analysis"
                 comb_dir.mkdir(parents=True, exist_ok=True)
-                plt.savefig(comb_dir / f"check_lfp_inter_array_coherence_{session}.png", dpi=150)
+                plt.savefig(comb_dir / f"check_lfp_inter_array_coherence_{session_id}.png", dpi=150)
                 plt.close(fig_coh)
 
         # --- 4. Time-Frequency ITPC (Grouped 4x2) ---
         if FIGURE_CONFIG.get('process_phase_coherence', False):
             print("  Generating Grouped T-F ITPC...")
             fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, constrained_layout=True)
-            fig.suptitle(f"{session} - T-F ITPC (Post-Stim Group Mean)\n{title_str}", fontsize=14)
+            fig.suptitle(f"{session_id} - T-F ITPC (Post-Stim Group Mean)\n{title_str}", fontsize=14)
             axes_flat = axes.flatten()
 
             # Using Post-Stim for event response
@@ -1686,7 +2217,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                     if i >= 6: ax.set_xlabel("Time (ms)")
                     if i % 2 == 0: ax.set_ylabel("Freq (Hz)")
 
-            out_path = fig_dir / f"check_lfp_itpc_grouped_{session}.png"
+            out_path = fig_dir / f"check_lfp_itpc_grouped_{session_id}.png"
             plt.savefig(out_path, dpi=150)
             plt.close(fig)
 
@@ -1694,7 +2225,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
         if FIGURE_CONFIG.get('process_ersp', False):
             print("  Generating Grouped ERSP...")
             fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, constrained_layout=True)
-            fig.suptitle(f"{session} - ERSP (dB vs Pre-Stim Baseline)\n{title_str}", fontsize=14)
+            fig.suptitle(f"{session_id} - ERSP (dB vs Pre-Stim Baseline)\n{title_str}", fontsize=14)
             axes_flat = axes.flatten()
 
             if bb_pre is not None and bb_post is not None:
@@ -1733,7 +2264,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             for j in range(len(groups), len(axes_flat)):
                 axes_flat[j].axis('off')
 
-            out_path = fig_dir / f"check_lfp_ersp_grouped_{session}.png"
+            out_path = fig_dir / f"check_lfp_ersp_grouped_{session_id}.png"
             plt.savefig(out_path, dpi=150)
             plt.close(fig)
 
@@ -1741,7 +2272,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
         if FIGURE_CONFIG.get('process_band_stats', False):
             print("  Generating Band Power Stats...")
             fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, constrained_layout=True)
-            fig.suptitle(f"{session} - Band Power Change (Pre vs Post)\n{title_str}", fontsize=14)
+            fig.suptitle(f"{session_id} - Band Power Change (Pre vs Post)\n{title_str}", fontsize=14)
             axes_flat = axes.flatten()
             
             if bb_pre is not None and bb_post is not None:
@@ -1852,9 +2383,9 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             if is_utah:
                 comb_dir = fig_dir / "Combined_Analysis"
                 comb_dir.mkdir(parents=True, exist_ok=True)
-                plt.savefig(comb_dir / f"check_lfp_band_stats_{session}.png", dpi=150)
+                plt.savefig(comb_dir / f"check_lfp_band_stats_{session_id}.png", dpi=150)
             else:
-                plt.savefig(fig_dir / f"check_lfp_band_stats_{session}.png", dpi=150)
+                plt.savefig(fig_dir / f"check_lfp_band_stats_{session_id}.png", dpi=150)
             plt.close(fig)
 
         # --- 7. CSD Analysis (NPRW Only) ---
@@ -1913,7 +2444,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 if csd_val is not None:
                     # Plot CSD Heatmap
                     fig_csd, ax_csd = plt.subplots(figsize=(10, 6), constrained_layout=True)
-                    fig_csd.suptitle(f"{session} - CSD (Current Source Density)\n{title_str}", fontsize=14)
+                    fig_csd.suptitle(f"{session_id} - CSD (Current Source Density)\n{title_str}", fontsize=14)
                     
                     # Plot with pcolormesh
                     # Use symmetric colormap
@@ -1935,11 +2466,11 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                     cb = plt.colorbar(mesh, ax=ax_csd)
                     cb.set_label("CSD (uV/mm^2)")
                     
-                    out_path = fig_dir / f"check_lfp_csd_{session}.png"
+                    out_path = fig_dir / f"check_lfp_csd_{session_id}.png"
                     plt.savefig(out_path, dpi=150)
                     plt.close(fig_csd)
 
-        # --- 7. Per-Channel ERSP Spectrograms (Utah Only) ---
+        # --- 8. Per-Channel ERSP Spectrograms (Utah Only) ---
         if FIGURE_CONFIG.get('process_spectrograms', False) and is_utah:
             print("  Generating Per-Channel ERSP Spectrograms...")
             
@@ -1989,13 +2520,12 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                         fig_sg, axes_sg = plt.subplots(
                             n_grp_ch, 1, figsize=(10, fig_h),
                             sharex=True, sharey=True,
-                            layout='tight'
                         )
                         if n_grp_ch == 1:
                             axes_sg = [axes_sg]
                         
                         fig_sg.suptitle(
-                            f"{session} — {safe_name}\n{title_str}\n"
+                            f"{session_id} — {safe_name}\n{title_str}\n"
                             f"ERSP Spectrogram (N={n_trials} trials)",
                             fontsize=13
                         )
@@ -2016,28 +2546,27 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                             ax.axvline(0, color='white', linewidth=0.8,
                                        linestyle='--', alpha=0.8)
                             
-                            # Log frequency scale
                             if spec_cfg.get('log_freq', False):
                                 ax.set_yscale('log')
                                 ax.set_ylim(max(spec_cfg.get('freq_min', 1), 1), spec_cfg['freq_max'])
                             
-                            # Channel label
-                            nsp_id = ch_idx + 1 + (128 if ua_port == 'B' else 0)
-                            ax.set_ylabel(f"Ch {nsp_id}\nFreq (Hz)", fontsize=7)
+                            if ua_ids_1based is not None:
+                                nsp_id = int(ua_ids_1based[ch_idx])
+                            else:
+                                nsp_id = ch_idx + 1 + (128 if ua_port == 'B' else 0)
+                            
+                            ax.set_ylabel(f"NSP {nsp_id}\nFreq (Hz)", fontsize=7)
                             ax.tick_params(labelsize=6)
                             
                             if ax_i < n_grp_ch - 1:
                                 ax.set_xlabel('')
                         
-                        # Bottom axis label
                         axes_sg[-1].set_xlabel("Time (ms)", fontsize=9)
-                        
-                        # Shared colorbar
                         cb = fig_sg.colorbar(im, ax=axes_sg, fraction=0.02,
                                              pad=0.02, label="Power (dB)")
                         cb.ax.tick_params(labelsize=7)
                         
-                        out_path = spec_fig_dir / f"spectrogram__{session}__{safe_name}.png"
+                        out_path = spec_fig_dir / f"spectrogram__{session_id}__{safe_name}.png"
                         fig_dpi = spec_cfg.get('dpi', 150)
                         plt.savefig(out_path, dpi=fig_dpi)
                         plt.close(fig_sg)
@@ -2045,6 +2574,111 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                     
                     del ersp_all
 
+        # --- 9. Band Overlays & Spatial Heatmaps (Utah Only) ---
+        if is_utah and (FIGURE_CONFIG.get('process_band_overlays', False) or FIGURE_CONFIG.get('process_spatial_heatmaps', False)):
+            d_bb_full = data.get('broadband_full')
+            ua_ids_1based = data.get('ua_ids_1based')
+
+            if d_bb_full is not None and ua_ids_1based is not None and len(groups) > 0:
+                print("  Generating Advanced Utah Array Visualization (Overlays/Heatmaps)...")
+                
+                # Reconstruct time axis for broadband_full
+                t_pre_arr = data.get('rel_time_pre')
+                t_post_arr = data.get('rel_time_post')
+
+                # print(f"t_pre_arr: {t_pre_arr}")
+                # print(f"t_post_arr: {t_post_arr}")
+                if t_pre_arr is not None and t_post_arr is not None:
+                    t_full_ms = np.linspace(t_pre_arr[0], t_post_arr[-1], d_bb_full.shape[2])
+                else:
+                    t_full_ms = np.linspace(-500.0, 1000.0, d_bb_full.shape[2])
+
+                # print(f"t_full_ms: {t_full_ms}")
+
+                band_plots_cfg = PLOT_CONFIG.get('band_plots', {})
+                spec_cfg_trials = PLOT_CONFIG['spectrogram'].copy()
+                spec_cfg_trials['return_power_trials'] = True
+                
+                try:
+                    # Get UNCROPPED power and time axis
+                    _, f_grid, t_grid_ms_full, P_trials = compute_ersp_spectrogram(
+                        d_bb_full, t_full_ms, fs, spec_cfg_trials
+                    )
+                    
+                    # Extract the specific band
+                    target_band = band_plots_cfg.get('selected_band', 'beta')
+
+                    # print(f"  [DEBUG] Full time axis: {t_grid_ms_full[0]:.1f} to {t_grid_ms_full[-1]:.1f} ms, shape {P_trials.shape}")
+                    # print(f"  [DEBUG] Target band: {target_band}, Freq Grid: {f_grid}")
+                    
+                    # Baseline mask on FULL (uncropped) time axis
+                    bl_win = spec_cfg_trials.get('baseline_window', (-950, -650))
+                    bl_start = bl_win[0] if bl_win[0] is not None else t_grid_ms_full[0]
+                    bl_end = bl_win[1] if bl_win[1] is not None else 0
+                    baseline_mask = (t_grid_ms_full >= bl_start) & (t_grid_ms_full <= bl_end)
+
+                    # print(f"  [DEBUG] Baseline window: ({bl_start}, {bl_end}) ms")
+                    # print(f"  [DEBUG] Baseline mask covers {np.sum(baseline_mask)} bins out of {len(t_grid_ms_full)} total bins.")
+                    
+                    if not np.any(baseline_mask):
+                        print(f"  [WARN] No time bins for overlays in baseline ({bl_start}, {bl_end}). Fallback.")
+                        n_bl = max(1, len(t_grid_ms_full) // 4)
+                        baseline_mask = np.zeros(len(t_grid_ms_full), dtype=bool)
+                        baseline_mask[:n_bl] = True
+                    else:
+                        print(f"  [OK] Baseline mask covers {np.sum(baseline_mask)} bins in ({bl_start}, {bl_end}) ms")
+
+                    # Extract band power (dB relative to baseline) - still on full time axis
+                    band_dB_trials_full = extract_band_power_trials(P_trials, f_grid, target_band, baseline_mask)
+
+                    # print(f"  [DEBUG] Extracted band power trials shape (full time): {band_dB_trials_full.shape if band_dB_trials_full is not None else 'None'}")
+                    
+                    if band_dB_trials_full is not None:
+                        # print(f"  [DEBUG] Band power trials (full) stats: min {np.nanmin(band_dB_trials_full):.2f} dB, max {np.nanmax(band_dB_trials_full):.2f} dB")
+                        # NOW crop to display time range
+                        t_range = spec_cfg_trials.get('time_range', (-400, 500))
+                        time_crop_mask = (t_grid_ms_full >= t_range[0]) & (t_grid_ms_full <= t_range[1])
+                        
+                        band_dB_trials = band_dB_trials_full[:, :, time_crop_mask]
+                        t_grid_ms = t_grid_ms_full[time_crop_mask]
+                        
+                        # print(f"  [DEBUG] After cropping: time {t_grid_ms[0]:.1f} to {t_grid_ms[-1]:.1f} ms, shape {band_dB_trials.shape}")
+                        
+                        # Update session_id name to include port for unique files
+                        session_id_port = f"{session_id}_{ua_port}"
+                        
+                        # Figure 1: Overlays (pass groups for region naming)
+                        if FIGURE_CONFIG.get('process_band_overlays', False):
+                            plot_band_overlays(band_dB_trials, fs, t_grid_ms, ua_ids_1based, 
+                                             session_id_port, fig_dir, PLOT_CONFIG, groups, 
+                                             nsp_to_elec, ua_port)
+                            
+                        # Figure 2: Spatial Heatmaps (pass groups for region naming)
+                        if FIGURE_CONFIG.get('process_spatial_heatmaps', False):
+                            plot_spatial_heatmaps(band_dB_trials, t_grid_ms, ua_ids_1based, 
+                                                 session_id_port, fig_dir, PLOT_CONFIG, groups, 
+                                                 nsp_to_elec, ua_port)
+
+                        # Figure 3: Spatial GIF
+                        if FIGURE_CONFIG.get('process_spatial_gif', False):
+                            generate_spatial_gif(band_dB_trials, t_grid_ms, ua_ids_1based, 
+                                                 session_id_port, fig_dir, PLOT_CONFIG, groups, 
+                                                 nsp_to_elec, ua_port)
+                        
+                        del band_dB_trials_full
+                    
+                    del P_trials
+                except Exception as e:
+                    import traceback
+                    print(f"  [ERROR] Advanced Utah plotting failed: {e}")
+                    traceback.print_exc()
+            else:
+                if d_bb_full is None:
+                    print("  [Skip] No broadband_full data for overlays/heatmaps.")
+                elif ua_ids_1based is None:
+                    print("  [Skip] No ua_ids_1based mapping for overlays/heatmaps.")
+                elif len(groups) == 0:
+                    print("  [Skip] No region groups defined for overlays/heatmaps.")
 
 
 def plot_lfp_check():

@@ -13,10 +13,16 @@ SHIFTS_CSV = METADATA_ROOT / "br_to_intan_shifts.csv"
 CONTROL_ROOT = ALIGNED_CKPT_ROOT / "control_reaches"
 AT_REST_ROOT  = ALIGNED_CKPT_ROOT / "at_rest"
 STIM_ROOT  = ALIGNED_CKPT_ROOT / "stim_reaches"
+GRASP_ROOT = ALIGNED_CKPT_ROOT / "Grasp"
+IMU_ROOT = ALIGNED_CKPT_ROOT / "IMU"
+CONTINUOUS_STIM_ROOT = ALIGNED_CKPT_ROOT / "continuous_stim"
 
 CONTROL_ROOT.mkdir(parents=True, exist_ok=True)
 AT_REST_ROOT.mkdir(parents=True, exist_ok=True)
 STIM_ROOT.mkdir(parents=True, exist_ok=True)
+GRASP_ROOT.mkdir(parents=True, exist_ok=True)
+IMU_ROOT.mkdir(parents=True, exist_ok=True)
+CONTINUOUS_STIM_ROOT.mkdir(parents=True, exist_ok=True)
 
 HAS_BR = PARAMS.preprocessing.get("has_BR")
 HAS_KINEMATICS = PARAMS.preprocessing.get("has_kinematics")
@@ -119,6 +125,14 @@ def parse_bool(x) -> bool:
 def main():
     br2video = rcp.get_metadata_mapping(METADATA_CSV, "BR_File", "Video_File")
     br2vog = rcp.get_metadata_mapping(METADATA_CSV, "BR_File", "VOG_File")
+    br2control = rcp.get_metadata_mapping(SHIFTS_CSV, "br_idx", "is_control")
+    br2at_rest = rcp.get_metadata_mapping(SHIFTS_CSV, "br_idx", "is_at_rest")
+    br2continuous = rcp.get_metadata_mapping(SHIFTS_CSV, "br_idx", "is_continuous_stim")
+    br2skip = rcp.get_metadata_mapping(SHIFTS_CSV, "br_idx", "skip_session")
+    br2shift_ms = rcp.get_metadata_mapping(SHIFTS_CSV, "br_idx", "shift_ms")
+    br2shift_smp = rcp.get_metadata_mapping(SHIFTS_CSV, "br_idx", "shift_sample")
+    
+    br2type = rcp.get_metadata_mapping(METADATA_CSV, "BR_File", "Type")
     
     if not SHIFTS_CSV.exists():
         raise SystemExit(f"[error] shifts CSV not found: {SHIFTS_CSV}")
@@ -137,10 +151,18 @@ def main():
             intan_idx = int(row["intan_idx"])
             br_idx    = int(row["br_idx"])
             fs_nprw  = float(row.get("fs_intan", 30000.0))
-            shift_ms = float(row["shift_ms"])
-            is_control = parse_bool(row["is_control"])
-            is_at_rest  = parse_bool(row["is_at_rest"])
+            is_control = parse_bool(br2control.get(br_idx, False))
+            is_at_rest = parse_bool(br2at_rest.get(br_idx, False))
+            is_continuous = parse_bool(br2continuous.get(br_idx, False))
+            should_skip = parse_bool(br2skip.get(br_idx, False))
 
+            if should_skip:
+                print(f"[skip] BR_{br_idx:03d}: skipped per shifts CSV flag.")
+                continue
+
+            shift_ms = float(br2shift_ms.get(br_idx, row.get("shift_ms", 0.0)))
+            shift_sample = int(float(br2shift_smp.get(br_idx, row.get("shift_sample", 0))))
+            
             if is_control and is_at_rest:
                 print(f"[warn] BR {br_idx:03d} marked as both control reaches and at rest; treating as control")
                 is_at_rest = False
@@ -342,15 +364,26 @@ def main():
                 shift_ms=float(shift_ms),
                 is_control=is_control,
                 is_at_rest=is_at_rest,
+                is_continuous=is_continuous,
                 recording_stim_dur=recording_stim_dur,
 
                 behavior_csv=str(beh_csv) if HAS_KINEMATICS else None,
                 behavior_rows=int(beh_ns5_sample.size) if HAS_KINEMATICS else None,
                 fs_ns5=float(ns5_fs) if HAS_KINEMATICS else None,
+                
+                exp_type=str(br2type.get(br_idx, "")).strip().upper(),
             )
 
-            # Choose output directory
-            if is_control:
+            # Choose output directory based on Type, then fallback to flags
+            metadata_type = str(br2type.get(br_idx, "")).strip().upper()
+            
+            if is_continuous:
+                out_dir = CONTINUOUS_STIM_ROOT
+            elif metadata_type == "GRASP":
+                out_dir = GRASP_ROOT
+            elif metadata_type == "IMU":
+                out_dir = IMU_ROOT
+            elif is_control:
                 out_dir = CONTROL_ROOT
             elif is_at_rest:
                 out_dir = AT_REST_ROOT

@@ -148,6 +148,7 @@ def main():
         raise SystemExit(f"[error] mapping CSV not found: {METADATA_CSV}")
     intan2br = rcp.get_metadata_mapping(METADATA_CSV, "Intan_File", "BR_File")
     notes_col = rcp.get_metadata_mapping(METADATA_CSV, "Intan_File", "Notes")
+    movement_trigger_col = rcp.get_metadata_mapping(METADATA_CSV, "Intan_File", "Movement_Trigger")
     print(f"[map] Loaded Intan→BR rows: {len(intan2br)}")
     
     # Load template
@@ -167,6 +168,14 @@ def main():
 
         is_control = (note_norm == "baseline")
         is_at_rest  = (note_norm == "rest")
+
+        movement_trigger = str(movement_trigger_col.get(intan_idx, "")).strip().lower()
+        is_continuous_stim = (movement_trigger == "sig gen" and note_norm != "rest")
+        skip_session = (movement_trigger == "sig gen" and note_norm == "rest")
+
+        if skip_session:
+            print(f"[skip] Intan {intan_idx:03d} / BR {br_idx:03d}: sig gen + Rest, skipping.")
+            continue
 
         if intan_filename is None:
             print(f"[warn] No session name for Intan_File={intan_idx} (skipping)")
@@ -288,6 +297,7 @@ def main():
             br_idx=br_idx,
             is_control=is_control,
             is_at_rest=is_at_rest,
+            is_continuous_stim=is_continuous_stim,
             notes=note_val,
             # br_ns5=str(br_ns5_file_path),
             fs_intan=fs_intan,

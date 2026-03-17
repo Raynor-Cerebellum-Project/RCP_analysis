@@ -28,7 +28,7 @@ The folder structure is as follows:
 Outputs:
 ```
 .
-├── data                         # Experimental data files
+├── data                          # Experimental data files
 │   ├── results                  # Output files
 │   │   ├── aux_data             # Auxillary data (sync pulses etc.)
 │   │   ├── checkpoints          # Intermediate files

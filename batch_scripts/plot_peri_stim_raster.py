@@ -9,6 +9,70 @@ from RCP_analysis.python.functions.config_loading import *
 from RCP_analysis.python.functions.impedance_utils import get_session_impedances
 from itertools import groupby
 from operator import itemgetter
+import pandas as pd
+import json
+
+# --- UTAH ELECTRODE MAPPING (Loaded from CSV) ---
+def load_electrode_mapping(csv_path: Path):
+    """
+    Load electrode mapping from CSV.
+    Returns:
+        nsp_to_elec: {nsp_id: electrode_id} mapping.
+        region_grids: {region: 8x8_array} of electrode IDs.
+        elec_to_region: {electrode_id: region} mapping.
+    """
+    nsp_to_elec = {}
+    region_grids = {}
+    elec_to_region = {}
+
+    if not csv_path.exists():
+        print(f"  [Warn] Electrode mapping CSV not found: {csv_path}")
+        return nsp_to_elec, region_grids, elec_to_region
+
+    try:
+        df = pd.read_csv(csv_path)
+        for _, row in df.iterrows():
+            elec_id = int(row['ElectrodeID'])
+            nsp_id = int(row['NSP_ID'])
+            region = str(row['Array']).strip()
+            r = int(row['GridRow'])
+            c = int(row['GridCol'])
+
+            nsp_to_elec[nsp_id] = elec_id
+            elec_to_region[elec_id] = region
+
+            if region not in region_grids:
+                region_grids[region] = np.zeros((8, 8), dtype=int)
+            region_grids[region][r, c] = elec_id
+            
+    except Exception as e:
+        print(f"  [Error] Failed to load electrode mapping from {csv_path}: {e}")
+
+    return nsp_to_elec, region_grids, elec_to_region
+
+def build_elec_to_data_idx(ua_ids_1based, nsp_to_elec):
+    """
+    Build electrode_id -> channel index mapping.
+    ua_ids_1based contains NSP IDs (1-256), we need to convert to electrode IDs.
+    """
+    if ua_ids_1based is None or nsp_to_elec is None:
+        return {}
+    
+    elec_to_idx = {}
+    for ch_idx, nsp_id in enumerate(ua_ids_1based):
+        try:
+            nsp_id = int(nsp_id)
+        except:
+            continue
+        elec_id = nsp_to_elec.get(nsp_id, -1)
+        if elec_id > 0:
+            elec_to_idx[elec_id] = ch_idx
+    
+    return elec_to_idx
+
+# Load mapping globally 
+MAPPING_CSV = Path(__file__).parent.parent / "scripts" / "electrode_port_mapping.csv"
+nsp_to_elec_global, UTAH_ELEC_GRIDS, elec_to_region_global = load_electrode_mapping(MAPPING_CSV)
 
 
 # Time window for plots
@@ -172,59 +236,37 @@ def plot_channel_group(ax_raster, ax_psth,
     #     rect_end = stim_dur_ms + blank_post_ms
     #     ax_raster.axvspan(rect_start, rect_end, color='gray', alpha=0.3, edgecolor=None)
 
-    # Red line at 0
-    ax_raster.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
+    # Red line at 0 (Only if data exists)
+    has_data = (len(rel_times) > 0) or (binned_counts is not None and np.nansum(binned_counts) > 0)
+    
+    if has_data:
+        ax_raster.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
     
     # Formatting
     ax_raster.set_xlim(win_ms)
     ax_raster.set_ylim(-0.5, n_trials - 0.5)
     ax_raster.set_title(title, fontsize=10, pad=4)
-    ax_raster.axis('off') # Hide axis for cleaner look, or maybe just remove ticks
+    ax_raster.axis('off') 
     
     # 2. PSTH (Spike Counts)
-    # binned_counts provided is (n_trials, n_bins). Sum across trials.
     if binned_counts is not None and binned_counts.size > 0:
-        psth_counts = np.nansum(binned_counts, axis=0) # Sum across trials
+        psth_counts = np.nansum(binned_counts, axis=0) 
         
-        # Apply blanking mask if stim_dur_ms > 0
-        # if stim_dur_ms > 0:
-        #     if bin_centers is not None:
-        #         mask = (bin_centers >= -blank_pre_ms) & (bin_centers <= stim_dur_ms + blank_post_ms)
-        #         if len(mask) == len(psth_counts):
-        #              psth_counts[mask] = np.nan
-        #     elif len(psth_counts) == len(bin_edges) - 1:
-        #         # Use edges to find centers
-        #         ctrs = (bin_edges[:-1] + bin_edges[1:]) / 2
-        #         mask = (ctrs >= -blank_pre_ms) & (ctrs <= stim_dur_ms + blank_post_ms)
-        #         psth_counts[mask] = np.nan
-        
-        # Plot using centers if available (Preferred)
         if bin_centers is not None and len(psth_counts) == len(bin_centers):
-            # Infer width
-            width = 20.0 # Default
+            width = 20.0 
             if len(bin_centers) > 1:
-                # dt usually constant
                 dt = np.nanmedian(np.diff(bin_centers))
                 if dt > 0: width = dt
             
             ax_psth.bar(bin_centers, psth_counts, width=width, align='center',
                         color=PSTH_COLOR, edgecolor=PSTH_EDGE_COLOR, linewidth=PSTH_LINEWIDTH)
                         
-        # Fallback to edges if centers not provided (Legacy/Backup)
         elif len(psth_counts) == len(bin_edges) - 1:
             ax_psth.bar(bin_edges[:-1], psth_counts, width=np.diff(bin_edges), align='edge',
                         color=PSTH_COLOR, edgecolor=PSTH_EDGE_COLOR, linewidth=PSTH_LINEWIDTH)
-        elif len(psth_counts) == len(bin_edges) - 2:
-             pass
 
-    # Stimulation shading
-    # if stim_dur_ms > 0:
-    #     rect_start = -blank_pre_ms
-    #     rect_end = stim_dur_ms + blank_post_ms
-    #     ax_psth.axvspan(rect_start, rect_end, color='gray', alpha=0.3, edgecolor=None)
-
-    # Red line at 0
-    ax_psth.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
+    if has_data:
+        ax_psth.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
     
     ax_psth.set_xlim(win_ms)
     ax_psth.set_ylim(psth_ylim) # Fixed Y-limits
@@ -236,105 +278,110 @@ def plot_channel_group(ax_raster, ax_psth,
     ax_psth.spines['bottom'].set_linewidth(0.5)
     ax_psth.tick_params(axis='both', which='major', labelsize=6, width=0.5, length=2)
     
-def load_best_controls(all_files):
+def load_reference_data(all_files, metadata_df=None):
     """
-    Scans all files for 'control_reaches'.
-    For each target (A or B), finds the file with the maximum number of trials.
-    Returns a dictionary:
+    Scans all files for 'control_reaches' and 'at_rest'.
+    Returns:
     {
-        'Target_A': {
-            'NPRW': <normalized_counts_array (n_ch, n_bins)>,
-            'UA': <normalized_counts_array (n_ch, n_bins)>,
-            'n_trials': <int>
-        },
-        'Target_B': ...
+        'controls': { 'Target_A': {data}, 'Target_B': {data} },
+        'rest': { (freq, dur): {data} }
     }
     """
-    # Filter for control files
     control_files = [f for f in all_files if "control_reaches" in str(f).lower()]
+    rest_files = [f for f in all_files if "at_rest" in str(f).lower()]
     
-    best_controls = {}
+    references = {'controls': {}, 'rest': {}}
     
-    # Group by target
-    for target in ['Target_A', 'Target_B']:
-        target_files = [f for f in control_files if f"_{target.lower()}" in f.name.lower() or f"_{target}" in f.name]
+    print(f"  [Debug] Found {len(control_files)} control files and {len(rest_files)} at_rest files.")
+    
+    # helper to get freq/dur from CSV or NPZ
+    def get_freq_dur(data, b_idx):
+        f_hz, d_ms = 0.0, 0.0
+        if metadata_df is not None and b_idx >= 0:
+            row = metadata_df[metadata_df['BR_File'] == b_idx]
+            if not row.empty:
+                try:
+                    fh = row.iloc[0].get('Stim_Frequency_Hz', 0.0)
+                    dh = row.iloc[0].get('Stim_Duration_ms', 0.0)
+                    f_hz = float(fh) if pd.notnull(fh) and str(fh) != '-' else 0.0
+                    d_ms = float(dh) if pd.notnull(dh) and str(dh) != '-' else 0.0
+                except:
+                    pass
         
-        if not target_files:
-            continue
+        # Fallback to NPZ meta
+        if f_hz == 0 or d_ms == 0:
+            meta = data['meta'].item() if 'meta' in data and data['meta'].ndim == 0 else {}
+            if f_hz == 0: f_hz = float(meta.get('recording_stim_freq', 0.0))
+            if d_ms == 0: d_ms = float(meta.get('recording_stim_dur', 0.0))
+        return f_hz, d_ms
+
+    # 1. Controls (by Target)
+    for target in ['Target_A', 'Target_B', 'Target_control']:
+        # If target_folder in STIM is "Target_A", we want comparison with "Target_A" control
+        target_files = [f for f in control_files if target.lower() in str(f).lower()]
+        if not target_files: continue
             
         max_trials = -1
         best_data = None
-        best_file = None
-        
-        for f in tqdm(target_files, desc=f"Scanning {target} Controls"):
+        for f in tqdm(target_files, desc=f"Scanning {target} Controls", leave=False):
             try:
                 data = np.load(f, allow_pickle=True)
-                
-                # Determine n_trials
-                n_trials = 0
-                if 'event_ms' in data:
-                     n_trials = len(np.asarray(data['event_ms']).flatten())
-                elif 'NPRW_counts' in data:
-                     n_trials = data['NPRW_counts'].shape[0]
-                elif 'UA_counts' in data:
-                     n_trials = data['UA_counts'].shape[0]
-                     
+                n_trials = data['UA_counts'].shape[0] if 'UA_counts' in data and len(data['UA_counts'].shape) > 0 else 0
                 if n_trials > max_trials:
                     max_trials = n_trials
-                    best_file = f
-                    
-                    # Store normalized data
-                    entry = {'n_trials': n_trials, 'NPRW': None, 'UA': None,
-                             'NPRW_peaks': None, 'UA_peaks': None, 'ctrl_events': None}
-                    
-                    # Store event times for re-binning in zoom views
-                    if 'event_ms' in data:
-                        entry['ctrl_events'] = np.asarray(data['event_ms']).flatten()
-                    
+                    entry = {'n_trials': n_trials, 'NPRW': None, 'UA': None, 'NPRW_peaks': None, 'UA_peaks': None, 'ctrl_events': None}
+                    if 'event_ms' in data: entry['ctrl_events'] = np.asarray(data['event_ms']).flatten()
                     if 'NPRW_counts' in data:
-                        # Sum over trials -> (n_ch, n_bins)
-                        counts = np.nansum(data['NPRW_counts'], axis=0)
-                        # Normalize
-                        if n_trials > 0:
-                            entry['NPRW'] = counts / n_trials
-                            if 'NPRW_edges_ms' in data:
-                                entry['NPRW_edges_ms'] = data['NPRW_edges_ms']
-                        # Store raw peaks for re-binning
-                        if 'NPRW_peak_ms_dedup' in data:
-                            try:
-                                entry['NPRW_peaks'] = data['NPRW_peak_ms_dedup'].item()
-                            except:
-                                pass
-                            
+                        entry['NPRW'] = np.nansum(data['NPRW_counts'], axis=0) / max(n_trials, 1)
+                        if 'NPRW_edges_ms' in data: entry['NPRW_edges_ms'] = data['NPRW_edges_ms']
+                        if 'NPRW_peak_ms_dedup' in data: entry['NPRW_peaks'] = data['NPRW_peak_ms_dedup'].item()
                     if 'UA_counts' in data:
-                        counts = np.nansum(data['UA_counts'], axis=0) # (n_ch, n_bins)
-                        n_trials = data['UA_counts'].shape[0] if len(data['UA_counts'].shape) > 0 else 0
-                        if n_trials > 0:
-                            entry['UA'] = counts / n_trials
-                            if 'UA_edges_ms' in data:
-                                entry['UA_edges_ms'] = data['UA_edges_ms']
-                        # Store raw peaks for re-binning
-                        if 'UA_peak_ms_dedup' in data:
-                            try:
-                                entry['UA_peaks'] = data['UA_peak_ms_dedup'].item()
-                            except:
-                                pass
-                    
+                        entry['UA'] = np.nansum(data['UA_counts'], axis=0) / max(n_trials, 1)
+                        if 'UA_edges_ms' in data: entry['UA_edges_ms'] = data['UA_edges_ms']
+                        if 'UA_peak_ms_dedup' in data: entry['UA_peaks'] = data['UA_peak_ms_dedup'].item()
                     best_data = entry
-                    
-            except Exception as e:
-                print(f"Error reading {f}: {e}")
-                continue
-                
-        if best_data and best_file:
-            print(f"  Best control for {target}: {best_file.name} ({max_trials} trials)")
-            best_controls[target] = best_data
+            except: continue
+        if best_data: references['controls'][target] = best_data
+
+    # 2. At-Rest (by Freq/Dur)
+    if not rest_files:
+        print("  [Debug] No 'at_rest' string found in any file paths.")
+    
+    for f in tqdm(rest_files, desc="Scanning At-Rest Baselines", leave=False):
+        try:
+            data = np.load(f, allow_pickle=True)
+            b_idx = int(data['br_idx']) if 'br_idx' in data else -1
+            freq, dur = get_freq_dur(data, b_idx)
             
-    return best_controls
+            if freq == 0: continue 
+            
+            key = (freq, dur)
+            n_trials = data['UA_counts'].shape[0] if 'UA_counts' in data and len(data['UA_counts'].shape) > 0 else 0
+            
+            if key not in references['rest'] or n_trials > references['rest'][key]['n_trials']:
+                entry = {'n_trials': n_trials, 'NPRW': None, 'UA': None, 'NPRW_peaks': None, 'UA_peaks': None, 'ctrl_events': None}
+                if 'event_ms' in data: entry['ctrl_events'] = np.asarray(data['event_ms']).flatten()
+                if 'NPRW_counts' in data:
+                    entry['NPRW'] = np.nansum(data['NPRW_counts'], axis=0) / max(n_trials, 1)
+                    if 'NPRW_edges_ms' in data: entry['NPRW_edges_ms'] = data['NPRW_edges_ms']
+                    if 'NPRW_peak_ms_dedup' in data: entry['NPRW_peaks'] = data['NPRW_peak_ms_dedup'].item()
+                if 'UA_counts' in data:
+                    entry['UA'] = np.nansum(data['UA_counts'], axis=0) / max(n_trials, 1)
+                    if 'UA_edges_ms' in data: entry['UA_edges_ms'] = data['UA_edges_ms']
+                    if 'UA_peak_ms_dedup' in data: entry['UA_peaks'] = data['UA_peak_ms_dedup'].item()
+                references['rest'][key] = entry
+        except: continue
+            
+    if references['rest']:
+        print(f"  [Debug] Loaded At-Rest baselines for keys: {list(references['rest'].keys())}")
+    else:
+        print("  [Debug] No valid At-Rest baselines (with freq > 0) were found.")
+
+    return references
 
 # -------------------------
 
-def process_file(npz_path, best_controls=None):
+def process_file(npz_path, references=None, metadata_df=None):
     
     
     try:
@@ -390,40 +437,69 @@ def process_file(npz_path, best_controls=None):
 
 
 
-    # Stim duration
-    stim_dur_ms = 0.0
-    if 'meta' in data and data['meta'].ndim == 0:
-        meta_dict = data['meta'].item()
-        if isinstance(meta_dict, dict):
-            stim_dur_ms = float(meta_dict.get('recording_stim_dur', 0.0))
-            
-    
     # Determine Type from path
     path_str = str(npz_path).lower()
+    cond_type = "OTHER"
     if "control_reaches" in path_str:
         cond_type = "CTRL"
     elif "stim_reaches" in path_str:
         cond_type = "STIM"
     elif "at_rest" in path_str:
         cond_type = "REST"
-    else:
-        # Skip files that don't match expected patterns
-        return
-        
-    # Legacy stim_dur check
-    if stim_dur_ms == 0.0 and 'nprw_meta' in data:
-         nprw_meta = data['nprw_meta'].item()
-         if isinstance(nprw_meta, dict):
-             # stim_dur might be a scalar or array
-             sd = nprw_meta.get('stim_dur', 0.0)
-             if np.ndim(sd) > 0:
-                 stim_dur_ms = float(np.median(sd))
-             else:
-                 stim_dur_ms = float(sd)
     
-    # If control reaches, force stim duration to 0 (no blanking/shading)
+    if cond_type == "OTHER":
+        return
+
+    target_folder = ""
+    if "_target_a" in npz_path.name.lower(): target_folder = "Target_A"
+    elif "_target_b" in npz_path.name.lower(): target_folder = "Target_B"
+    elif "_target_control" in npz_path.name.lower(): target_folder = "Target_control"
+
+    # Stim freq/dur
+    stim_dur_ms = 0.0
+    stim_freq_hz = 0.0
+    
+    # Try metadata CSV first
+    if metadata_df is not None and br_idx >= 0:
+        row = metadata_df[metadata_df['BR_File'] == br_idx]
+        if not row.empty:
+            try:
+                fh = row.iloc[0].get('Stim_Frequency_Hz', 0.0)
+                dh = row.iloc[0].get('Stim_Duration_ms', 0.0)
+                stim_freq_hz = float(fh) if pd.notnull(fh) and str(fh) != '-' else 0.0
+                stim_dur_ms = float(dh) if pd.notnull(dh) and str(dh) != '-' else 0.0
+            except:
+                pass
+
+    # Fallback to NPZ meta (Main results or legacy)
+    if stim_freq_hz == 0 or stim_dur_ms == 0:
+        if 'meta' in data and data['meta'].ndim == 0:
+            meta_dict = data['meta'].item()
+            if isinstance(meta_dict, dict):
+                if stim_dur_ms == 0: stim_dur_ms = float(meta_dict.get('recording_stim_dur', 0.0))
+                if stim_freq_hz == 0: stim_freq_hz = float(meta_dict.get('recording_stim_freq', 0.0))
+                
+        if (stim_freq_hz == 0 or stim_dur_ms == 0) and 'nprw_meta' in data:
+             nprw_meta = data['nprw_meta'].item()
+             if isinstance(nprw_meta, dict):
+                 if stim_freq_hz == 0:
+                     sf = nprw_meta.get('stim_freq', 0.0)
+                     stim_freq_hz = float(np.median(sf)) if np.ndim(sf) > 0 else float(sf)
+                 if stim_dur_ms == 0:
+                     sd = nprw_meta.get('stim_dur', 0.0)
+                     stim_dur_ms = float(np.median(sd)) if np.ndim(sd) > 0 else float(sd)
+
     if cond_type == "CTRL":
-        stim_dur_ms = 0.0
+        stim_dur_ms = 0.0 # Force no blanking for control
+            
+    if cond_type == "STIM":
+        print(f"  [Debug] File: {npz_path.name} | Freq: {stim_freq_hz} | Dur: {stim_dur_ms}")
+        if references and references['rest']:
+             rest_entry = references['rest'].get((stim_freq_hz, stim_dur_ms))
+             if rest_entry:
+                 print(f"    [OK] Found At-Rest baseline for Freq={stim_freq_hz}, Dur={stim_dur_ms}")
+             else:
+                 print(f"    [Warn] No At-Rest baseline match for Freq={stim_freq_hz}, Dur={stim_dur_ms}. Available: {list(references['rest'].keys())}")
     
     # Stim Channels (New)
     stim_chs_str = ""
@@ -564,112 +640,84 @@ def process_file(npz_path, best_controls=None):
             plt.close(fig_rw)
 
             # ---------------------------------------------------------
-            # Stim - Control Difference Plot (NPRW)
+            # NPRW Difference Plots
             # ---------------------------------------------------------
-            if cond_type == "STIM" and best_controls is not None and target_folder in best_controls:
-                ctrl_entry = best_controls[target_folder]
-                if ctrl_entry['NPRW'] is not None:
-                    ctrl_norm = ctrl_entry['NPRW'] # (n_ch, n_bins)
+            if cond_type == "STIM" and references is not None:
+                # Find baselines
+                ctrl_entry = references['controls'].get(target_folder)
+                rest_entry = references['rest'].get((stim_freq_hz, stim_dur_ms))
+                
+                # Definitions for diffs
+                # User said "subtract both at rest and control condition from stim condition" -> Stim - Control - Rest
+                diff_configs = []
+                stim_norm = np.nansum(counts_data, axis=0) / max(counts_data.shape[0], 1)
+                
+                # Function to get normalized counts for a reference entry
+                def get_norm_ref(entry, ref_type='NPRW'):
+                    if entry is None or entry.get(f'{ref_type}_peaks') is None:
+                        return None
+                    # Re-bin using the SAME window and bin size as Stim
+                    pk_dict = entry[f'{ref_type}_peaks']
+                    ev_ms = entry['ctrl_events'] if entry.get('ctrl_events') is not None else []
+                    if len(ev_ms) == 0: return None
                     
-                    stim_sum = np.nansum(counts_data, axis=0)
-                    n_stim_trials = counts_data.shape[0]
-                    
-                    if n_stim_trials > 0:
-                        stim_norm = stim_sum / n_stim_trials
-                        diff_norm = None
-                        
-                        if view_bin_ms is not None:
-                            # For re-binned views, re-bin control data with same params
-                            ctrl_peaks = best_controls[target_folder].get('NPRW_peaks')
-                            if ctrl_peaks is not None:
-                                ctrl_counts_rb, ctrl_centers_rb, _ = _rebin_from_peaks(
-                                    ctrl_peaks, best_controls[target_folder]['ctrl_events'],
-                                    view_win, view_bin_ms, stim_dur_ms=0.0)
-                                ctrl_norm_rb = np.nansum(ctrl_counts_rb, axis=0) / max(ctrl_counts_rb.shape[0], 1)
-                                if stim_norm.shape == ctrl_norm_rb.shape:
-                                    diff_norm = stim_norm - ctrl_norm_rb
-                        else:
-                            # Standard view: use pre-computed bins with alignment
-                            if 'NPRW_edges_ms' in data and 'NPRW_edges_ms' in ctrl_entry:
-                                stim_edges = data['NPRW_edges_ms']
-                                ctrl_edges = ctrl_entry['NPRW_edges_ms']
-                                stim_ctr = (stim_edges[:-1] + stim_edges[1:]) / 2
-                                ctrl_ctr = (ctrl_edges[:-1] + ctrl_edges[1:]) / 2
-                                if stim_norm.shape[1] < len(stim_ctr):
-                                    stim_ctr = stim_ctr[:stim_norm.shape[1]]
-                                keep_idx = []
-                                for sc in stim_ctr:
-                                    idx = np.argmin(np.abs(ctrl_ctr - sc))
-                                    keep_idx.append(idx)
-                                ctrl_subset = ctrl_norm[:, keep_idx]
-                                if stim_norm.shape == ctrl_subset.shape:
-                                    diff_norm = stim_norm - ctrl_subset
-                            else:
-                                if stim_norm.shape == ctrl_norm.shape:
-                                    diff_norm = stim_norm - ctrl_norm
-                        
-                        if diff_norm is not None:
-                            # Apply blanking mask to diff_norm
-                            # if stim_dur_ms > 0:
-                            #     t0, t1 = -20.0, stim_dur_ms + 20.0
-                            #     if centers_ms is not None:
-                            #         mask = (centers_ms >= t0) & (centers_ms <= t1)
-                            #         if diff_norm.shape[1] == len(mask):
-                            #             diff_norm[:, mask] = np.nan
-                            #     elif edges_ms is not None:
-                            #         ctrs = (edges_ms[:-1] + edges_ms[1:]) / 2
-                            #         mask = (ctrs >= t0) & (ctrs <= t1)
-                            #         if diff_norm.shape[1] == len(mask):
-                            #             diff_norm[:, mask] = np.nan
+                    c_ref, _, _ = _rebin_from_peaks(pk_dict, ev_ms, view_win, 
+                                                    view_bin_ms if view_bin_ms else 20.0, # fallback to standard bin if None
+                                                    0.0, 0.0, 0.0) # No blanking for baseline
+                    # Normalize by trials
+                    return np.nansum(c_ref, axis=0) / max(c_ref.shape[0], 1)
 
-                            fig_diff = plt.figure(figsize=FIG_SIZE_RW)
-                            gs_diff = gridspec.GridSpec(rows, cols, figure=fig_diff, hspace=0.3, wspace=0.3)
+                ctrl_norm = get_norm_ref(ctrl_entry, 'NPRW')
+                rest_norm = get_norm_ref(rest_entry, 'NPRW')
+
+                if ctrl_norm is not None:
+                    diff_configs.append(('stim_control_diff', 'Stim - Control', ctrl_norm))
+                if rest_norm is not None:
+                    diff_configs.append(('stim_rest_diff', 'Stim - Rest', rest_norm))
+                if ctrl_norm is not None and rest_norm is not None:
+                    diff_configs.append(('stim_rest_control_diff', 'Stim - Control - Rest', ctrl_norm + rest_norm))
+                
+                stim_norm = np.nansum(counts_data, axis=0) / max(counts_data.shape[0], 1)
+                
+                for dir_name, title_suffix, baseline_norm in diff_configs:
+                    if stim_norm.shape == baseline_norm.shape:
+                        diff_norm = stim_norm - baseline_norm
+                        fig_diff = plt.figure(figsize=FIG_SIZE_RW)
+                        gs_diff = gridspec.GridSpec(rows, cols, figure=fig_diff, hspace=0.3, wspace=0.3)
+                        
+                        found_diff = False
+                        for i, ch in enumerate(sorted_ch_ids):
+                            if i >= n_ch: break
+                            r, c = i // cols, i % cols
+                            ax_diff = fig_diff.add_subplot(gs_diff[r, c])
+                            d_ch = None
+                            if i < diff_norm.shape[0]:
+                                found_diff = True
+                                d_ch = diff_norm[i, :]
+                                bar_colors = np.where(d_ch >= 0, 'tab:green', 'tab:red')
+                                if centers_ms is not None and len(d_ch) == len(centers_ms):
+                                    bw = view_bin_ms if view_bin_ms else np.nanmedian(np.diff(centers_ms)) if len(centers_ms)>1 else 20.0
+                                    ax_diff.bar(centers_ms, d_ch, width=bw, align='center', color=bar_colors, edgecolor='none')
+                                elif edges_ms is not None:
+                                    ax_diff.bar(edges_ms[:-1], d_ch, width=np.diff(edges_ms), align='edge', color=bar_colors, edgecolor='none')
                             
-                            for i, ch in enumerate(sorted_ch_ids):
-                                if i >= n_ch: break
-                                r = (i // cols)
-                                c = (i % cols)
-                                ax_diff = fig_diff.add_subplot(gs_diff[r, c])
-                                
-                                ch_idx = i
-                                if ch_idx < diff_norm.shape[0]:
-                                    d_ch = diff_norm[ch_idx, :]
-                                    bar_colors = np.where(d_ch >= 0, 'tab:green', 'tab:red')
-                                    
-                                    if centers_ms is not None and len(d_ch) == len(centers_ms):
-                                        width = view_bin_ms if view_bin_ms else 20.0
-                                        if view_bin_ms is None and len(centers_ms) > 1:
-                                            width = np.nanmedian(np.diff(centers_ms))
-                                        ax_diff.bar(centers_ms, d_ch, width=width, align='center',
-                                                    color=bar_colors, edgecolor='none')
-                                    elif edges_ms is not None:
-                                        ax_diff.bar(edges_ms[:-1], d_ch, width=np.diff(edges_ms), align='edge',
-                                                    color=bar_colors, edgecolor='none')
-                                
-                                # if stim_dur_ms > 0:
-                                #     # NPRW blanking: 20ms pre, 20ms post
-                                #     rect_start = -20.0
-                                #     rect_end = stim_dur_ms + 20.0
-                                #     ax_diff.axvspan(rect_start, rect_end, color='gray', alpha=0.3, edgecolor=None)
+                            if d_ch is not None and np.nansum(np.abs(d_ch)) > 0:
                                 ax_diff.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
-                                ax_diff.set_title(f"Ch {ch}", fontsize=10, pad=4)
-                                ax_diff.set_xlim(view_win)
-                                ax_diff.set_ylim(DIFF_YLIM)
-                                ax_diff.spines['top'].set_visible(False)
-                                ax_diff.spines['right'].set_visible(False)
-                                ax_diff.spines['left'].set_linewidth(0.5)
-                                ax_diff.spines['bottom'].set_linewidth(0.5)
-                                ax_diff.tick_params(axis='both', which='major', labelsize=6, width=0.5, length=2)
-                                if r < rows-1:
-                                    ax_diff.set_xticklabels([])
-                            
-                            fig_diff.suptitle(f"{overall_title} | NPRW Diff (Stim - Ctrl){stim_chs_str}", fontsize=20)
-                            
-                            save_diff_dir = FIG_ROOT / "stim_diff" / target_folder
+                            ax_diff.set_title(f"Ch {ch}", fontsize=10, pad=2)
+                            ax_diff.set_xlim(view_win)
+                            ax_diff.set_ylim(DIFF_YLIM)
+                            ax_diff.spines['top'].set_visible(False)
+                            ax_diff.spines['right'].set_visible(False)
+                            ax_diff.axis('off') if i >= diff_norm.shape[0] else None
+                            if r < rows-1: ax_diff.set_xticklabels([])
+
+                        if found_diff:
+                            fig_diff.suptitle(f"{overall_title} | NPRW Diff ({title_suffix}){stim_chs_str}", fontsize=20)
+                            save_diff_dir = FIG_ROOT / dir_name / target_folder
                             save_diff_dir.mkdir(parents=True, exist_ok=True)
                             fig_diff_name = f"[diff]_Cond{br_idx:03d}_{cond_type}_NPRW{view_suffix}.png"
                             fig_diff.savefig(save_diff_dir / fig_diff_name, dpi=100, bbox_inches='tight')
-                            plt.close(fig_diff)
+                        plt.close(fig_diff)
 
 
     # ---------------------------------------------------------
@@ -690,58 +738,40 @@ def process_file(npz_path, best_controls=None):
         edges_ms_orig = data['UA_edges_ms']
         centers_ms_orig = data['UA_rel_t'] if 'UA_rel_t' in data else None
 
-        # Metadata for plotting
-        ua_region_names = data['ua_region_names'] # array of strings
-        if ua_region_names.ndim == 0: ua_region_names = np.array([])
-        
-        # Group channels by region
-        regions = {} # Region -> list of (ch_id, linear_index)
-        
-        try:
-            sorted_keys = sorted(peaks_dict.keys(), key=lambda x: int(x))
-        except:
-            sorted_keys = sorted(peaks_dict.keys())
-
-        # Load ua_ids_1based
+        # Load ua_ids_1based (NSP IDs)
         ua_ids_1based = data.get('ua_ids_1based', None)
         if ua_ids_1based is not None and ua_ids_1based.ndim == 0:
-            ua_ids_1based = None # Handle scalar None
-
-        for i, ch in enumerate(sorted_keys):
-            try:
-                ch_idx = int(ch)
-            except:
-                ch_idx = -1
-                
-            # Determines actual ID
-            real_id = ch_idx # Fallback
-            if ua_ids_1based is not None and 0 <= ch_idx < len(ua_ids_1based):
+            ua_ids_1based = None
+            
+        # Mapping helpers
+        elec_to_idx = build_elec_to_data_idx(ua_ids_1based, nsp_to_elec_global)
+        
+        # Identify which regions are actually present in this recording
+        plot_regions = []
+        REGION_ORDER = ["M1i", "M1s", "PMd", "SMA"]
+        if ua_ids_1based is not None:
+            active_regs = set()
+            for nsp_id in ua_ids_1based:
                 try:
-                    real_id = int(ua_ids_1based[ch_idx])
-                except:
-                    pass
-            
-            # CHECK BAD CHANNELS (Real ID)
-            if real_id in bad_ua:
-                continue
+                    elec_id = nsp_to_elec_global.get(int(nsp_id), -1)
+                    if elec_id > 0:
+                        reg = elec_to_region_global.get(elec_id)
+                        if reg: active_regs.add(reg)
+                except: continue
+            plot_regions = [r for r in REGION_ORDER if r in active_regs]
+        
+        if not plot_regions: plot_regions = ["Unknown"]
 
-            # Map based on Real ID
-            if 1 <= real_id <= 64:
-                reg = "SMA"
-            elif 65 <= real_id <= 128:
-                reg = "PMd"
-            elif 129 <= real_id <= 192:
-                reg = "M1i"
-            elif 193 <= real_id <= 256:
-                reg = "M1s"
-            else:
-                reg = "Unknown"
-            
-            if reg not in regions: regions[reg] = []
-            regions[reg].append((ch, i, real_id))
-            
-        # Custom Region Order
-        REGION_ORDER = ["M1i", "M1s", "PMd", "SMA", "Unknown"]
+        # Determine output directories
+        base_folder = "other"
+        path_str_lower = str(npz_path).lower()
+        if "control_reaches" in path_str_lower: base_folder = "control_reaches"
+        elif "stim_reaches" in path_str_lower: base_folder = "stim_reaches"
+        elif "at_rest" in path_str_lower: base_folder = "at_rest"
+        
+        target_folder = ""
+        if "_target_A" in npz_path.name: target_folder = "Target_A"
+        elif "_target_B" in npz_path.name: target_folder = "Target_B"
 
         # Determine output directories (computed once)
         base_folder = "other"
@@ -779,180 +809,129 @@ def process_file(npz_path, best_controls=None):
                 edges_ms = edges_ms_orig
                 cur_ylim = PSTH_YLIM
 
-            for reg_target in REGION_ORDER:
-                if reg_target not in regions or not regions[reg_target]:
-                    continue
+            for reg_target in plot_regions:
+                grid_elec = UTAH_ELEC_GRIDS.get(reg_target)
+                if grid_elec is None: continue
                 
-                ch_list = regions[reg_target]
-                try:
-                    ch_list.sort(key=lambda x: int(x[0]))
-                except:
-                    ch_list.sort(key=lambda x: x[0])
-                region_chs = [(reg_target, item[0], item[1], item[2]) for item in ch_list]
+                fig_ua = plt.figure(figsize=(32, 24))
+                gs = gridspec.GridSpec(8 * 2, 8, figure=fig_ua, hspace=0.3, wspace=0.3)
                 
-                n_total = len(region_chs)
-                cols = 8
-                rows = (n_total + cols - 1) // cols
-                if rows == 0: rows = 1
-
-                fig_h = max(12, rows * 1.5)
-                fig_ua = plt.figure(figsize=(48, fig_h))
-                gs = gridspec.GridSpec(rows * 2, cols, figure=fig_ua, hspace=0.3, wspace=0.3)
-                
-                for i, (reg, ch_id, linear_idx, real_id) in enumerate(region_chs):
-                    r = (i // cols)
-                    c = (i % cols)
-                    
-                    ax_raster = fig_ua.add_subplot(gs[2*r, c])
-                    ax_psth = fig_ua.add_subplot(gs[2*r+1, c], sharex=ax_raster)
-                    
-                    if linear_idx < counts_data.shape[1]:
-                        binned = counts_data[:, linear_idx, :]
-                    else:
-                        binned = None
-                    
-                    peak_times = peaks_dict.get(ch_id, [])
-                    
-                    plot_channel_group(ax_raster, ax_psth, peak_times, event_ms, binned, edges_ms,
-                                       f"{reg} - Ch {real_id}", stim_dur_ms=0.0, 
-                                       blank_pre_ms=0.0, blank_post_ms=0.0, # UA default blanking
-                                       bin_centers=centers_ms,
-                                       n_trials_ref=n_trials_ref, win_ms=view_win, psth_ylim=cur_ylim)
-                    if 2*r+1 < (rows*2 - 2):
-                        ax_psth.set_xticklabels([])
-
-                fig_ua.suptitle(f"{overall_title} | Utah Array - {reg_target}{stim_chs_str}", fontsize=20)
-                if len(stim_chs_str) > 0:
-                     plt.subplots_adjust(top=0.90)
-                
-                save_dir = FIG_ROOT / base_folder / target_folder
-                save_dir.mkdir(parents=True, exist_ok=True)
-                fig_name = f"[processed]_Cond{br_idx:03d}_{cond_type}_UA_{reg_target}{view_suffix}.png"
-                fig_ua.savefig(save_dir / fig_name, dpi=100, bbox_inches='tight')
-                plt.close(fig_ua)
-            
-            # ---------------------------------------------------------
-            # Stim - Control Difference Plot (Utah)
-            # ---------------------------------------------------------
-            if cond_type == "STIM" and best_controls is not None and target_folder in best_controls:
-                ctrl_entry = best_controls[target_folder]
-                if ctrl_entry['UA'] is not None:
-                    ctrl_norm = ctrl_entry['UA'] # (n_ch, n_bins)
-                    
-                    stim_sum = np.nansum(counts_data, axis=0)
-                    n_stim_trials = counts_data.shape[0]
-                    
-                    if n_stim_trials > 0:
-                        stim_norm = stim_sum / n_stim_trials
-                        diff_norm = None
+                found_channels = False
+                for r in range(8):
+                    for c in range(8):
+                        elec_id = int(grid_elec[r, c])
+                        idx = elec_to_idx.get(elec_id)
                         
-                        if view_bin_ms is not None:
-                            # For re-binned views, re-bin control data with same params
-                            ctrl_peaks = best_controls[target_folder].get('UA_peaks')
-                            if ctrl_peaks is not None:
-                                ctrl_counts_rb, ctrl_centers_rb, _ = _rebin_from_peaks(
-                                    ctrl_peaks, best_controls[target_folder]['ctrl_events'],
-                                    view_win, view_bin_ms, stim_dur_ms=0.0)
-                                ctrl_norm_rb = np.nansum(ctrl_counts_rb, axis=0) / max(ctrl_counts_rb.shape[0], 1)
-                                if stim_norm.shape == ctrl_norm_rb.shape:
-                                    diff_norm = stim_norm - ctrl_norm_rb
+                        ax_raster = fig_ua.add_subplot(gs[2*r, c])
+                        ax_psth = fig_ua.add_subplot(gs[2*r+1, c], sharex=ax_raster)
+                        
+                        if idx is not None and 0 <= idx < counts_data.shape[1]:
+                            found_channels = True
+                            binned = counts_data[:, idx, :]
+                            ch_key = str(idx)
+                            peak_times = peaks_dict.get(ch_key, [])
+                            nsp_val = int(ua_ids_1based[idx]) if ua_ids_1based is not None else -1
+                            
+                            plot_channel_group(ax_raster, ax_psth, peak_times, event_ms, binned, edges_ms,
+                                               f"E{elec_id} (NSP{nsp_val})", stim_dur_ms=0.0, 
+                                               blank_pre_ms=0.0, blank_post_ms=0.0, 
+                                               bin_centers=centers_ms,
+                                               n_trials_ref=n_trials_ref, win_ms=view_win, psth_ylim=cur_ylim)
                         else:
-                            # Standard view: use pre-computed bins with alignment
-                            if 'UA_edges_ms' in data and 'UA_edges_ms' in ctrl_entry:
-                                stim_edges = data['UA_edges_ms']
-                                ctrl_edges = ctrl_entry['UA_edges_ms']
-                                stim_ctr = (stim_edges[:-1] + stim_edges[1:]) / 2
-                                ctrl_ctr = (ctrl_edges[:-1] + ctrl_edges[1:]) / 2
-                                if stim_norm.shape[1] < len(stim_ctr):
-                                    stim_ctr = stim_ctr[:stim_norm.shape[1]]
-                                keep_idx = []
-                                for sc in stim_ctr:
-                                    idx = np.argmin(np.abs(ctrl_ctr - sc))
-                                    keep_idx.append(idx)
-                                ctrl_subset = ctrl_norm[:, keep_idx]
-                                if stim_norm.shape == ctrl_subset.shape:
-                                    diff_norm = stim_norm - ctrl_subset
-                            else:
-                                if stim_norm.shape == ctrl_norm.shape:
-                                    diff_norm = stim_norm - ctrl_norm
+                            ax_raster.axis('off')
+                            ax_psth.axis('off')
+                            if elec_id > 0:
+                                ax_raster.text(0.5, 0.5, f"E{elec_id}\nN/A", ha='center', va='center', 
+                                               transform=ax_raster.transAxes, fontsize=8, alpha=0.3)
                         
-                        if diff_norm is not None:
-                            # Apply blanking mask to diff_norm
-                            # if stim_dur_ms > 0:
-                            #     t0, t1 = -5.0, stim_dur_ms + 5.0
-                            #     if centers_ms is not None:
-                            #         mask = (centers_ms >= t0) & (centers_ms <= t1)
-                            #         if diff_norm.shape[1] == len(mask):
-                            #             diff_norm[:, mask] = np.nan
-                            #     elif edges_ms is not None:
-                            #         ctrs = (edges_ms[:-1] + edges_ms[1:]) / 2
-                            #         mask = (ctrs >= t0) & (ctrs <= t1)
-                            #         if diff_norm.shape[1] == len(mask):
-                            #             diff_norm[:, mask] = np.nan
+                        if 2*r+1 < 14: ax_psth.set_xticklabels([])
 
-                            for reg_target in REGION_ORDER:
-                                if reg_target not in regions or not regions[reg_target]:
-                                    continue
-                                
-                                ch_list = regions[reg_target]
-                                try:
-                                    ch_list.sort(key=lambda x: int(x[0]))
-                                except:
-                                    ch_list.sort(key=lambda x: x[0])
-                                region_chs = [(reg_target, item[0], item[1], item[2]) for item in ch_list]
-                                
-                                n_total = len(region_chs)
-                                cols = 8
-                                rows = (n_total + cols - 1) // cols
-                                if rows == 0: rows = 1
+                if found_channels:
+                    fig_ua.suptitle(f"{overall_title} | Utah Array - {reg_target}{stim_chs_str}", fontsize=20)
+                    plt.subplots_adjust(top=0.90 if stim_chs_str else 0.94)
+                    
+                    save_dir = FIG_ROOT / base_folder / target_folder
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                    fig_name = f"[processed]_Cond{br_idx:03d}_{cond_type}_UA_{reg_target}{view_suffix}.png"
+                    fig_ua.savefig(save_dir / fig_name, dpi=100, bbox_inches='tight')
+            if cond_type == "STIM" and references is not None:
+                ctrl_entry = references['controls'].get(target_folder)
+                rest_entry = references['rest'].get((stim_freq_hz, stim_dur_ms))
 
-                                fig_h = max(12, rows * 1.5)
-                                fig_diff_ua = plt.figure(figsize=(48, fig_h))
-                                gs_diff = gridspec.GridSpec(rows, cols, figure=fig_diff_ua, hspace=0.3, wspace=0.3)
-                                
-                                for i, (reg, ch_id, linear_idx, real_id) in enumerate(region_chs):
-                                    r = (i // cols)
-                                    c = (i % cols)
+                # Utah-specific norm ref helper (already has elec_to_idx from stim)
+                def get_norm_ref_ua(entry):
+                    if entry is None or entry.get('UA_peaks') is None:
+                        return None
+                    pk_dict = entry['UA_peaks']
+                    ev_ms = entry['ctrl_events'] if entry.get('ctrl_events') is not None else []
+                    if len(ev_ms) == 0: return None
+                    
+                    c_ref, _, _ = _rebin_from_peaks(pk_dict, ev_ms, view_win, 
+                                                    view_bin_ms if view_bin_ms else 20.0, 
+                                                    0.0, 0.0, 0.0)
+                    return np.nansum(c_ref, axis=0) / max(c_ref.shape[0], 1)
+
+                ctrl_norm_ua = get_norm_ref_ua(ctrl_entry)
+                rest_norm_ua = get_norm_ref_ua(rest_entry)
+
+                diff_configs_ua = []
+                if ctrl_norm_ua is not None:
+                    diff_configs_ua.append(('stim_control_diff', 'Stim - Control', ctrl_norm_ua))
+                if rest_norm_ua is not None:
+                    diff_configs_ua.append(('stim_rest_diff', 'Stim - Rest', rest_norm_ua))
+                if ctrl_norm_ua is not None and rest_norm_ua is not None:
+                    diff_configs_ua.append(('stim_rest_control_diff', 'Stim - Control - Rest', ctrl_norm_ua + rest_norm_ua))
+                
+                stim_norm = np.nansum(counts_data, axis=0) / max(counts_data.shape[0], 1)
+                
+                for dir_name, title_suffix, baseline_norm in diff_configs_ua:
+                    if stim_norm.shape == baseline_norm.shape:
+                        diff_norm = stim_norm - baseline_norm
+                        for reg_target in plot_regions:
+                            grid_elec = UTAH_ELEC_GRIDS.get(reg_target)
+                            if grid_elec is None: continue
+                            
+                            fig_diff_ua = plt.figure(figsize=(32, 24))
+                            gs_diff = gridspec.GridSpec(8, 8, figure=fig_diff_ua, hspace=0.3, wspace=0.3)
+                            found_diff = False
+                            for r in range(8):
+                                for c in range(8):
+                                    elec_id = int(grid_elec[r, c])
+                                    idx = elec_to_idx.get(elec_id)
                                     ax_diff = fig_diff_ua.add_subplot(gs_diff[r, c])
-                                    
-                                    if linear_idx < diff_norm.shape[0]:
-                                        d_ch = diff_norm[linear_idx, :]
+                                    d_ch = None
+                                    if idx is not None and 0 <= idx < diff_norm.shape[0]:
+                                        found_diff = True
+                                        d_ch = diff_norm[idx, :]
                                         bar_colors = np.where(d_ch >= 0, 'tab:green', 'tab:red')
-                                        
-                                        if centers_ms is not None:
-                                            width = view_bin_ms if view_bin_ms else 20.0
-                                            if view_bin_ms is None and len(centers_ms) > 1:
-                                                width = np.nanmedian(np.diff(centers_ms))
-                                            ax_diff.bar(centers_ms, d_ch, width=width, align='center',
-                                                        color=bar_colors, edgecolor='none')
+                                        if centers_ms is not None and len(d_ch) == len(centers_ms):
+                                            bw = view_bin_ms if view_bin_ms else np.nanmedian(np.diff(centers_ms)) if len(centers_ms)>1 else 20.0
+                                            ax_diff.bar(centers_ms, d_ch, width=bw, align='center', color=bar_colors, edgecolor='none')
                                         elif edges_ms is not None:
-                                            ax_diff.bar(edges_ms[:-1], d_ch, width=np.diff(edges_ms), align='edge',
-                                                        color=bar_colors, edgecolor='none')
+                                            ax_diff.bar(edges_ms[:-1], d_ch, width=np.diff(edges_ms), align='edge', color=bar_colors, edgecolor='none')
+                                        
+                                        if d_ch is not None and np.nansum(np.abs(d_ch)) > 0:
+                                            ax_diff.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
+                                        ax_diff.set_title(f"E{elec_id}", fontsize=10, pad=2)
+                                    else:
+                                        ax_diff.axis('off')
+                                        if elec_id > 0:
+                                            ax_diff.text(0.5, 0.5, f"E{elec_id}\nN/A", ha='center', va='center', 
+                                                           transform=ax_diff.transAxes, fontsize=8, alpha=0.3)
                                     
-                                    # if stim_dur_ms > 0:
-                                    #     # UA default blanking: 5ms pre, 5ms post
-                                    #     rect_start = -5.0
-                                    #     rect_end = stim_dur_ms + 5.0
-                                    #     ax_diff.axvspan(rect_start, rect_end, color='gray', alpha=0.3, edgecolor=None)
-                                    ax_diff.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
-                                    ax_diff.set_title(f"{reg} - Ch {real_id}", fontsize=10, pad=4)
-                                    ax_diff.set_xlim(view_win)
-                                    ax_diff.set_ylim(DIFF_YLIM)
-                                    ax_diff.spines['top'].set_visible(False)
-                                    ax_diff.spines['right'].set_visible(False)
-                                    ax_diff.spines['left'].set_linewidth(0.5)
-                                    ax_diff.spines['bottom'].set_linewidth(0.5)
-                                    ax_diff.tick_params(axis='both', which='major', labelsize=6, width=0.5, length=2)
-                                    if r < rows-1:
-                                        ax_diff.set_xticklabels([])
-                                
-                                fig_diff_ua.suptitle(f"{overall_title} | Utah Diff (Stim - Ctrl) - {reg_target}{stim_chs_str}", fontsize=20)
-                                
-                                save_diff_dir = FIG_ROOT / "stim_diff" / target_folder
+                                    ax_diff.set_xlim(view_win); ax_diff.set_ylim(DIFF_YLIM)
+                                    ax_diff.tick_params(axis='both', which='major', labelsize=6)
+                                    # Show timing labels on every subplot per user request
+                                    # if r < 7: ax_diff.set_xticklabels([])
+                            
+                            if found_diff:
+                                fig_diff_ua.suptitle(f"{overall_title} | Utah Diff ({title_suffix}) - {reg_target}{stim_chs_str}", fontsize=20)
+                                save_diff_dir = FIG_ROOT / dir_name / target_folder
                                 save_diff_dir.mkdir(parents=True, exist_ok=True)
                                 fig_name = f"[diff]_Cond{br_idx:03d}_{cond_type}_UA_{reg_target}{view_suffix}.png"
                                 fig_diff_ua.savefig(save_diff_dir / fig_name, dpi=100, bbox_inches='tight')
-                                plt.close(fig_diff_ua)
+                            plt.close(fig_diff_ua)
+                        plt.close(fig_diff_ua)
         
 
 
@@ -970,12 +949,18 @@ def main():
         
     print(f"Found {len(files)} files.")
     
-    # Load best controls first (serial)
-    best_controls = load_best_controls(files)
+    # Load Metadata CSV if available
+    global metadata_df
+    metadata_df = None
+    if METADATA_CSV.exists():
+        print(f"Loading metadata from {METADATA_CSV}")
+        metadata_df = pd.read_csv(METADATA_CSV)
+
+    # Load best controls and rest baselines first (serial)
+    references = load_reference_data(files, metadata_df=metadata_df)
 
     # Run in parallel
-    # n_jobs=-1 uses all available cores. adjust as needed.
-    Parallel(n_jobs=8)(delayed(process_file)(f, best_controls) for f in tqdm(files, desc="Files"))
+    Parallel(n_jobs=8)(delayed(process_file)(f, references, metadata_df) for f in tqdm(files, desc="Files"))
 
 
 if __name__ == "__main__":

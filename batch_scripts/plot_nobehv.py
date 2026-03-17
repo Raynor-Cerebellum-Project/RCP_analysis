@@ -2,7 +2,11 @@ from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
+import imageio
+import io
 import matplotlib
+import matplotlib.pyplot as plt
 from scipy.io import loadmat
 from probeinterface import Probe
 
@@ -28,6 +32,105 @@ VMIN_NPRW_COUNTS, VMAX_NPRW_COUNTS = 0.0, 10.0
 VMIN_UA_COUNTS,   VMAX_UA_COUNTS   = 0.0, 10.0
 
 COLORMAP = "jet"
+
+# --- UTAH ELECTRODE MAPPING ---
+def load_electrode_mapping(csv_path: Path):
+    nsp_to_elec = {}
+    region_grids = {}
+    elec_to_region = {}
+
+    if not csv_path.exists():
+        print(f"  [Warn] Electrode mapping CSV not found: {csv_path}")
+        return nsp_to_elec, region_grids, elec_to_region
+
+    try:
+        df = pd.read_csv(csv_path)
+        for _, row in df.iterrows():
+            elec_id = int(row['ElectrodeID'])
+            nsp_id = int(row['NSP_ID'])
+            region = str(row['Array']).strip()
+            r = int(row['GridRow'])
+            c = int(row['GridCol'])
+
+            nsp_to_elec[nsp_id] = elec_id
+            elec_to_region[elec_id] = region
+
+            if region not in region_grids:
+                region_grids[region] = np.zeros((8, 8), dtype=int)
+            region_grids[region][r, c] = elec_id
+            
+    except Exception as e:
+        print(f"  [Error] Failed to load electrode mapping from {csv_path}: {e}")
+
+    return nsp_to_elec, region_grids, elec_to_region
+
+MAPPING_CSV = REPO_ROOT / "scripts" / "electrode_port_mapping.csv"
+nsp_to_elec_global, UTAH_ELEC_GRIDS, elec_to_region_global = load_electrode_mapping(MAPPING_CSV)
+
+def _region_from_group_name(grp_name: str) -> str:
+    return grp_name.split(" (")[0].strip()
+
+def _region_grid(region_name: str):
+    aliases = {"M1 Inf": "M1i", "M1 Sup": "M1s"}
+    target = aliases.get(region_name, region_name)
+    return UTAH_ELEC_GRIDS.get(target, None)
+
+def build_elec_to_data_idx(ua_ids_1based, nsp_to_elec):
+    if ua_ids_1based is None or nsp_to_elec is None:
+        return {}
+    
+    elec_to_idx = {}
+    for ch_idx, nsp_id in enumerate(ua_ids_1based):
+        nsp_id = int(nsp_id)
+        elec_id = nsp_to_elec.get(nsp_id, -1)
+        if elec_id > 0:
+            elec_to_idx[elec_id] = ch_idx
+    
+    return elec_to_idx
+
+def render_spatial_grid(ax, data_slice, grid_elec, elec_to_idx, vmin, vmax, smoothing=False):
+    grid = np.full((8, 8), np.nan)
+    points = []
+    values = []
+    
+    for r in range(8):
+        for c in range(8):
+            elec_id = int(grid_elec[r, c])
+            idx = elec_to_idx.get(elec_id, None)
+            if idx is not None and 0 <= idx < data_slice.shape[0]:
+                val = data_slice[idx]
+                grid[r, c] = val
+                if not np.isnan(val):
+                    points.append((r, c))
+                    values.append(val)
+
+    if smoothing and len(points) >= 4:
+        filled_grid = np.copy(grid)
+        mask = np.isnan(filled_grid)
+        
+        if len(values) > 0:
+            filled_grid[mask] = np.nanmean(np.asarray(values))
+        
+        for _ in range(10):
+            prev_grid = np.copy(filled_grid)
+            for r in range(8):
+                for c in range(8):
+                    if mask[r, c]:
+                        neighbors = []
+                        if r > 0: neighbors.append(prev_grid[r-1, c])
+                        if r < 7: neighbors.append(prev_grid[r+1, c])
+                        if c > 0: neighbors.append(prev_grid[r, c-1])
+                        if c < 7: neighbors.append(prev_grid[r, c+1])
+                        if neighbors:
+                            filled_grid[r, c] = np.nanmean(np.asarray(neighbors))
+        
+        im = ax.imshow(filled_grid, cmap=COLORMAP, vmin=vmin, vmax=vmax, 
+                       origin='upper', aspect='equal', interpolation='bicubic')
+    else:
+        im = ax.imshow(grid, cmap=COLORMAP, vmin=vmin, vmax=vmax, 
+                       origin='upper', aspect='equal')
+    
+    return im
 
 # Layout knobs (passed into stacked_heatmaps_plus_behv)
 BEH_RATIO = 0.0               # <- no behavior rows in the new NPZ
@@ -361,6 +464,80 @@ def main():
                     probe_gap_ratio=PROBE_GAP_RATIO,
                     probe_width_ratio=PROBE_WIDTH_RATIO,
                 )
+
+        # -----------------------------------------------------------------
+        # FIG 5: SPATIAL GIFS (FIRING RATES)
+        # -----------------------------------------------------------------
+        if UA_med.size and UA_rel_t.size and ua_ids_1based is not None:
+            gif_dir = current_fig_root / "GIFs"
+            gif_dir.mkdir(parents=True, exist_ok=True)
+            
+            elec_to_idx = build_elec_to_data_idx(ua_ids_1based, nsp_to_elec_global)
+            
+            # Find the groups
+            u_regions = set()
+            for ch_idx, nsp_id in enumerate(ua_ids_1based):
+                elec_id = nsp_to_elec_global.get(int(nsp_id), -1)
+                reg = elec_to_region_global.get(elec_id, None)
+                if reg:
+                    u_regions.add(reg)
+            
+            # Define GIF time points (e.g. every 10ms for smooth playing)
+            t_min = UA_rel_t[0]
+            t_max = UA_rel_t[-1]
+            t_step = 10.0
+            gif_time_pts = np.arange(t_min, t_max + t_step, t_step)
+            
+            vmin = VMIN_UA
+            vmax = VMAX_UA
+            
+            for region_name in ["SMA", "PMd", "M1i", "M1s"]:
+                if region_name not in u_regions:
+                    continue
+                grid_elec = _region_grid(region_name)
+                if grid_elec is None:
+                    continue
+
+                safe_region = region_name.replace(' ', '_')
+                
+                render_modes = [('blocky', False), ('smoothed', True)]
+                
+                for mode_label, use_smoothing in render_modes:
+                    frames = []
+                    print(f"    Generating FR GIF ({mode_label}) for {region_name} ({len(gif_time_pts)} frames)...")
+                    
+                    fig_gif, ax_gif = plt.subplots(figsize=(6, 5))
+                    
+                    for t_target in gif_time_pts:
+                        t_bin_idx = int(np.argmin(np.abs(UA_rel_t - t_target)))
+                        t_actual = float(UA_rel_t[t_bin_idx])
+                        
+                        ax_gif.clear()
+                        im = render_spatial_grid(ax_gif, UA_med[:, t_bin_idx], grid_elec, elec_to_idx, vmin, vmax, smoothing=use_smoothing)
+                        
+                        ax_gif.set_title(f"{region_name} | Firing Rate ({mode_label.capitalize()})\nT = {t_actual:.0f} ms", fontsize=12)
+                        ax_gif.set_xticks(np.arange(8))
+                        ax_gif.set_yticks(np.arange(8))
+                        ax_gif.set_xticklabels(np.arange(1, 9), fontsize=8)
+                        ax_gif.set_yticklabels(np.arange(1, 9), fontsize=8)
+                        ax_gif.set_ylabel("Row", fontsize=10)
+                        ax_gif.set_xlabel("Col", fontsize=10)
+                        
+                        if not fig_gif.axes[1:]:
+                            fig_gif.colorbar(im, ax=ax_gif, label="Δ Firing Rate")
+                            
+                        buf = io.BytesIO()
+                        plt.savefig(buf, format='png', dpi=80)
+                        buf.seek(0)
+                        frames.append(imageio.v3.imread(buf))
+
+                    plt.close(fig_gif)
+
+                    if frames:
+                        out_name = f"spatial_heatmap_FR_{base_fn}_{safe_region}_{mode_label}.gif"
+                        out_path = gif_dir / out_name
+                        imageio.mimsave(out_path, frames, fps=10)
+                        print(f"    Saved FR GIF -> {out_path.name}")
 
         print(f"[plot] done: {peri_path.name}")
 

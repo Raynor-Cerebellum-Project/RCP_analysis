@@ -93,6 +93,12 @@ def main():
     # 2) Find sessions and load data from each Intan folder
     sess_folders = rcp.list_intan_sessions(INTAN_ROOT)
     print(f"Found Intan sessions: {len(sess_folders)}")
+
+    # Build mapping from session name to Movement_Trigger
+    sess_names = [s.name for s in sess_folders]
+    sess2idx, idx2sess = rcp.build_session_index_map(sess_names)
+    idx2trigger = rcp.get_metadata_mapping(METADATA_CSV, "Intan_File", "Movement_Trigger")
+    sess2trigger = {idx2sess[i]: idx2trigger.get(i, "").strip().lower() for i in idx2sess}
     
     for sess in sess_folders[:]: # Can tweak here to isolate sessions
         # 3) Extract stim sessions and aux channels
@@ -147,19 +153,36 @@ def main():
         
         # block_bounds_samples: shape (# stim blocks, 2) in absolute samples
         block_bounds = stim_ext_arrays.get("block_bounds_samples")
+        trigger_pairs = stim_ext_arrays.get("trigger_pairs") # (n_pulses, 2)
         stim_channels = stim_ext_arrays['active_channels']
 
         rec_artif_removed = rec_ref  # fallback
         fs_nprw = rec_reordered.get_sampling_frequency()
         n_total = rec_reordered.get_num_samples()
         
+        movement_trigger = sess2trigger.get(sess.name, "")
+        is_sig_gen = (movement_trigger == "sig gen")
+        
         dur_ms = None
-        if block_bounds is not None and block_bounds.size:
+        if is_sig_gen and trigger_pairs is not None and trigger_pairs.size:
+            print(f"[{sess.name}] detected sig gen paradigm: using per-pulse blanking.")
+            pulse_onsets = trigger_pairs[:, 0] # Use individual pulses
+            
+            # Blank around each pulse
+            rec_artif_removed = si.preprocessing.remove_artifacts(
+                rec_ref,
+                list_triggers=pulse_onsets.tolist(),
+                ms_before=ARTRMV_MS_BEFORE,
+                ms_after=ARTRMV_TAIL_MS,
+                mode="zeros",
+            )
+            dur_ms = 0.0 # Not really a single duration
+            
+        elif block_bounds is not None and block_bounds.size:
             starts_samp = block_bounds[:, 0]
             ends_samp   = block_bounds[:, 1]
 
             valid = (ends_samp > starts_samp) & (starts_samp >= 0) & (starts_samp < n_total)
-            # TODO if this is already checked in extract stim, isn't it redundant?
             starts_samp = starts_samp[valid]
             ends_samp   = ends_samp[valid]
 
