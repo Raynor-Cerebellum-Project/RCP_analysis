@@ -2,18 +2,20 @@ clear; close all; clc;
 addpath(genpath(fullfile('..', 'functions')));
 
 %% --- Setup Session and Paths ---
-session = 'BL_RW_003_Session_1';
+session = 'Nike/20260304_NRR_RW020_Fastig';
+[~, session_name] = fileparts(session);
+
 fr_method = 'pca';  % Options: 'local' or 'pca'
 [base_root, code_root, base_folder] = set_paths_cullen_lab(session);
 
 intan_folder     = fullfile(base_folder, 'Intan');
 cal_folder       = fullfile(base_folder, 'Calibrated');
 fig_folder         = fullfile(base_folder, 'Figures', 'Neural');
-metadata_csv_path     = fullfile(base_folder, 'Metadata', [session, '_metadata.csv']);
-raw_metrics_path   = fullfile(base_folder, 'Checkpoints', [session, '_raw_metrics_all.mat']);
-summary_with_fr_path       = fullfile(base_folder, 'Checkpoints', [session, '_summarized_metrics.mat']);
-merged_baseline_with_fr_path = fullfile(base_folder, 'Checkpoints', [session, '_merged_baseline.mat']);
-raw_metrics_with_fr_path        = fullfile(base_folder, 'Checkpoints', [session, '_raw_metrics_all_with_fr.mat']);
+metadata_csv_path     = fullfile(base_folder, 'Metadata', [session_name, '_metadata.csv']);
+raw_metrics_path   = fullfile(base_folder, 'Checkpoints', [session_name, '_raw_metrics_all.mat']);
+summary_with_fr_path       = fullfile(base_folder, 'Checkpoints', [session_name, '_summarized_metrics.mat']);
+merged_baseline_with_fr_path = fullfile(base_folder, 'Checkpoints', [session_name, '_merged_baseline.mat']);
+raw_metrics_with_fr_path        = fullfile(base_folder, 'Checkpoints', [session_name, '_raw_metrics_all_with_fr.mat']);
 
 save_figs = false;  % Set to false to skip saving .fig files
 show_figs = false;
@@ -37,6 +39,10 @@ switch session
         EndPoint_pos = 41; EndPoint_neg = -33;
         baseline_file_nums = [4, 11, 16];
         trial_indices = [6, 7, 8, 9, 12, 13, 14, 18]; %9 should have stim but doesn't
+    case 'Nike/20260304_NRR_RW020_Fastig'
+        EndPoint_pos = 30; EndPoint_neg = -30;
+        baseline_file_nums = [1, 6];
+        trial_indices = [2, 3, 4, 5]; %9 should have stim but doesn't
     otherwise
         EndPoint_pos = 30; EndPoint_neg = -30;
 end

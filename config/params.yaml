@@ -1,11 +1,7 @@
 paths:
-  data_root: "Y:/Current Project Databases - NHP/2025 Cerebellum prosthesis"
-  location: "Nike/20260116_NRR_RW012"
-  session: "NRR_RW012"
-  # location: "Nike/20260226_NRR_RW019"
-  # session: "NRR_RW019"
-  # location: "Nike/20260202_NRR_RW015"
-  # session: "NRR_RW015"
+  data_root: "/home/bryan/mnt/cullen_data/Current Project Databases - NHP/2025 Cerebellum prosthesis"
+  location: "Nike/20260202_NRR_RW015"
+  session: "NRR_RW015"
   geom_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
   
 kinematics:
@@ -22,6 +18,7 @@ preprocessing:
 
 # ---- Spike preprocessing ----
 highpass_hz: 300.0
+lowpass_hz: 10000.0
 
 probes:
   UA: 
@@ -71,8 +68,8 @@ NPRW_rate_est:
 
 # ---- BR firing rate (threshold MUA) ----
 UA_rate_est:
-  bin_ms: 20.0          # bin width for counts
-  sigma_ms: 20.0       # Gaussian kernel std
+  bin_ms: 50.0          # bin width for counts
+  sigma_ms: 50.0       # Gaussian kernel std
   detect_threshold: 3
   peak_sign: "neg"
   remove_ms_before: 5.0

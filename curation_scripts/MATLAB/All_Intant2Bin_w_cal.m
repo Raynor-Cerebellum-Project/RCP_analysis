@@ -62,6 +62,16 @@ for i = neuropixel_index
     Data.(Data.ChannelList{i}) = zeros();
 end
 
+nFiles = length(intan_files);
+nChannels = 128;
+
+% read first file to get sample size
+read_Intan_RHS2000_file(intan_files{1});
+samples_per_file = size(stim_data,2);
+
+Stim_data = zeros(nChannels, samples_per_file * nFiles, 'int16');
+neural_data = zeros(nChannels, samples_per_file * nFiles, 'int16');
+
 neural_data = [];
 Stim_data = [];
 for intan_file_index = 1:length(intan_files)
@@ -69,33 +79,40 @@ for intan_file_index = 1:length(intan_files)
     disp(['Processing Intan file: ' intan_file])
     
     read_Intan_RHS2000_file(intan_file);  % populates amplifier_data and board_adc_data
+    samples_per_file = size(stim_data,2);
+    
+    start_idx = (intan_file_index-1)*samples_per_file + 1;
+    end_idx   = intan_file_index*samples_per_file;
 
+    Stim_data(:,start_idx:end_idx) = int16(stim_data(1:128,:));
+%     neural_data(:,start_idx:end_idx) = int16(amplifier_data(1:128,:));
+    
     fwrite(fileID, int16(amplifier_data(neuropixel_index,:)), 'int16');  % optional raw binary write
     
     session_triger = [session_triger board_adc_data(1:2,:)];  % if needed
 
     % Append neural data
-    if nChannelsNpxl == "128"
-        neural_data = [neural_data, amplifier_data(1:128,:)];  % concatenate across time
-
-        % Append stim data from desired ADC channel (e.g., channel 3)
-        Stim_data = [Stim_data, stim_data(1:128,:)];
-
-        % Optional: populate Data struct
-        for i = 1:128
-            analog = amplifier_data(i,:);
-            Data.(strcat('Ch', num2str(i))) = [Data.(strcat('Ch', num2str(i))) analog];
-        end
-    elseif nChannelsNpxl == "64"
-        neural_data = [neural_data, amplifier_data(1:64,:)];
-
-        % Populate downsampled version into Data
-        for i = neuropixel_index
-            analog = amplifier_data(i,:);
-            analog = downsample(analog, 30, 10);  % optional
-            Data.(Data.ChannelList{i}) = [Data.(Data.ChannelList{i}) analog];
-        end
-    end
+%     if nChannelsNpxl == "128"
+%         neural_data = [neural_data, amplifier_data(1:128,:)];  % concatenate across time
+% 
+%         % Append stim data from desired ADC channel (e.g., channel 3)
+%         Stim_data = [Stim_data, stim_data(1:128,:)];
+% 
+%         % Optional: populate Data struct
+%         for i = 1:128
+%             analog = amplifier_data(i,:);
+%             Data.(strcat('Ch', num2str(i))) = [Data.(strcat('Ch', num2str(i))) analog];
+%         end
+%     elseif nChannelsNpxl == "64"
+%         neural_data = [neural_data, amplifier_data(1:64,:)];
+% 
+%         % Populate downsampled version into Data
+%         for i = neuropixel_index
+%             analog = amplifier_data(i,:);
+%             analog = downsample(analog, 30, 10);  % optional
+%             Data.(Data.ChannelList{i}) = [Data.(Data.ChannelList{i}) analog];
+%         end
+%     end
 end
 
 Data.Neural = neural_data;

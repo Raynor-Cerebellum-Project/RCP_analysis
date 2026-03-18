@@ -148,7 +148,7 @@ def main():
         rec_reordered = rcp.reorder_recording_to_geometry(rec, intan_probe_mapping)
         
         # Local CMR
-        rec_hp = spre.highpass_filter(rec_reordered, freq_min=float(PARAMS.highpass_hz))
+        rec_hp = spre.bandpass_filter(rec_reordered, freq_min=float(PARAMS.highpass_hz), freq_max=(PARAMS.lowpass_hz))
         rec_ref = spre.common_reference(rec_hp, reference="local", operator="median", local_radius=(RADII[0], RADII[1]))
         
         # block_bounds_samples: shape (# stim blocks, 2) in absolute samples

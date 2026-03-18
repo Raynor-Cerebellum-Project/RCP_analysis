@@ -16,6 +16,7 @@ class experimentParams:
 
     # processing + per-probe/session config
     highpass_hz: float = 300.0
+    lowpass_hz: float = 10000.0
     probes: dict[str, dict[str, Any]] = field(default_factory=dict)
     sessions: dict[str, Any] = field(default_factory=dict)
 
@@ -77,6 +78,7 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
         geom_mat_rel=geom_mat_rel,
 
         highpass_hz=float(cfg.get("highpass_hz", 300.0)),
+        lowpass_hz=float(cfg.get("lowpass_hz", 10000.0)),
         probes=cfg.get("probes", {}) or {},
         sessions=cfg.get("sessions", {}) or {},
 
