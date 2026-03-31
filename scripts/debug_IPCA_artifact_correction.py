@@ -670,6 +670,10 @@ def run_ipca_debug(
 
     micro_signal_array = micro_signal_array[:pulse_counter]
 
+    if pulse_counter == 0:
+        print(f"Warning: No valid IPCA micro-windows found! (pulse_counter=0 on channel {target_ch})")
+        return
+
     if drift_logs:
         print("\n--- Drift Logs ---")
         for entry in drift_logs:
@@ -827,7 +831,7 @@ def run_ipca_debug(
                 )
 
     # --- §5  Full-trace reconstruction and summary figure ---
-    # Columns: Raw | Exp-removed | IPCA template | Corrected | BPF 300-10 kHz
+    # Columns: Raw | (After Exp Subtraction) | IPCA template | Corrected | BPF 300-10 kHz
 
     def _bandpass(sig, lo, hi, fs_hz):
         sos = butter(4, [lo / (fs_hz / 2), hi / (fs_hz / 2)], btype='band', output='sos')
@@ -903,8 +907,8 @@ def run_ipca_debug(
         print(f"Saved: {viz_path}")
 
     # --- §5  Full-trace reconstruction and summary figure ---
-    # Columns: Raw | After IPCA | IPCA Template | Final Corrected | BPF 300-10 kHz
-    # For NPRW: Final = IPCA + Exp subtraction.  For UA: Final = IPCA only.
+    # Columns: Raw | (After Exp Subtraction) | After IPCA | Final Corrected | BPF 300-10 kHz
+    # For NPRW: Final = IPCA + (optional Exp subtraction).  For UA: Final = IPCA only.
 
     def _bandpass(sig, lo, hi, fs_hz):
         sos = butter(4, [lo / (fs_hz / 2), hi / (fs_hz / 2)], btype='band', output='sos')
@@ -914,10 +918,17 @@ def run_ipca_debug(
         0, len(valid_stims) - 1, min(trials_plot, len(valid_stims)), dtype=int,
     )
     time_axis = np.arange(fw_start, fw_end) / fs * 1000
-    col_labels = ["Raw Signal", "After Exp Subtraction",
-                  "IPCA Artifact Template", "Corrected Signal",
-                  "BPF 300–10kHz (Corrected)"]
-    n_cols = 5
+    if exp_subtract:
+        col_labels = ["Raw Signal", "After Exp Subtraction",
+                      "IPCA Artifact Template", "Corrected Signal",
+                      "BPF 300–10kHz (Corrected)"]
+        row_colors = ["k", "darkorange", "r", "b", "purple"]
+    else:
+        col_labels = ["Raw Signal",
+                      "IPCA Artifact Template", "Corrected Signal",
+                      "BPF 300–10kHz (Corrected)"]
+        row_colors = ["k", "r", "b", "purple"]
+    n_cols = len(col_labels)
 
     fig, axes = plt.subplots(
         len(plot_idxs), n_cols,
@@ -929,14 +940,21 @@ def run_ipca_debug(
 
     for r, ti in enumerate(plot_idxs):
         bpf_sig = _bandpass(full_corr_array[ti], 300.0, 10000.0, fs)
-        row_data = [
-            full_orig_array[ti],       # col 0: true raw
-            full_raw_array[ti],        # col 1: after exp subtraction
-            full_artifact_array[ti],   # col 2: IPCA template
-            full_corr_array[ti],       # col 3: fully corrected
-            bpf_sig,                   # col 4: BPF of corrected
-        ]
-        row_colors = ["k", "darkorange", "r", "b", "purple"]
+        if exp_subtract:
+            row_data = [
+                full_orig_array[ti],       # col 0: true raw
+                full_raw_array[ti],        # col 1: after exp subtraction
+                full_artifact_array[ti],   # col 2: IPCA template
+                full_corr_array[ti],       # col 3: fully corrected
+                bpf_sig,                   # col 4: BPF of corrected
+            ]
+        else:
+            row_data = [
+                full_orig_array[ti],       # col 0: true raw
+                full_artifact_array[ti],   # col 1: IPCA template
+                full_corr_array[ti],       # col 2: fully corrected
+                bpf_sig,                   # col 3: BPF of corrected
+            ]
         for c, (sig, col) in enumerate(zip(row_data, row_colors)):
             ax = axes[r, c]
             ax.plot(time_axis, sig, color=col, lw=0.7)
@@ -1067,18 +1085,39 @@ if __name__ == "__main__":
 
     # target_ch = 'all' or int
 
+    # run_ipca_debug(
+    #     condition=10,
+    #     probe="UA",
+    #     trials_plot=5,
+    #     target_ch=168,
+    #     ipca_rank=10,
+    #     window_ms=(-20.0, 40.0),
+    #     pulse_window_ms=(-0.3, 0.4),
+    #     apply_hpf=False,
+    #     debug_single_pulse=True,
+    #     use_behavior_filter=False,
+    #     reference_ch=124,
+    #     plot_rank_variance=True,
+    #     plot_learning_rate_sweep=True,
+    #     exp_subtract=False,
+    #     exp_fit_guard_ms=0.1,
+    #     exp_n_tau_fits=10,
+    #     exp_tau_bounds_ms=(0.1, 20.0),
+    #     exp_tau_seed_ms=5.0,
+    # )
+
     run_ipca_debug(
         condition=10,
-        probe="UA",
+        probe="NPRW",
         trials_plot=5,
-        target_ch=168,
-        ipca_rank=10,
+        target_ch=60,
+        ipca_rank=20,
         window_ms=(-20.0, 40.0),
         pulse_window_ms=(-0.3, 0.4),
         apply_hpf=False,
         debug_single_pulse=True,
         use_behavior_filter=False,
-        reference_ch=124,
+        reference_ch=60,
         plot_rank_variance=True,
         plot_learning_rate_sweep=True,
         exp_subtract=False,

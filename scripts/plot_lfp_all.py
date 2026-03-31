@@ -18,17 +18,17 @@ import io
 
 # --- Global Plotting Configuration ---
 FIGURE_CONFIG = {
-    'process_original': False,          # The existing heatmap/trace plot
-    'process_power_spectra': False,      # PSD (Pre vs Post)
-    'process_power_vs_time': False,      # Band power vs time (all arrays overlaid)
+    'process_original': True,          # The existing heatmap/trace plot
+    'process_power_spectra': True,      # PSD (Pre vs Post)
+    'process_power_vs_time': True,      # Band power vs time (all arrays overlaid)
     'process_band_stats': False,         # (Stage 2: New) Band Power Stats (Pre vs Post)
-    'process_inter_array_coherence': False, # 4x4 inter-array coherence grid (Utah only)
+    'process_inter_array_coherence': True, # 4x4 inter-array coherence grid (Utah only)
     'process_csd': False,                # Current Source Density (CSD) Analysis
     'process_single_channel_traces': False, # Isolated multi-band trace plot for one channel 
-    'process_spectrograms': False,            # Per-channel ERSP spectrograms (Utah only)
-    'process_band_overlays': False,          # Per-channel trial overlays for one band
-    'process_spatial_heatmaps': True,       # 8x8 spatial heatmaps at key timepoints
-    'process_spatial_gif': True,            # Animated GIF of spatial heatmaps
+    'process_spectrograms': True,            # Per-channel ERSP spectrograms (Utah only)
+    'process_band_overlays': True,          # Per-channel trial overlays for one band
+    'process_spatial_heatmaps': False,       # 8x8 spatial heatmaps at key timepoints
+    'process_spatial_gif': False,            # Animated GIF of spatial heatmaps
 }
 
 y_scaler = 1

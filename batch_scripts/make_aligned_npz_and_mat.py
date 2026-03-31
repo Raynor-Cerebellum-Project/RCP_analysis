@@ -379,14 +379,14 @@ def main():
             
             if is_continuous:
                 out_dir = CONTINUOUS_STIM_ROOT
-            elif metadata_type == "GRASP":
-                out_dir = GRASP_ROOT
-            elif metadata_type == "IMU":
-                out_dir = IMU_ROOT
             elif is_control:
                 out_dir = CONTROL_ROOT
             elif is_at_rest:
                 out_dir = AT_REST_ROOT
+            elif metadata_type == "GRASP":
+                out_dir = GRASP_ROOT
+            elif metadata_type == "IMU":
+                out_dir = IMU_ROOT
             else:
                 out_dir = STIM_ROOT
 

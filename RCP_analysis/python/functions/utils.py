@@ -954,12 +954,10 @@ def bin_counts_around_stim(
     """
     window_start_ms, window_end_ms = float(win_ms[0]), float(win_ms[1])
 
-    if peaks_ms is None or len(peaks_ms) == 0:
-        return None, None, None, 0
+    if peaks_ms is None:
+        peaks_ms = {}
 
     stim_times_ms = np.asarray(stim_times_ms, float).ravel()
-    if stim_times_ms.size == 0:
-        return None, None, None, 0
 
     # Left/right edges & centers
     left_window_edges_ms: list[float] = []
