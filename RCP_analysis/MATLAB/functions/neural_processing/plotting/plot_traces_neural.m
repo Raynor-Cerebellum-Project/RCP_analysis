@@ -6,7 +6,7 @@ end
 trace_spacing = 20 * offset;
 t = linspace(-800, 1200, 2001);
 
-is_ipsi = contains(side_label, 'pos');
+is_ipsi = contains(side_label, 'ipsi');
 suffix = 'ipsi';
 if ~is_ipsi
     suffix = 'contra';
@@ -27,7 +27,7 @@ if isnumeric(raw_delay)
 elseif ischar(raw_delay)
     if strcmpi(raw_delay, 'Random')
         % --- Try to parse delay info from side_label ---
-        tokens = regexp(side_label, 'active_like_stim_(pos|neg)_(\d+)', 'tokens');
+        tokens = regexp(side_label, '(ipsi|contra)_(\d+)', 'tokens');
         if ~isempty(tokens)
             polarity = tokens{1}{1};
             delay_str_part = tokens{1}{2};
@@ -39,11 +39,11 @@ elseif ischar(raw_delay)
             warning('Could not parse delay from side_label: %s', side_label);
         end
         % --- Determine if Random baseline exists ---
-        if contains(side_label, 'pos') && isfield(base_data, 'active_like_stim_pos_nan')
-            base_side_label = 'active_like_stim_pos_nan';
+        if contains(side_label, 'ipsi') && isfield(base_data, 'ipsi_nan')
+            base_side_label = 'ipsi_nan';
             use_random_baseline = true;
-        elseif contains(side_label, 'neg') && isfield(base_data, 'active_like_stim_neg_nan')
-            base_side_label = 'active_like_stim_neg_nan';
+        elseif contains(side_label, 'contra') && isfield(base_data, 'contra_nan')
+            base_side_label = 'contra_nan';
             use_random_baseline = true;
         end
     else
@@ -66,8 +66,8 @@ if ~use_random_baseline
     base_side_label = side_label;
 end
 
-base_summary_field = [suffix '_' strrep(base_side_label, 'active_like_stim_', '') '_summary'];
-cond_summary_field = [suffix '_' strrep(side_label, 'active_like_stim_', '') '_summary'];
+base_summary_field = [base_side_label '_summary'];
+cond_summary_field = [side_label '_summary'];
 
 % === Baseline ===
 baseline_segment = base_data.(base_side_label).segments3;
@@ -289,7 +289,7 @@ stim_str = sprintf('Ch: %g | Freq: %gHz | Curr: %gμA | Dur: %gms | Delay: %s | 
 % === Save figure to ComparisonTraces directory ===
 % Get trial number from metadata (assumes BR_File holds the numeric ID)
 trial_num = meta_cond.BR_File;
-side_short = strrep(side_label, 'active_like_stim_', '');
+side_short = side_label;
 title(layout, sprintf('Condition %03d - %s', trial_num, strrep(side_label, '_', ' ')), ...
     'FontWeight', 'bold', 'FontSize', 14, 'HorizontalAlignment', 'center');
 

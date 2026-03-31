@@ -360,7 +360,7 @@ def main():
 
                     if not micro_signal_list:
                         print("[IPCA] No pulses successfully extracted, skipping correction.")
-                        rec_hp = spre.highpass_filter(rec_ns6, freq_min=float(PARAMS.highpass_hz))
+                        rec_hp = spre.bandpass_filter(rec_ns6, freq_min=float(PARAMS.highpass_hz), freq_max=(PARAMS.lowpass_hz))
                         rec_artif_removed = rec_hp
                     else:
                         micro_signal_array = np.stack(micro_signal_list) # (n_pulses, n_time, n_all_channels)

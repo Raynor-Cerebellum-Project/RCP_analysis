@@ -1,18 +1,22 @@
 %% Clearing workspace
 clear all; close all; clc;
-%%
-profile on -memory
+
 %% Setup Paths
-addpath(genpath(fullfile('..', 'functions')));
-session = 'BL_RW_003_Session_1';
+session = 'Nike/20260304_NRR_RW020_Fastig';
+[~, session_name] = fileparts(session);
+
 [base_root, code_root, base_folder] = set_paths_cullen_lab(session);
+addpath(genpath(fullfile(code_root, 'functions')));
+
 intan_folder = fullfile(base_folder, 'Intan');
 fig_folder   = fullfile(base_folder, 'Figures');
-metadata_csv     = fullfile(base_folder, 'Metadata', [session, '_metadata.csv']);
-if ~exist(fig_folder, 'dir'), mkdir(fig_folder); end
+metadata_csv = fullfile(base_folder, 'Metadata', [session_name, '_metadata.csv']);
 
+if ~exist(fig_folder, 'dir')
+    mkdir(fig_folder);
+end
 %% Find valid trials
-trial_dirs = dir(fullfile(intan_folder, 'BL_closed_loop_STIM_*'));
+trial_dirs = dir(fullfile(intan_folder, 'NRR_RW*'));
 valid_trials = {};
 for i = 1:length(trial_dirs)
     trial_name = trial_dirs(i).name;
@@ -58,7 +62,7 @@ if isempty(gcp('nocreate'))
 end
 
 %% Loop through each trial
-for i = 1:numel(valid_trials)
+for i = 2:numel(valid_trials) % TODO 1
     trial = valid_trials{i};
     trial_path = fullfile(intan_folder, trial);
     logmsg(sprintf('[%d/%d] Processing: %s', i, numel(valid_trials), trial));
@@ -167,11 +171,10 @@ end
 % Add stim flag to metadata
 T.Has_Stim = has_stim_all;
 writetable(T, metadata_csv);  % Overwrite CSV with new column
-save(fullfile(base_folder, 'Metadata', [session '_metadata_with_stim.mat']), 'T');
-
+save(fullfile(base_folder, 'Metadata', [session_name, '_metadata_with_stim.mat']), 'T');
 %% Save profiler output
-p = profile('info');
-save('profiler_data.mat', 'p');
+% p = profile('info');
+% save('profiler_data.mat', 'p');
 
 function logmsg(msg)
     fprintf('[%s] %s\n', datestr(datetime('now'), 'yyyy-mm-dd HH:MM:SS'), msg);

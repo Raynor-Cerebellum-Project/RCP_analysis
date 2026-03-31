@@ -16,13 +16,16 @@ load(filename, 'Data');
 % Constants
 fs = 1000;
 [b, a] = butter(4, 2 / (fs/2), 'high');
-Data.headYawVel_filtered = filtfilt(b, a, Data.headYawVel);
-accel = diff(Data.headYawVel) / 0.001;
+Data.headYawVel_filtered = filtfilt(b, a, Data.yaw_vel); % changed from headYawVel
+accel = diff(Data.yaw_vel) / 0.001;
+Data.headYawPos = cumtrapz(Data.headYawVel_filtered);
 
 % Loop over segment fields
 for i = 1:length(segment_fields)
     field = segment_fields{i};
-    if ~isfield(Data.segments, field), continue; end
+    if ~isfield(Data.segments, field)
+        continue
+    end
 
     Segment = Data.segments.(field);
     N = size(Segment, 1);
@@ -34,7 +37,7 @@ for i = 1:length(segment_fields)
     % Align each segment
     for s = 1:N
         % === Skip stim-based alignment for 'nan' fields ===
-        if strcmp(field, 'active_like_stim_pos_nan') || strcmp(field, 'active_like_stim_neg_nan')
+        if strcmp(field, 'ipsi') || strcmp(field, 'contra')
             segments3(s,:) = [Segment(s,1) - 800, Segment(s,1) + 1200];
             continue;
         end
@@ -129,8 +132,7 @@ for i = 1:length(segment_fields)
 
     for s = 1:N
         idx = segments3(s,:);
-        if any(idx <= 0) || idx(2) > length(Data.headYawVel), continue; end
-        % Choose which alignment to use
+        if any(idx <= 0) || idx(2) > length(Data.yaw_vel), continue; end
         % Choose which alignment to use
         if strcmp(field, 'active_like_stim_pos_nan') || strcmp(field, 'active_like_stim_neg_nan')
             idx = segments3(s,:);  % Always use original if '_nan' condition
@@ -140,7 +142,7 @@ for i = 1:length(segment_fields)
             idx = segments3(s,:);
         end
 
-        vel_seg   = Data.headYawVel(idx(1):idx(2));
+        vel_seg   = Data.yaw_vel(idx(1):idx(2));
         pos_seg   = Data.headYawPos(idx(1):idx(2));
         accel_seg = accel(idx(1):idx(2));
         vel_filt  = Data.headYawVel_filtered(idx(1):idx(2));

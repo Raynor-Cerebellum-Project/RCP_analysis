@@ -1,27 +1,28 @@
 clear all; close all; clc;
-addpath(genpath('..', 'functions'));
+addpath(genpath(fullfile('..', 'functions')));
 
 %% --- Setup Paths and Define session
-session = 'BL_RW_001_Session_1';
+session = 'Nike/20260304_NRR_RW020_Fastig';
+[~, session_name] = fileparts(session);
 % Get machine-specific root path
-base_root = set_paths();
+[base_root, code_root, base_folder] = set_paths_cullen_lab(session);
 relative_path = fullfile('Current Project Databases - NHP', ...
-                         '2025 Cerebellum prosthesis', 'Bryan', 'Data', session);
-base_folder = fullfile(base_root, relative_path);
+                         '2025 Cerebellum prosthesis', 'Bryan', 'Data', session_name);
 %%
 search_folder      = fullfile(base_folder, 'Calibrated');
 fig_folder         = fullfile(base_folder, 'Figures', 'Behavior');
-metadata_csv_path  = fullfile(base_folder, [session, '_metadata.csv']);
-raw_metrics_path   = fullfile(base_folder, 'Checkpoints', [session, '_raw_metrics_all.mat']);
-summary_path       = fullfile(base_folder, 'Checkpoints', [session, '_summarized_metrics.mat']);
-merged_baseline_path = fullfile(base_folder, 'Checkpoints', [session, '_merged_baseline.mat']);
+metadata_csv_path  = fullfile(base_folder, 'Metadata', [session_name, '_metadata.csv']);
+raw_metrics_path   = fullfile(base_folder, 'Checkpoints', [session_name, '_raw_metrics_all.mat']);
+summary_path       = fullfile(base_folder, 'Checkpoints', [session_name, '_summarized_metrics.mat']);
+merged_baseline_path = fullfile(base_folder, 'Checkpoints', [session_name, '_merged_baseline.mat']);
 
 % List all Cal and Cal_stim files
 stim_files = dir(fullfile(search_folder, '**', '*_Cal_stim.mat'));
 nonstim_files = dir(fullfile(search_folder, '**', '*_Cal.mat'));
 
 file_map = containers.Map('KeyType', 'double', 'ValueType', 'char');
-extract_br = @(name) str2double(regexp(name, 'STIM_\d+_(\d+)_Cal', 'tokens', 'once'));
+% extract_br = @(name) str2double(regexp(name, 'STIM_\d+_(\d+)_Cal', 'tokens', 'once'));
+extract_br = @(name) str2double(regexp(name, 'fastig_(\d+)_Cal', 'tokens', 'once'));
 
 % First add stim files
 for i = 1:numel(stim_files)
@@ -34,7 +35,7 @@ end
 % Add non-stim files only if not already included
 for i = 1:numel(nonstim_files)
     br = double(extract_br(nonstim_files(i).name));
-    if ~isnan(br) && ~isKey(file_map, br)
+    if ~isnan(br)
         file_map(br) = fullfile(nonstim_files(i).folder, nonstim_files(i).name);
     end
 end
@@ -55,7 +56,7 @@ trace_analysis_plot = false;
 % --- Sort trial_mat_files by BR_File number extracted from filename ---
 br_nums = zeros(length(trial_mat_files), 1);
 for i = 1:length(trial_mat_files)
-    tokens = regexp(trial_mat_files(i).name, 'STIM_\d+_(\d+)_Cal(?:_stim)?\.mat', 'tokens');
+    tokens = regexp(trial_mat_files(i).name, 'fastig_(\d+)_Cal', 'tokens');
     if ~isempty(tokens)
         br_nums(i) = str2double(tokens{1}{1});
     else
@@ -85,6 +86,13 @@ switch session
             'active_like_stim_neg_100', 'active_like_stim_neg_200'};
         baseline_file_nums = [4, 11, 16];
         trial_indices = [6, 7, 8, 9, 12, 13, 14, 18]; %9 should have stim but doesn't
+    case 'Nike/20260304_NRR_RW020_Fastig'
+        EndPoint_pos = 30; EndPoint_neg = -30;
+        baseline_file_nums = [1, 6];
+        trial_indices = [2, 3, 4];
+        at_rest_indices = [5];
+        segment_fields_random = {'both', 'ipsi' , 'contra', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
+        segment_fields = {'both', 'ipsi' , 'contra'};
     otherwise
         EndPoint_pos = 30; EndPoint_neg = -30;
 end
@@ -96,7 +104,7 @@ all_trial_indices = sort([baseline_file_nums, trial_indices]);
 
 for i = all_trial_indices
     fname = trial_mat_files(i).name;
-    tokens = regexp(fname, 'STIM_\d+_(\d+)_Cal(?:_stim)?\.mat', 'tokens');
+    tokens = regexp(fname, 'fastig_(\d+)_Cal', 'tokens');
     if isempty(tokens), warning("Couldn't parse file: %s", fname); continue; end
     br_id = str2double(tokens{1}{1});
     row_idx = find(T.BR_File == br_id);
@@ -106,7 +114,6 @@ for i = all_trial_indices
     filename = fullfile(trial_mat_files(i).folder, fname);
 
     % Decide segment fields
-    segment_fields = {'active_like_stim_pos', 'active_like_stim_neg'};
     if ismember('Stim_Delay', metadata_row.Properties.VariableNames)
         stim_delay_val = metadata_row.Stim_Delay;
         if iscell(stim_delay_val), stim_delay_val = string(stim_delay_val{1}); end
@@ -136,7 +143,7 @@ for i = all_trial_indices
     end
 end
 
-% Save all raw data
+%% Save all raw data
 save(raw_metrics_path, ...
     'raw_metrics_all', 'T', 'segment_fields', 'EndPoint_pos', 'EndPoint_neg');
 %% Merge
@@ -185,8 +192,8 @@ summary_struct = struct();
 
 % Define mapping of baseline + condition segments
 combine_map = struct( ...
-    'active_like_stim_pos_nan', {{'active_like_stim_pos', 'active_like_stim_pos_nan'}}, ...
-    'active_like_stim_neg_nan', {{'active_like_stim_neg', 'active_like_stim_neg_nan'}} ...
+    'ipsi', {{'ipsi', 'ipsi'}}, ...
+    'contra', {{'contra', 'contra'}} ...
     );
 
 % Identify random trial indices
@@ -282,8 +289,8 @@ for i = trial_indices
     meta_cond = T(T.BR_File == cond_br, :);
 
     % === Determine baseline source ===
-    has_merged = isfield(cond_data, 'active_like_stim_pos_nan') || ...
-        isfield(cond_data, 'active_like_stim_neg_nan');
+    has_merged = isfield(cond_data, 'ipsi') || ...
+        isfield(cond_data, 'contra');
 
     if has_merged
         base_data = cond_data;
@@ -300,18 +307,18 @@ for i = trial_indices
     end
 
     % Special case for Random: run multiple fixed-delay comparisons
-    if ischar(raw_delay) && strcmpi(raw_delay, 'Random')
+    if ischar(raw_delay) && strcmpi(raw_delay, 'Randomm') % TODO
         delays = [0, 100, 200];
         for delay_val = delays
-            for polarity = {'pos', 'neg'}
-                side_label = sprintf('active_like_stim_%s_%d', polarity{1}, delay_val);
+            for polarity = {'ipsi', 'contra'}
+                side_label = polarity{1}; %sprintf('%s_%d', polarity{1}, delay_val);
                 try
                     base_data = cond_data;
                     fig = plot_traces_neural(base_data, cond_data, side_label, false, ...
                         meta_cond, true, show_figs);
 
                     % === Save ===
-                    side_short = strrep(side_label, 'active_like_stim_', '');  % e.g., 'pos' or 'neg'
+                    side_short = side_label;
                     stim_str_for_file = sprintf('%dCh_%dHz_%duA_%dmsdelay_%s', ...
                         meta_cond.Channels, ...
                         meta_cond.Stim_Frequency_Hz, ...
@@ -344,15 +351,15 @@ for i = trial_indices
                 end
             end
         end
-        for polarity = {'pos', 'neg'}
-            side_label = sprintf('active_like_stim_%s', polarity{1});
+        for polarity = {'ipsi', 'contra'}
+            side_label = polarity{1};
             try
                 base_data = cond_data;
                 fig = plot_rand_condition_traces_neural(base_data, cond_data, side_label, false, ...
                     meta_cond, true, show_figs);
 
                 % === Save ===
-                side_short = strrep(side_label, 'active_like_stim_', '');  % e.g., 'pos' or 'neg'
+                side_short = side_label;  % e.g., 'pos' or 'neg'
                 trigger_clean = strrep(strtrim(meta_cond.Movement_Trigger{1}), ' ', '_');
                 stim_str_for_file = sprintf('%dCh_%dHz_%duA_%s', ...
                     meta_cond.Channels, ...
@@ -391,7 +398,7 @@ for i = trial_indices
     end
 
     % Loop over sides
-    for side = {'active_like_stim_pos', 'active_like_stim_neg'}
+    for side = {'ipsi', 'contra'}
         side_label = side{1};
         try
             fig = plot_traces_neural(base_data, cond_data, side_label, false, ...
@@ -403,7 +410,7 @@ for i = trial_indices
                 delay_value = meta_cond.Stim_Delay;
             end
             % === Save ===
-            side_short = strrep(side_label, 'active_like_stim_', '');  % e.g., 'pos' or 'neg'
+            side_short = side_label;
             trigger_clean = strrep(strtrim(meta_cond.Movement_Trigger{1}), ' ', '_');
             stim_str_for_file = sprintf('%dCh_%dHz_%duA_%dmsdelay_%s', ...
                 meta_cond.Channels, ...

@@ -5,10 +5,8 @@ function [base_root, code_root, base_folder] = set_paths_cullen_lab(session)
 
 % Get the directory where this function is stored
 this_file_path = mfilename('fullpath');
-base_root = fileparts(fileparts(fileparts(this_file_path)));  % Go up two levels
-
-% Construct relative paths
-code_root = fullfile(base_root, 'Analysis Codes');
-base_folder = fullfile(base_root, 'Data', session);
+code_root = fileparts(fileparts((this_file_path)));
+base_root = fileparts(fileparts(fileparts(fileparts(fileparts(fileparts(this_file_path))))));
+base_folder = fullfile(base_root, session);
 
 end
