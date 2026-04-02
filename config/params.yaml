@@ -1,13 +1,7 @@
 paths:
-  data_root: "Y:/Current Project Databases - NHP/2025 Cerebellum prosthesis"
-  # location: "Nike/20260116_NRR_RW012"
-  # session: "NRR_RW012"
-  # location: "Nike/20260226_NRR_RW019"
-  # session: "NRR_RW019"
-  location: "Nike/20260311_NRR_RW022"
-  session: "NRR_RW022"
-  # location: "Nike/20260202_NRR_RW015"
-  # session: "NRR_RW015"
+  data_root: "/media/bryan/Expansion"
+  location: "Nike/20260324_NRR_RW026"
+  session: "NRR_RW026"
   geom_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
   
 kinematics:
@@ -16,11 +10,11 @@ kinematics:
 
 preprocessing:
   has_BR: True
-  has_kinematics: True
+  has_kinematics: False
   has_VOG: False
   has_HR: False
   output_aligned_mat: True
-  process_only: [1, 2, 3] # Input as BR indexes, e.g. [1, 2] to only process BR_001 and BR_002
+  process_only: [] # Input as BR indexes, e.g. [1, 2] to only process BR_001 and BR_002, if process all just leave as []
 
 # ---- Spike preprocessing ----
 highpass_hz: 300.0
@@ -58,7 +52,7 @@ probes:
     ir_stream: "USB board digital input channel"
 
 # ---- chunking / parallel ----
-parallel_jobs: 2
+parallel_jobs: -1
 threads_per_worker: 1
 chunk: "4s"
 
@@ -66,7 +60,7 @@ chunk: "4s"
 NPRW_rate_est:
   bin_ms: 20.0          # bin width for counts
   sigma_ms: 20.0       # Gaussian kernel std
-  detect_threshold: 3
+  detect_threshold: 4
   peak_sign: "neg"
   remove_ms_before: 20.0
   remove_tail_ms_after: 20.0
@@ -76,7 +70,7 @@ NPRW_rate_est:
 UA_rate_est:
   bin_ms: 50.0          # bin width for counts
   sigma_ms: 50.0       # Gaussian kernel std
-  detect_threshold: 3
+  detect_threshold: 4
   peak_sign: "neg"
   remove_ms_before: 5.0
   remove_tail_ms_after: 5.0

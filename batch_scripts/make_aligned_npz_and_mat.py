@@ -69,13 +69,15 @@ def _find_aligned_DLC_for_br_idx(behv_root: Path, br_idx: int) -> tuple[Path | N
         return cam1, "cam1"
     return None, "none"
 
-def _parse_SI_peaks(peaks) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray]]:
-    peak_times: dict[int, np.ndarray] = {}
-    peak_amp: dict[int, np.ndarray] = {}
+def _parse_SI_peaks(peaks, n_channels: int) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray]]:
+    peak_times: dict[int, np.ndarray] = {i: np.array([], dtype=np.int64) for i in range(n_channels)}
+    peak_amp: dict[int, np.ndarray] = {i: np.array([], dtype=np.float32) for i in range(n_channels)}
 
     ch_idx = peaks["channel_index"]
     for i in np.unique(ch_idx):
         ii = int(i)
+        if ii >= n_channels:
+            continue
         m = (ch_idx == i)
         peak_times[ii] = peaks["sample_index"][m]
         peak_amp[ii] = peaks["amplitude"][m]
@@ -143,7 +145,20 @@ def main():
         rows = list(rdr)
 
     if not rows:
-        raise SystemExit("[error] shifts CSV has no rows")
+            raise SystemExit("[error] shifts CSV has no rows")
+
+    # Filter to PROCESS_ONLY BR indices if specified
+    if PROCESS_ONLY:
+        original_count = len(rows)
+        filtered_rows = []
+        for br_idx in PROCESS_ONLY:
+            match = [r for r in rows if int(r["br_idx"]) == br_idx]
+            if not match:
+                print(f"[WARN] PROCESS_ONLY BR index {br_idx} not found in shifts CSV; skipping.")
+                continue
+            filtered_rows.extend(match)
+        print(f"[INFO] PROCESS_ONLY: {len(filtered_rows)}/{original_count} rows selected.")
+        rows = filtered_rows
 
     for row in rows:
         try:
@@ -186,7 +201,7 @@ def main():
             nprw_meta['rec_start_ms_aligned'] = nprw_meta['rec_start_ms'] - shift_ms
             nprw_meta['rec_end_ms_aligned'] = nprw_meta['rec_end_ms'] - shift_ms
             
-            nprw_peak_samps, nprw_peak_amps = _parse_SI_peaks(nprw_peaks)
+            nprw_peak_samps, nprw_peak_amps = _parse_SI_peaks(nprw_peaks, nprw_meta['n_channels'])
             nprw_peak_ms = {int(ch): samps / fs_nprw * 1000.0 - shift_ms for ch, samps in nprw_peak_samps.items()}
 
             ir_ms = nprw_npz["ir_ms"] - shift_ms
@@ -247,7 +262,7 @@ def main():
                 ua_idx_rows = np.asarray(ua_idx_rows)[perm]
 
                 # parse peaks after channel_index rewrite
-                ua_peak_samps, ua_peak_amps = _parse_SI_peaks(ua_peaks)
+                ua_peak_samps, ua_peak_amps = _parse_SI_peaks(ua_peaks, ua_meta['n_channels'])
                 ua_peak_ms   = {int(ch): samps / fs_ua * 1000.0 for ch, samps in ua_peak_samps.items()}
 
             if HAS_KINEMATICS is True:

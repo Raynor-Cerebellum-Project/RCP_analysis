@@ -98,6 +98,12 @@ def main():
             print(f"[INFO] PROCESS_ONLY: {len(filtered)}/{len(sess_folders)} sessions selected.")
             sess_folders = filtered
 
+    # TODO Set it to be automatically detecting template
+    template_dir = Path(REPO_ROOT / 'config' / "median_extremum_templates_norm.npy")
+    control_template = np.load(template_dir)
+    nbefore = np.argmin(control_template)
+    ms_before = nbefore / 30000 * 1000
+    
     for sess in sess_folders:
         # 3) Extract stim sessions and aux channels
         print(f"[RUN] session {sess.name}")
@@ -216,19 +222,22 @@ def main():
             # Force n_jobs=1 for PyTorch backend to prevent GPU memory fragmentation / OOM
             peaks = detect_peaks(
                 rec_artif_removed,
-                method="by_channel_torch",
+                method="matched_filtering",
                 method_kwargs=dict(
-                    detect_threshold=THRESH,
+                    detect_threshold=4,
                     peak_sign=PEAK_SIGN,
-                    noise_levels=noise_levels,
+                    ms_before=ms_before,
+                    prototype=control_template,
+                    radius_um=0,
                 ),
-                job_kwargs=dict(n_jobs=1),
+                job_kwargs=dict(n_jobs=-1),
             )
+            
         except Exception as exc:
             print(f"[WARN] Torch peak detection failed ({exc}). Falling back to CPU locally_exclusive...")
             peaks = detect_peaks(
                 rec_artif_removed,
-                method="by_channel",
+                method="locally_exclusive",
                 detect_threshold=THRESH,
                 peak_sign=PEAK_SIGN,
                 noise_levels=noise_levels,

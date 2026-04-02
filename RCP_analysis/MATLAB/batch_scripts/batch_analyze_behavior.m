@@ -88,11 +88,11 @@ switch session
         trial_indices = [6, 7, 8, 9, 12, 13, 14, 18]; %9 should have stim but doesn't
     case 'Nike/20260304_NRR_RW020_Fastig'
         EndPoint_pos = 30; EndPoint_neg = -30;
-        baseline_file_nums = [1, 6];
-        trial_indices = [2, 3, 4];
-        at_rest_indices = [5];
-        segment_fields_random = {'both', 'ipsi' , 'contra', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
-        segment_fields = {'both', 'ipsi' , 'contra'};
+        baseline_file_nums = [1, 7];
+        trial_indices = [2, 3, 4, 5, 6];
+        % at_rest_indices = [5];
+        segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
+        segment_fields = {'ipsi' , 'contra'};
     otherwise
         EndPoint_pos = 30; EndPoint_neg = -30;
 end
@@ -118,6 +118,9 @@ for i = all_trial_indices
         stim_delay_val = metadata_row.Stim_Delay;
         if iscell(stim_delay_val), stim_delay_val = string(stim_delay_val{1}); end
         if isnumeric(stim_delay_val), stim_delay_val = string(num2str(stim_delay_val)); end
+        if strcmpi(metadata_row.Movement_Trigger, "Rest")
+            continue
+        end
         if strcmpi(stim_delay_val, "Random")
             segment_fields = segment_fields_random;
         end
@@ -307,47 +310,52 @@ for i = trial_indices
     end
 
     % Special case for Random: run multiple fixed-delay comparisons
-    if ischar(raw_delay) && strcmpi(raw_delay, 'Randomm') % TODO
-        delays = [0, 100, 200];
-        for delay_val = delays
-            for polarity = {'ipsi', 'contra'}
-                side_label = polarity{1}; %sprintf('%s_%d', polarity{1}, delay_val);
-                try
-                    base_data = cond_data;
-                    fig = plot_traces_neural(base_data, cond_data, side_label, false, ...
-                        meta_cond, true, show_figs);
-
-                    % === Save ===
-                    side_short = side_label;
-                    stim_str_for_file = sprintf('%dCh_%dHz_%duA_%dmsdelay_%s', ...
-                        meta_cond.Channels, ...
-                        meta_cond.Stim_Frequency_Hz, ...
-                        meta_cond.Current_uA, ...
-                        delay_val, ...
-                        meta_cond.Movement_Trigger{1});
-                    % Define base name without any extension
-
-                    save_filename_base = sprintf('%s_Condition_%03d_%s_vsBaselineTraces', ...
-                        stim_str_for_file, cond_br, side_short);
-                    if save_figs
-                        % Save .fig
-                        fig_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'figFigs', [save_filename_base, '.fig']);
-                        savefig(fig, fig_save_path);
+    if ischar(raw_delay) && strcmpi(raw_delay, 'Random')
+        has_delay_subfields = isfield(cond_data, 'ipsi_0') || isfield(cond_data, 'ipsi_100') || isfield(cond_data, 'ipsi_200');
+    
+        if has_delay_subfields
+            delays = [0, 100, 200];
+            for delay_val = delays
+                for polarity = {'ipsi', 'contra'}
+                    side_label = sprintf('%s_%d', polarity{1}, delay_val);
+                    if ~isfield(cond_data, side_label), continue; end  % skip missing delays
+                    try
+                        base_data = cond_data;
+                        fig = plot_traces_neural(base_data, cond_data, side_label, false, ...
+                            meta_cond, true, show_figs);
+    
+                        % === Save ===
+                        side_short = side_label;
+                        stim_str_for_file = sprintf('%dCh_%dHz_%duA_%dmsdelay_%s', ...
+                            meta_cond.Channels, ...
+                            meta_cond.Stim_Frequency_Hz, ...
+                            meta_cond.Current_uA, ...
+                            delay_val, ...
+                            meta_cond.Movement_Trigger{1});
+                        % Define base name without any extension
+    
+                        save_filename_base = sprintf('%s_Condition_%03d_%s_vsBaselineTraces', ...
+                            stim_str_for_file, cond_br, side_short);
+                        if save_figs
+                            % Save .fig
+                            fig_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'figFigs', [save_filename_base, '.fig']);
+                            savefig(fig, fig_save_path);
+                        end
+                        % Save .png
+                        png_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'pngFigs', [save_filename_base, '.png']);
+                        print(fig, png_save_path, '-dpng', '-r300');
+                        % Save .svg
+                        set(fig, 'Renderer', 'painters');
+                        svg_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'svgFigs', [save_filename_base, '.svg']);
+                        print(fig, svg_save_path, '-dsvg', '-r300');
+    
+                        close(fig);
+                        fprintf('Saved Random Delay Comparison: %s\n', save_filename_base);
+    
+                    catch ME
+                        warning('Plot failed for Random trial %d (%s): %s', ...
+                            i, polarity{1}, ME.message);
                     end
-                    % Save .png
-                    png_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'pngFigs', [save_filename_base, '.png']);
-                    print(fig, png_save_path, '-dpng', '-r300');
-                    % Save .svg
-                    set(fig, 'Renderer', 'painters');
-                    svg_save_path = fullfile(fig_folder, 'vsBaselineTraces', 'svgFigs', [save_filename_base, '.svg']);
-                    print(fig, svg_save_path, '-dsvg', '-r300');
-
-                    close(fig);
-                    fprintf('Saved Random Delay Comparison: %s\n', save_filename_base);
-
-                catch ME
-                    warning('Plot failed for Random trial %d (%s, delay %d): %s', ...
-                        i, polarity{1}, delay_val, ME.message);
                 end
             end
         end
@@ -390,7 +398,7 @@ for i = trial_indices
                 fprintf('Saved Random Delay Comparison: %s\n', save_filename_base);
 
             catch ME
-                warning('Plot failed for Random trial %d (%s, delay %d): %s', ...
+                warning('Plot failed for Random trial %d (%s): %s', ...
                     i, polarity{1}, ME.message);
             end
         end

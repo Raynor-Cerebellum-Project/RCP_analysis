@@ -36,18 +36,23 @@ sig_labels = strings(1, n_groups - 1);
 is_ipsi = contains(side_label, 'pos');
 suffix = ternary(is_ipsi, 'ipsi', 'contra');
 
-tokens = regexp(side_label, 'active_like_stim_(pos|neg)', 'tokens');
-assert(~isempty(tokens), 'Invalid side_label: %s', side_label);
-polarity = tokens{1}{1};
+% === Metadata ===
+if contains(side_label, 'ipsi')
+    suffix = 'ipsi';
+    polarity = 'ipsi';
+else
+    suffix = 'contra';
+    polarity = 'contra';
+end
 
-base_side_label = sprintf('active_like_stim_%s_nan', polarity);
+base_side_label = sprintf('%s_nan', polarity);
 if ~isfield(base_data, base_side_label)
-    warning('Missing baseline: using original side_label');
+    warning('Missing baseline field %s: falling back to %s', base_side_label, side_label);
     base_side_label = side_label;
 end
 
 % Create delay-specific condition labels
-delay_labels = cellfun(@(s) sprintf('active_like_stim_%s_%s', polarity, s), ...
+delay_labels = cellfun(@(s) sprintf('%s_%s', polarity, s), ...
     delay_suffixes, 'UniformOutput', false);
 
 % Colors for each condition
@@ -153,7 +158,7 @@ set(gca, 'TickDir', 'out', 'FontSize', 12);
 for i = 1:n_groups
     delay_suffix = delay_suffixes{i};
     cond_label = delay_labels{i};
-    summary_label = sprintf('%s_%s_%s_summary', suffix, polarity, delay_suffix);
+    summary_label = sprintf('%s_%s_summary', polarity, delay_suffix);
 
     cond_data = cond_data_list.(cond_label);
     cond_summary = cond_data_list.(summary_label);
@@ -374,7 +379,7 @@ osc_sems  = nan(1, n_groups);
 osc_sig_labels = strings(1, n_groups - 1);
 
 for i = 1:n_groups
-    summary_field = sprintf('%s_%s_%s_summary', suffix, polarity, delay_suffixes{i});
+    summary_field = sprintf('%s_%s_summary', polarity, delay_suffixes{i});
     osc_means(i) = cond_data_list.(summary_field).oscillations_mean;
     osc_sems(i)  = sqrt(cond_data_list.(summary_field).oscillations_var);
 
@@ -413,7 +418,7 @@ fft_sems  = nan(1, n_groups);
 fft_sig_labels = strings(1, n_groups - 1);
 
 for i = 1:n_groups
-    summary_field = sprintf('%s_%s_%s_summary', suffix, polarity, delay_suffixes{i});
+    summary_field = sprintf('%s_%s_summary', polarity, delay_suffixes{i});
     fft_means(i) = cond_data_list.(summary_field).fft_power_mean;
     fft_sems(i)  = sqrt(cond_data_list.(summary_field).fft_power_var);
 
