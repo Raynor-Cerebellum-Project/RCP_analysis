@@ -503,6 +503,79 @@ def main():
 
             ts_state_char[ts_state_num == 1] = 'A'
             ts_state_char[ts_state_num == 2] = 'B'
+            
+            # --- Fallback to DLC kinematics if touchscreen signal is bad / unresponsive ---
+            if np.max(ts_state_num) == 0:
+                print(f"[touchscreen] Signal max voltage ({np.max(touchscreen_sig):.1f}) below threshold, falling back to DLC kinematics.")
+                import pandas as pd
+                
+                # Base session name without date (e.g., NRR_RW022_001) if date is present
+                sess_parts = sess.name.split('_', 1)
+                short_name = sess_parts[1] if len(sess_parts) > 1 and sess_parts[0].isdigit() else sess.name
+                
+                csv_files = list(BEHV_CKPT_ROOT.rglob(f"*{short_name}*aligned.csv"))
+                
+                if csv_files:
+                    csv_path = csv_files[0]
+                    print(f"  > Reading DLC CSV: {csv_path.name}")
+                    try:
+                        df = pd.read_csv(csv_path, header=[0, 1, 2])
+                        flat_headers = ['_'.join([str(c) for c in col if 'Unnamed' not in str(c)]).strip() for col in df.columns]
+                        df.columns = flat_headers
+                    except:
+                        df = pd.read_csv(csv_path, header=0)
+                    
+                    # Try to extract the middle finger columns for Cam 0
+                    cam_idx = 0
+                    col_y = None
+                    for i, h in enumerate(df.columns):
+                         h_str = str(h).lower()
+                         if "middle_y" in h_str and (f"cam-{cam_idx}" in h_str or f"cam{cam_idx}" in h_str or f"camera {cam_idx}" in h_str):
+                             col_y = i
+                             break
+                    if col_y is None: # fallback
+                         for i, h in enumerate(df.columns):
+                              h_str = str(h).lower()
+                              if "middle_y" in h_str and "cam" not in h_str:
+                                  col_y = i
+                                  break
+                    
+                    if col_y is not None:
+                        ser_y = pd.to_numeric(df.iloc[:, col_y], errors='coerce')
+                        dlc_fps = 100.0  # standard behavioral framing rate
+                        
+                        # Apply thresholds: Below 190 -> Target B, Above 240 -> Target A
+                        dlc_state_num = np.zeros(len(ser_y), dtype=np.int8)
+                        dlc_state_num[ser_y > 240.0] = 1 # A
+                        dlc_state_num[ser_y < 190.0] = 2 # B
+                        
+                        # We often have erratic movement or noise. Optional: filter jumps (jump > 10.0). 
+                        # However, given we just need the binary state map (and events are debounced down the pipeline), 
+                        # we can rely on just thresholding the raw position, or replicate the basic jump logic.
+                        diff = ser_y.diff().abs()
+                        valid_mask = (diff <= 10.0) & (ser_y.diff(-1).abs() <= 10.0)
+                        dlc_state_num[~valid_mask] = 0
+                        
+                        # Map 100Hz kinematics back to Blackrock fs_ts sampling rate
+                        t_dlc = np.arange(len(ser_y)) / dlc_fps
+                        t_ts = np.arange(len(touchscreen_sig)) / fs_ts
+                        
+                        idx_map = (t_ts * dlc_fps).astype(int)
+                        # Clip indices to prevent out of bounds
+                        idx_map = np.clip(idx_map, 0, len(dlc_state_num) - 1)
+                        
+                        ts_state_num = dlc_state_num[idx_map]
+                        
+                        ts_state_char = np.full(len(ts_state_num), 'N', dtype='U1')
+                        ts_state_char[ts_state_num == 1] = 'A'
+                        ts_state_char[ts_state_num == 2] = 'B'
+                        
+                        print(f"  > Reassigned from DLC. Unique kinematic states: {np.unique(ts_state_num)}")
+                    else:
+                        print("  [WARN] Could not find Camera 0 middle_y column in CSV.")
+                else:
+                     print(f"  [WARN] DLC CSV not found for session footprint: *{short_name}*aligned.csv")
+
             print("Unique touchscreen states:", np.unique(ts_state_num))
         else:
             print("[touchscreen] No touchscreen signal; leaving ts_state_* empty.")

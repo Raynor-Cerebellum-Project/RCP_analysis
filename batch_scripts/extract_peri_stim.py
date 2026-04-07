@@ -1275,11 +1275,13 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
             n_beh_sub = 0
             
         if split_targets and target_name is not None:
-            out_dir = out_dir / f"target_{target_name}"   # .../target_A
+            current_out_dir = out_dir / f"target_{target_name}"   # .../target_A
+        else:
+            current_out_dir = out_dir
             
         # save NPZ + MAT
         _save_peristim(
-            out_dir=out_dir,
+            out_dir=current_out_dir,
             target_name=target_name,
             intan_filename=intan_filename,
             br_idx=int(br_idx),
