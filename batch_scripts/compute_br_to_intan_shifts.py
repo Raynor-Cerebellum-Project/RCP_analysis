@@ -14,6 +14,7 @@ NPRW_CAMERA_SYNC_CH = int(NPRW_CFG.get("triangle_sync_ch", 1))
 UA_CFG = PARAMS.probes.get("UA")
 CAMERA_SYNC_CH = int(UA_CFG.get("camera_sync_ch", 134))
 TRIANGLE_SYNC_CH = int(UA_CFG.get("triangle_sync_ch", 138))
+PROCESS_ONLY = PARAMS.preprocessing.get("process_only")
 
 LOC_REFINE_N = 50        # like MATLAB's N
         
@@ -149,6 +150,13 @@ def main():
     intan2br = rcp.get_metadata_mapping(METADATA_CSV, "Intan_File", "BR_File")
     notes_col = rcp.get_metadata_mapping(METADATA_CSV, "Intan_File", "Notes")
     movement_trigger_col = rcp.get_metadata_mapping(METADATA_CSV, "Intan_File", "Movement_Trigger")
+
+    # Filter to PROCESS_ONLY BR indices if specified
+    if PROCESS_ONLY:
+        br_set = set(int(x) for x in PROCESS_ONLY)
+        intan2br = {k: v for k, v in intan2br.items() if int(v) in br_set}
+        print(f"[map] PROCESS_ONLY: {len(intan2br)} sessions selected.")
+
     print(f"[map] Loaded Intan→BR rows: {len(intan2br)}")
     
     # Load template

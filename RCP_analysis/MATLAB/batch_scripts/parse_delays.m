@@ -90,8 +90,8 @@ trial_mat_files = trial_mat_files(sort_idx);
 switch session
     case 'Nike/20260304_NRR_RW020_Fastig'
         EndPoint_pos = 30; EndPoint_neg = -30;
-        baseline_file_nums = [1, 6];
-        trial_indices = [2, 3, 4];
+        baseline_file_nums = [1, 7];
+        trial_indices = [2, 3, 4, 6];
         at_rest_indices = [5];
         segment_fields_random = {'both', 'ipsi', 'contra', 'ipsi_0', 'contra_0', 'ipsi_100', 'contra_100', 'ipsi_200', 'contra_200'};
         segment_fields = {'both', 'ipsi' , 'contra'};
@@ -101,7 +101,7 @@ end
 %% --- Load Metadata ---
 T = readtable(metadata_csv_path);
 %% --- Loop over each trial and analyze ---
-for trial = 4 % trial_indices
+for trial = 6% trial_indices
     fname = trial_mat_files(trial).name;
     tokens = regexp(fname, 'fastig_(\d+)_Cal', 'tokens');
     if isempty(tokens)

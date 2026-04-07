@@ -64,8 +64,6 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
 
     # ensure process_only is a list[int]
     po = pre_cfg.get("process_only", [])
-    if po is None:
-        po = []
     if not isinstance(po, list):
         raise TypeError("preprocessing.process_only must be a list (e.g. [1,2])")
     pre_cfg["process_only"] = [int(x) for x in po]

@@ -4,41 +4,6 @@ import RCP_analysis as rcp
 
 from RCP_analysis.python.functions.config_loading import *
 
-# ----------------------------------------------------------------------------------------------------------------------
-# Helper Functions
-# ----------------------------------------------------------------------------------------------------------------------
-
-def _dedup_peaks(
-    peaks: dict[int, np.ndarray],
-    amps: dict[int, np.ndarray],
-    dedup_ms: float = 0.5,
-    max_cluster_ms: float = 1.0,
-):
-    """Deduplicate peaks per (segment, channel), keeping strongest within short windows"""
-    peaks_dedup = {}
-    amps_dedup = {}
-    for ch in peaks:
-        t_ch = peaks[ch]
-        a_ch = amps[ch]
-        num_peaks = len(t_ch)
-        keep = np.zeros(num_peaks, dtype = bool)
-        cluster_start = 0 # index counter
-        for i in range(1, num_peaks):
-            isi = t_ch[i] - t_ch[i - 1]
-            if isi > dedup_ms or (t_ch[i] - t_ch[cluster_start]) > max_cluster_ms: # If isi violation or cluster too big
-                best = cluster_start + np.argmax(a_ch[cluster_start: i]) # Find max and give index
-                keep[best] = True # Keep this spike
-                cluster_start = i
-
-        # finalize last cluster
-        if num_peaks > 0:
-            best = cluster_start + np.argmax(a_ch[cluster_start: num_peaks])
-            keep[best] = True
-            
-        peaks_dedup[ch] = peaks[ch][np.argwhere(keep == True).flatten()]
-        amps_dedup[ch] = amps[ch][np.argwhere(keep == True).flatten()]
-    return peaks_dedup, amps_dedup
-
 SHIFTS_CSV = METADATA_ROOT / "br_to_intan_shifts.csv"
 
 # Config
@@ -1359,6 +1324,15 @@ def main():
     grasp_files = sorted(GRASP_ROOT.glob("aligned__*.npz"))
     imu_files = sorted(IMU_ROOT.glob("aligned__*.npz"))
     continuous_stim_files = sorted(CONTINUOUS_STIM_ROOT.glob("aligned__*.npz"))
+    
+    if PROCESS_ONLY:
+        keep = set(int(x) for x in PROCESS_ONLY)
+        control_files        = [f for f in control_files        if (m := re.search(r"BR_(\d+)", f.name)) and int(m.group(1)) in keep]
+        stim_files           = [f for f in stim_files           if (m := re.search(r"BR_(\d+)", f.name)) and int(m.group(1)) in keep]
+        at_rest_files        = [f for f in at_rest_files        if (m := re.search(r"BR_(\d+)", f.name)) and int(m.group(1)) in keep]
+        grasp_files          = [f for f in grasp_files          if (m := re.search(r"BR_(\d+)", f.name)) and int(m.group(1)) in keep]
+        imu_files            = [f for f in imu_files            if (m := re.search(r"BR_(\d+)", f.name)) and int(m.group(1)) in keep]
+        continuous_stim_files = [f for f in continuous_stim_files if (m := re.search(r"BR_(\d+)", f.name)) and int(m.group(1)) in keep]
     
     if not any([control_files, stim_files, at_rest_files, grasp_files, imu_files, continuous_stim_files]):
         raise SystemExit(f"[error] No combined aligned NPZs found at {ALIGNED_CKPT_ROOT}")

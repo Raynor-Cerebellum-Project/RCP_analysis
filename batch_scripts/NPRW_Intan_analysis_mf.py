@@ -98,6 +98,12 @@ def main():
             print(f"[INFO] PROCESS_ONLY: {len(filtered)}/{len(sess_folders)} sessions selected.")
             sess_folders = filtered
 
+    # TODO Set it to be automatically detecting template
+    template_dir = Path(REPO_ROOT / 'config' / "median_extremum_templates_norm.npy")
+    control_template = np.load(template_dir)
+    nbefore = np.argmin(control_template)
+    ms_before = nbefore / 30000 * 1000
+    
     for sess in sess_folders:
         # 3) Extract stim sessions and aux channels
         print(f"[RUN] session {sess.name}")
@@ -124,22 +130,7 @@ def main():
         # rec_ir = spre.unsigned_to_signed(rec_ir)  # UInt16 -> int16
         
         fs_ir = float(rec_ir.sampling_frequency)
-<<<<<<< HEAD
-        # Select only the IR beam channel (DIGITAL-IN-01).
-        # The digital input stream may also contain DIGITAL-IN-03 (stim pulse sync
-        # during continuous stimulation). Using .squeeze() on a multi-channel stream
-        # and then .ravel() in detect_IR_crossings would interleave both channels,
-        # producing 100K+ false crossings.
-        ir_ch_ids = list(rec_ir.get_channel_ids())
-        IR_BEAM_CH = "DIGITAL-IN-01"
-        if IR_BEAM_CH in ir_ch_ids:
-            sig = np.asarray(rec_ir.get_traces(channel_ids=[IR_BEAM_CH])).squeeze()
-        else:
-            print(f"[IR] {IR_BEAM_CH} not found in {ir_ch_ids}; falling back to first channel ({ir_ch_ids[0]})")
-            sig = np.asarray(rec_ir.get_traces(channel_ids=[ir_ch_ids[0]])).squeeze()
-=======
         sig = np.asarray(rec_ir.get_traces(channel_ids=[IR_CHANNEL])).squeeze()
->>>>>>> fd626eb29e593a0d755b18e89452818316eeb46b
         if sig is None or sig.size == 0:
             print(f"[IR] Intan={sess}: empty IR signal.")
 
@@ -231,19 +222,22 @@ def main():
             # Force n_jobs=1 for PyTorch backend to prevent GPU memory fragmentation / OOM
             peaks = detect_peaks(
                 rec_artif_removed,
-                method="by_channel_torch",
+                method="matched_filtering",
                 method_kwargs=dict(
-                    detect_threshold=THRESH,
+                    detect_threshold=4,
                     peak_sign=PEAK_SIGN,
-                    noise_levels=noise_levels,
+                    ms_before=ms_before,
+                    prototype=control_template,
+                    radius_um=0,
                 ),
-                job_kwargs=dict(n_jobs=1),
+                job_kwargs=dict(n_jobs=-1),
             )
+            
         except Exception as exc:
             print(f"[WARN] Torch peak detection failed ({exc}). Falling back to CPU locally_exclusive...")
             peaks = detect_peaks(
                 rec_artif_removed,
-                method="by_channel",
+                method="locally_exclusive",
                 detect_threshold=THRESH,
                 peak_sign=PEAK_SIGN,
                 noise_levels=noise_levels,

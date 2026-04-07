@@ -41,8 +41,11 @@ switch session
         trial_indices = [6, 7, 8, 9, 12, 13, 14, 18]; %9 should have stim but doesn't
     case 'Nike/20260304_NRR_RW020_Fastig'
         EndPoint_pos = 30; EndPoint_neg = -30;
-        baseline_file_nums = [1, 6];
-        trial_indices = [2, 3, 4, 5]; %9 should have stim but doesn't
+        baseline_file_nums = [1, 7];
+        trial_indices = [2, 3, 4, 6];
+        at_rest_indices = [5];
+        % segment_fields_random = {'both', 'ipsi', 'contra', 'ipsi_0', 'contra_0', 'ipsi_100', 'contra_100', 'ipsi_200', 'contra_200'};
+        segment_fields = {'both', 'ipsi' , 'contra'};
     otherwise
         EndPoint_pos = 30; EndPoint_neg = -30;
 end

@@ -103,6 +103,8 @@ class IPCACorrectedRecording(BaseRecording):
 SHIFT_CSV = METADATA_ROOT / "br_to_intan_shifts.csv"
 BR_SESSION_FOLDERS = rcp.list_br_sessions(BR_ROOT)
 
+PROCESS_ONLY = PARAMS.preprocessing.get("process_only")
+
 RATES = PARAMS.UA_rate_est
 BIN_MS     = RATES.get("bin_ms")
 SIGMA_MS   = RATES.get("sigma_ms")
@@ -110,6 +112,7 @@ THRESH     = RATES.get("detect_threshold")
 PEAK_SIGN  = RATES.get("peak_sign")
 ARTRMV_MS_BEFORE = float(RATES.get("remove_ms_before", 5.0))
 ARTRMV_TAIL_MS   = float(RATES.get("remove_tail_ms_after", 5.0))
+
 
 # --- IPCA Artifact Correction Settings ---
 USE_IPCA_CORRECTION  = True
@@ -131,11 +134,11 @@ HR_CH = int(UA_CFG.get("HR_ch", 136))
 TRIANGLE_SYNC_CH = int(UA_CFG.get("triangle_sync_ch", 138))
 TOUCHSCREEN_CH = int(UA_CFG.get("touchscreen_ch", 139))
 
+
 TOUCHSCREEN_THRES_A = 1.0e6
 TOUCHSCREEN_THRES_B = 3.0e6
 
 UA_CKPT_OUT = UA_CKPT_ROOT
-
 
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
@@ -183,20 +186,34 @@ def load_anchor_for_session(out_base: Path, session: str) -> tuple[int, float]:
 
 def main():
     sess_folders = BR_SESSION_FOLDERS
-    
+
     print("Found session folders:", len(sess_folders))
-    for sess in sess_folders[:]: # Can tweak here to isolate sessions
+
+    # Filter to PROCESS_ONLY BR indices if specified
+    if PROCESS_ONLY:
+        original_count = len(sess_folders)
+        filtered = []
+        for br_idx in PROCESS_ONLY:
+            match = [s for s in sess_folders if int(s.name.split('_')[-1]) == br_idx]
+            if not match:
+                print(f"[WARN] PROCESS_ONLY BR index {br_idx} not found in session folders; skipping.")
+                continue
+            filtered.extend(match)
+        print(f"[INFO] PROCESS_ONLY: {len(filtered)}/{original_count} sessions selected.")
+        sess_folders = filtered
+
+    for sess in sess_folders:
         print(f"=== Session: {sess.name} ===")
         
         # Check if outputs already exist
         out_dir = UA_CKPT_OUT / f"pp__{sess.name}__NS6"
         out_npz = UA_CKPT_OUT / f"rates__{sess.name}__bin{int(BIN_MS)}ms_sigma{int(SIGMA_MS)}ms.npz"
         
-        if out_dir.exists() and out_npz.exists():
-            print(f"[SKIP] Both outputs already exist for {sess.name}")
-            print(f"       - Preprocessed: {out_dir}")
-            print(f"       - Rates: {out_npz}")
-            continue
+        # if out_dir.exists() and out_npz.exists():
+        #     print(f"[SKIP] Both outputs already exist for {sess.name}")
+        #     print(f"       - Preprocessed: {out_dir}")
+        #     print(f"       - Rates: {out_npz}")
+        #     continue
         
         temp_bin_path = None # Initialize temp_bin_path
         touchscreen_sig, hr_sig, vog_sig, meta_ns5, meta_ns2 = rcp.extract_br_aux_streams_npz(sess, UA_AUX_DATA, CAMERA_SYNC_CH, TRIANGLE_SYNC_CH, TOUCHSCREEN_CH, HR_CH, VOG_CH) # Extract sync pulses and stuff
@@ -456,12 +473,10 @@ def main():
             
         print(f"[{sess.name}] (ns6) saved preprocessed -> {out_dir}")
         
-        del rec_artif_removed
+        # del rec_artif_removed
         if 'rec_corr_mem' in locals(): del rec_corr_mem
         if 'rec_hp' in locals(): del rec_hp
         gc.collect()
-                    
-        rec_artif_removed = si.load_extractor(out_dir)
         
         n_seg = rec_artif_removed.get_num_segments()
         # Detect peaks
@@ -473,16 +488,18 @@ def main():
             peaks = detect_peaks(
                 rec_artif_removed,
                 method="by_channel_torch",
-                detect_threshold=THRESH,
-                peak_sign=PEAK_SIGN,
-                noise_levels=noise_levels,
-                n_jobs=1,
+                method_kwargs=dict(
+                    detect_threshold=THRESH,
+                    peak_sign=PEAK_SIGN,
+                    noise_levels=noise_levels,
+                ),
+                job_kwargs=dict(n_jobs=1),
             )
         except Exception as exc:
             print(f"[WARN] Torch peak detection failed ({exc}). Falling back to CPU locally_exclusive...")
             peaks = detect_peaks(
                 rec_artif_removed,
-                method="locally_exclusive",
+                method="by_channel",
                 detect_threshold=THRESH,
                 peak_sign=PEAK_SIGN,
                 noise_levels=noise_levels,

@@ -27,14 +27,23 @@ if isnumeric(raw_delay)
 elseif ischar(raw_delay)
     if strcmpi(raw_delay, 'Random')
         % --- Try to parse delay info from side_label ---
-        tokens = regexp(side_label, '(ipsi|contra)_(\d+)', 'tokens');
+        tokens = regexp(side_label, '^(ipsi|contra)(?:_(\d+|nan))?$', 'tokens', 'ignorecase');
         if ~isempty(tokens)
             polarity = tokens{1}{1};
-            delay_str_part = tokens{1}{2};
-            delay = str2double(delay_str_part);
-            delay_str = sprintf('%dms', delay);
+            if numel(tokens{1}) >= 2
+                delay_part = tokens{1}{2};
+            else
+                delay_part = '';  % no suffix → treat as NaN delay
+            end
+            if isempty(delay_part) || strcmpi(delay_part, 'nan')
+                delay = NaN;
+                delay_str = 'NaNms';
+            else
+                delay = str2double(delay_part);
+                delay_str = sprintf('%dms', delay);
+            end
         else
-            delay = 0;
+            delay = NaN;
             delay_str = 'NaNms';
             warning('Could not parse delay from side_label: %s', side_label);
         end
