@@ -124,7 +124,22 @@ def main():
         # rec_ir = spre.unsigned_to_signed(rec_ir)  # UInt16 -> int16
         
         fs_ir = float(rec_ir.sampling_frequency)
+<<<<<<< HEAD
+        # Select only the IR beam channel (DIGITAL-IN-01).
+        # The digital input stream may also contain DIGITAL-IN-03 (stim pulse sync
+        # during continuous stimulation). Using .squeeze() on a multi-channel stream
+        # and then .ravel() in detect_IR_crossings would interleave both channels,
+        # producing 100K+ false crossings.
+        ir_ch_ids = list(rec_ir.get_channel_ids())
+        IR_BEAM_CH = "DIGITAL-IN-01"
+        if IR_BEAM_CH in ir_ch_ids:
+            sig = np.asarray(rec_ir.get_traces(channel_ids=[IR_BEAM_CH])).squeeze()
+        else:
+            print(f"[IR] {IR_BEAM_CH} not found in {ir_ch_ids}; falling back to first channel ({ir_ch_ids[0]})")
+            sig = np.asarray(rec_ir.get_traces(channel_ids=[ir_ch_ids[0]])).squeeze()
+=======
         sig = np.asarray(rec_ir.get_traces(channel_ids=[IR_CHANNEL])).squeeze()
+>>>>>>> fd626eb29e593a0d755b18e89452818316eeb46b
         if sig is None or sig.size == 0:
             print(f"[IR] Intan={sess}: empty IR signal.")
 

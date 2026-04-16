@@ -256,16 +256,16 @@ def main():
     locs = nprw_probe.contact_positions.astype(float)
 
     # -----------------------------------------------------------------
-    # Search both Target_A and Target_B folders
+    # Search all subdirectories in PERI_ROOT
     # -----------------------------------------------------------------
-    target_dirs = [PERI_ROOT / "Target_A", PERI_ROOT / "Target_B"]
-    files: list[Path] = []
-    for d in target_dirs:
-        if d.exists():
-            files.extend(sorted(d.glob("*.npz")))
+    if not PERI_ROOT.exists():
+        print(f"[warn] PERI_ROOT does not exist: {PERI_ROOT}")
+        return
+
+    files = sorted(PERI_ROOT.rglob("*.npz"))
 
     if not files:
-        print(f"[warn] No .npz files found in {target_dirs}")
+        print(f"[warn] No .npz files found in {PERI_ROOT}")
         return
 
     for k, peri_stim_npz_loc in enumerate(files):
@@ -274,7 +274,9 @@ def main():
         if not peri_stim_npz_loc.exists():
             continue
 
-        target_label   = peri_stim_npz_loc.parent.name
+        target_label = str(peri_stim_npz_loc.parent.relative_to(PERI_ROOT)).replace("\\", "/")
+        if target_label == ".":
+            target_label = peri_stim_npz_loc.parent.name
         
         # --- PRE-LOAD SKIP CHECK ---
         if SKIP_EXISTING:
@@ -333,10 +335,10 @@ def main():
         ts_state_rel_t = peri_stim_npz["ts_state_rel_t"]  # (n_trials, T_state)
 
         # Decide which target to use based on folder name
-        parent_name  = peri_stim_npz_loc.parent.name  # "Target_A" or "Target_B"
-        if parent_name == "Target_A":
+        parent_name  = peri_stim_npz_loc.parent.name.lower()
+        if parent_name == "target_a":
             target_suffix = "ta"
-        elif parent_name == "Target_B":
+        elif parent_name == "target_b":
             target_suffix = "tb"
         else:
             target_suffix = ""
@@ -391,7 +393,7 @@ def main():
         # Titles
         base_kin_title = f"Kinematics / n={n_nprw} events"
         base_neural_title = f"Neural Activity (median Δ) / Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
-        full_overall_title = f"{overall_title} {target_label.replace('_', ' ')}"
+        full_overall_title = f"{overall_title} {target_label.replace('_', ' ').replace('/', ' - ')}"
 
         # ---- stim site detection (probe inset) ---- TODO this can be extracted from active_channels
         stim_npz = NPRW_AUX_DATA / f"{sess}_Intan_streams" / "stim_stream.npz"

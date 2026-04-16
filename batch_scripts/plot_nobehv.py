@@ -33,6 +33,8 @@ VMIN_UA_COUNTS,   VMAX_UA_COUNTS   = 0.0, 10.0
 
 COLORMAP = "jet"
 
+PLOT_GIFS = False
+
 from RCP_analysis.python.functions.br_preproc import (
     load_electrode_mapping, 
     get_region_from_group_name as _region_from_group_name, 
@@ -426,7 +428,7 @@ def main():
         # -----------------------------------------------------------------
         # FIG 5: SPATIAL GIFS (FIRING RATES)
         # -----------------------------------------------------------------
-        if UA_med.size and UA_rel_t.size and ua_ids_1based is not None:
+        if PLOT_GIFS and UA_med.size and UA_rel_t.size and ua_ids_1based is not None:
             gif_dir = current_fig_root / "GIFs"
             gif_dir.mkdir(parents=True, exist_ok=True)
             
