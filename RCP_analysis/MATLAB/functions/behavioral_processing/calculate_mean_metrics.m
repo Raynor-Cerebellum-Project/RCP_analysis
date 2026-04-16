@@ -67,8 +67,7 @@ for i = 1:length(segment_fields)
     if startsWith(field, 'catch_')
         Summary.([side '_catch_summary']) = S;
     else
-        suffix = extractAfter(field, 'stim_');
-        Summary.([side '_' suffix '_summary']) = S;
+        Summary.([field '_summary']) = S;
     end
 end
 end

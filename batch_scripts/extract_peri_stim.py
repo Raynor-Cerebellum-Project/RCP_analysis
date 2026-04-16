@@ -1335,6 +1335,10 @@ def main():
     if not any([control_files, stim_files, at_rest_files, grasp_files, imu_files, continuous_stim_files]):
         raise SystemExit(f"[error] No combined aligned NPZs found at {ALIGNED_CKPT_ROOT}")
     
+    # control: split A/B, align to ir_ms
+    for file in control_files:
+        extract_one_file(file, out_dir = CONTROL_PERI_ROOT, use_ir_ms=True, split_targets=True, is_control=True)
+
     # normal: per-file processing
     for file in stim_files:
         extract_one_file(file, out_dir = STIM_PERI_ROOT, use_ir_ms=False, split_targets=True)
@@ -1353,10 +1357,6 @@ def main():
     # at_rest: per-file processing (no A/B)
     for file in at_rest_files:
         extract_one_file(file, out_dir = AT_REST_PERI_ROOT, use_ir_ms=False, split_targets=False)
-
-    # control: split A/B, align to ir_ms
-    for file in control_files:
-        extract_one_file(file, out_dir = CONTROL_PERI_ROOT, use_ir_ms=True, split_targets=True, is_control=True)
 
 if __name__ == "__main__":
     main()

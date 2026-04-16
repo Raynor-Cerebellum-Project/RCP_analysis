@@ -14,7 +14,7 @@ preprocessing:
   has_VOG: False
   has_HR: False
   output_aligned_mat: True
-  process_only: [] # Input as BR indexes, e.g. [1, 2] to only process BR_001 and BR_002, if process all just leave as []
+  process_only: [2] # Input as BR indexes, e.g. [1, 2] to only process BR_001 and BR_002, if process all just leave as []
 
 # ---- Spike preprocessing ----
 highpass_hz: 300.0
@@ -58,8 +58,8 @@ chunk: "4s"
 
 # ---- Intan firing rate (threshold MUA) ----
 NPRW_rate_est:
-  bin_ms: 20.0          # bin width for counts
-  sigma_ms: 20.0       # Gaussian kernel std
+  bin_ms: 50.0          # bin width for counts
+  sigma_ms: 50.0       # Gaussian kernel std
   detect_threshold: 4
   peak_sign: "neg"
   remove_ms_before: 20.0

@@ -42,10 +42,10 @@ switch session
     case 'Nike/20260304_NRR_RW020_Fastig'
         EndPoint_pos = 30; EndPoint_neg = -30;
         baseline_file_nums = [1, 7];
-        trial_indices = [2, 3, 4, 6];
-        at_rest_indices = [5];
-        % segment_fields_random = {'both', 'ipsi', 'contra', 'ipsi_0', 'contra_0', 'ipsi_100', 'contra_100', 'ipsi_200', 'contra_200'};
-        segment_fields = {'both', 'ipsi' , 'contra'};
+        trial_indices = [2, 3, 4, 5, 6];
+        % at_rest_indices = [5];
+        segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
+        segment_fields = {'ipsi' , 'contra'};
     otherwise
         EndPoint_pos = 30; EndPoint_neg = -30;
 end
@@ -58,7 +58,7 @@ nonstim_files = dir(fullfile(cal_folder, '**', '*_Cal.mat'));
 all_files = [stim_files; nonstim_files];
 
 file_map = containers.Map('KeyType', 'double', 'ValueType', 'char');
-extract_br = @(name) str2double(regexp(name, 'STIM_\d+_(\d+)_Cal', 'tokens', 'once'));
+extract_br = @(name) str2double(regexp(name, 'fastig_(\d+)_Cal', 'tokens', 'once'));
 
 for i = 1:numel(all_files)
     br = double(extract_br(all_files(i).name));
@@ -74,10 +74,6 @@ tmp = load(raw_metrics_path, 'raw_metrics_all');
 raw_metrics_all = tmp.raw_metrics_all;
 
 fr_segments_all = cell(height(T), 1);
-segment_fields_random = {'active_like_stim_pos_nan', 'active_like_stim_pos_0', ...
-    'active_like_stim_pos_100', 'active_like_stim_pos_200', ...
-    'active_like_stim_neg_nan', 'active_like_stim_neg_0', ...
-    'active_like_stim_neg_100', 'active_like_stim_neg_200'};
 
 prev_intan_id = -1;
 smoothed_fr_all = {};
@@ -99,7 +95,7 @@ for i = 1:height(T)
 
     % Load firing rate only if needed
     if intan_id ~= prev_intan_id
-        intan_dirs = dir(fullfile(intan_folder, 'BL_closed_loop_STIM_*'));
+        intan_dirs = dir(fullfile(intan_folder, '*_fastig_*'));
         intan_dirs = intan_dirs([intan_dirs.isdir]);
         intan_names = {intan_dirs.name};
 
