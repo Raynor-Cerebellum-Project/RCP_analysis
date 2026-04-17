@@ -6,6 +6,9 @@ from probeinterface import Probe
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 
+PROCESS_ONLY = PARAMS.preprocessing.get("process_only")
+Z_SCORE_FR   = PARAMS.preprocessing.get("z_score_firing_rate", False)
+
 # Local plotting settings
 matplotlib.rcParams["svg.fonttype"] = "none"
 
@@ -27,7 +30,12 @@ VMAX_SMA_VAR                 = 5000.0
 VMIN_NPRW_COUNTS, VMAX_NPRW_COUNTS = 0.0, 10.0
 VMIN_UA_COUNTS,   VMAX_UA_COUNTS   = 0.0, 10.0
 
-COLORMAP = "jet"
+# Override color ranges for z-scored firing rates
+if Z_SCORE_FR:
+    VMIN_NPRW, VMAX_NPRW = -3.0, 3.0
+    VMIN_UA,   VMAX_UA   = -3.0, 3.0
+
+COLORMAP = "RdBu_r"
 
 # Kinematics
 KINEMATICS_YLIM = (-4, 4)    # fixed y-limits for all figures
@@ -308,6 +316,9 @@ def main():
         peri_stim_npz = np.load(peri_stim_npz_loc, allow_pickle=True)
         sess         = str(peri_stim_npz["sess"])
         br_idx       = int(peri_stim_npz["br_idx"])
+
+        if PROCESS_ONLY and br_idx not in PROCESS_ONLY:
+            continue
         overall_title_raw = peri_stim_npz["overall_title"]
         if overall_title_raw.shape == ():
             overall_title = str(overall_title_raw.item())
@@ -376,6 +387,17 @@ def main():
         ua_ids_1based = peri_stim_npz["ua_ids_1based"] if "ua_ids_1based" in peri_stim_npz.files else None
 
         ts_state_segs = peri_stim_npz["ts_state_segs"]
+
+        # --- Optional z-score normalization ---
+        if Z_SCORE_FR:
+            if NPRW_rates_zeroed.ndim == 3 and NPRW_rates_zeroed.shape[0] > 0:
+                mu  = np.nanmean(NPRW_rates_zeroed, axis=2, keepdims=True)
+                sig = np.clip(np.nanstd(NPRW_rates_zeroed, axis=2, keepdims=True), 1e-6, None)
+                NPRW_med = np.nanmean((NPRW_rates_zeroed - mu) / sig, axis=0)
+            if UA_rates_zeroed.ndim == 3 and UA_rates_zeroed.shape[0] > 0:
+                mu  = np.nanmean(UA_rates_zeroed, axis=2, keepdims=True)
+                sig = np.clip(np.nanstd(UA_rates_zeroed, axis=2, keepdims=True), 1e-6, None)
+                UA_med = np.nanmean((UA_rates_zeroed - mu) / sig, axis=0)
             
         # -----------------------------------------------------------------
         # Labels
@@ -392,8 +414,10 @@ def main():
 
         # Titles
         base_kin_title = f"Kinematics / n={n_nprw} events"
-        base_neural_title = f"Neural Activity (median Δ) / Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
+        neural_type = "z-scored" if Z_SCORE_FR else "median"
+        base_neural_title = f"Neural Activity ({neural_type} Δ) / Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
         full_overall_title = f"{overall_title} {target_label.replace('_', ' ').replace('/', ' - ')}"
+        cb_label = "z-score (std)" if Z_SCORE_FR else "Δ FR (Hz)"
 
         # ---- stim site detection (probe inset) ---- TODO this can be extracted from active_channels
         stim_npz = NPRW_AUX_DATA / f"{sess}_Intan_streams" / "stim_stream.npz"
@@ -431,6 +455,8 @@ def main():
             base_kin_title,
             base_neural_title,
             cmap=COLORMAP,
+            cb_label_nprw=cb_label,
+            cb_label_ua=cb_label,
             vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
             vmin_ua={
                 "M1i+M1s": VMIN_UA,
@@ -615,6 +641,8 @@ def main():
             title_MWT_kin,
             title_MWT_neural,
             cmap=COLORMAP,
+            cb_label_nprw=cb_label,
+            cb_label_ua=cb_label,
             vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
             vmin_ua={
                 "M1i+M1s": VMIN_UA,

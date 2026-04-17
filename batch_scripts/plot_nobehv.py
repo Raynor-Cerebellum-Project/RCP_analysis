@@ -13,6 +13,9 @@ from probeinterface import Probe
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 
+PROCESS_ONLY = PARAMS.preprocessing.get("process_only")
+Z_SCORE_FR   = PARAMS.preprocessing.get("z_score_firing_rate", False)
+
 matplotlib.rcParams["svg.fonttype"] = "none"
 
 # ---------------------------------------------------------------------
@@ -31,7 +34,11 @@ VMAX_SMA_VAR                 = 5000.0
 VMIN_NPRW_COUNTS, VMAX_NPRW_COUNTS = 0.0, 10.0
 VMIN_UA_COUNTS,   VMAX_UA_COUNTS   = 0.0, 10.0
 
-COLORMAP = "jet"
+if Z_SCORE_FR:
+    VMIN_NPRW, VMAX_NPRW = -3.0, 3.0
+    VMIN_UA,   VMAX_UA   = -3.0, 3.0
+
+COLORMAP = "RdBu_r"
 
 PLOT_GIFS = False
 
@@ -188,6 +195,9 @@ def main():
         sess = _safe_get_scalar_str(peri["sess"])
         br_idx = int(peri["br_idx"]) if "br_idx" in peri.files else -1
 
+        if PROCESS_ONLY and br_idx not in PROCESS_ONLY:
+            continue
+
         overall_title = _safe_get_scalar_str(peri["overall_title"]) if "overall_title" in peri.files else ""
         n_nprw = int(peri["n_nprw"]) if "n_nprw" in peri.files else None
 
@@ -210,13 +220,26 @@ def main():
         NPRW_rates_zeroed = peri["NPRW_rates_zeroed"] if "NPRW_rates_zeroed" in peri.files else np.zeros((0, 0, 0), float)
         UA_rates_zeroed   = peri["UA_rates_zeroed"]   if "UA_rates_zeroed" in peri.files else np.zeros((0, 0, 0), float)
 
+        # --- Optional z-score normalization ---
+        if Z_SCORE_FR:
+            if NPRW_rates_zeroed.ndim == 3 and NPRW_rates_zeroed.shape[0] > 0:
+                mu  = np.nanmean(NPRW_rates_zeroed, axis=2, keepdims=True)
+                sig = np.clip(np.nanstd(NPRW_rates_zeroed, axis=2, keepdims=True), 1e-6, None)
+                NPRW_med = np.nanmean((NPRW_rates_zeroed - mu) / sig, axis=0)
+            if UA_rates_zeroed.ndim == 3 and UA_rates_zeroed.shape[0] > 0:
+                mu  = np.nanmean(UA_rates_zeroed, axis=2, keepdims=True)
+                sig = np.clip(np.nanstd(UA_rates_zeroed, axis=2, keepdims=True), 1e-6, None)
+                UA_med = np.nanmean((UA_rates_zeroed - mu) / sig, axis=0)
+
         # Titles / filenames
         if n_nprw is None:
             # fall back: infer from stim_ms_nprw if present
             n_nprw = int(peri["stim_ms_nprw"].size) if "stim_ms_nprw" in peri.files else (NPRW_rates_zeroed.shape[0] if NPRW_rates_zeroed.ndim == 3 else 0)
 
         base_kin_title   = f"(no behavior in new NPZ) / n={n_nprw} events"
-        base_neural_title = f"Neural Activity (median Δ) / Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
+        neural_type = "z-scored" if Z_SCORE_FR else "median"
+        base_neural_title = f"Neural Activity ({neural_type} Δ) / Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
+        cb_label = "z-score (std)" if Z_SCORE_FR else "Δ FR (Hz)"
         full_overall_title = overall_title
 
         base_fn = f"Cond_{br_idx:03d}" if br_idx >= 0 else peri_path.stem
@@ -243,6 +266,8 @@ def main():
             base_kin_title,
             base_neural_title,
             cmap=COLORMAP,
+            cb_label_nprw=cb_label,
+            cb_label_ua=cb_label,
             vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
             vmin_ua={"M1i+M1s": VMIN_UA, "PMd": VMIN_UA, "SMA": VMIN_UA},
             vmax_ua={"M1i+M1s": VMAX_UA, "PMd": VMAX_UA, "SMA": VMAX_UA},
@@ -380,8 +405,9 @@ def main():
 
                 out_single = current_fig.peri_single / f"{base_fn}__trial_{i_trial:02d}.png"
                 title_single_kin = f"(no behavior) single trial {i_trial+1}"
+                neural_type = "z-scored" if Z_SCORE_FR else "single trial"
                 title_single_neural = (
-                    f"Neural Activity (single trial {i_trial+1}) / "
+                    f"Neural Activity ({neural_type} {i_trial+1}) / "
                     f"Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
                 )
 
@@ -394,6 +420,8 @@ def main():
                     title_single_kin,
                     title_single_neural,
                     cmap=COLORMAP,
+                    cb_label_nprw=cb_label,
+                    cb_label_ua=cb_label,
                     vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
                     vmin_ua={"M1i+M1s": VMIN_UA, "PMd": VMIN_UA, "SMA": VMIN_UA},
                     vmax_ua={"M1i+M1s": VMAX_UA, "PMd": VMAX_UA, "SMA": VMAX_UA},

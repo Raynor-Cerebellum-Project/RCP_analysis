@@ -34,50 +34,50 @@ class IPCACorrectedRecordingSegment(BaseRecordingSegment):
         """
         BaseRecordingSegment.__init__(self, **parent_recording_segment.get_times_kwargs())
         self.parent_recording_segment = parent_recording_segment
-        self.micro_map = micro_map
-        self.micro_corrected = micro_corrected
+
+        # Pre-sort by start sample and build arrays for binary search
+        if micro_map and len(micro_map) > 0:
+            order = np.argsort([s for s, e in micro_map])
+            self.micro_map = [micro_map[i] for i in order]
+            self.micro_corrected = micro_corrected[order]
+            self._starts = np.array([s for s, e in self.micro_map])
+            self._ends   = np.array([e for s, e in self.micro_map])
+        else:
+            self.micro_map = micro_map
+            self.micro_corrected = micro_corrected
+            self._starts = np.array([], dtype=np.int64)
+            self._ends   = np.array([], dtype=np.int64)
 
     def get_num_samples(self):
         return self.parent_recording_segment.get_num_samples()
 
     def get_traces(self, start_frame, end_frame, channel_indices):
-        # 1. Ask the parent for the clean disk-backed chunk
         traces = self.parent_recording_segment.get_traces(start_frame, end_frame, channel_indices)
-        
-        # We need a writeable copy to patch
         traces = traces.copy() 
         
-        if self.micro_map is None or len(self.micro_map) == 0:
+        if self._starts.size == 0:
             return traces
             
-        # 2. Find any artifacts that intersect with our current [start_frame, end_frame] chunk
-        for p, (p_start, p_end) in enumerate(self.micro_map):
-            # Check for overlap
+        lo = np.searchsorted(self._ends, start_frame, side='right')
+        hi = np.searchsorted(self._starts, end_frame, side='left')
+
+        for p in range(lo, hi):
+            p_start, p_end = self.micro_map[p]
             overlap_start = max(start_frame, p_start)
             overlap_end = min(end_frame, p_end)
             
             if overlap_start < overlap_end:
-                # Calculate indices relative to our current trace chunk
                 chunk_idx_start = overlap_start - start_frame
                 chunk_idx_end = overlap_end - start_frame
-                
-                # Calculate indices relative to the pre-computed artifact patch
                 patch_idx_start = overlap_start - p_start
                 patch_idx_end = overlap_end - p_start
                 
-                # Fetch full patch for this event and time window: shape (time, all_channels)
                 patch_full = self.micro_corrected[p, patch_idx_start:patch_idx_end, :]
-                
-                # Slice the micro_corrected patch (only for the requested channels)
                 if channel_indices is None:
-                    # All channels
                     patch = patch_full
                 else:
-                    # Specific channels
                     patch = patch_full[:, channel_indices]
                 
-                # Overwrite the disk trace with the IPCA-corrected data
-                # traces is (time, channels)
                 traces[chunk_idx_start:chunk_idx_end, :] = patch
                 
         return traces

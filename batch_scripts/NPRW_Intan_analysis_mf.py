@@ -102,7 +102,6 @@ def main():
     template_dir = Path(REPO_ROOT / 'config' / "median_extremum_templates_norm.npy")
     control_template = np.load(template_dir)
     nbefore = np.argmin(control_template)
-    ms_before = nbefore / 30000 * 1000
     
     for sess in sess_folders:
         # 3) Extract stim sessions and aux channels
@@ -163,6 +162,9 @@ def main():
         rec_artif_removed = rec_ref  # fallback
         fs_nprw = rec_reordered.get_sampling_frequency()
         n_total = rec_reordered.get_num_samples()
+
+        # Calculate ms_before for matched filtering based on actual sampling rate
+        ms_before = (nbefore / fs_nprw) * 1000.0
         
         movement_trigger = sess2trigger.get(sess.name, "")
         is_sig_gen = (movement_trigger == "sig gen")
