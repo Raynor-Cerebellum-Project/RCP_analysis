@@ -1,5 +1,6 @@
 %% Clearing workspace
 clear all; close all; clc;
+addpath(genpath(fullfile('..', 'functions')));
 
 %% Setup Paths
 session = 'Nike/20260304_NRR_RW020_Fastig';
@@ -62,7 +63,7 @@ if isempty(gcp('nocreate'))
 end
 
 %% Loop through each trial
-for i = 2:numel(valid_trials) % TODO 1
+for i = 1:numel(valid_trials) % TODO 1
     trial = valid_trials{i};
     trial_path = fullfile(intan_folder, trial);
     logmsg(sprintf('[%d/%d] Processing: %s', i, numel(valid_trials), trial));

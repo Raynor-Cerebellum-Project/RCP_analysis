@@ -1,11 +1,5 @@
 paths:
-  data_root: "Y:/Current Project Databases - NHP/2025 Cerebellum prosthesis"
-  # location: "Nike/20260116_NRR_RW012"
-  # session: "NRR_RW012"
-  # location: "Nike/20260226_NRR_RW019"
-  # session: "NRR_RW019"
-  # location: "Nike/20251203_NRR_RW011"
-  # session: "NRR_RW011"
+  data_root: "/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis"
   location: "Nike/20260311_NRR_RW022"
   session: "NRR_RW022"
   # location: "Nike/20260324_NRR_RW026"
@@ -71,8 +65,8 @@ chunk: "4s"
 
 # ---- Intan firing rate (threshold MUA) ----
 NPRW_rate_est:
-  bin_ms: 20.0          # bin width for counts
-  sigma_ms: 20.0       # Gaussian kernel std
+  bin_ms: 50.0          # bin width for counts
+  sigma_ms: 50.0       # Gaussian kernel std
   detect_threshold: 4
   peak_sign: "neg"
   remove_ms_before: 20.0

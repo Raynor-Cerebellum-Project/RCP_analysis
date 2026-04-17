@@ -195,8 +195,8 @@ summary_struct = struct();
 
 % Define mapping of baseline + condition segments
 combine_map = struct( ...
-    'ipsi', {{'ipsi', 'ipsi'}}, ...
-    'contra', {{'contra', 'contra'}} ...
+    'ipsi', {{'ipsi', 'ipsi_nan'}}, ...
+    'contra', {{'contra', 'contra_nan'}} ...
     );
 
 % Identify random trial indices
@@ -220,8 +220,8 @@ for i = all_trial_indices
     all_fields = fieldnames(merged);
 
     % Split fields by type
-    ipsi_fields_main   = all_fields(contains(all_fields, '_pos') & ~contains(all_fields, 'catch'));
-    contra_fields_main = all_fields(contains(all_fields, '_neg') & ~contains(all_fields, 'catch'));
+    ipsi_fields_main   = all_fields(contains(all_fields, 'ipsi') & ~contains(all_fields, 'catch'));
+    contra_fields_main = all_fields(contains(all_fields, 'contra') & ~contains(all_fields, 'catch'));
     ipsi_fields_catch  = all_fields(contains(all_fields, 'catch_pos'));
     contra_fields_catch= all_fields(contains(all_fields, 'catch_neg'));
 
