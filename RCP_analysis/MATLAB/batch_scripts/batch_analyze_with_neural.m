@@ -1,3 +1,32 @@
+%% This file:
+% Processes neural firing and appends to analyzed behavioral structs.
+%
+% Requirements:
+%   - metadata_csv
+%   - firing_rate_data.mat
+% Outputs:
+%   - raw_metrics_all.mat
+%       - raw_metrics_all
+%       - T # metadata table
+%       - segment_fields
+%       - EndPoint_pos
+%       - EndPoint_neg
+%   - summarized_metrics.mat
+%       - summary_struct
+%       - merged_baseline_summary
+%   - merged_baseline.mat
+%       - merged_baseline_summary
+%   - raw_metrics_all_with_fr.mat
+%       - raw_metrics_all
+%       - T
+%       - segment_fields
+%       - EndPoint_pos
+%       - EndPoint_neg
+%   - Plots
+%
+% Author: Bryan Tseng
+% Date: 2026-04-21
+
 clear; close all; clc;
 addpath(genpath(fullfile('..', 'functions')));
 
@@ -23,7 +52,7 @@ trace_analysis_plot = false;
 
 window_ms = [-800, 1200];
 window_samples = round(window_ms * 30 / 1000);  % Convert ms to 1 kHz (30kHz / 30)
-%% --- Session-specific Endpoint Targets ---
+%% Session-specific Endpoint Targets
 switch session
     case 'BL_RW_001_Session_1'
         EndPoint_pos = 32; EndPoint_neg = -26;
@@ -49,10 +78,10 @@ switch session
     otherwise
         EndPoint_pos = 30; EndPoint_neg = -30;
 end
-%% --- Load Metadata ---
+%% Load Metadata
 T = readtable(metadata_csv_path);
 all_trial_indices = sort([baseline_file_nums, trial_indices]);
-%% --- Locate Trial Files ---
+%% Locate Trial Files
 stim_files = dir(fullfile(cal_folder, '**', '*_Cal_stim.mat'));
 nonstim_files = dir(fullfile(cal_folder, '**', '*_Cal.mat'));
 all_files = [stim_files; nonstim_files];
@@ -69,7 +98,7 @@ end
 
 all_br = sort(cell2mat(keys(file_map)));
 
-%% --- Process Each Trial ---
+%% Process Each Trial
 tmp = load(raw_metrics_path, 'raw_metrics_all');
 raw_metrics_all = tmp.raw_metrics_all;
 
@@ -135,7 +164,6 @@ for i = 1:height(T)
             end
         end
 
-
         fr_data = load(fr_path, 'smoothed_fr_all');
         smoothed_fr_all = fr_data.smoothed_fr_all;
         prev_intan_id = intan_id;
@@ -143,7 +171,7 @@ for i = 1:height(T)
 
 
     % Segment fields
-    segment_fields = {'active_like_stim_pos', 'active_like_stim_neg'};
+    segment_fields = {'ipsi', 'contra'};
     if ismember('Stim_Delay', T.Properties.VariableNames)
         delay_val = string(T.Stim_Delay(i));
         if strcmpi(delay_val, "Random")
@@ -193,7 +221,7 @@ fields = fieldnames(merged_baseline);
 fr_sum_struct = struct();
 fr_count_struct = struct();
 
-for f = 2:length(baseline_file_nums)
+for f = 1:length(baseline_file_nums)
     current = raw_metrics_all{baseline_file_nums(f)};
     
     for field = fields'
@@ -274,8 +302,8 @@ summary_struct = struct();
 
 % Define mapping of baseline + condition segments
 combine_map = struct( ...
-    'active_like_stim_pos_nan', {{'active_like_stim_pos', 'active_like_stim_pos_nan'}}, ...
-    'active_like_stim_neg_nan', {{'active_like_stim_neg', 'active_like_stim_neg_nan'}} ...
+    'ipsi_nan', {{'ipsi', 'ipsi_nan'}}, ...
+    'contra_nan', {{'contra', 'contra_nan'}} ...
     );
 
 % Identify random trial indices
@@ -297,18 +325,20 @@ for i = all_trial_indices
 
     % --- Identify all segment fields ---
     all_fields = fieldnames(merged);
+    has_catch = any(endsWith(all_fields, '_catch'));
 
     % Split fields by type
-    ipsi_fields_main   = all_fields(contains(all_fields, '_pos') & ~contains(all_fields, 'catch'));
-    contra_fields_main = all_fields(contains(all_fields, '_neg') & ~contains(all_fields, 'catch'));
-    ipsi_fields_catch  = all_fields(contains(all_fields, 'catch_pos'));
-    contra_fields_catch= all_fields(contains(all_fields, 'catch_neg'));
+    if ismember(i, random_indices)
+        ipsi_fields_main   = all_fields(contains(all_fields, 'ipsi_') & ~contains(all_fields, 'catch') & ~contains(all_fields, '_summary'));
+        contra_fields_main = all_fields(contains(all_fields, 'contra_') & ~contains(all_fields, 'catch') & ~contains(all_fields, '_summary'));
+    else
+        ipsi_fields_main   = all_fields(contains(all_fields, '_pos') & ~contains(all_fields, 'catch'));
+        contra_fields_main = all_fields(contains(all_fields, '_neg') & ~contains(all_fields, 'catch'));
+    end
 
     % --- Calculate summaries ---
     summary_ipsi_main   = calculate_mean_metrics(merged, ipsi_fields_main, 'ipsi');
     summary_contra_main = calculate_mean_metrics(merged, contra_fields_main, 'contra');
-    summary_ipsi_catch  = calculate_mean_metrics(merged, ipsi_fields_catch, 'ipsi');
-    summary_contra_catch= calculate_mean_metrics(merged, contra_fields_catch, 'contra');
 
     % --- Combine all summaries ---
     merged_with_summary = merged;
@@ -319,11 +349,21 @@ for i = all_trial_indices
     for s = fieldnames(summary_contra_main)'
         merged_with_summary.(s{1}) = summary_contra_main.(s{1});
     end
-    if ~isempty(fieldnames(summary_ipsi_catch))
-        merged_with_summary.ipsi_catch_summary = summary_ipsi_catch;
-    end
-    if ~isempty(fieldnames(summary_contra_catch))
-        merged_with_summary.contra_catch_summary = summary_contra_catch;
+
+    % --- Catch trial summaries (only if catch fields exist) ---
+    if has_catch
+        ipsi_fields_catch   = all_fields(contains(all_fields, 'ipsi') & endsWith(all_fields, '_catch'));
+        contra_fields_catch = all_fields(contains(all_fields, 'contra') & endsWith(all_fields, '_catch'));
+
+        summary_ipsi_catch   = calculate_mean_metrics(merged, ipsi_fields_catch, 'ipsi');
+        summary_contra_catch = calculate_mean_metrics(merged, contra_fields_catch, 'contra');
+
+        if ~isempty(fieldnames(summary_ipsi_catch))
+            merged_with_summary.ipsi_catch_summary = summary_ipsi_catch;
+        end
+        if ~isempty(fieldnames(summary_contra_catch))
+            merged_with_summary.contra_catch_summary = summary_contra_catch;
+        end
     end
 
     % --- Store result ---
@@ -366,9 +406,9 @@ for i = trial_indices
     cond_br = cond_struct.BR_File;
     meta_cond = T(T.BR_File == cond_br, :);
 
-    % === Determine baseline source ===
-    has_merged = isfield(cond_data, 'active_like_stim_pos_nan') || ...
-        isfield(cond_data, 'active_like_stim_neg_nan');
+    % Determine baseline source
+    has_merged = isfield(cond_data, 'ipsi_nan') || ...
+        isfield(cond_data, 'contra_nan');
 
     if has_merged
         base_data = cond_data;
@@ -388,15 +428,15 @@ for i = trial_indices
     if ischar(raw_delay) && strcmpi(raw_delay, 'Random')
         delays = [0, 100, 200];
         for delay_val = delays
-            for polarity = {'pos', 'neg'}
-                side_label = sprintf('active_like_stim_%s_%d', polarity{1}, delay_val);
+            for polarity = {'ipsi', 'contra'}
+                side_label = sprintf('%s_%d', polarity{1}, delay_val);
                 try
                     base_data = cond_data;
                     fig = plot_traces_neural(base_data, cond_data, side_label, false, ...
                         meta_cond, true, show_figs);
 
                     % === Save ===
-                    side_short = strrep(side_label, 'active_like_stim_', '');  % e.g., 'pos' or 'neg'
+                    side_short = sprintf('%s_%d', polarity{1}, delay_val);  % e.g., 'pos' or 'neg'
                     stim_str_for_file = sprintf('%dCh_%dHz_%duA_%dmsdelay_%s', ...
                         meta_cond.Channels, ...
                         meta_cond.Stim_Frequency_Hz, ...
@@ -429,8 +469,8 @@ for i = trial_indices
                 end
             end
         end
-        for polarity = {'pos', 'neg'}
-            side_label = sprintf('active_like_stim_%s', polarity{1});
+        for polarity = {'ipsi', 'contra'}
+            side_label = sprintf(polarity{1});  % keep if plot_rand_condition_traces_neural expects this
             try
                 base_data = cond_data;
                 fig = plot_rand_condition_traces_neural(base_data, cond_data, side_label, false, ...
@@ -476,7 +516,7 @@ for i = trial_indices
     end
 
     % Loop over sides
-    for side = {'active_like_stim_pos', 'active_like_stim_neg'}
+    for side = {'ipsi', 'contra'}
         side_label = side{1};
         try
             fig = plot_traces_neural(base_data, cond_data, side_label, false, ...

@@ -36,7 +36,7 @@ for i = 1:length(segment_fields)
 
     % Align each segment
     for s = 1:N
-        % === Skip stim-based alignment for 'nan' fields ===
+        % Skip stim-based alignment for 'nan' fields
         if strcmp(field, 'ipsi') || strcmp(field, 'contra')
             segments3(s,:) = [Segment(s,1) - 800, Segment(s,1) + 1200];
             continue;

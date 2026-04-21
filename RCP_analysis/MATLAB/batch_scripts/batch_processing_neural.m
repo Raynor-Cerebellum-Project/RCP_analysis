@@ -1,3 +1,27 @@
+%% This file:
+% Extracts stim timings
+% Performs artifact correction and
+% Performs FR estimation using the Kaiser filter
+%
+% Requirements:
+%   - metadata_csv
+%   - Sorted output from kilosort (neural_data.mat)
+%   - Stim data from intan (stim_data.mat)
+%   - After alignment with blackrock
+% Outputs:
+%   - trig_info.mat
+%   - neural_data_artifact_removed_*method*.mat
+%   - firing_rate_data.mat
+%       - smoothed_fr_all
+%       - spike_trains_all
+%       - fs
+%       - cutoff_freq
+%       - rate_mode
+%   - metadata_with_stim.mat
+%
+% Author: Bryan Tseng
+% Date: 2026-04-21
+
 %% Clearing workspace
 clear all; close all; clc;
 addpath(genpath(fullfile('..', 'functions')));
@@ -53,7 +77,7 @@ refractory_ms = 1;
 target_fs = 1000;
 ds_factor = round(fs / target_fs);
 
-%% --- Load Metadata ---
+%% Load Metadata
 T = readtable(metadata_csv);
 has_stim_all = false(height(T), 1);  % Preallocate logical array
 
@@ -63,12 +87,12 @@ if isempty(gcp('nocreate'))
 end
 
 %% Loop through each trial
-for i = 1:numel(valid_trials) % TODO 1
+for i = 1:numel(valid_trials)
     trial = valid_trials{i};
     trial_path = fullfile(intan_folder, trial);
     logmsg(sprintf('[%d/%d] Processing: %s', i, numel(valid_trials), trial));
 
-    % === Load stim data and extract triggers ===
+    % Load stim data and extract triggers
     stim_struct = load(fullfile(trial_path, 'stim_data.mat'));
     if isfield(stim_struct, 'Stim_data')
         stim_data = stim_struct.Stim_data;
@@ -88,12 +112,12 @@ for i = 1:numel(valid_trials) % TODO 1
     if i <= height(T)
         has_stim_all(i) = has_trigs;
     end
-    clear stim_data
-    % Save artifact removed data and trig info with method suffix
+    clear stim_data stim_struct
+    % Save trig info with method suffix
     trig_info_file = fullfile(trial_path, sprintf('trig_info.mat'));
     save(trig_info_file, 'trigs', 'repeat_boundaries');
 
-    % === Load neural data ===
+    % Load neural data
     logmsg('  Loading data...');
 
     tic;
@@ -104,7 +128,7 @@ for i = 1:numel(valid_trials) % TODO 1
     for m = 1:numel(template_modes)
         method = template_modes{m};
         if has_trigs
-            % === Artifact removal ===
+            % Artifact removal
             fprintf('  Running artifact removal (%s)... ', method);
             tic;
             neural_data = neural_struct.neural_data;
@@ -115,14 +139,14 @@ for i = 1:numel(valid_trials) % TODO 1
             logmsg(sprintf('Done (%.2f sec).', elapsed_time));
 
             artifact_file  = fullfile(trial_path, sprintf('neural_data_artifact_removed_%s.mat', method));
-            save(artifact_file, 'artifact_removed_data', '-v7.3');
+            save(artifact_file, 'artifact_removed_data ', '-v7.3');
             fprintf('  Saved artifact-corrected data (%s).\n', method);
         else
             % Use raw data if no artifact correction
             artifact_removed_data = neural_struct.neural_data;
         end
 
-        % === Spike detection + FR estimation ===
+        % Spike detection + FR estimation
         fprintf('  Running FR estimation (%s)... ', method);
         tic;
         [nChans, nSamples] = size(artifact_removed_data);
@@ -156,7 +180,7 @@ for i = 1:numel(valid_trials) % TODO 1
         elapsed_time = toc;
         logmsg(sprintf('Done (%.2f sec).', elapsed_time));
 
-        % Save FR data
+        % Save FR
         if has_trigs
             fr_out_path = fullfile(trial_path, sprintf('firing_rate_data_%s.mat', method));
         else

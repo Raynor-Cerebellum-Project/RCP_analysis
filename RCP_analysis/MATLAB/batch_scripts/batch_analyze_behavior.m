@@ -1,3 +1,31 @@
+%% This file:
+% Processes and create behavioral structs.
+%
+% Requirements:
+%   - metadata_csv
+% Outputs:
+%   - raw_metrics_all.mat
+%       - raw_metrics_all
+%       - T # metadata table
+%       - segment_fields
+%       - EndPoint_pos
+%       - EndPoint_neg
+%   - summarized_metrics.mat
+%       - summary_struct
+%       - merged_baseline_summary
+%   - merged_baseline.mat
+%       - merged_baseline_summary
+%   - raw_metrics_all_with_fr.mat
+%       - raw_metrics_all
+%       - T
+%       - segment_fields
+%       - EndPoint_pos
+%       - EndPoint_neg
+%   - Plots
+%
+% Author: Bryan Tseng
+% Date: 2026-04-21
+
 clear all; close all; clc;
 addpath(genpath(fullfile('..', 'functions')));
 
@@ -122,24 +150,26 @@ for i = all_trial_indices
             continue
         end
         if strcmpi(stim_delay_val, "Random")
-            segment_fields = segment_fields_random;
+            segment_fields_use = segment_fields_random;
+        else
+            segment_fields_use = segment_fields;
         end
     end
 
-    % === Check for catch fields in Data.segments ===
+    % Check for catch fields in Data.segments
     try
         tmp = load(filename, 'Data');
         if isfield(tmp.Data, 'segments')
             if isfield(tmp.Data.segments, 'catch_pos')
-                segment_fields{end+1} = 'catch_pos';
+                segment_fields_use{end+1} = 'catch_pos';
             end
             if isfield(tmp.Data.segments, 'catch_neg')
-                segment_fields{end+1} = 'catch_neg';
+                segment_fields_use{end+1} = 'catch_neg';
             end
         end
 
         raw_metrics = analyze_metrics(filename, EndPoint_pos, EndPoint_neg, ...
-            metadata_row, segment_fields, trace_analysis_plot);
+            metadata_row, segment_fields_use, trace_analysis_plot);
         raw_metrics_all{row_idx} = raw_metrics;
     catch ME
         warning("Error in trial %d: %s", br_id, ME.message);
@@ -148,13 +178,13 @@ end
 
 %% Save all raw data
 save(raw_metrics_path, ...
-    'raw_metrics_all', 'T', 'segment_fields', 'EndPoint_pos', 'EndPoint_neg');
+    'raw_metrics_all', 'T', 'segment_fields_use', 'EndPoint_pos', 'EndPoint_neg');
 %% Merge
 % Initialize merged baseline struct
 merged_baseline = raw_metrics_all{baseline_file_nums(1)};
 fields = fieldnames(merged_baseline);
 
-for f = 2:length(baseline_file_nums)
+for f = 1:length(baseline_file_nums)
     current = raw_metrics_all{baseline_file_nums(f)};
     for field = fields'
         key = field{1};
