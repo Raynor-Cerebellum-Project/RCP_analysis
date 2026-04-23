@@ -36,7 +36,7 @@ addpath(genpath(fullfile(code_root, 'functions')));
 intan_folder = fullfile(base_folder, 'Intan');
 fig_folder   = fullfile(base_folder, 'Figures');
 metadata_csv = fullfile(base_folder, 'Metadata', [session_name, '_metadata.csv']);
-
+ls
 if ~exist(fig_folder, 'dir')
     mkdir(fig_folder);
 end
@@ -139,7 +139,7 @@ for i = 1:numel(valid_trials)
             logmsg(sprintf('Done (%.2f sec).', elapsed_time));
 
             artifact_file  = fullfile(trial_path, sprintf('neural_data_artifact_removed_%s.mat', method));
-            save(artifact_file, 'artifact_removed_data ', '-v7.3');
+            save(artifact_file, 'artifact_removed_data', '-v7.3');
             fprintf('  Saved artifact-corrected data (%s).\n', method);
         else
             % Use raw data if no artifact correction
