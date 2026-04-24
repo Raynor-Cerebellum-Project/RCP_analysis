@@ -87,7 +87,7 @@ nonstim_files = dir(fullfile(cal_folder, '**', '*_Cal.mat'));
 all_files = [stim_files; nonstim_files];
 
 file_map = containers.Map('KeyType', 'double', 'ValueType', 'char');
-extract_br = @(name) str2double(regexp(name, 'fastig_(\d+)_Cal', 'tokens', 'once'));
+extract_br = @(name) str2double(regexp(name, '(\d+)_Cal', 'tokens', 'once'));
 
 for i = 1:numel(all_files)
     br = double(extract_br(all_files(i).name));
@@ -477,7 +477,7 @@ for i = trial_indices
                     meta_cond, true, show_figs);
 
                 % === Save ===
-                side_short = strrep(side_label, 'active_like_stim_', '');  % e.g., 'pos' or 'neg'
+                side_short = side_label;
                 trigger_clean = strrep(strtrim(meta_cond.Movement_Trigger{1}), ' ', '_');
                 stim_str_for_file = sprintf('%dCh_%dHz_%duA_%s', ...
                     meta_cond.Channels, ...
@@ -528,7 +528,7 @@ for i = trial_indices
                 delay_value = meta_cond.Stim_Delay;
             end
             % === Save ===
-            side_short = strrep(side_label, 'active_like_stim_', '');  % e.g., 'pos' or 'neg'
+            side_short = side_label;
             trigger_clean = strrep(strtrim(meta_cond.Movement_Trigger{1}), ' ', '_');
             stim_str_for_file = sprintf('%dCh_%dHz_%duA_%dmsdelay_%s', ...
                 meta_cond.Channels, ...

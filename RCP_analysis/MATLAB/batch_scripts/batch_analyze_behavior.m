@@ -30,7 +30,7 @@ clear all; close all; clc;
 addpath(genpath(fullfile('..', 'functions')));
 
 %% --- Setup Paths and Define session
-session = 'Nike/20260304_NRR_RW020_Fastig';
+session = 'Nike/20260326_NRR_RW027_fastig';
 [~, session_name] = fileparts(session);
 % Get machine-specific root path
 [base_root, code_root, base_folder] = set_paths_cullen_lab(session);
@@ -50,7 +50,7 @@ nonstim_files = dir(fullfile(search_folder, '**', '*_Cal.mat'));
 
 file_map = containers.Map('KeyType', 'double', 'ValueType', 'char');
 % extract_br = @(name) str2double(regexp(name, 'STIM_\d+_(\d+)_Cal', 'tokens', 'once'));
-extract_br = @(name) str2double(regexp(name, 'fastig_(\d+)_Cal', 'tokens', 'once'));
+extract_br = @(name) str2double(regexp(name, '(\d+)_Cal', 'tokens', 'once'));
 
 % First add stim files
 for i = 1:numel(stim_files)
@@ -84,7 +84,7 @@ trace_analysis_plot = false;
 % --- Sort trial_mat_files by BR_File number extracted from filename ---
 br_nums = zeros(length(trial_mat_files), 1);
 for i = 1:length(trial_mat_files)
-    tokens = regexp(trial_mat_files(i).name, 'fastig_(\d+)_Cal', 'tokens');
+    tokens = regexp(trial_mat_files(i).name, '(\d+)_Cal', 'tokens');
     if ~isempty(tokens)
         br_nums(i) = str2double(tokens{1}{1});
     else
@@ -121,6 +121,14 @@ switch session
         % at_rest_indices = [5];
         segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
         segment_fields = {'ipsi' , 'contra'};
+    case 'Nike/20260326_NRR_RW027_fastig'
+        EndPoint_pos = 30; EndPoint_neg = -30;
+        % 1-6 weird
+        baseline_file_nums = 14;%[1, 6, 14];
+        trial_indices = [8:9, 13, 15:22];%[2, 4:5, 8:9, 13, 15:22];
+        % at_rest_indices = [10, 11];
+        segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
+        segment_fields = {'ipsi' , 'contra'};
     otherwise
         EndPoint_pos = 30; EndPoint_neg = -30;
 end
@@ -132,7 +140,7 @@ all_trial_indices = sort([baseline_file_nums, trial_indices]);
 
 for i = all_trial_indices
     fname = trial_mat_files(i).name;
-    tokens = regexp(fname, 'fastig_(\d+)_Cal', 'tokens');
+    tokens = regexp(fname, '(\d+)_Cal', 'tokens');
     if isempty(tokens), warning("Couldn't parse file: %s", fname); continue; end
     br_id = str2double(tokens{1}{1});
     row_idx = find(T.BR_File == br_id);
@@ -177,6 +185,10 @@ for i = all_trial_indices
 end
 
 %% Save all raw data
+[filepath,name,ext] = fileparts(raw_metrics_path);
+if ~exist(filepath, 'dir')
+    mkdir(filepath);
+end
 save(raw_metrics_path, ...
     'raw_metrics_all', 'T', 'segment_fields_use', 'EndPoint_pos', 'EndPoint_neg');
 %% Merge
