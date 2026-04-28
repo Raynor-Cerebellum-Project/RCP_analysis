@@ -95,6 +95,8 @@ def stacked_heatmaps_plus_behv(
     gap_beh_nprw: float = 0.22, # originally GAP_HEIGHT
     fig_width_in: float = 16.0,
     height_per_ratio_in: float = 4.0,
+    cb_label_nprw: str = "Δ FR (Hz)",
+    cb_label_ua: str = "Δ FR (Hz)",
 ):
     """
     s: session ID
@@ -445,7 +447,7 @@ def stacked_heatmaps_plus_behv(
         except: pass
         cb0.ax.tick_params(width=1.2, labelsize=9)
         cb0.outline.set_linewidth(1.0)
-        cb0.set_label("Δ FR (Hz)")
+        cb0.set_label(cb_label_nprw)
         row += 1
 
     # ---------- UA heatmaps (optional) ----------
@@ -541,6 +543,7 @@ def stacked_heatmaps_plus_behv(
             cb1 = fig.colorbar(im1, cax=ax_ua_cax)
             cb1.ax.tick_params(width=1.2, labelsize=9)
             cb1.outline.set_linewidth(1.0)
+            cb1.set_label(cb_label_ua)
             row += 1
 
     # ---------- Probe inset (optional) ----------

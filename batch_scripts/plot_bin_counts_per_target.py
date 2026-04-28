@@ -11,6 +11,9 @@ matplotlib.rcParams["svg.fonttype"] = "none"
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 
+PROCESS_ONLY = PARAMS.preprocessing.get("process_only")
+Z_SCORE_FR   = PARAMS.preprocessing.get("z_score_firing_rate", False)
+
 # Local plotting settings
 matplotlib.rcParams["svg.fonttype"] = "none"
 
@@ -28,11 +31,15 @@ VMIN_NPRW_VAR, VMAX_NPRW_VAR = 0.0, 40000.0
 VMIN_UA_VAR,   VMAX_UA_VAR   = 0.0, 10000.0
 VMAX_SMA_VAR                  = 5000.0
 
-# Peri-stim med ranges (a bit wider than baseline)
-VMIN_NPRW_STIM, VMAX_NPRW_STIM = -25, 200
-VMIN_UA_STIM,   VMAX_UA_STIM   = -50, 150
+# Override color ranges for z-scored firing rates
+if Z_SCORE_FR:
+    VMIN_NPRW_STIM, VMAX_NPRW_STIM = -3.0, 3.0
+    VMIN_UA_STIM,   VMAX_UA_STIM   = -3.0, 3.0
+    VMIN_NPRW_BASELINE, VMAX_NPRW_BASELINE = -3.0, 3.0
+    VMIN_UA_BASELINE,   VMAX_UA_BASELINE   = -3.0, 3.0
+    VMIN_SMA_BASELINE,  VMAX_SMA_BASELINE  = -3.0, 3.0
 
-COLORMAP = "jet"
+COLORMAP = "RdBu_r"
 
 # ---------- params / roots ----------
 # Base paths from config_loading
@@ -281,7 +288,8 @@ def _plot_one_baseline_npz(npz_path: Path, target_label: str, ua_imp: dict[int, 
     title_kinematics = f"Kinematics / Referenced to first {int(NORMALIZE_FIRST_MS)} ms"
 
     # ---------- MEDIAN FIG ----------
-    title_NA = f"Baseline (IR-aligned): Neural Activity (median Δ across {n_nprw} events)"
+    neural_type = "z-scored" if Z_SCORE_FR else "median"
+    title_NA = f"Baseline (IR-aligned): Neural Activity ({neural_type} Δ across {n_nprw} events)"
     
     fig_dir = FIG.peri_posvel_median / f"Target_{target_label}"
     fig_dir.mkdir(parents=True, exist_ok=True)
@@ -393,6 +401,9 @@ def _plot_one_peristim_npz(npz_path: Path, target_label: str, ua_imp_a: dict[int
 
         br_idx = _get_int(z, ["br_idx"], default=-1)
 
+        if PROCESS_ONLY and br_idx not in PROCESS_ONLY:
+            return
+
         overall_title_arr = z["overall_title"]
         overall_title = str(
             overall_title_arr.item()
@@ -412,6 +423,21 @@ def _plot_one_peristim_npz(npz_path: Path, target_label: str, ua_imp_a: dict[int
         UA_med     = _get_first_array(z, ["UA_med", "ua_med"])
         NPRW_var   = _get_first_array(z, ["NPRW_var", "nprw_var"])
         UA_var     = _get_first_array(z, ["UA_var", "ua_var"])
+
+        # single-trial arrays (optional) for z-scoring
+        NPRW_rates_zeroed = _get_first_array(z, ["NPRW_rates_zeroed"], default=np.zeros((0, 0, 0), float))
+        UA_rates_zeroed   = _get_first_array(z, ["UA_rates_zeroed"], default=np.zeros((0, 0, 0), float))
+
+        # --- Optional z-score normalization ---
+        if Z_SCORE_FR:
+            if NPRW_rates_zeroed.ndim == 3 and NPRW_rates_zeroed.shape[0] > 0:
+                mu  = np.nanmean(NPRW_rates_zeroed, axis=2, keepdims=True)
+                sig = np.clip(np.nanstd(NPRW_rates_zeroed, axis=2, keepdims=True), 1e-6, None)
+                NPRW_med = np.nanmean((NPRW_rates_zeroed - mu) / sig, axis=0)
+            if UA_rates_zeroed.ndim == 3 and UA_rates_zeroed.shape[0] > 0:
+                mu  = np.nanmean(UA_rates_zeroed, axis=2, keepdims=True)
+                sig = np.clip(np.nanstd(UA_rates_zeroed, axis=2, keepdims=True), 1e-6, None)
+                UA_med = np.nanmean((UA_rates_zeroed - mu) / sig, axis=0)
         NPRW_rel_t = _get_first_array(z, ["NPRW_rel_t", "nprw_rel_t"], default=np.arange(0.0))
         UA_rel_t   = _get_first_array(z, ["UA_rel_t", "ua_rel_t"], default=np.arange(0.0))
 
@@ -520,9 +546,10 @@ def _plot_one_peristim_npz(npz_path: Path, target_label: str, ua_imp_a: dict[int
         except Exception as e:
             print(f"[warn] stim-site detection failed for {sess}, Condition {br_idx}: {e}")
     # ---------- MEDIAN FIG ----------
+    neural_type = "z-scored" if Z_SCORE_FR else "median"
     title_NA = (
         f"Peri-stim (stim-aligned): Neural Activity "
-        f"(median Δ across {n_nprw} events, BR {br_idx:03d}, Target {target_label})"
+        f"({neural_type} Δ across {n_nprw} events, BR {br_idx:03d}, Target {target_label})"
     )
     fig_dir = FIG.peri_posvel_median / f"Target_{target_label}"
     fig_dir.mkdir(parents=True, exist_ok=True)

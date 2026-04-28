@@ -150,7 +150,7 @@ def run_ipca_debug(
     target_ch = 10,
     ipca_rank: int = 3,
     window_ms: tuple = (-10.0, 50.0),
-    trials_plot: int = 5,
+    trials_to_plot: list = None,
     pulse_window_ms: tuple = (-0.5, 0.5),
     apply_hpf: bool = False,
     debug_single_pulse: bool = True,
@@ -165,6 +165,7 @@ def run_ipca_debug(
     plot_rank_variance: bool = False,
     plot_learning_rate_sweep: bool = False,
     override_freq: float = None,
+    per_channel_ipca: bool = True,
 ):
     """Run the full IPCA artifact-correction debug pipeline.
 
@@ -326,7 +327,7 @@ def run_ipca_debug(
         ua_map = rcp.load_UA_mapping_from_excel(
             rcp.ua_excel_path(REPO_ROOT, PARAMS.probes)
         )
-        (rec_proc, _, ua_elec, _, ua_region, ua_region_names, _) = rcp.apply_ua_mapping_with_regions(
+        (rec_proc, _, ua_elec, _, ua_region, ua_region_names, ua_port) = rcp.apply_ua_mapping_with_regions(
             rec_raw, ua_map, condition, METADATA_CSV,
         )
         fs = rec_proc.get_sampling_frequency()
@@ -396,10 +397,15 @@ def run_ipca_debug(
             target_ch_elecs = list(range(len(all_ch_ids)))
             target_ch_regions = []
         # Reference channel for pulse detection
-        if reference_ch is not None and probe == "UA":
-            ref_matches = np.where(ua_elec == reference_ch)[0]
+        if probe == "UA":
+            if reference_ch is not None:
+                ref_elec_id = reference_ch
+            else:
+                ref_elec_id = 124 if ua_port == 'A' else 123
+                
+            ref_matches = np.where(ua_elec == ref_elec_id)[0]
             if ref_matches.size == 0:
-                print(f"Warning: reference ch {reference_ch} not mapped; using first channel.")
+                print(f"Warning: reference ch {ref_elec_id} not mapped; using first channel.")
                 ref_ch_id = target_ch_ids[0]
             else:
                 ref_ch_id = all_ch_ids[ref_matches[0]]
@@ -407,7 +413,7 @@ def run_ipca_debug(
             ref_ch_id = target_ch_ids[0]
         n_channels = len(target_ch_ids)
         print(f"-> All-channel mode: {n_channels} channels, "
-              f"pulse detection on ref ch {reference_ch or 'first'}")
+              f"pulse detection on ref ch {ref_elec_id if probe == 'UA' else 'first'}")
     else:
         # Single-channel mode (original behaviour)
         if probe == "UA":
@@ -419,14 +425,16 @@ def run_ipca_debug(
             
             # Use reference channel for pulse detection if provided
             if reference_ch is not None:
-                ref_matches = np.where(ua_elec == reference_ch)[0]
-                if ref_matches.size == 0:
-                    print(f"Warning: reference ch {reference_ch} not mapped; using target channel.")
-                    ref_ch_id = target_ch_id
-                else:
-                    ref_ch_id = all_ch_ids[ref_matches[0]]
+                ref_elec_id = reference_ch
             else:
+                ref_elec_id = 124 if ua_port == 'A' else 123
+                
+            ref_matches = np.where(ua_elec == ref_elec_id)[0]
+            if ref_matches.size == 0:
+                print(f"Warning: reference ch {ref_elec_id} not mapped; using target channel.")
                 ref_ch_id = target_ch_id
+            else:
+                ref_ch_id = all_ch_ids[ref_matches[0]]
         else:
             target_ch_id = all_ch_ids[target_ch]
             ref_ch_id = target_ch_id if reference_ch is None else all_ch_ids[reference_ch]
@@ -439,6 +447,8 @@ def run_ipca_debug(
     # 2d. Pre-allocate extraction buffers
     full_raw_array    = np.zeros((len(valid_stims), full_n_time), dtype=np.float32)
     full_orig_array   = np.zeros((len(valid_stims), full_n_time), dtype=np.float32)  # true raw, never overwritten
+    if all_channels_mode:
+        full_raw_array_all = np.zeros((len(valid_stims), full_n_time, n_channels), dtype=np.float32)
     micro_signal_array = np.zeros(
         (len(valid_stims) * (num_pulses + 10), micro_n_time, n_channels),
         dtype=np.float32,
@@ -521,9 +531,9 @@ def run_ipca_debug(
         full_raw_array[i, :]  = tr_all[:, 0]
         full_orig_array[i, :] = tr_all[:, 0]
 
-        # Save trial 0 raw all-channels for the geographic plot later.
-        if all_channels_mode and i == 0:
-                full_raw_array_all_t0 = tr_all.copy()
+        # Save raw all-channels for the geographic plot later.
+        if all_channels_mode:
+            full_raw_array_all[i, :, :] = tr_all
 
         if train_end_idx <= train_start_idx:
             continue
@@ -542,20 +552,22 @@ def run_ipca_debug(
 
         pulse_centres = [anchor_final]
         curr = anchor_final
-        while True:
-            if len(pulse_centres) >= num_pulses:
-                break
-                
+        while len(pulse_centres) < num_pulses:
             nxt = curr + interval_idx
-            if nxt > train_end_idx:
-                break
+            
             s_lo = max(0, nxt - search_radius_idx)
             s_hi = min(full_n_time, nxt + search_radius_idx)
             if s_hi <= s_lo:
-                break
-            curr = s_lo + np.argmax(tr_diff[s_lo:s_hi])
-            if tr_diff[curr] < 0.15 * local_max_diff:
-                break
+                curr = nxt
+                pulse_centres.append(curr)
+                continue
+                
+            peak_idx = np.argmax(tr_diff[s_lo:s_hi])
+            if tr_diff[s_lo+peak_idx] < 0.15 * local_max_diff:
+                curr = nxt
+            else:
+                curr = s_lo + peak_idx
+                
             pulse_centres.append(curr)
 
         pulse_centres = sorted(set(pulse_centres))
@@ -801,34 +813,39 @@ def run_ipca_debug(
                 plt.close(fig_lr)
                 print(f"  [Diag] Saved LR Sweep plot -> {out_path_lr.name}")
     else:
-        # Group channels by brain region; learn one shared subspace per region.
-        region_to_idxs: dict = {}
-        if probe == "UA":
-            for ch_idx, reg_idx in enumerate(target_ch_regions):
-                reg_name = ua_region_names[reg_idx] if reg_idx >= 0 else "Unknown"
-                region_to_idxs.setdefault(reg_name, []).append(ch_idx)
+        if per_channel_ipca:
+            print("Online Transfer-Learning Per-Channel IPCA Correction:")
+            array_template = Template()
+            for ch_idx in range(n_channels):
+                sig = micro_signal_array[:, :, ch_idx].copy()
+                corrected, array_template = corrector.ipca_template_per_channel(sig, array_template)
+                micro_corrected[:, :, ch_idx] = corrected
         else:
-            region_to_idxs["All Channels"] = list(range(n_channels))
-
-        for reg, idxs in region_to_idxs.items():
-            if not idxs:
-                continue
-            n_time = micro_signal_array.shape[1]
-            # Pool all pulses reversed (last trial first): template is well-formed
-            # before encountering trial 0's first pulse.
-            reg_signal = micro_signal_array[::-1, :, idxs]
-            pooled_sig = np.transpose(reg_signal, (0, 2, 1)).reshape(-1, n_time)
-            reg_template = Template()
-            _, reg_template = corrector.ipca_template_per_channel(pooled_sig, reg_template)
-            print(f"  [{reg}] template from {len(idxs)} ch.")
-
-
-            for ch_idx in idxs:
-                sig      = micro_signal_array[:, :, ch_idx].copy()
-                baseline = np.mean(sig[:, :3], axis=1, keepdims=True)
-                micro_corrected[:, :, ch_idx] = (
-                    corrector.apply_template(sig - baseline, reg_template) + baseline
-                )
+            # Group channels by brain region; learn one shared subspace per region.
+            region_to_idxs: dict = {}
+            if probe == "UA":
+                for ch_idx, reg_idx in enumerate(target_ch_regions):
+                    reg_name = ua_region_names[reg_idx] if reg_idx >= 0 else "Unknown"
+                    region_to_idxs.setdefault(reg_name, []).append(ch_idx)
+            else:
+                region_to_idxs["All Channels"] = list(range(n_channels))
+    
+            for reg, idxs in region_to_idxs.items():
+                if not idxs:
+                    continue
+                n_time = micro_signal_array.shape[1]
+                # Pool all pulses reversed (last trial first): template is well-formed
+                # before encountering trial 0's first pulse.
+                reg_signal = micro_signal_array[::-1, :, idxs]
+                pooled_sig = np.transpose(reg_signal, (0, 2, 1)).reshape(-1, n_time)
+                reg_template = Template()
+                _, reg_template = corrector.ipca_template_per_channel(pooled_sig, reg_template)
+                print(f"  [{reg}] template from {len(idxs)} ch.")
+    
+    
+                for ch_idx in idxs:
+                    sig = micro_signal_array[:, :, ch_idx].copy()
+                    micro_corrected[:, :, ch_idx] = corrector.apply_template(sig, reg_template)
 
     # --- §5  Full-trace reconstruction and summary figure ---
     # Columns: Raw | (After Exp Subtraction) | IPCA template | Corrected | BPF 300-10 kHz
@@ -914,9 +931,10 @@ def run_ipca_debug(
         sos = butter(4, [lo / (fs_hz / 2), hi / (fs_hz / 2)], btype='band', output='sos')
         return sosfiltfilt(sos, sig.astype(float)).astype(np.float32)
 
-    plot_idxs = np.linspace(
-        0, len(valid_stims) - 1, min(trials_plot, len(valid_stims)), dtype=int,
-    )
+    if trials_to_plot is None or len(trials_to_plot) == 0:
+        plot_idxs = np.arange(len(valid_stims))
+    else:
+        plot_idxs = np.array([i for i in trials_to_plot if i < len(valid_stims)])
     time_axis = np.arange(fw_start, fw_end) / fs * 1000
     if exp_subtract:
         col_labels = ["Raw Signal", "After Exp Subtraction",
@@ -994,74 +1012,74 @@ def run_ipca_debug(
         else:
             region_to_idxs["All Channels"] = list(range(n_channels))
             
-        trial_to_plot = 0
         col_labels_multi = ["Raw Signal", "IPCA Template", "Corrected", "HPF Corrected"]
         sos_hpf = butter(4, 300.0, btype='high', fs=fs, output='sos')
         
-        for reg, sample_ch_idxs in region_to_idxs.items():
-            if not sample_ch_idxs:
-                continue
+        for trial_to_plot in plot_idxs:
+            for reg, sample_ch_idxs in region_to_idxs.items():
+                if not sample_ch_idxs:
+                    continue
+                    
+                n_sample_channels = len(sample_ch_idxs)
+                print(f"  Generating plot for region {reg} with {n_sample_channels} channels (Trial {trial_to_plot + 1})...")
                 
-            n_sample_channels = len(sample_ch_idxs)
-            print(f"  Generating plot for region {reg} with {n_sample_channels} channels...")
-            
-            fig_multi, axes_multi = plt.subplots(
-                n_sample_channels, 4,
-                figsize=(18, 2.5 * n_sample_channels),
-                sharex=True, sharey=False,
-            )
-            if n_sample_channels == 1:
-                axes_multi = np.array([axes_multi])
-
-            # Share Y axis across the first 3 columns (raw / template / corrected).
-            ref_ax = axes_multi[0, 0]
-            for r in range(n_sample_channels):
-                for c in range(1, 3):
-                    axes_multi[r, c].sharey(ref_ax)
-
-            for r, ch_idx in enumerate(sample_ch_idxs):
-                ch_name = f"Ch {target_ch_elecs[ch_idx]}" if probe == "UA" else f"Ch {ch_idx}"
-
-                chan_full_raw  = full_raw_array_all_t0[:, ch_idx].copy()
-                chan_full_corr = chan_full_raw.copy()
-                chan_full_art  = np.zeros(full_n_time, dtype=np.float32)
-
-                for p_idx, (m_trial, ps, pe) in enumerate(micro_map):
-                    if m_trial == trial_to_plot:
-                        raw_mc  = micro_signal_array[p_idx, :, ch_idx]
-                        corr_mc = micro_corrected[p_idx, :, ch_idx]
-                        chan_full_corr[ps:pe] = corr_mc
-                        chan_full_art[ps:pe]  = raw_mc - corr_mc
-
-                chan_full_filt = sosfiltfilt(sos_hpf, chan_full_corr)
-
-                axes_multi[r, 0].plot(time_axis, chan_full_raw,  color="k",      lw=1)
-                axes_multi[r, 1].plot(time_axis, chan_full_art,  color="r",      lw=1)
-                axes_multi[r, 2].plot(time_axis, chan_full_corr, color="b",      lw=1)
-                axes_multi[r, 3].plot(time_axis, chan_full_filt, color="purple", lw=1)
-                axes_multi[r, 3].set_ylim(-80, 80)
-
-                for c in range(4):
-                    ax = axes_multi[r, c]
-                    ax.axvline(0, color="g", ls="--")
-                    if stim_dur > 0:
-                        ax.axvline(stim_dur, color="g", ls=":", alpha=0.5)
-                    if r == 0:
-                        ax.set_title(col_labels_multi[c])
-                    if c == 0:
-                        ax.set_ylabel(f"{ch_name}\n(µV)")
+                fig_multi, axes_multi = plt.subplots(
+                    n_sample_channels, 4,
+                    figsize=(18, 2.5 * n_sample_channels),
+                    sharex=True, sharey=False,
+                )
+                if n_sample_channels == 1:
+                    axes_multi = np.array([axes_multi])
     
-            axes_multi[0, 0].set_xlim(window_ms)
-            fig_multi.suptitle(
-                f"Region: {reg} | IPCA Correction (rank {ipca_rank}) | Cond {condition} | Trial 1",
-                y=0.99 if n_sample_channels < 10 else 1.0 - (0.5 / n_sample_channels),
-            )
-            fig_multi.tight_layout(rect=[0, 0, 1, 0.98 if n_sample_channels < 10 else 1.0 - (1.0 / n_sample_channels)])
+                # Share Y axis across the first 3 columns (raw / template / corrected).
+                ref_ax = axes_multi[0, 0]
+                for r in range(n_sample_channels):
+                    for c in range(1, 3):
+                        axes_multi[r, c].sharey(ref_ax)
     
-            multi_out_path = FIG_DIR / f"debug_IPCA_Region_{reg}_cond{condition}_rank{ipca_rank}.png"
-            fig_multi.savefig(multi_out_path)
-            print(f"Saved: {multi_out_path}")
-            plt.close(fig_multi)
+                for r, ch_idx in enumerate(sample_ch_idxs):
+                    ch_name = f"Ch {target_ch_elecs[ch_idx]}" if probe == "UA" else f"Ch {ch_idx}"
+    
+                    chan_full_raw  = full_raw_array_all[trial_to_plot, :, ch_idx].copy()
+                    chan_full_corr = chan_full_raw.copy()
+                    chan_full_art  = np.zeros(full_n_time, dtype=np.float32)
+    
+                    for p_idx, (m_trial, ps, pe) in enumerate(micro_map):
+                        if m_trial == trial_to_plot:
+                            raw_mc  = micro_signal_array[p_idx, :, ch_idx]
+                            corr_mc = micro_corrected[p_idx, :, ch_idx]
+                            chan_full_corr[ps:pe] = corr_mc
+                            chan_full_art[ps:pe]  = raw_mc - corr_mc
+    
+                    chan_full_filt = sosfiltfilt(sos_hpf, chan_full_corr)
+    
+                    axes_multi[r, 0].plot(time_axis, chan_full_raw,  color="k",      lw=1)
+                    axes_multi[r, 1].plot(time_axis, chan_full_art,  color="r",      lw=1)
+                    axes_multi[r, 2].plot(time_axis, chan_full_corr, color="b",      lw=1)
+                    axes_multi[r, 3].plot(time_axis, chan_full_filt, color="purple", lw=1)
+                    axes_multi[r, 3].set_ylim(-50, 50)
+    
+                    for c in range(4):
+                        ax = axes_multi[r, c]
+                        ax.axvline(0, color="g", ls="--")
+                        if stim_dur > 0:
+                            ax.axvline(stim_dur, color="g", ls=":", alpha=0.5)
+                        if r == 0:
+                            ax.set_title(col_labels_multi[c])
+                        if c == 0:
+                            ax.set_ylabel(f"{ch_name}\n(µV)")
+        
+                axes_multi[0, 0].set_xlim(window_ms)
+                fig_multi.suptitle(
+                    f"Region: {reg} | IPCA Correction (rank {ipca_rank}) | Cond {condition} | Trial {trial_to_plot + 1}",
+                    y=0.99 if n_sample_channels < 10 else 1.0 - (0.5 / n_sample_channels),
+                )
+                fig_multi.tight_layout(rect=[0, 0, 1, 0.98 if n_sample_channels < 10 else 1.0 - (1.0 / n_sample_channels)])
+        
+                multi_out_path = FIG_DIR / f"debug_IPCA_Region_{reg}_cond{condition}_rank{ipca_rank}_trial{trial_to_plot + 1}.png"
+                fig_multi.savefig(multi_out_path)
+                print(f"Saved: {multi_out_path}")
+                plt.close(fig_multi)
 
     # --- §6  Return data for notebook / interactive use ---
     return {
@@ -1085,18 +1103,40 @@ if __name__ == "__main__":
 
     # target_ch = 'all' or int
 
+    run_ipca_debug(
+        condition=15,
+        probe="UA",
+        trials_to_plot=[6],
+        target_ch='all', # 168 or 48 or 'all'
+        ipca_rank=7,
+        window_ms=(-5.0, 25.0),
+        pulse_window_ms=(-0.5, 0.5),
+        apply_hpf=False,
+        debug_single_pulse=True,
+        use_behavior_filter=False,
+        reference_ch=None,
+        plot_rank_variance=True,
+        plot_learning_rate_sweep=True,
+        exp_subtract=False,
+        exp_fit_guard_ms=0.1,
+        exp_n_tau_fits=10,
+        exp_tau_bounds_ms=(0.1, 20.0),
+        exp_tau_seed_ms=5.0,
+        per_channel_ipca=False,
+    )
+
     # run_ipca_debug(
     #     condition=10,
-    #     probe="UA",
-    #     trials_plot=5,
-    #     target_ch=168,
-    #     ipca_rank=10,
+    #     probe="NPRW",
+    #     trials_to_plot=[0, 5],
+    #     target_ch=60,
+    #     ipca_rank=20,
     #     window_ms=(-20.0, 40.0),
     #     pulse_window_ms=(-0.3, 0.4),
     #     apply_hpf=False,
     #     debug_single_pulse=True,
     #     use_behavior_filter=False,
-    #     reference_ch=124,
+    #     reference_ch=60,
     #     plot_rank_variance=True,
     #     plot_learning_rate_sweep=True,
     #     exp_subtract=False,
@@ -1105,24 +1145,3 @@ if __name__ == "__main__":
     #     exp_tau_bounds_ms=(0.1, 20.0),
     #     exp_tau_seed_ms=5.0,
     # )
-
-    run_ipca_debug(
-        condition=10,
-        probe="NPRW",
-        trials_plot=5,
-        target_ch=60,
-        ipca_rank=20,
-        window_ms=(-20.0, 40.0),
-        pulse_window_ms=(-0.3, 0.4),
-        apply_hpf=False,
-        debug_single_pulse=True,
-        use_behavior_filter=False,
-        reference_ch=60,
-        plot_rank_variance=True,
-        plot_learning_rate_sweep=True,
-        exp_subtract=False,
-        exp_fit_guard_ms=0.1,
-        exp_n_tau_fits=10,
-        exp_tau_bounds_ms=(0.1, 20.0),
-        exp_tau_seed_ms=5.0,
-    )

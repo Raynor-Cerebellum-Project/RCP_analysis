@@ -55,7 +55,8 @@ class IPCA_Artifact_Correction:
         baseline_mean = np.mean(signal[:, :3], axis=1, keepdims=True)
         signal = signal - baseline_mean
         
-        ipca = IncrementalPCA(n_components=self.rank)
+        effective_rank = min(self.rank, n_time, n_stim)
+        ipca = IncrementalPCA(n_components=effective_rank)
 
         ipca.partial_fit(signal)
         
@@ -99,14 +100,24 @@ class IPCA_Artifact_Correction:
         Apply existing template to new signal WITHOUT updating the weight!
         
         Input:
-            signal: n_stim * n_time array
+            signal: n_stim * n_time array (raw, un-centered)
             template: Template object with existing weights
         
         Returns:
-            signal_corrected: artifact-corrected signal
+            signal_corrected: artifact-corrected signal (with baseline preserved)
         """
-        X_artifact = signal @ template.weights.T @ template.weights
-        return signal - X_artifact
+        baseline_mean = np.mean(signal[:, :3], axis=1, keepdims=True)
+
+        centered = signal - baseline_mean
+        X_artifact = centered @ template.weights.T @ template.weights
+
+
+        # print(signal[0, :], np.mean(signal[0, :3]))
+        # print(centered[0, :], np.mean(centered[0, :3]))
+        # print(X_artifact[0, :], np.mean(X_artifact[0, :3]))
+        # print(centered[0, :] - X_artifact[0, :], np.mean(centered[0, :] - X_artifact[0, :]) )
+        # print(centered[0, :] - X_artifact[0, :] + baseline_mean[0, :], np.mean(centered[0, :] - X_artifact[0, :] + baseline_mean[0, :]) )
+        return centered - X_artifact + baseline_mean
 
 
 

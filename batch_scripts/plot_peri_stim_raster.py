@@ -6,6 +6,8 @@ from tqdm import tqdm
 from joblib import Parallel, delayed
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
+
+PROCESS_ONLY = PARAMS.preprocessing.get("process_only")
 from RCP_analysis.python.functions.impedance_utils import get_session_impedances
 from itertools import groupby
 from operator import itemgetter
@@ -400,6 +402,10 @@ def process_file(npz_path, references=None, metadata_df=None):
     # Extract Metadata
     sess = str(data['sess'])
     br_idx = int(data['br_idx']) if 'br_idx' in data else -1
+
+    if PROCESS_ONLY and br_idx not in PROCESS_ONLY:
+        return
+
     overall_title = str(data['overall_title']) if 'overall_title' in data else ""
     
     # Event times (Stimulation onsets)

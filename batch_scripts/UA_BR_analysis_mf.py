@@ -13,6 +13,12 @@ from RCP_analysis.python.functions.config_loading import *
 
 from spikeinterface.core import BaseRecording, BaseRecordingSegment
 
+# FIX FOR WINDOWS MULTIPROCESSING IN SPIKEINTERFACE 0.104.1
+# When child processes try to unpickle dynamically defined classes (IPCACorrectedRecording),
+# SI tries to check the __version__ of the module. Since the module is __mp_main__, it crashes.
+__version__ = "1.0.0"
+
+
 # Suppress annoying SpikeInterface provenance warning when manually reconstructing memory arrays
 warnings.filterwarnings("ignore", message="The extractor is not serializable to file. The provenance will not be saved.")
 
@@ -42,14 +48,20 @@ class IPCACorrectedRecordingSegment(BaseRecordingSegment):
         return self.parent_recording_segment.get_num_samples()
 
     def get_traces(self, start_frame, end_frame, channel_indices):
+        # 1. Ask the parent for the clean disk-backed chunk
         traces = self.parent_recording_segment.get_traces(start_frame, end_frame, channel_indices)
+        
+        # We need a writeable copy to patch
         traces = traces.copy() 
         
         if self._starts.size == 0:
             return traces
             
-        lo = np.searchsorted(self._ends, start_frame, side='right')
-        hi = np.searchsorted(self._starts, end_frame, side='left')
+        # 2. Binary-search for overlapping artifacts only
+        #    Any pulse with p_start < end_frame AND p_end > start_frame overlaps.
+        #    Since _starts is sorted, the first candidate is the first with p_end > start_frame.
+        lo = np.searchsorted(self._ends, start_frame, side='right')   # first pulse whose end > start_frame
+        hi = np.searchsorted(self._starts, end_frame, side='left')    # first pulse whose start >= end_frame
 
         for p in range(lo, hi):
             p_start, p_end = self.micro_map[p]
@@ -57,20 +69,25 @@ class IPCACorrectedRecordingSegment(BaseRecordingSegment):
             overlap_end = min(end_frame, p_end)
             
             if overlap_start < overlap_end:
+                # Calculate indices relative to our current trace chunk
                 chunk_idx_start = overlap_start - start_frame
                 chunk_idx_end = overlap_end - start_frame
+                
+                # Calculate indices relative to the pre-computed artifact patch
                 patch_idx_start = overlap_start - p_start
                 patch_idx_end = overlap_end - p_start
                 
+                # Slice the micro_corrected patch (only for the requested channels)
                 if channel_indices is None:
                     patch = self.micro_corrected[p, patch_idx_start:patch_idx_end, :]
                 else:
-                    patch = self.micro_corrected[p, patch_idx_start:patch_idx_end, channel_indices]
+                    patch = self.micro_corrected[p, patch_idx_start:patch_idx_end, :]
+                    patch = patch[:, channel_indices]
                 
+                # Overwrite the disk trace with the IPCA-corrected data
                 traces[chunk_idx_start:chunk_idx_end, :] = patch
                 
         return traces
-
 
 class IPCACorrectedRecording(BaseRecording):
     """
@@ -96,10 +113,10 @@ class IPCACorrectedRecording(BaseRecording):
 """ 
     This script preprocesses the Blackrock data.
     Input:
-        .ns6 files from Intan
+        .ns6 files from Blackrock
     Output:
         Checkpoint after preprocessing
-        Checkpoint after thresholding and calculating MUA peak locations and firing rate
+        Checkpoint after matched-filtering and calculating MUA peak locations and firing rate
 """
 
 # ---------- Config ----------
@@ -120,8 +137,8 @@ ARTRMV_TAIL_MS   = float(RATES.get("remove_tail_ms_after", 5.0))
 
 # --- IPCA Artifact Correction Settings ---
 USE_IPCA_CORRECTION  = True
-IPCA_RANK            = 10
-IPCA_PULSE_WINDOW_MS = (-0.2, 0.3)
+IPCA_RANK            = 5
+IPCA_PULSE_WINDOW_MS = (-0.3, 0.3)
 # ----------------------------------------
 
 
@@ -198,13 +215,40 @@ def main():
         original_count = len(sess_folders)
         filtered = []
         for br_idx in PROCESS_ONLY:
-            match = [s for s in sess_folders if int(s.name.split('_')[-1]) == br_idx]
+            match = [s for s in sess_folders if int(s.name.split("_")[-1]) == br_idx]
             if not match:
                 print(f"[WARN] PROCESS_ONLY BR index {br_idx} not found in session folders; skipping.")
                 continue
             filtered.extend(match)
         print(f"[INFO] PROCESS_ONLY: {len(filtered)}/{original_count} sessions selected.")
         sess_folders = filtered
+
+    # =========================================================================
+    # TODO: Matched Filter Template Configuration
+    # We load the Utah Array specific templates here. 
+    # Example logic assuming a single template or two separate templates for PortA and PortB.
+    # Currently pointing to hypothetical template files.
+    # =========================================================================
+    template_path_port_a = Path(REPO_ROOT / 'config' / "median_extremum_templates_norm_UA_PortB.npy")
+    template_path_port_b = Path(REPO_ROOT / 'config' / "median_extremum_templates_norm_UA_PortB.npy")
+    
+    # Check if they exist (hypothetical check)
+    has_port_templates = template_path_port_a.exists() and template_path_port_b.exists()
+    
+    if has_port_templates:
+        template_port_a = np.load(template_path_port_a)
+        template_port_b = np.load(template_path_port_b)
+    else:
+        # Fallback to single template if only one exists (e.g., generic UA template)
+        single_template_path = Path(REPO_ROOT / 'config' / "median_extremum_templates_norm_UA.npy")
+        if single_template_path.exists():
+            template_port_a = np.load(single_template_path)
+            template_port_b = template_port_a
+        else:
+            print("[WARN] No matched filter templates found for Utah Arrays! Please generate them before running.")
+            # Forcing placeholder templates to allow compilation, but it will error on execution
+            template_port_a = np.zeros(60)
+            template_port_b = np.zeros(60)
 
     for sess in sess_folders:
         print(f"=== Session: {sess.name} ===")
@@ -215,8 +259,6 @@ def main():
         
         # if out_dir.exists() and out_npz.exists():
         #     print(f"[SKIP] Both outputs already exist for {sess.name}")
-        #     print(f"       - Preprocessed: {out_dir}")
-        #     print(f"       - Rates: {out_npz}")
         #     continue
         
         temp_bin_path = None # Initialize temp_bin_path
@@ -235,6 +277,11 @@ def main():
         block_bounds = np.empty((0, 2), dtype=int)
         
         fs_ua = rec_ns6.get_sampling_frequency()
+        
+        # Calculate ms_before for centering based on actual session sampling rate
+        # If the template was generated at 30k but session is different, this ensures alignment
+        ms_before_a = (np.argmin(template_port_a) / fs_ua) * 1000.0
+        ms_before_b = (np.argmin(template_port_b) / fs_ua) * 1000.0
         
         if br_idx is None:
             print(f"[WARN] Could not parse BR index from session folder '{sess.name}'. Skipping artifact removal.")
@@ -410,7 +457,6 @@ def main():
                         PER_CHANNEL_IPCA = False
                         if PER_CHANNEL_IPCA:
                             print("Online Transfer-Learning Per-Channel IPCA Correction:")
-                            # We instantiate a single array-level template and let it geometrically "drift" across channels
                             array_template = Template()
                             for ch_idx in range(micro_signal_array.shape[2]):
                                 signal_ch = micro_signal_array[:, :, ch_idx].copy()
@@ -446,6 +492,62 @@ def main():
                                 
                         print("[IPCA] Building dynamically-correcting IPCACorrectedRecording...")
                         rec_corr_mem = IPCACorrectedRecording(rec_ns6, micro_map, micro_corrected)
+                        
+                        # --- TEMPORARY MACRO-WINDOW PLOTTING FOR CH 24 ---
+                        # Plot -5ms to +20ms directly from SpikeInterface stream (Continuous)
+                        ch_si_id = None
+                        for ci, elec_id in enumerate(ua_elec):
+                            if int(elec_id) == 24:
+                                ch_si_id = rec_ns6.get_channel_ids()[ci]
+                                break
+                                
+                        if ch_si_id is not None:
+                            import matplotlib.pyplot as plt
+                            MAX_DEBUG_BLOCKS = 20  # Cap to avoid hanging on continuous stim
+                            n_blocks = min(len(starts_ua), MAX_DEBUG_BLOCKS)
+                            fig, axes = plt.subplots(n_blocks, 3, figsize=(18, 2.5 * n_blocks))
+                            if n_blocks == 1: axes = axes[np.newaxis, :]
+                            
+                            fs = rec_ns6.get_sampling_frequency()
+                            win_samp_pre  = int(5.0  * fs / 1000.0)  # 5ms before
+                            win_samp_post = int(20.0 * fs / 1000.0)  # 20ms after
+                            time_axis = np.linspace(-5.0, 20.0, win_samp_pre + win_samp_post)
+                            
+                            for b_idx, s_anchor in enumerate(starts_ua[:n_blocks]):
+                                s0 = int(s_anchor) - win_samp_pre
+                                s1 = int(s_anchor) + win_samp_post
+                                s0 = max(0, s0)
+                                s1 = min(rec_ns6.get_num_samples(), s1)
+                                n_samp = s1 - s0
+                                t_ax = time_axis[:n_samp]
+                                
+                                raw_trace  = rec_ns6.get_traces(start_frame=s0, end_frame=s1, channel_ids=[ch_si_id], return_in_uV=True).flatten()
+                                corr_trace = rec_corr_mem.get_traces(start_frame=s0, end_frame=s1, channel_ids=[ch_si_id], return_in_uV=True).flatten()
+                                artifact_trace = raw_trace - corr_trace
+                                
+                                axes[b_idx, 0].plot(t_ax, raw_trace,      color='k',    lw=1,   alpha=0.8)
+                                axes[b_idx, 0].axvline(0, color='r', linestyle='--', alpha=0.4)
+                                axes[b_idx, 1].plot(t_ax, artifact_trace, color='r',    lw=1,   alpha=0.9)
+                                axes[b_idx, 1].axvline(0, color='r', linestyle='--', alpha=0.4)
+                                axes[b_idx, 2].plot(t_ax, corr_trace,     color='blue', lw=1.2, alpha=0.9)
+                                axes[b_idx, 2].axvline(0, color='r', linestyle='--', alpha=0.4)
+                                for c in range(3):
+                                    axes[b_idx, c].set_ylabel(f"T{b_idx+1} (µV)", fontsize=7)
+                                if b_idx == 0:
+                                    axes[0, 0].set_title("Raw",             fontsize=9)
+                                    axes[0, 1].set_title("Learned Artifact",fontsize=9)
+                                    axes[0, 2].set_title("Corrected",        fontsize=9)
+                                
+                            for c in range(3):
+                                axes[-1, c].set_xlabel("Time rel. stim onset (ms)")
+                            fig.suptitle(f"IPCA Debug | Ch 24 | BR sess {br_idx:03d}")
+                            fig.tight_layout()
+                            out_fig = UA_CKPT_OUT.parent.parent / "figures" / f"debug_MACRO_UA_br{br_idx:03d}_ch24.png"
+                            out_fig.parent.mkdir(parents=True, exist_ok=True)
+                            fig.savefig(out_fig, dpi=150)
+                            plt.close(fig)
+                            print(f"!!! SAVED MACRO DEBUG FIG FOR CH 24: {out_fig}")
+                        # --------------------------------------------------
                         
                         print("[IPCA] Filter after correction...")
                         rec_hp = spre.highpass_filter(rec_corr_mem, freq_min=float(PARAMS.highpass_hz))
@@ -493,52 +595,129 @@ def main():
         print(f"[{sess.name}] (ns6) saved preprocessed -> {out_dir}")
         
         # del rec_artif_removed
-        if 'rec_corr_mem' in locals(): del rec_corr_mem
-        if 'rec_hp' in locals(): del rec_hp
+        if "rec_corr_mem" in locals(): del rec_corr_mem
+        if "rec_hp" in locals(): del rec_hp
         gc.collect()
         
         n_seg = rec_artif_removed.get_num_segments()
-        # Detect peaks
-        noise_levels = si.get_noise_levels(rec_artif_removed, method="mad", return_in_uV=False) # They didn't write return_in_uV in their documentation
+        try:
+            noise_levels = si.get_noise_levels(rec_artif_removed, method="mad", return_in_uV=False, n_jobs=1)
+        except Exception:
+            noise_levels = si.get_noise_levels(rec_artif_removed, method="mad", return_in_uV=False)
         
         print(f"[INFO] Segments of recording: {n_seg}, Average noise level: {np.nanmean(noise_levels)}")
+        
+        # =====================================================================
+        # TODO: Matched Filter Applied to Array
+        # We process Port A and Port B separately if we have separate templates.
+        # SpikeInterface's `detect_peaks` acts on a recording. 
+        # So we can split the recording by port or just apply a general template.
+        # =====================================================================
+        
+        # SpikeInterface peak detection requires channel locations (even for 1D matched filtering)
+        n_ch_total = rec_artif_removed.get_num_channels()
+        locs = np.zeros((n_ch_total, 2))
+        side = int(np.ceil(np.sqrt(n_ch_total)))
+        for i in range(n_ch_total):
+            locs[i, 0] = (i % side) * 400.0
+            locs[i, 1] = (i // side) * 400.0
+        rec_artif_removed.set_channel_locations(locs)
+        
         try:
-            # Force n_jobs=1 for PyTorch backend to prevent GPU memory fragmentation / OOM
-            peaks = detect_peaks(
-                rec_artif_removed,
-                method="by_channel_torch",
-                method_kwargs=dict(
-                    detect_threshold=THRESH,
-                    peak_sign=PEAK_SIGN,
-                    noise_levels=noise_levels,
-                ),
-                job_kwargs=dict(n_jobs=1),
-            )
+            if has_port_templates:
+                # 1. Split recording by Port
+                # ua_port is an array matching the channels. 0 = PortA, 1 = PortB maybe?
+                # We need to map ua_port back to SpikeInterface channels
+                ch_ids = rec_artif_removed.get_channel_ids()
+                
+                # Filter valid channels
+                valid_mask = ua_elec > 0 
+                valid_ch_ids = [ch_ids[i] for i, valid in enumerate(valid_mask) if valid]
+                
+                port_a_ch = valid_ch_ids if ua_port == 'A' else []
+                port_b_ch = valid_ch_ids if ua_port == 'B' else []
+                
+                rec_a = rec_artif_removed.select_channels(port_a_ch) if len(port_a_ch) > 0 else None
+                rec_b = rec_artif_removed.select_channels(port_b_ch) if len(port_b_ch) > 0 else None
+                
+                all_peaks = []
+                
+                if rec_a is not None:
+                    print(f"Detecting peaks on Port A ({len(port_a_ch)} channels) via matched filtering...")
+                    peaks_a = detect_peaks(
+                        rec_a,
+                        method="matched_filtering",
+                        method_kwargs=dict(
+                            detect_threshold=THRESH,
+                            peak_sign=PEAK_SIGN,
+                            ms_before=ms_before_a,
+                            prototype=template_port_a,
+                            radius_um=0,  # 1D thresholding on matched filter result
+                            weight_method={"mode": "gaussian_2d"}
+                        ),
+                        n_jobs=1,
+                    )
+                    all_peaks.append(peaks_a)
+                
+                if rec_b is not None:
+                    print(f"Detecting peaks on Port B ({len(port_b_ch)} channels) via matched filtering...")
+                    peaks_b = detect_peaks(
+                        rec_b,
+                        method="matched_filtering",
+                        method_kwargs=dict(
+                            detect_threshold=THRESH,
+                            peak_sign=PEAK_SIGN,
+                            ms_before=ms_before_b,
+                            prototype=template_port_b,
+                            radius_um=0,
+                            weight_method={"mode": "gaussian_2d"}
+                        ),
+                        n_jobs=1,
+                    )
+                    all_peaks.append(peaks_b)
+                    
+                peaks = np.concatenate(all_peaks) if all_peaks else np.array([])
+            else:
+                print("Detecting peaks simultaneously on all channels with generic template via matched filtering...")
+                # Single template for all
+                peaks = detect_peaks(
+                    rec_artif_removed,
+                    method="matched_filtering",
+                    method_kwargs=dict(
+                        detect_threshold=4, # Use typical matched filter SNR threshold 
+                        peak_sign=PEAK_SIGN,
+                        ms_before=ms_before_a,
+                        prototype=template_port_a,
+                        radius_um=0,
+                        weight_method={"mode": "gaussian_2d"}
+                    ),
+                    n_jobs=1,
+                )
+                
         except Exception as exc:
-            print(f"[WARN] Torch peak detection failed ({exc}). Falling back to CPU locally_exclusive...")
+            print(f"[WARN] Torch matched filtering failed ({exc}). Falling back to CPU locally_exclusive...")
             peaks = detect_peaks(
                 rec_artif_removed,
-                method="by_channel",
+                method="locally_exclusive", # Fallback logic
                 detect_threshold=THRESH,
                 peak_sign=PEAK_SIGN,
                 noise_levels=noise_levels,
-                n_jobs=PARAMS.parallel_jobs,
             )
         
         # Threshold to get touchscreen state
         ts_state_num = np.zeros(0, dtype=np.int8)
-        ts_state_char = np.full(0, 'N', dtype='U1')
+        ts_state_char = np.full(0, "N", dtype="U1")
 
         if touchscreen_sig is not None:
             touchscreen_sig = np.asarray(touchscreen_sig, float)
             ts_state_num = np.zeros_like(touchscreen_sig, dtype=np.int8)
-            ts_state_char = np.full(touchscreen_sig.shape, 'N', dtype='U1')
+            ts_state_char = np.full(touchscreen_sig.shape, "N", dtype="U1")
 
             ts_state_num[touchscreen_sig >= TOUCHSCREEN_THRES_A] = 1
             ts_state_num[touchscreen_sig >= TOUCHSCREEN_THRES_B] = 2
 
-            ts_state_char[ts_state_num == 1] = 'A'
-            ts_state_char[ts_state_num == 2] = 'B'
+            ts_state_char[ts_state_num == 1] = "A"
+            ts_state_char[ts_state_num == 2] = "B"
             
             # --- Fallback to DLC kinematics if touchscreen signal is bad / unresponsive ---
             if np.max(ts_state_num) == 0:
@@ -546,7 +725,7 @@ def main():
                 import pandas as pd
                 
                 # Base session name without date (e.g., NRR_RW022_001) if date is present
-                sess_parts = sess.name.split('_', 1)
+                sess_parts = sess.name.split("_", 1)
                 short_name = sess_parts[1] if len(sess_parts) > 1 and sess_parts[0].isdigit() else sess.name
                 
                 csv_files = list(BEHV_CKPT_ROOT.rglob(f"*{short_name}*aligned.csv"))
@@ -556,7 +735,7 @@ def main():
                     print(f"  > Reading DLC CSV: {csv_path.name}")
                     try:
                         df = pd.read_csv(csv_path, header=[0, 1, 2])
-                        flat_headers = ['_'.join([str(c) for c in col if 'Unnamed' not in str(c)]).strip() for col in df.columns]
+                        flat_headers = ["_".join([str(c) for c in col if "Unnamed" not in str(c)]).strip() for col in df.columns]
                         df.columns = flat_headers
                     except:
                         df = pd.read_csv(csv_path, header=0)
@@ -577,7 +756,7 @@ def main():
                                   break
                     
                     if col_y is not None:
-                        ser_y = pd.to_numeric(df.iloc[:, col_y], errors='coerce')
+                        ser_y = pd.to_numeric(df.iloc[:, col_y], errors="coerce")
                         dlc_fps = 100.0  # standard behavioral framing rate
                         
                         # Apply thresholds: Below 190 -> Target B, Above 240 -> Target A
@@ -602,9 +781,9 @@ def main():
                         
                         ts_state_num = dlc_state_num[idx_map]
                         
-                        ts_state_char = np.full(len(ts_state_num), 'N', dtype='U1')
-                        ts_state_char[ts_state_num == 1] = 'A'
-                        ts_state_char[ts_state_num == 2] = 'B'
+                        ts_state_char = np.full(len(ts_state_num), "N", dtype="U1")
+                        ts_state_char[ts_state_num == 1] = "A"
+                        ts_state_char[ts_state_num == 2] = "B"
                         
                         print(f"  > Reassigned from DLC. Unique kinematic states: {np.unique(ts_state_num)}")
                     else:

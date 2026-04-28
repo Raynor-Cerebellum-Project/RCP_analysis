@@ -30,7 +30,7 @@ parent_dir = pwd;
 D = dir(parent_dir);
 D = D([D.isdir]);                         % only folders
 D = D(~ismember({D.name},{'.','..'}));    % remove . and ..
-D = D(1:7); %**** specify files----------------------------------------------
+% D = D(3:end);
 
 %% Loop through each folder
 for i_folder = 1:length(D)

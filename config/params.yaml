@@ -1,5 +1,5 @@
 paths:
-  data_root: "/media/bryan/Expansion/"
+  data_root: "/home/bryan/mnt/cullen/Current Project Databases - NHP/2025 Cerebellum prosthesis"
   location: "Nike/20260324_NRR_RW026"
   session: "NRR_RW026"
   geom_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
@@ -14,7 +14,8 @@ preprocessing:
   has_VOG: False
   has_HR: False
   output_aligned_mat: True
-  process_only: [2] # Input as BR indexes, e.g. [1, 2] to only process BR_001 and BR_002, if process all just leave as []
+  process_only: [] # Input as BR indexes, e.g. [1, 2] to only process BR_001 and BR_002, if process all just leave as []
+  z_score_firing_rate: true  # If true, z-score firing rates per-trial before averaging for heatmap plots
 
 # ---- Spike preprocessing ----
 highpass_hz: 300.0
