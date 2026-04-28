@@ -79,7 +79,10 @@ def find_aligned_file(aligned_dir: Path, br_idx: int) -> Path:
     search_dirs = [
         aligned_dir / "stim_reaches",
         aligned_dir / "control_reaches",
+        aligned_dir / "continuous_stim",  # Added this line
         aligned_dir / "at_rest",
+        aligned_dir / "Grasp",             # Added this line
+        aligned_dir / "IMU",               # Added this line
         aligned_dir,
     ]
     for d in search_dirs:
@@ -166,6 +169,8 @@ def run_ipca_debug(
     plot_learning_rate_sweep: bool = False,
     override_freq: float = None,
     per_channel_ipca: bool = True,
+    nprw_block_size: int = 16,
+    exclude_nprw_stim_channels: bool = False,
 ):
     """Run the full IPCA artifact-correction debug pipeline.
 
@@ -257,6 +262,7 @@ def run_ipca_debug(
         )
     stim = rcp.load_stim_detection(stim_npz_path)
     block_bounds = stim.get("block_bounds_samples", np.empty((0, 2), dtype=np.int64))
+    active_stim_channels = stim.get("active_channels", [])
     if len(block_bounds) == 0:
         raise ValueError("No stimulation blocks found in Intan auxiliary traces.")
     if isinstance(block_bounds, list):
@@ -356,7 +362,15 @@ def run_ipca_debug(
     if override_freq is not None:
         stim_freq = float(override_freq)
     else:
-        stim_freq = float(meta.get("Freq", 400.0))
+        try:
+            br_idx = int(meta.get("br_idx", 0))
+            if br_idx > 0:
+                stim_freq = float(rcp.get_metadata_mapping(METADATA_CSV, 'BR_File', 'Stim_Frequency_Hz').get(br_idx, 400.0))
+                if np.isnan(stim_freq): stim_freq = 400.0
+            else:
+                stim_freq = float(meta.get("Freq", 400.0))
+        except Exception:
+            stim_freq = float(meta.get("Freq", 400.0))
         
     pulse_interval_ms = 1000.0 / stim_freq
     num_pulses       = int(np.floor(stim_dur / pulse_interval_ms)) + 1
@@ -396,12 +410,16 @@ def run_ipca_debug(
             target_ch_ids = list(all_ch_ids)
             target_ch_elecs = list(range(len(all_ch_ids)))
             target_ch_regions = []
-        # Reference channel for pulse detection
         if probe == "UA":
+            center_elecs_A = {0: 29, 1: 93, 2: 165, 3: 229}
+            center_elecs_B = {0: 37, 1: 101, 2: 157, 3: 221}
+            center_elecs = center_elecs_A if ua_port == 'A' else center_elecs_B
+            
             if reference_ch is not None:
                 ref_elec_id = reference_ch
             else:
-                ref_elec_id = 124 if ua_port == 'A' else 123
+                # Default to SMA center for all-channels mode
+                ref_elec_id = center_elecs.get(0, 37)
                 
             ref_matches = np.where(ua_elec == ref_elec_id)[0]
             if ref_matches.size == 0:
@@ -409,11 +427,60 @@ def run_ipca_debug(
                 ref_ch_id = target_ch_ids[0]
             else:
                 ref_ch_id = all_ch_ids[ref_matches[0]]
+            
+            n_channels = len(target_ch_ids)
+            print(f"-> All-channel mode: {n_channels} channels, "
+                  f"pulse detection on ref ch {ref_elec_id}")
         else:
-            ref_ch_id = target_ch_ids[0]
-        n_channels = len(target_ch_ids)
-        print(f"-> All-channel mode: {n_channels} channels, "
-              f"pulse detection on ref ch {ref_elec_id if probe == 'UA' else 'first'}")
+            # NPRW
+            # If all_channels_mode, group target_ch_ids by y-coordinates
+            # rec_proc has channel ids in mapped order. We can get their locations
+            locs = probe_obj.contact_positions[:, 1] # ycoords
+            mapped_indices = map_idx # from load_probe_geometry
+            ycoords = locs # since rec_proc is reordered to geometry, ch i corresponds to ycoords[i]
+            
+            target_ch_ids_np = np.array(all_ch_ids)
+            valid_mask = np.ones(len(all_ch_ids), dtype=bool)
+            
+            if exclude_nprw_stim_channels and len(active_stim_channels) > 0:
+                # Need to convert active_stim_channels (names) to indices if possible
+                stim_ch_names = [str(c) for c in active_stim_channels]
+                for i, ch_id in enumerate(target_ch_ids_np):
+                    if str(ch_id) in stim_ch_names:
+                        valid_mask[i] = False
+                print(f"-> Excluding {np.sum(~valid_mask)} stimulation channels from IPCA.")
+                
+            target_ch_ids = target_ch_ids_np[valid_mask].tolist()
+            target_ch_elecs = np.where(valid_mask)[0].tolist()
+            
+            # Map valid channels to spatial blocks based on sorted y-coordinates
+            valid_y = ycoords[valid_mask]
+            sorted_idx = np.argsort(valid_y)
+            
+            target_ch_regions = np.zeros(len(target_ch_ids), dtype=int)
+            n_blocks = max(1, int(np.ceil(len(target_ch_ids) / nprw_block_size)))
+            
+            for b in range(n_blocks):
+                block_idxs = sorted_idx[b * nprw_block_size : (b + 1) * nprw_block_size]
+                for idx in block_idxs:
+                    target_ch_regions[idx] = b
+                    
+            if reference_ch is not None:
+                # User provided a reference channel by index or name
+                if reference_ch in target_ch_ids:
+                    ref_ch_id = reference_ch
+                else:
+                    try:
+                        ref_ch_id = all_ch_ids[int(reference_ch)]
+                    except:
+                        ref_ch_id = target_ch_ids[len(target_ch_ids)//2]
+            else:
+                # Default to the median depth channel of the entire probe
+                ref_ch_id = target_ch_ids[np.argsort(valid_y)[len(valid_y) // 2]]
+                
+            n_channels = len(target_ch_ids)
+            print(f"-> All-channel mode (NPRW): {n_channels} channels, "
+                  f"pulse detection on ref ch {ref_ch_id}, grouped into {n_blocks} blocks of ~{nprw_block_size} channels")
     else:
         # Single-channel mode (original behaviour)
         if probe == "UA":
@@ -422,12 +489,16 @@ def run_ipca_debug(
                 print(f"Warning: UA ch {target_ch} not mapped in this recording.")
                 return
             target_ch_id = all_ch_ids[matches[0]]
+            reg_idx = int(ua_region[matches[0]])
             
             # Use reference channel for pulse detection if provided
             if reference_ch is not None:
                 ref_elec_id = reference_ch
             else:
-                ref_elec_id = 124 if ua_port == 'A' else 123
+                center_elecs_A = {0: 29, 1: 93, 2: 165, 3: 229}
+                center_elecs_B = {0: 37, 1: 101, 2: 157, 3: 221}
+                center_elecs = center_elecs_A if ua_port == 'A' else center_elecs_B
+                ref_elec_id = center_elecs.get(reg_idx, target_ch)
                 
             ref_matches = np.where(ua_elec == ref_elec_id)[0]
             if ref_matches.size == 0:
@@ -821,14 +892,16 @@ def run_ipca_debug(
                 corrected, array_template = corrector.ipca_template_per_channel(sig, array_template)
                 micro_corrected[:, :, ch_idx] = corrected
         else:
-            # Group channels by brain region; learn one shared subspace per region.
+            # Group channels by brain region or spatial block; learn one shared subspace per region.
             region_to_idxs: dict = {}
             if probe == "UA":
                 for ch_idx, reg_idx in enumerate(target_ch_regions):
                     reg_name = ua_region_names[reg_idx] if reg_idx >= 0 else "Unknown"
                     region_to_idxs.setdefault(reg_name, []).append(ch_idx)
             else:
-                region_to_idxs["All Channels"] = list(range(n_channels))
+                for ch_idx, reg_idx in enumerate(target_ch_regions):
+                    reg_name = f"Shank_Block_{reg_idx}"
+                    region_to_idxs.setdefault(reg_name, []).append(ch_idx)
     
             for reg, idxs in region_to_idxs.items():
                 if not idxs:
@@ -1010,7 +1083,9 @@ def run_ipca_debug(
                 reg_name = ua_region_names[reg_idx] if reg_idx >= 0 else "Unknown"
                 region_to_idxs.setdefault(reg_name, []).append(ch_idx)
         else:
-            region_to_idxs["All Channels"] = list(range(n_channels))
+            for ch_idx, reg_idx in enumerate(target_ch_regions):
+                reg_name = f"Shank_Block_{reg_idx}"
+                region_to_idxs.setdefault(reg_name, []).append(ch_idx)
             
         col_labels_multi = ["Raw Signal", "IPCA Template", "Corrected", "HPF Corrected"]
         sos_hpf = butter(4, 300.0, btype='high', fs=fs, output='sos')
@@ -1057,7 +1132,10 @@ def run_ipca_debug(
                     axes_multi[r, 1].plot(time_axis, chan_full_art,  color="r",      lw=1)
                     axes_multi[r, 2].plot(time_axis, chan_full_corr, color="b",      lw=1)
                     axes_multi[r, 3].plot(time_axis, chan_full_filt, color="purple", lw=1)
-                    axes_multi[r, 3].set_ylim(-50, 50)
+                    
+                    # Set Y-limit for HPF column
+                    hpf_lim = 150 if probe == "NPRW" else 50
+                    axes_multi[r, 3].set_ylim(-hpf_lim, hpf_lim)
     
                     for c in range(4):
                         ax = axes_multi[r, c]
@@ -1103,40 +1181,18 @@ if __name__ == "__main__":
 
     # target_ch = 'all' or int
 
-    run_ipca_debug(
-        condition=15,
-        probe="UA",
-        trials_to_plot=[6],
-        target_ch='all', # 168 or 48 or 'all'
-        ipca_rank=7,
-        window_ms=(-5.0, 25.0),
-        pulse_window_ms=(-0.5, 0.5),
-        apply_hpf=False,
-        debug_single_pulse=True,
-        use_behavior_filter=False,
-        reference_ch=None,
-        plot_rank_variance=True,
-        plot_learning_rate_sweep=True,
-        exp_subtract=False,
-        exp_fit_guard_ms=0.1,
-        exp_n_tau_fits=10,
-        exp_tau_bounds_ms=(0.1, 20.0),
-        exp_tau_seed_ms=5.0,
-        per_channel_ipca=False,
-    )
-
     # run_ipca_debug(
-    #     condition=10,
-    #     probe="NPRW",
-    #     trials_to_plot=[0, 5],
-    #     target_ch=60,
-    #     ipca_rank=20,
-    #     window_ms=(-20.0, 40.0),
-    #     pulse_window_ms=(-0.3, 0.4),
+    #     condition=5,
+    #     probe="UA",
+    #     trials_to_plot=[6],
+    #     target_ch=24,  # 'all', # 168 or 48 or 'all'
+    #     ipca_rank=5,
+    #     window_ms=(-5.0, 25.0),
+    #     pulse_window_ms=(-0.3, 0.3),
     #     apply_hpf=False,
     #     debug_single_pulse=True,
     #     use_behavior_filter=False,
-    #     reference_ch=60,
+    #     reference_ch=None,
     #     plot_rank_variance=True,
     #     plot_learning_rate_sweep=True,
     #     exp_subtract=False,
@@ -1144,4 +1200,29 @@ if __name__ == "__main__":
     #     exp_n_tau_fits=10,
     #     exp_tau_bounds_ms=(0.1, 20.0),
     #     exp_tau_seed_ms=5.0,
+    #     per_channel_ipca=False,
     # )
+
+    run_ipca_debug(
+        condition=10,
+        probe="NPRW",
+        trials_to_plot=[0],
+        target_ch="all",
+        ipca_rank=20,
+        window_ms=(-20.0, 40.0),
+        pulse_window_ms=(-0.5, 0.5),
+        apply_hpf=False,
+        debug_single_pulse=True,
+        use_behavior_filter=False,
+        reference_ch=None,
+        plot_rank_variance=True,
+        plot_learning_rate_sweep=True,
+        exp_subtract=True,
+        exp_fit_guard_ms=0.1,
+        exp_n_tau_fits=10,
+        exp_tau_bounds_ms=(0.1, 20.0),
+        exp_tau_seed_ms=5.0,
+        per_channel_ipca=False,
+        nprw_block_size=16,
+        exclude_nprw_stim_channels=False,
+    )

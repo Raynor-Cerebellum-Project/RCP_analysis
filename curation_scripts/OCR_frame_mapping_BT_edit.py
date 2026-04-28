@@ -106,7 +106,12 @@ def main():
         ocr_root = target.parent / "OCR"
         ocr_root.mkdir(parents=True, exist_ok=True)
         out_csv = ocr_root / f"{target.stem}_ocr.csv"
-        process_video(target, READER, out_csv)
+
+        # Skip if output already exists
+        if out_csv.exists():
+            print(f"[skip] Output already exists: {out_csv}", file=sys.stderr)
+        else:
+            process_video(target, READER, out_csv)
 
     elif target.is_dir():
         files = sorted(p for p in target.rglob('*') if p.suffix.lower() in VIDEO_EXTS)
@@ -121,6 +126,11 @@ def main():
             out_dir = (ocr_root / rel.parent)
             out_dir.mkdir(parents=True, exist_ok=True)
             out_csv = out_dir / f"{p.stem}_ocr.csv"
+
+            if out_csv.exists():
+                print(f"[skip] Output already exists: {out_csv}", file=sys.stderr)
+                continue
+            
             process_video(p, READER, out_csv)
 
     else:
