@@ -30,7 +30,7 @@ clear all; close all; clc;
 addpath(genpath(fullfile('..', 'functions')));
 
 %% --- Setup Paths and Define session
-session = 'Nike/20260326_NRR_RW027_fastig';
+session = 'Nike/20260423_NRR_RW033_fastig';
 [~, session_name] = fileparts(session);
 % Get machine-specific root path
 [base_root, code_root, base_folder] = set_paths_cullen_lab(session);
@@ -129,11 +129,21 @@ switch session
         % at_rest_indices = [10, 11];
         segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
         segment_fields = {'ipsi' , 'contra'};
+    case 'Nike/20260423_NRR_RW033_fastig'
+        EndPoint_pos = 30; EndPoint_neg = -30;
+        % 1-9 segmented
+        baseline_file_nums = 1;%[1, 6, 14];
+        trial_indices = [3:5, 8:9];
+        % at_rest_indices = [6];
+        segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
+        segment_fields = {'ipsi' , 'contra'};
     otherwise
         EndPoint_pos = 30; EndPoint_neg = -30;
 end
 %% --- Load Metadata ---
-T = readtable(metadata_csv_path);
+opts = detectImportOptions(metadata_csv_path);
+opts = setvartype(opts, 'Stim_Delay', 'string');
+T = readtable(metadata_csv_path, opts);
 %% --- Loop over each trial and analyze ---
 raw_metrics_all = cell(height(T), 1);  % Save all raw metrics (from analyze_metrics)
 all_trial_indices = sort([baseline_file_nums, trial_indices]);
@@ -151,9 +161,7 @@ for i = all_trial_indices
 
     % Decide segment fields
     if ismember('Stim_Delay', metadata_row.Properties.VariableNames)
-        stim_delay_val = metadata_row.Stim_Delay;
-        if iscell(stim_delay_val), stim_delay_val = string(stim_delay_val{1}); end
-        if isnumeric(stim_delay_val), stim_delay_val = string(num2str(stim_delay_val)); end
+        stim_delay_val = string(metadata_row.Stim_Delay);  % already string, but defensive cast is fine
         if strcmpi(metadata_row.Movement_Trigger, "Rest")
             continue
         end

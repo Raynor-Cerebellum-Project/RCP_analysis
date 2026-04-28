@@ -78,7 +78,9 @@ target_fs = 1000;
 ds_factor = round(fs / target_fs);
 
 %% Load Metadata
-T = readtable(metadata_csv);
+opts = detectImportOptions(metadata_csv_path);
+opts = setvartype(opts, 'Stim_Delay', 'string');
+T = readtable(metadata_csv_path, opts);
 has_stim_all = false(height(T), 1);  % Preallocate logical array
 
 %% Start parallel pool before trial loop

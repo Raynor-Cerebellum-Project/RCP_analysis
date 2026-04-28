@@ -13,61 +13,41 @@ if ~is_ipsi
 end
 
 % === Extract delay info and determine baseline label ===
-if iscell(meta_cond.Stim_Delay)
-    raw_delay = meta_cond.Stim_Delay{1};
-else
-    raw_delay = meta_cond.Stim_Delay;
-end
-
+raw_delay = string(meta_cond.Stim_Delay);  % handles cell, char, string, numeric
 use_random_baseline = false;
 
-if isnumeric(raw_delay)
-    delay = raw_delay;
-    delay_str = sprintf('%dms', delay);
-elseif ischar(raw_delay)
-    if strcmpi(raw_delay, 'Random')
-        % --- Try to parse delay info from side_label ---
-        tokens = regexp(side_label, '^(ipsi|contra)(?:_(\d+|nan))?$', 'tokens', 'ignorecase');
-        if ~isempty(tokens)
-            polarity = tokens{1}{1};
-            if numel(tokens{1}) >= 2
-                delay_part = tokens{1}{2};
-            else
-                delay_part = '';  % no suffix → treat as NaN delay
-            end
-            if isempty(delay_part) || strcmpi(delay_part, 'nan')
-                delay = NaN;
-                delay_str = 'NaNms';
-            else
-                delay = str2double(delay_part);
-                delay_str = sprintf('%dms', delay);
-            end
-        else
-            delay = NaN;
-            delay_str = 'NaNms';
-            warning('Could not parse delay from side_label: %s', side_label);
-        end
-        % --- Determine if Random baseline exists ---
-        if contains(side_label, 'ipsi') && isfield(base_data, 'ipsi_nan')
-            base_side_label = 'ipsi_nan';
-            use_random_baseline = true;
-        elseif contains(side_label, 'contra') && isfield(base_data, 'contra_nan')
-            base_side_label = 'contra_nan';
-            use_random_baseline = true;
-        end
+if strcmpi(raw_delay, "Random")
+    % parse delay from side_label suffix e.g. ipsi_100, contra_nan
+    tokens = regexp(side_label, '^(ipsi|contra)(?:_(\d+|nan))?$', 'tokens', 'ignorecase');
+    if ~isempty(tokens) && numel(tokens{1}) >= 2 && ~isempty(tokens{1}{2}) ...
+            && ~strcmpi(tokens{1}{2}, 'nan')
+        delay = str2double(tokens{1}{2});
+        delay_str = sprintf('%dms', delay);
     else
-        delay = str2double(raw_delay);
-        if isnan(delay)
-            delay = 0;
-            delay_str = 'NaNms';
-        else
-            delay_str = sprintf('%dms', delay);
-        end
+        delay = NaN;
+        delay_str = 'NaNms';
+    end
+    % use random baseline if available
+    if contains(side_label, 'ipsi') && isfield(base_data, 'ipsi_nan')
+        base_side_label = 'ipsi_nan';
+        use_random_baseline = true;
+    elseif contains(side_label, 'contra') && isfield(base_data, 'contra_nan')
+        base_side_label = 'contra_nan';
+        use_random_baseline = true;
     end
 else
-    delay = 0;
-    delay_str = 'NaNms';
-    warning('Unrecognized format for Stim_Delay: %s', string(raw_delay));
+    delay = str2double(raw_delay);
+    if isnan(delay)
+        delay = 0;
+        delay_str = 'NaNms';
+        warning('Unrecognized Stim_Delay value: %s', raw_delay);
+    else
+        delay_str = sprintf('%dms', delay);
+    end
+end
+
+if ~use_random_baseline
+    base_side_label = side_label;
 end
 
 % --- Fallback: use original side_label if no Random override ---

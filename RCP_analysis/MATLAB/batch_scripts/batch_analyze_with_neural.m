@@ -79,7 +79,9 @@ switch session
         EndPoint_pos = 30; EndPoint_neg = -30;
 end
 %% Load Metadata
-T = readtable(metadata_csv_path);
+opts = detectImportOptions(metadata_csv_path);
+opts = setvartype(opts, 'Stim_Delay', 'string');
+T = readtable(metadata_csv_path, opts);
 all_trial_indices = sort([baseline_file_nums, trial_indices]);
 %% Locate Trial Files
 stim_files = dir(fullfile(cal_folder, '**', '*_Cal_stim.mat'));

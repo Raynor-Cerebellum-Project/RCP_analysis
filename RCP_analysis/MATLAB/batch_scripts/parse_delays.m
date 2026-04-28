@@ -2,7 +2,7 @@ clear all; close all; clc;
 addpath(genpath(fullfile('..', 'functions')));
 
 %% --- Setup Paths and Define session
-session = 'Nike/20260304_NRR_RW020_Fastig';
+session = 'Nike/20260423_NRR_RW033_fastig';
 [~, session_name] = fileparts(session);
 % Get machine-specific root path
 [base_root, code_root, base_folder] = set_paths_cullen_lab(session);
@@ -18,7 +18,7 @@ intanfiles = dir(fullfile(intan_folder, '**', 'stim_data.mat'));
 
 file_map = containers.Map('KeyType', 'double', 'ValueType', 'char');
 % extract_br = @(name) str2double(regexp(name, 'STIM_\d+_(\d+)_Cal', 'tokens', 'once'));
-extract_br = @(name) str2double(regexp(name, 'fastig_(\d+)_Cal', 'tokens', 'once'));
+extract_br = @(name) str2double(regexp(name, '(\d+)_Cal', 'tokens', 'once'));
 
 % First add stim files
 for trial = 1:numel(stim_files)
@@ -75,12 +75,12 @@ show_figs = false;
 trace_analysis_plot = false;
 % --- Sort trial_mat_files by BR_File number extracted from filename ---
 br_nums = zeros(length(trial_mat_files), 1);
-for trial = 1:length(trial_mat_files)
-    tokens = regexp(trial_mat_files(trial).name, 'fastig_(\d+)_Cal', 'tokens');
+for i = 1:length(trial_mat_files)
+    tokens = regexp(trial_mat_files(i).name, '(\d+)_Cal', 'tokens');
     if ~isempty(tokens)
-        br_nums(trial) = str2double(tokens{1}{1});
+        br_nums(i) = str2double(tokens{1}{1});
     else
-        br_nums(trial) = NaN;
+        br_nums(i) = NaN;
     end
 end
 
@@ -95,15 +95,23 @@ switch session
         at_rest_indices = [5];
         segment_fields_random = {'both', 'ipsi', 'contra', 'ipsi_0', 'contra_0', 'ipsi_100', 'contra_100', 'ipsi_200', 'contra_200'};
         segment_fields = {'both', 'ipsi' , 'contra'};
+    case 'Nike/20260423_NRR_RW033_fastig'
+        EndPoint_pos = 30; EndPoint_neg = -30;
+        % 1-9 segmented
+        baseline_file_nums = 1;%[1, 6, 14];
+        trial_indices = [3:5, 8:9];
+        % at_rest_indices = [6];
+        segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
+        segment_fields = {'ipsi' , 'contra'};
     otherwise
         EndPoint_pos = 30; EndPoint_neg = -30;
 end
 %% --- Load Metadata ---
 T = readtable(metadata_csv_path);
 %% --- Loop over each trial and analyze ---
-for trial = 6% trial_indices
+for trial = 4% trial_indices
     fname = trial_mat_files(trial).name;
-    tokens = regexp(fname, 'fastig_(\d+)_Cal', 'tokens');
+    tokens = regexp(fname, '(\d+)_Cal', 'tokens');
     if isempty(tokens)
         warning("Couldn't parse file: %s", fname);
         continue;
