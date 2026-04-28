@@ -40,7 +40,7 @@ if Z_SCORE_FR:
 
 COLORMAP = "RdBu_r"
 
-PLOT_GIFS = False
+PLOT_GIFS = True
 
 from RCP_analysis.python.functions.br_preproc import (
     load_electrode_mapping, 

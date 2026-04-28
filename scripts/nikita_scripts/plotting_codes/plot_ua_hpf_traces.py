@@ -12,6 +12,8 @@ import json
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
+import re
+import pandas as pd
 import spikeinterface as si
 import RCP_analysis as rcp
 
@@ -21,12 +23,13 @@ matplotlib.rcParams["svg.fonttype"] = "none"
 # ──────────────────────────────────────────────────
 # USER SETTINGS
 # ──────────────────────────────────────────────────
-CONDITION   = 12             # BR index  (= condition number)
+CONDITION   = 56             # BR index  (= condition number)
 PROBE       = "UA"           # Exclusively analyzing Utah Array channels
-CHANNELS    = list(range(162, 176))   # Electrode IDs to plot (1–256)
-WINDOW_MS   = (-50.0, 125.0)      # (start, end) relative to stim onset
+CHANNELS    = list(range(1, 256))   # Electrode IDs to plot (1–256)
+WINDOW_MS   = (-200.0, 200.0)      # (start, end) relative to stim onset
 Y_LIM       = (-100, 100)         # µV range; set to None for auto-scale
-TRIALS_TO_PLOT = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26]                  # which trials to plot: e.g. [0, 1] or 'all'
+TRIALS_TO_PLOT = [5] #[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26]                  # which trials to plot: e.g. [0, 1] or 'all'
+PLOT_WAVEFORM = True          # If True, plot spike waveforms on the right
 # ──────────────────────────────────────────────────
 
 REPO_ROOT   = Path(__file__).resolve().parents[1]
@@ -149,6 +152,10 @@ def main():
         if isinstance(target_ch_elecs, np.ndarray) and target_ch_elecs.ndim == 0:
             target_ch_elecs = target_ch_elecs.item()  # Handle occasional object scalar
         target_ch_elecs = np.asarray(target_ch_elecs, int).ravel()
+        ua_idx_rows = z.get("ua_idx_rows", [])
+        if isinstance(ua_idx_rows, np.ndarray) and ua_idx_rows.ndim == 0:
+            ua_idx_rows = ua_idx_rows.item()
+        ua_idx_rows = np.asarray(ua_idx_rows, int).ravel()
 
     # Convert stim times from aligned time base to recording-local time base
     stim_local_ms = stim_ms - rec_start_ms
@@ -194,27 +201,62 @@ def main():
     print(f"[info] Recording: {pp_folder.name}  |  fs={fs:.0f} Hz  |  {n_ch} ch  |  {rec_dur_ms:.1f} ms")
     print(f"[info] Stim events: {stim_ms.size}  |  condition {CONDITION}")
 
-    # Resolve channel indices (interpreting CHANNELS as Electrode IDs for UA)
+    # Resolve channel metadata (Electrode ID and Original Index)
+    # This map allows us to find the correct spikes in the .npz for any recording channel
+    ridx_to_meta = {}
+    ch_ids = rec.get_channel_ids()
+    
+    # Path to robust mapping CSV
+    mapping_csv = REPO_ROOT / "scripts" / "electrode_port_mapping.csv"
+    mapping_df = pd.read_csv(mapping_csv) if mapping_csv.exists() else None
+    
+    for ridx, cid in enumerate(ch_ids):
+        # 1. Try to parse Electrode ID from name (e.g. UAe005 -> 5)
+        m = re.search(r'UAe(\d+)', str(cid))
+        eid = int(m.group(1)) if m else -1
+        
+        # 2. Fallback to indexing target_ch_elecs if parsing fails
+        if eid < 0 and ridx < len(target_ch_elecs):
+            eid = int(target_ch_elecs[ridx])
+            
+        # 3. Find where this Electrode is in the .npz mapping to align spikes
+        # peak_ms_dict is usually keyed by the index into the 'peaks' array saved in the .npz
+        # which corresponds to the index in target_ch_elecs
+        oid = ridx
+        if eid > 0:
+            matches = np.where(target_ch_elecs == eid)[0]
+            if matches.size > 0:
+                oid = int(matches[0])
+                
+        ridx_to_meta[ridx] = {"eid": eid, "oid": oid, "cid": cid}
+
+    # Resolve specifically requested channels for plotting
     resolved_channels = []
     if PROBE == "UA" and target_ch_elecs.size > 0:
         print(f"[info] Resolving Electrode IDs to recording indices...")
-        for eid in CHANNELS:
-            matches = np.where(target_ch_elecs == eid)[0]
-            if matches.size > 0:
-                resolved_channels.append(int(matches[0]))
-            else:
-                # Optional: search for specific electrode in other ports? 
-                # (Not possible with single-port recording loading)
-                pass
+        for eid_req in CHANNELS:
+            # Find which RIDX in the current recording has this Electrode ID
+            # We check the metadata we just built from the channel IDs
+            found = False
+            for ridx, meta in ridx_to_meta.items():
+                if meta["eid"] == eid_req:
+                    resolved_channels.append(ridx)
+                    found = True
+                    break
+            if not found:
+                # Fallback to direct mapping if parsing didn't find it
+                matches = np.where(target_ch_elecs == eid_req)[0]
+                if matches.size > 0:
+                    resolved_channels.append(int(matches[0]))
     else:
-        # Fallback to direct indexing for NPRW or if no electrode mapping
+        # Fallback for NPRW or if no electrode mapping
         resolved_channels = [c for c in CHANNELS if 0 <= c < n_ch]
 
     if not resolved_channels:
         print(f"[error] No valid channels found for {CHANNELS} (recording has {n_ch} channels).")
-        if PROBE == "UA":
-            print(f"        Available Electrode IDs in this recording: {np.unique(target_ch_elecs[target_ch_elecs > 0])}")
         return
+
+
 
     # ── Filter valid stim events that fit within the recording ──
     valid = []
@@ -242,7 +284,7 @@ def main():
                 reg_name = region_names[reg_idx] if reg_idx >= 0 else "Unknown"
                 region_to_idxs.setdefault(reg_name, []).append(ch_idx)
     else:
-        region_to_idxs["All Channels"] = channels
+        region_to_idxs["All Channels"] = resolved_channels
 
     for trial_i in plot_idxs:
         center_time = valid[trial_i]
@@ -251,28 +293,51 @@ def main():
             if not reg_channels: continue
             
             n_rows = len(reg_channels)
-            fig, axes = plt.subplots(n_rows, 1, figsize=(12, 2.0 * n_rows),
-                                     sharex=True, sharey=True)
-            if n_rows == 1:
-                axes = [axes]
+            PLOT_WAVEFORM = globals().get("PLOT_WAVEFORM", False)
+            if PLOT_WAVEFORM:
+                fig = plt.figure(figsize=(15, 2.0 * n_rows))
+                gs = matplotlib.gridspec.GridSpec(n_rows, 2, width_ratios=[4, 1])
+                axes_trace = []
+                axes_wv = []
+                for r in range(n_rows):
+                    ax_t = fig.add_subplot(gs[r, 0], sharex=axes_trace[0] if r>0 else None, sharey=axes_trace[0] if r>0 else None)
+                    ax_w = fig.add_subplot(gs[r, 1], sharex=axes_wv[0] if r>0 else None, sharey=ax_t)
+                    axes_trace.append(ax_t)
+                    axes_wv.append(ax_w)
+            else:
+                fig, axes_raw = plt.subplots(n_rows, 1, figsize=(12, 2.0 * n_rows),
+                                         sharex=True, sharey=True)
+                axes_trace = np.atleast_1d(axes_raw)
+                axes_wv = [None] * n_rows
                 
             for r, ch in enumerate(reg_channels):
-                ax = axes[r]
+                ax = axes_trace[r]
+                ax_wv = axes_wv[r]
                 t, y = extract_traces(rec, ch, center_time, WINDOW_MS, fs)
+                
+                meta = ridx_to_meta.get(ch, {"eid": ch, "oid": ch})
+                eid = meta["eid"]
+                oid = meta["oid"]
+                
                 if t is not None:
                     ax.plot(t, y, lw=0.7, color="k")
                 
-                # Label with Electrode ID if available
-                if PROBE == "UA" and ch < len(target_ch_elecs):
-                    elec_id = target_ch_elecs[ch]
-                    ax.set_ylabel(f"Elec {elec_id}\n(µV)", fontsize=8)
-                else:
-                    ax.set_ylabel(f"Ch {ch}\n(µV)", fontsize=8)
+                # Label with Electrode ID
+                ch_label = f"Elec {eid}" if PROBE == "UA" and eid > 0 else f"Ch {ch}"
+                ax.set_ylabel(f"{ch_label}\n(µV)", fontsize=8)
 
-                # Overlay spikes
-                ch_peaks_abs_aligned = np.asarray(peak_ms_dict.get(ch, []), float).ravel()
+                # Overlay spikes - IMPORTANT: lookup by Alignment Index (oid) 
+                # This ensures we get spikes for the physical electrode shown in the trace
+                ch_peaks_abs_aligned = np.asarray(peak_ms_dict.get(oid, []), float).ravel()
+                
+                # Fallback to keying by Electrode ID directly (for some pipeline versions)
+                if ch_peaks_abs_aligned.size == 0 and PROBE == "UA" and eid > 0:
+                    ch_peaks_abs_aligned = np.asarray(peak_ms_dict.get(eid, []), float).ravel()
+                
                 stim_ms_trial = center_time + rec_start_ms
                 pk_rel = ch_peaks_abs_aligned - stim_ms_trial
+
+
                 
                 # filter to window
                 pk_rel_win = pk_rel[(pk_rel >= WINDOW_MS[0]) & (pk_rel <= WINDOW_MS[1])]
@@ -284,19 +349,32 @@ def main():
                     peak_idx = peak_idx[valid_idx]
                     pk_rel_clean = pk_rel_win[valid_idx]
                     ax.plot(pk_rel_clean, y[peak_idx], "ro", markersize=3, alpha=0.8)
+                    
+                    if ax_wv is not None:
+                        wf_pre = int(1.0 * fs / 1000.0)
+                        wf_post = int(2.0 * fs / 1000.0)
+                        t_wv = np.arange(-wf_pre, wf_post) * 1000.0 / fs
+                        for p_idx in peak_idx:
+                            i0 = p_idx - wf_pre
+                            i1 = p_idx + wf_post
+                            if i0 >= 0 and i1 < len(y):
+                                ax_wv.plot(t_wv, y[i0:i1], color="k", lw=0.5, alpha=0.5)
+                        ax_wv.set_xlim(-1, 1)
+                        ax_wv.axvline(0, ls="--", color="r", alpha=0.5)
+                        if r == n_rows - 1:
+                            ax_wv.set_xlabel("Time (ms)")
 
                 ax.axvline(0.0, ls="--", lw=0.8, color="green", label="Stim onset")
                 if stim_dur > 0:
                     ax.axvline(stim_dur, ls="--", lw=0.8, color="green", label="Stim end")
                     ax.axvspan(0.0, stim_dur, color="gray", alpha=0.3, zorder=0)
                 
-                ch_label = f"Elec {int(target_ch_elecs[ch])}" if (PROBE == "UA" and ch < len(target_ch_elecs)) else f"Ch {ch}"
-                ax.set_ylabel(f"{ch_label}\n(µV)", fontsize=8)
                 if Y_LIM is not None:
                     ax.set_ylim(*Y_LIM)
 
-            axes[-1].set_xlabel("Time relative to stimulation (ms)")
-            axes[0].set_xlim(*WINDOW_MS)
+
+            axes_trace[-1].set_xlabel("Time relative to stimulation (ms)")
+            axes_trace[0].set_xlim(*WINDOW_MS)
 
             fig.suptitle(
                 f"{SESSION}  •  Condition {CONDITION} (BR_{CONDITION:03d})  •  "

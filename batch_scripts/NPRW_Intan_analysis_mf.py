@@ -219,6 +219,9 @@ def main():
         n_seg = rec_artif_removed.get_num_segments()
         noise_levels = si.get_noise_levels(rec_artif_removed, method="mad", return_in_uV=False) # They didn't write return_in_uV in their documentation
         
+        # Prevent ZeroDivisionError for completely blanked/zeroed out sessions
+        noise_levels = np.where(noise_levels == 0, 1.0, noise_levels)
+        
         print(f"[INFO] Segments of recording: {n_seg}, Average noise level: {np.nanmean(noise_levels)}")
         try:
             # Force n_jobs=1 for PyTorch backend to prevent GPU memory fragmentation / OOM
