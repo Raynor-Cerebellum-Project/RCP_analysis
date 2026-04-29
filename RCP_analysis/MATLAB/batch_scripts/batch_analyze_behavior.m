@@ -39,7 +39,7 @@ relative_path = fullfile('Current Project Databases - NHP', ...
 %%
 search_folder      = fullfile(base_folder, 'Calibrated');
 fig_folder         = fullfile(base_folder, 'Figures', 'Behavior');
-metadata_csv_path  = fullfile(base_folder, 'Metadata', [session_name, '_metadata.csv']);
+metadata_csv  = fullfile(base_folder, 'Metadata', [session_name, '_metadata.csv']);
 raw_metrics_path   = fullfile(base_folder, 'Checkpoints', [session_name, '_raw_metrics_all.mat']);
 summary_path       = fullfile(base_folder, 'Checkpoints', [session_name, '_summarized_metrics.mat']);
 merged_baseline_path = fullfile(base_folder, 'Checkpoints', [session_name, '_merged_baseline.mat']);
@@ -141,9 +141,9 @@ switch session
         EndPoint_pos = 30; EndPoint_neg = -30;
 end
 %% --- Load Metadata ---
-opts = detectImportOptions(metadata_csv_path);
+opts = detectImportOptions(metadata_csv);
 opts = setvartype(opts, 'Stim_Delay', 'string');
-T = readtable(metadata_csv_path, opts);
+T = readtable(metadata_csv, opts);
 %% --- Loop over each trial and analyze ---
 raw_metrics_all = cell(height(T), 1);  % Save all raw metrics (from analyze_metrics)
 all_trial_indices = sort([baseline_file_nums, trial_indices]);

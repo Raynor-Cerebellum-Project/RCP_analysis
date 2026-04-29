@@ -31,7 +31,7 @@ clear; close all; clc;
 addpath(genpath(fullfile('..', 'functions')));
 
 %% --- Setup Session and Paths ---
-session = 'Nike/20260304_NRR_RW020_Fastig';
+session = 'Nike/20260423_NRR_RW033_fastig';
 [~, session_name] = fileparts(session);
 
 fr_method = 'pca';  % Options: 'local' or 'pca'
@@ -73,6 +73,22 @@ switch session
         baseline_file_nums = [1, 7];
         trial_indices = [2, 3, 4, 5, 6];
         % at_rest_indices = [5];
+        segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
+        segment_fields = {'ipsi' , 'contra'};
+    case 'Nike/20260326_NRR_RW027_fastig'
+        EndPoint_pos = 30; EndPoint_neg = -30;
+        % 1-6 weird
+        baseline_file_nums = 14;%[1, 6, 14];
+        trial_indices = [8:9, 13, 15:22];%[2, 4:5, 8:9, 13, 15:22];
+        % at_rest_indices = [10, 11];
+        segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
+        segment_fields = {'ipsi' , 'contra'};
+    case 'Nike/20260423_NRR_RW033_fastig'
+        EndPoint_pos = 30; EndPoint_neg = -30;
+        % 1-9 segmented
+        baseline_file_nums = 1;%[1, 6, 14];
+        trial_indices = [3:5, 8:9];
+        % at_rest_indices = [6];
         segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
         segment_fields = {'ipsi' , 'contra'};
     otherwise
@@ -126,7 +142,7 @@ for i = 1:height(T)
 
     % Load firing rate only if needed
     if intan_id ~= prev_intan_id
-        intan_dirs = dir(fullfile(intan_folder, '*_fastig_*'));
+        intan_dirs = dir(fullfile(intan_folder));
         intan_dirs = intan_dirs([intan_dirs.isdir]);
         intan_names = {intan_dirs.name};
 
@@ -214,6 +230,8 @@ save(raw_metrics_path, ...
     'raw_metrics_all', 'T', 'segment_fields', 'EndPoint_pos', 'EndPoint_neg');
 fprintf('Saved raw FR segments to: %s\n', raw_metrics_with_fr_path);
 
+% tmp = load(raw_metrics_path, 'raw_metrics_all');
+% raw_metrics_all = tmp.raw_metrics_all;
 %% Merge
 % Initialize merged baseline struct
 merged_baseline = raw_metrics_all{baseline_file_nums(1)};

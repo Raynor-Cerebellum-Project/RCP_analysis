@@ -11,7 +11,7 @@ relative_path = fullfile('Current Project Databases - NHP', ...
 %%
 search_folder      = fullfile(base_folder, 'Calibrated');
 intan_folder      = fullfile(base_folder, 'Intan');
-metadata_csv_path  = fullfile(base_folder, 'Metadata', [session_name, '_metadata.csv']);
+metadata_csv  = fullfile(base_folder, 'Metadata', [session_name, '_metadata.csv']);
 stim_files = dir(fullfile(search_folder, '**', '*_Cal_stim.mat'));
 nonstim_files = dir(fullfile(search_folder, '**', '*_Cal.mat'));
 intanfiles = dir(fullfile(intan_folder, '**', 'stim_data.mat'));
@@ -101,13 +101,15 @@ switch session
         baseline_file_nums = 1;%[1, 6, 14];
         trial_indices = [3:5, 8:9];
         % at_rest_indices = [6];
-        segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
-        segment_fields = {'ipsi' , 'contra'};
+        segment_fields_random = {'both', 'ipsi', 'contra', 'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
+        segment_fields = {'ipsi', 'contra'};
     otherwise
         EndPoint_pos = 30; EndPoint_neg = -30;
 end
 %% --- Load Metadata ---
-T = readtable(metadata_csv_path);
+opts = detectImportOptions(metadata_csv);
+opts = setvartype(opts, 'Stim_Delay', 'string');
+T = readtable(metadata_csv, opts);
 %% --- Loop over each trial and analyze ---
 for trial = 4% trial_indices
     fname = trial_mat_files(trial).name;
@@ -161,14 +163,7 @@ for trial = 4% trial_indices
 
     % Decide segment fields
     if ismember('Stim_Delay', metadata_row.Properties.VariableNames)
-        stim_delay_val = metadata_row.Stim_Delay;
-
-        if iscell(stim_delay_val)
-            stim_delay_val = string(stim_delay_val{1});
-        end
-        if isnumeric(stim_delay_val)
-            stim_delay_val = string(num2str(stim_delay_val));
-        end
+        stim_delay_val = string(metadata_row.Stim_Delay);
 
         if strcmpi(stim_delay_val, "Random")
 
