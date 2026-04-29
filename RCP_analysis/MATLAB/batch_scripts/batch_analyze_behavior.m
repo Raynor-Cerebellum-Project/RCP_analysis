@@ -360,7 +360,7 @@ for i = trial_indices
     end
 
     % Special case for Random: run multiple fixed-delay comparisons
-    if ischar(raw_delay) && strcmpi(raw_delay, 'Random')
+    if strcmpi(raw_delay, 'Random')
         has_delay_subfields = isfield(cond_data, 'ipsi_0') || isfield(cond_data, 'ipsi_100') || isfield(cond_data, 'ipsi_200');
     
         if has_delay_subfields
@@ -461,15 +461,22 @@ for i = trial_indices
         try
             fig = plot_traces_neural(base_data, cond_data, side_label, false, ...
                 meta_cond, true, show_figs);
-            % Convert delay to numeric if it's a cell
-            if iscell(meta_cond.Stim_Delay)
-                delay_value = str2double(meta_cond.Stim_Delay{1});
+            raw_delay = string(meta_cond.Stim_Delay);
+            if strcmpi(raw_delay, "Random") || strcmpi(raw_delay, "NaN")
+                delay_value = NaN;
             else
-                delay_value = meta_cond.Stim_Delay;
+                delay_value = str2double(raw_delay);
             end
             % === Save ===
             side_short = side_label;
             trigger_clean = strrep(strtrim(meta_cond.Movement_Trigger{1}), ' ', '_');
+
+            if isnan(delay_value)
+                delay_str_for_file = 'RandomDelay';
+            else
+                delay_str_for_file = sprintf('%dmsdelay', delay_value);
+            end
+
             stim_str_for_file = sprintf('%dCh_%dHz_%duA_%dmsdelay_%s', ...
                 meta_cond.Channels, ...
                 meta_cond.Stim_Frequency_Hz, ...

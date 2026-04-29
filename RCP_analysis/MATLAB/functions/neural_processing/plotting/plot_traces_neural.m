@@ -285,6 +285,10 @@ title(layout, sprintf('Condition %03d - %s', trial_num, strrep(side_label, '_', 
 title_str = sprintf('Condition %03d - %s', trial_num, suffix);
 sgtitle({title_str, stim_str}, 'FontWeight', 'bold');
 %% === Compute Z-Scored Rasters ===
+if ~isfield(base_data.(base_summary_field), 'fr_mean') || ...
+   ~isfield(cond_data.(cond_summary_field), 'fr_mean')
+    return;
+end
 baseline_mean = mean(base_data.(base_summary_field).fr_mean, 2);  % [128 x 1]
 baseline_std  = std(base_data.(base_summary_field).fr_mean, 0, 2);  % [128 x 1]
 
