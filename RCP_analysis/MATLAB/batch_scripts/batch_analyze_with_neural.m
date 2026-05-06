@@ -143,7 +143,7 @@ for i = 1:height(T)
     % Load firing rate only if needed
     if intan_id ~= prev_intan_id
         intan_dirs = dir(fullfile(intan_folder));
-        intan_dirs = intan_dirs([intan_dirs.isdir]);
+        intan_dirs = intan_dirs([intan_dirs.isdir] & ~strcmp({intan_dirs.name}, '.') & ~strcmp({intan_dirs.name}, '..'));
         intan_names = {intan_dirs.name};
 
         if intan_id > numel(intan_names)
@@ -298,15 +298,16 @@ for key = fieldnames(fr_sum_struct)'
     merged_baseline.(fieldname).fr_traces = fr_sum_struct.(fieldname);
 end
 
-% --- Calculate summaries for merged baseline ---
+% Calculate summaries for merged baseline
 all_fields = fieldnames(merged_baseline);
-ipsi_fields = all_fields(contains(all_fields, '_pos'));
-contra_fields = all_fields(contains(all_fields, '_neg'));
+
+ipsi_fields = all_fields(contains(all_fields, 'ipsi'));
+contra_fields = all_fields(contains(all_fields, 'contra'));
 
 summary_ipsi = calculate_mean_metrics(merged_baseline, ipsi_fields, 'ipsi');
 summary_contra = calculate_mean_metrics(merged_baseline, contra_fields, 'contra');
 
-% --- Merge into summary struct ---
+% Merge into summary struct
 merged_baseline_summary = merged_baseline;
 for s = fieldnames(summary_ipsi)'
     merged_baseline_summary.(s{1}) = summary_ipsi.(s{1});
@@ -349,8 +350,8 @@ for i = all_trial_indices
 
     % Split fields by type
     if ismember(i, random_indices)
-        ipsi_fields_main   = all_fields(contains(all_fields, 'ipsi_') & ~contains(all_fields, 'catch') & ~contains(all_fields, '_summary'));
-        contra_fields_main = all_fields(contains(all_fields, 'contra_') & ~contains(all_fields, 'catch') & ~contains(all_fields, '_summary'));
+        ipsi_fields_main   = all_fields(contains(all_fields, 'ipsi') & ~contains(all_fields, 'catch') & ~contains(all_fields, '_summary'));
+        contra_fields_main = all_fields(contains(all_fields, 'contra') & ~contains(all_fields, 'catch') & ~contains(all_fields, '_summary'));
     else
         ipsi_fields_main   = all_fields(contains(all_fields, '_pos') & ~contains(all_fields, 'catch'));
         contra_fields_main = all_fields(contains(all_fields, '_neg') & ~contains(all_fields, 'catch'));
@@ -534,9 +535,18 @@ for i = trial_indices
         end
         continue;  % skip default pos/neg loop
     end
+    % 
+    % 
+    % segment_fields = {'ipsi', 'contra'};
+    % if ismember('Stim_Delay', T.Properties.VariableNames)
+    %     delay_val = string(T.Stim_Delay(i));
+    %     if strcmpi(delay_val, "Random")
+    %         segment_fields = segment_fields_random;
+    %     end
+    % end
 
     % Loop over sides
-    for side = {'ipsi', 'contra'}
+    for side = segment_fields
         side_label = side{1};
         try
             fig = plot_traces_neural(base_data, cond_data, side_label, false, ...

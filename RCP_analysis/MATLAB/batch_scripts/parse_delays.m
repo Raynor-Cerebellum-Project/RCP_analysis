@@ -2,12 +2,16 @@ clear all; close all; clc;
 addpath(genpath(fullfile('..', 'functions')));
 
 %% --- Setup Paths and Define session
-session = 'Nike/20260423_NRR_RW033_fastig';
+session = 'Nike/20260326_NRR_RW027_fastig';
 [~, session_name] = fileparts(session);
 % Get machine-specific root path
 [base_root, code_root, base_folder] = set_paths_cullen_lab(session);
 relative_path = fullfile('Current Project Databases - NHP', ...
                          '2025 Cerebellum prosthesis', 'Bryan', 'Data', session_name);
+%% --- Load Metadata ---
+opts = detectImportOptions(metadata_csv);
+opts = setvartype(opts, 'Stim_Delay', 'string');
+T = readtable(metadata_csv, opts);
 %%
 search_folder      = fullfile(base_folder, 'Calibrated');
 intan_folder      = fullfile(base_folder, 'Intan');
@@ -36,17 +40,25 @@ for trial = 1:numel(nonstim_files)
     end
 end
 
-intan_map = containers.Map('KeyType','double','ValueType','char');
+intan_map = containers.Map('KeyType', 'double', 'ValueType', 'char');
+intan_dirs = dir(intan_folder);
+intan_dirs = intan_dirs([intan_dirs.isdir] & ~strcmp({intan_dirs.name}, '.') & ~strcmp({intan_dirs.name}, '..'));
+[~, intan_sort_idx] = sort({intan_dirs.name});
+intan_dirs = intan_dirs(intan_sort_idx);
+intan_names = {intan_dirs.name};
 
-for trial = 1:numel(intanfiles)
-    fpath = fullfile(intanfiles(trial).folder, intanfiles(trial).name);
-    % Try extracting BR number from folder
-    tokens = regexp(intanfiles(trial).folder, 'fastig_(\d+)', 'tokens');
-    if ~isempty(tokens)
-        br = str2double(tokens{1}{1});
-        intan_map(br) = fpath;
+for i = 1:height(T)
+    intan_id = T.Intan_File(i);
+    br_id    = T.BR_File(i);
+    if intan_id < 1 || intan_id > numel(intan_names)
+        continue;
+    end
+    stim_path = fullfile(intan_folder, intan_names{intan_id}, 'stim_data.mat');
+    if isfile(stim_path)
+        intan_map(br_id) = stim_path;
     end
 end
+
 % Sort Intan stim_data files by folder name
 [~, intan_sort_idx] = sort({intanfiles.folder});
 intanfiles = intanfiles(intan_sort_idx);
@@ -59,12 +71,10 @@ for trial = 1:numel(all_br)
     br = all_br(trial);
     fpath = file_map(br);
     [fldr, fname, ext] = fileparts(fpath);
-
     trial_mat_files(trial).folder = fldr;
     trial_mat_files(trial).name   = [fname, ext];
-
-    if trial <= numel(intanfiles)
-        trial_mat_files(trial).stim_path = fullfile(intanfiles(trial).folder, intanfiles(trial).name);
+    if isKey(intan_map, br)
+        trial_mat_files(trial).stim_path = intan_map(br);
     else
         trial_mat_files(trial).stim_path = '';
     end
@@ -95,6 +105,14 @@ switch session
         at_rest_indices = [5];
         segment_fields_random = {'both', 'ipsi', 'contra', 'ipsi_0', 'contra_0', 'ipsi_100', 'contra_100', 'ipsi_200', 'contra_200'};
         segment_fields = {'both', 'ipsi' , 'contra'};
+    case 'Nike/20260326_NRR_RW027_fastig'
+        EndPoint_pos = 30; EndPoint_neg = -30;
+        % 1-6 weird
+        baseline_file_nums = 14;%[1, 6, 14];
+        trial_indices = [8:9, 13, 15:22];%[2, 4:5, 8:9, 13, 15:22];
+        % at_rest_indices = [10, 11];
+        segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
+        segment_fields = {'ipsi' , 'contra'};
     case 'Nike/20260423_NRR_RW033_fastig'
         EndPoint_pos = 30; EndPoint_neg = -30;
         % 1-9 segmented
@@ -111,7 +129,7 @@ opts = detectImportOptions(metadata_csv);
 opts = setvartype(opts, 'Stim_Delay', 'string');
 T = readtable(metadata_csv, opts);
 %% --- Loop over each trial and analyze ---
-for trial = 4% trial_indices
+for trial = 9% trial_indices
     fname = trial_mat_files(trial).name;
     tokens = regexp(fname, '(\d+)_Cal', 'tokens');
     if isempty(tokens)

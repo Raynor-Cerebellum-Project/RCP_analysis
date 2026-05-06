@@ -5,13 +5,12 @@ end
 
 %% === Setup ===
 clear all;
-session = 'BL_RW_003_Session_1';
-base_folder = fullfile('/Volumes/CullenLab_Server/Current Project Databases - NHP', ...
-    '2025 Cerebellum prosthesis/Bryan/Data', session);
-summary_path = fullfile(base_folder, [session '_summarized_metrics.mat']);
-meta_path = fullfile(base_folder, [session '_metadata_with_metrics.csv']);
-side_label = 'active_like_stim_pos';
-condition_num = 9;
+session = '20260326_NRR_RW027_fastig';
+base_folder = fullfile('/Volumes/data/Current Project Databases - NHP/2025 Cerebellum prosthesis/Nike/', session);
+summary_path = fullfile(base_folder, 'Checkpoints', [session '_summarized_metrics.mat']);
+meta_path = fullfile(base_folder, 'Checkpoints', [session '_metadata_with_metrics.csv']);
+side_label = 'contra_catch';
+condition_num = 8;
 
 load(summary_path, 'summary_struct', 'merged_baseline_summary');
 offset = false;
@@ -30,7 +29,7 @@ n_sets = numel(x_labels);
 
 % === Extract first and last 10 trials from both _pos and _neg fields ===
 all_fields = fieldnames(cond_data_list);
-sides = all_fields(contains(all_fields, 'active_like_stim'));
+sides = all_fields(~contains(all_fields, '_summary'));
 
 first10_data = struct();
 last10_data  = struct();

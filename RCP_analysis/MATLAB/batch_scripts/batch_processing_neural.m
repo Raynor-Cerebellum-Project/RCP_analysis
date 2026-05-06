@@ -27,7 +27,7 @@ clear all; close all; clc;
 addpath(genpath(fullfile('..', 'functions')));
 
 %% Setup Paths
-session = 'Nike/20260423_NRR_RW033_fastig';
+session = 'Nike/20260326_NRR_RW027_fastig';
 [~, session_name] = fileparts(session);
 
 [base_root, code_root, base_folder] = set_paths_cullen_lab(session);
@@ -89,7 +89,7 @@ if isempty(gcp('nocreate'))
 end
 
 %% Loop through each trial
-for i = 3%1:numel(valid_trials)
+for i = 1:numel(valid_trials)
     trial = valid_trials{i};
     trial_path = fullfile(intan_folder, trial);
     logmsg(sprintf('[%d/%d] Processing: %s', i, numel(valid_trials), trial));

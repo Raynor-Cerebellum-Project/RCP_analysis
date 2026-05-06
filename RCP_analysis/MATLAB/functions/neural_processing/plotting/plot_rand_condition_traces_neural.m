@@ -448,11 +448,10 @@ for i = 2:n_groups
     text(i, y_sig, fft_sig_labels(i-1), 'HorizontalAlignment', 'center', 'FontSize', 12, 'FontWeight', 'bold');
 end
 
-% === Title using Metadata ===
-stim_str = sprintf('Ch: %g | Freq: %gHz | Curr: %gμA | Dur: %gms | Depth: %gmm | Trig: %s', ...
+% Title using Metadata
+stim_str = sprintf('Ch: %g, Freq: %gHz, Curr: %gμA, Dur: %gms, Depth: %gmm, Trig: Random', ...
     meta_cond.Channels, meta_cond.Stim_Frequency_Hz, meta_cond.Current_uA, ...
-    meta_cond.Stim_Duration_ms, meta_cond.Depth_mm, ...
-    meta_cond.Movement_Trigger{1});
+    meta_cond.Stim_Duration_ms, meta_cond.Depth_mm);
 
 trial_num = meta_cond.BR_File;
 title_str = sprintf('Delay Comparison: Condition %03d - %s', trial_num, suffix);

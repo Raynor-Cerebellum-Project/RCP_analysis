@@ -45,12 +45,7 @@ else
         delay_str = sprintf('%dms', delay);
     end
 end
-
-if ~use_random_baseline
-    base_side_label = side_label;
-end
-
-% --- Fallback: use original side_label if no Random override ---
+% Fallback
 if ~use_random_baseline
     base_side_label = side_label;
 end
@@ -58,10 +53,10 @@ end
 base_summary_field = [base_side_label '_summary'];
 cond_summary_field = [side_label '_summary'];
 
-% === Baseline ===
+% Baseline
 baseline_segment = base_data.(base_side_label).segments3;
 
-% === Condition ===
+% Condition
 if isfield(cond_data.(side_label), 'segments3_from_stim') && ...
         ~all(isnan(cond_data.(side_label).segments3_from_stim), 'all')
     condition_segment = cond_data.(side_label).segments3_from_stim;
@@ -269,21 +264,19 @@ for ax = [ax_pos_baseline, ax_pos_condition, ax_pos_overlay]
          [0.8 0.1 0.1], 'FaceAlpha', 0.2, 'EdgeColor', 'none');
 end
 
-% === Title using Metadata ===
-stim_str = sprintf('Ch: %g | Freq: %gHz | Curr: %gμA | Dur: %gms | Delay: %s | Depth: %gmm | Trig: %s', ...
-    meta_cond.Channels, meta_cond.Stim_Frequency_Hz, meta_cond.Current_uA, ...
-    meta_cond.Stim_Duration_ms, delay_str, meta_cond.Depth_mm, ...
-    meta_cond.Movement_Trigger{1});
+% Title using Metadata
+n_base = size(baseline_segment, 1);
+n_cond = size(condition_segment, 1);
 
-% === Save figure to ComparisonTraces directory ===
+stim_str = sprintf('Ch: %g, Freq: %gHz, Curr: %gμA, Dur: %gms, Delay: %s, Depth: %gmm', ...
+    meta_cond.Channels, meta_cond.Stim_Frequency_Hz, meta_cond.Current_uA, ...
+    meta_cond.Stim_Duration_ms, delay_str, meta_cond.Depth_mm);
+
+% Save figure to ComparisonTraces directory
 % Get trial number from metadata (assumes BR_File holds the numeric ID)
 trial_num = meta_cond.BR_File;
-side_short = side_label;
-title(layout, sprintf('Condition %03d - %s', trial_num, strrep(side_label, '_', ' ')), ...
-    'FontWeight', 'bold', 'FontSize', 14, 'HorizontalAlignment', 'center');
-
-title_str = sprintf('Condition %03d - %s', trial_num, suffix);
-sgtitle({title_str, stim_str}, 'FontWeight', 'bold');
+sgtitle({sprintf('Condition %03d - %s  |  Base n=%d, Cond n=%d', trial_num, suffix, n_base, n_cond), stim_str}, ...
+    'FontWeight', 'bold');
 %% === Compute Z-Scored Rasters ===
 if ~isfield(base_data.(base_summary_field), 'fr_mean') || ...
    ~isfield(cond_data.(cond_summary_field), 'fr_mean')

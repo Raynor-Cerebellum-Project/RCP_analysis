@@ -30,7 +30,7 @@ clear all; close all; clc;
 addpath(genpath(fullfile('..', 'functions')));
 
 %% --- Setup Paths and Define session
-session = 'Nike/20260423_NRR_RW033_fastig';
+session = 'Nike/20260326_NRR_RW027_fastig';
 [~, session_name] = fileparts(session);
 % Get machine-specific root path
 [base_root, code_root, base_folder] = set_paths_cullen_lab(session);
@@ -125,7 +125,7 @@ switch session
         EndPoint_pos = 30; EndPoint_neg = -30;
         % 1-6 weird
         baseline_file_nums = 14;%[1, 6, 14];
-        trial_indices = [8:9, 13, 15:22];%[2, 4:5, 8:9, 13, 15:22];
+        trial_indices = [8:9, 13]; %, 15:22];%[2, 4:5, 8:9, 13, 15:22];
         % at_rest_indices = [10, 11];
         segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
         segment_fields = {'ipsi' , 'contra'};
@@ -179,8 +179,8 @@ for i = all_trial_indices
             if isfield(tmp.Data.segments, 'catch_pos')
                 segment_fields_use{end+1} = 'catch_pos';
             end
-            if isfield(tmp.Data.segments, 'catch_neg')
-                segment_fields_use{end+1} = 'catch_neg';
+            if isfield(tmp.Data.segments, 'contra_catch')
+                segment_fields_use{end+1} = 'contra_catch';
             end
         end
 
@@ -223,8 +223,8 @@ for f = 1:length(baseline_file_nums)
 end
 % --- Calculate summaries for merged baseline ---
 all_fields = fieldnames(merged_baseline);
-ipsi_fields = all_fields(contains(all_fields, '_pos'));
-contra_fields = all_fields(contains(all_fields, '_neg'));
+ipsi_fields = all_fields(contains(all_fields, 'ipsi'));
+contra_fields = all_fields(contains(all_fields, 'contra'));
 
 summary_ipsi = calculate_mean_metrics(merged_baseline, ipsi_fields, 'ipsi');
 summary_contra = calculate_mean_metrics(merged_baseline, contra_fields, 'contra');
@@ -273,7 +273,7 @@ for i = all_trial_indices
     ipsi_fields_main   = all_fields(contains(all_fields, 'ipsi') & ~contains(all_fields, 'catch'));
     contra_fields_main = all_fields(contains(all_fields, 'contra') & ~contains(all_fields, 'catch'));
     ipsi_fields_catch  = all_fields(contains(all_fields, 'catch_pos'));
-    contra_fields_catch= all_fields(contains(all_fields, 'catch_neg'));
+    contra_fields_catch= all_fields(contains(all_fields, 'contra_catch'));
 
     % --- Calculate summaries ---
     summary_ipsi_main   = calculate_mean_metrics(merged, ipsi_fields_main, 'ipsi');
@@ -341,16 +341,12 @@ for i = trial_indices
     cond_br = cond_struct.BR_File;
     meta_cond = T(T.BR_File == cond_br, :);
 
-    % === Determine baseline source ===
-    has_merged = isfield(cond_data, 'ipsi') || ...
-        isfield(cond_data, 'contra');
+    is_random_trial = strcmpi(string(meta_cond.Stim_Delay), 'Random');
 
-    if has_merged
-        base_data = cond_data;
-        baseline_file_used = i;
+    if is_random_trial
+        base_data = cond_data;  % baseline was merged in via combine_baseline_with_rand
     else
-        base_data = merged_baseline_summary;
-        baseline_file_used = NaN;
+        base_data = merged_baseline_summary;  % use external baseline
     end
 
     if iscell(meta_cond.Stim_Delay)
@@ -416,7 +412,7 @@ for i = trial_indices
                 fig = plot_rand_condition_traces_neural(base_data, cond_data, side_label, false, ...
                     meta_cond, true, show_figs);
 
-                % === Save ===
+                % Save
                 side_short = side_label;  % e.g., 'pos' or 'neg'
                 trigger_clean = strrep(strtrim(meta_cond.Movement_Trigger{1}), ' ', '_');
                 stim_str_for_file = sprintf('%dCh_%dHz_%duA_%s', ...

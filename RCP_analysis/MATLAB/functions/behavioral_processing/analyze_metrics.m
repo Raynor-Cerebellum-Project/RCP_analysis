@@ -18,7 +18,7 @@ fs = 1000;
 [b, a] = butter(4, 2 / (fs/2), 'high');
 Data.headYawVel_filtered = filtfilt(b, a, Data.yaw_vel); % changed from headYawVel
 accel = diff(Data.yaw_vel) / 0.001;
-Data.headYawPos = cumtrapz(Data.headYawVel_filtered);
+% Data.head_pos = cumtrapz(Data.headYawVel_filtered);
 
 % Loop over segment fields
 for i = 1:length(segment_fields)
@@ -143,7 +143,7 @@ for i = 1:length(segment_fields)
         end
 
         vel_seg   = Data.yaw_vel(idx(1):idx(2));
-        pos_seg   = Data.headYawPos(idx(1):idx(2));
+        pos_seg   = Data.head_pos(idx(1):idx(2));
         accel_seg = accel(idx(1):idx(2));
         vel_filt  = Data.headYawVel_filtered(idx(1):idx(2));
 
