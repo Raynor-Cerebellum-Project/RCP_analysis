@@ -12,7 +12,8 @@ elec_to_row = {ch: (ch - 1) // 2 for ch in range(1, 129)}
 
 # 2. Parse stimulation conditions
 # input_file = r'e:\NHP_Cerebellum_Project_2025_RCP_Analysis_Git\RCP_analysis\20260408_rand_sampling_seed_5'
-input_file = r'e:\NHP_Cerebellum_Project_2025_RCP_Analysis_Git\RCP_analysis\testing_whatever_different_groups'
+# input_file = r'e:\NHP_Cerebellum_Project_2025_RCP_Analysis_Git\RCP_analysis\testing_whatever_different_groups'
+input_file = r'E:\NHP_Cerebellum_Project_2025_RCP_Analysis_Git\RCP_analysis\20260430_rand_sampling_seed_6_3groups_24channels.json'
 with open(input_file, 'r') as f:
     data = json.load(f)
 

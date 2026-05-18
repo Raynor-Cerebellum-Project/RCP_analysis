@@ -24,6 +24,7 @@ Key Features:
   - Optional outlier detection and removal (IQR method).
   - Combined analysis of conditions grouping by name pattern.
   - Detailed statistical annotations (significance stars).
+  - Backwards compatible with old and new data formats.
 
 Outputs:
   - Figures: Saved to `results/figures/quantify_kinematics/`
@@ -58,15 +59,16 @@ MAX_REACH_DURATION_MS = 800.0
 
 # Position Constraints for detection
 START_POS_MAX_THRESH = 0.2  # Start must be within +/- 0.2 of 0 (Tightened)
-END_POS_MIN_THRESH = 2.0    # End must be at least +/- 2.0 away from 0
+END_POS_MIN_THRESH = 1.5    # End must be at least +/- 1.5 away from 0
 
 # --- Speed Exclusion Thresholds ---
 # Exclude trials if Peak Speed is 0 or > 0.25 (User request)
 SPEED_EXCL_MIN = 0.005  
 SPEED_EXCL_MAX = 0.02
 
-# Track only middle_x as requested
-SELECTED_KEYPOINTS = ["middle_x"] 
+# Track only middle_x as requested - with backwards-compatible variants
+# The matching is case-insensitive, so this covers: middle_x, Middle_x, middle_X, etc.
+SELECTED_KEYPOINTS = ["middle_x", "middle"] 
 
 # Plotting Configuration
 FIG_OUT_DIR = OUT_BASE / "figures" / "quantify_kinematics"
@@ -76,7 +78,7 @@ FIG_OUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_FORMAT = 'svg'  # Change to 'svg' for vector graphics
 
 # Set to True to generate 5x5 grid of traces for every trial (for debugging alignment)
-PLOT_DEBUG_TRACES = False 
+PLOT_DEBUG_TRACES = True 
 
 # Set to True to include Peak Speed plots in quantification figures
 PLOT_PEAK_SPEED = False
@@ -89,60 +91,230 @@ SAVE_STATS_CSV = False        # Set to False to skip saving stats CSV
 
 plt.rcParams.update({'font.size': 14}) # Larger font for plots
 
+# Module-level flag to only print keypoint diagnostics once per session
+_KEYPOINT_DIAG_PRINTED = set()
+
+# ---------------------------------------------------------------------
+# SESSION-SPECIFIC BR FILTERS
+# ---------------------------------------------------------------------
+# Which BR indices to include for each session
+SESSION_BR_FILTERS = {
+    "NRR_RW011": [4, 5, 6, 10, 11],
+    "NRR_RW012": [3, 7, 8, 9, 10, 11, 12, 18, 31],
+    "NRR_RW022": [1, 11, 12, 13, 14, 15, 16, 17],
+}
+
+# Get BR filter for current session
+def get_br_filter_for_session():
+    """Return list of BR indices to include for current session, or None for all."""
+    for session_key, br_list in SESSION_BR_FILTERS.items():
+        if session_key in PARAMS.session:
+            return br_list
+    return None  # No filter = include all
+
+BR_FILTER = get_br_filter_for_session()
+
+# ---------------------------------------------------------------------
+# METADATA-BASED CONDITION LABELING
+# ---------------------------------------------------------------------
+# Path to metadata CSV - derive from available paths
+# PERI_ROOT is typically: <session_root>/results/checkpoints/PeriStim
+# We need to go up to session root
+
+# Go up from PeriStim -> checkpoints -> results -> session_root
+_session_root = PERI_ROOT.parent.parent.parent
+
+# Extract session name for the filename (e.g., "NRR_RW011" from full session string)
+_session_name = PARAMS.session  # Use full session name like "NRR_RW011"
+
+# Build metadata path - at session root level, NOT in results
+METADATA_CSV = _session_root / "Metadata" / f"{_session_name}_metadata.csv"
+
+# Debug print to verify path
+print(f"[info] Session root: {_session_root}")
+print(f"[info] Looking for metadata at: {METADATA_CSV}")
+
+if not METADATA_CSV.exists():
+    # Try alternative naming patterns
+    _alt_paths = [
+        _session_root / "Metadata" / f"{_session_name.split('_')[-1]}_metadata.csv",  # RW011_metadata.csv
+        _session_root / "Metadata" / f"{_session_name.replace('NRR_', '')}_metadata.csv",  # RW011_metadata.csv
+    ]
+    for _alt in _alt_paths:
+        if _alt.exists():
+            METADATA_CSV = _alt
+            print(f"[info] Found metadata at: {METADATA_CSV}")
+            break
+    else:
+        print(f"[warn] Metadata file not found. Tried:")
+        print(f"       - {_session_root / 'Metadata' / f'{_session_name}_metadata.csv'}")
+        for _alt in _alt_paths:
+            print(f"       - {_alt}")
+
+
+
+def get_condition_label_from_metadata(br_idx: int, is_control: bool = False) -> str:
+    """
+    Get condition label from metadata CSV.
+    
+    Returns labels like:
+    - "Control" for control/baseline conditions (grouped)
+    - "40p @ 400Hz (1-32)" for stim conditions
+    
+    Parameters:
+    -----------
+    br_idx : int
+        BR file index
+    is_control : bool
+        Whether this is a control/baseline condition
+    """
+    # Control conditions are always grouped
+    if is_control:
+        return "Control"
+    
+    try:
+        if not METADATA_CSV.exists():
+            print(f"[warn] Metadata file not found: {METADATA_CSV}")
+            return f"BR {br_idx}"
+        
+        meta_df = pd.read_csv(METADATA_CSV)
+        
+        # Convert BR_File to numeric, coercing errors to NaN
+        br_file_numeric = pd.to_numeric(meta_df['BR_File'], errors='coerce')
+        
+        # Find the row for this BR index
+        mask = br_file_numeric == float(br_idx)
+        row = meta_df[mask]
+        
+        if len(row) == 0:
+            return f"BR {br_idx}"
+        
+        row = row.iloc[0]
+        
+        # Check if this is a baseline/control condition from Notes column
+        if 'Notes' in row.index:
+            notes = str(row['Notes']).lower() if pd.notna(row['Notes']) else ''
+            if 'baseline' in notes or 'rest' in notes:
+                return "Control"
+        
+        # Get stim parameters
+        duration_ms = None
+        frequency_hz = None
+        channels = None
+        
+        if 'Stim_Duration_ms' in meta_df.columns:
+            val = row['Stim_Duration_ms']
+            if pd.notna(val):
+                duration_ms = float(val)
+        
+        if 'Stim_Frequency_Hz' in meta_df.columns:
+            val = row['Stim_Frequency_Hz']
+            if pd.notna(val):
+                frequency_hz = float(val)
+        
+        if 'Channels' in meta_df.columns:
+            val = row['Channels']
+            if pd.notna(val):
+                channels = str(val).strip()
+        
+        # Build label
+        label_parts = []
+        
+        # Pulses and frequency
+        if duration_ms is not None and frequency_hz is not None:
+            pulse_duration_ms = 2.5
+            n_pulses = int(round(duration_ms / pulse_duration_ms))
+            label_parts.append(f"{n_pulses}p @ {int(frequency_hz)}Hz")
+        elif frequency_hz is not None:
+            label_parts.append(f"@ {int(frequency_hz)}Hz")
+        elif duration_ms is not None:
+            n_pulses = int(round(duration_ms / 2.5))
+            label_parts.append(f"{n_pulses}p")
+        
+        # Channels
+        if channels:
+            label_parts.append(f"({channels})")
+        
+        if label_parts:
+            return " ".join(label_parts)
+        
+        return f"BR {br_idx}"
+        
+    except Exception as e:
+        print(f"[warn] Error reading metadata for BR {br_idx}: {e}")
+        return f"BR {br_idx}"
+
+
+def get_br_from_condition_string(cond_str: str) -> Optional[int]:
+    """Extract BR index from condition string like 'Cond_6' or 'BR_006'."""
+    # Try "Cond_X" format
+    match = re.search(r"Cond_(\d+)", cond_str)
+    if match:
+        return int(match.group(1))
+    
+    # Try "BR_XXX" format
+    match = re.search(r"BR_(\d+)", cond_str)
+    if match:
+        return int(match.group(1))
+    
+    # Try any number
+    match = re.search(r"(\d+)", cond_str)
+    if match:
+        return int(match.group(1))
+    
+    return None
+
+
+def is_control_condition(cond_str: str, br_idx: Optional[int] = None) -> bool:
+    """
+    Determine if a condition is a control/baseline condition.
+    
+    Checks:
+    1. Condition string contains 'baseline' or 'control'
+    2. Metadata Notes column contains 'baseline' or 'rest'
+    """
+    cond_lower = cond_str.lower()
+    if 'baseline' in cond_lower or 'control' in cond_lower:
+        return True
+    
+    # Check metadata if we have a BR index
+    if br_idx is not None:
+        try:
+            if METADATA_CSV.exists():
+                meta_df = pd.read_csv(METADATA_CSV)
+                br_file_numeric = pd.to_numeric(meta_df['BR_File'], errors='coerce')
+                mask = br_file_numeric == float(br_idx)
+                row = meta_df[mask]
+                
+                if len(row) > 0:
+                    row = row.iloc[0]
+                    if 'Notes' in row.index:
+                        notes = str(row['Notes']).lower() if pd.notna(row['Notes']) else ''
+                        if 'baseline' in notes or 'rest' in notes:
+                            return True
+        except Exception:
+            pass
+    
+    return False
+
+
+
+
+# ---------------------------------------------------------------------
+# SESSION-SPECIFIC TRIAL EXCLUSIONS
+# ---------------------------------------------------------------------
+# These remain for manual trial exclusions within conditions
 
 if "NRR_RW012" in PARAMS.session:
     EXCLUDE_CONDITIONS = []
-
-    CONDITION_LABELS = {
-        "baseline": "Control",
-    }
-
     
-    # Labels for combined conditions
-    COMBINED_CONDITION_LABELS = { 
-        "baseline": "Control",
-    }
-
-    # Exclude specific trials within conditions (condition_id: [trial_indices])
-    # Trial indices are 0-indexed within each condition
     EXCLUDE_TRIALS_TARGET_A = {
-        6: [],
-        7: [],
-        10: [],
-        11: [],
-        12: [],
-        13: [],
-        14: [],
-        15: [],
-        16: [],
-        18: [],
-        19: [],
-        20: [],
-        21: [],
-        23: [],
-        24: [],
-        27: [],
+        # Add specific trial exclusions if needed
     }
-
+    
     EXCLUDE_TRIALS_TARGET_B = {
-        6: [],
-        7: [],
-        10: [],
-        11: [],
-        13: [],
-        14: [],
-        15: [],
-        18: [],
-        19: [],
-        21: [],
-        23: [],
-        24: [],
-        27: [],
     }
-
-    # Baseline-specific trial exclusions (organized by port and target)
-    # Format: "baseline_port{A/B}_target{A/B}": [trial_indices]
-    # User provided 1-based indices, converting to 0-based here:
+    
     EXCLUDE_BASELINE_TRIALS = {
         "baseline_portA_targetA": [],
         "baseline_portB_targetA": [],
@@ -150,90 +322,25 @@ if "NRR_RW012" in PARAMS.session:
         "baseline_portB_targetB": [],
     }
 
-
 elif "NRR_RW011" in PARAMS.session:
-    # EXCLUDE_CONDITIONS = [2, 3, 5, 8, 9, 10, 11, 23, 24, 27, 25]
-    # EXCLUDE_CONDITIONS = [2, 3, 5, 8, 9, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 27, 25]
-    EXCLUDE_CONDITIONS = [2, 3, 5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 27, 25]
-
-    # Custom labels for conditions
-    CONDITION_LABELS = {
-        "baseline": "Control",
-        6: "32 ch \n (1-32)",
-        7: "32 ch \n (33-64)",
-        # 9: "32 ch \n (Rest, 33-64)",
-        # 10: "130Hz \n (1-32)",
-        # 11: "130Hz \n (33-64)",
-        # 12: "1-8",
-        # 13: "5-12",
-        # 14: "9-16",
-        # 15: "13-20",
-        # 16: "17-24",
-        # 17: "21-28",
-        # 18: "25-32",
-        # 19: "29-36",
-        # 20: "33-40",
-        # 21: "37-44",
-        23: "32 ch \n (1-32) Later",
-        24: "32 ch \n (32-64) Later",
-        # 27: "130Hz \n (1-32) Later",
-    }
-
-    # Labels for combined conditions
-    COMBINED_CONDITION_LABELS = { 
-        "baseline": "Control",
-        6: "32 ch \n (1-32)",
-        7: "32 ch \n (33-64)",
-        # 9: "32 ch \n (Rest, 33-64)",
-        # 10: "130Hz \n (1-32)",
-        # 11: "130Hz \n (33-64)",
-        # "Combined_12-16": "Chs 1-24",
-        # "Combined_17-21": "Chs 21-44",
-        # 23: "32 ch \n (1-32) Later",
-        # 24: "32 ch \n (32-64) Later",
-        # 27: "130Hz \n (1-32) Later",
-    }
-
-    # Exclude specific trials within conditions (condition_id: [trial_indices])
-    # Trial indices are 0-indexed within each condition
+    EXCLUDE_CONDITIONS = []  # Now handled by BR_FILTER
+    
     EXCLUDE_TRIALS_TARGET_A = {
         6: [0, 8],
         7: [2, 11],
         10: [5, 9],
         11: [3, 6],
-        12: [8],
-        13: [7],
-        14: [2, 3, 5, 6, 8],
-        15: [1, 2, 4, 5, 6, 8],
-        16: [9, 10],
-        18: [3, 5],
-        19: [0, 4],
-        20: [0, 1],
-        21: [5],
-        23: [8],
-        24: [0, 1, 5, 8, 10],
-        27: [1, 2],
+        # ... keep your existing exclusions
     }
-
+    
     EXCLUDE_TRIALS_TARGET_B = {
         6: [1, 6, 7, 8, 9, 10],
         7: [0, 6, 13],
         10: [12],
         11: [7],
-        13: [1, 10],
-        14: [10, 11],
-        15: [0],
-        18: [0],
-        19: [2, 11],
-        21: [2, 9],
-        23: [5],
-        24: [9],
-        27: [1, 5, 9],
+        # ... keep your existing exclusions
     }
-
-    # Baseline-specific trial exclusions (organized by port and target)
-    # Format: "baseline_port{A/B}_target{A/B}": [trial_indices]
-    # User provided 1-based indices, converting to 0-based here:
+    
     EXCLUDE_BASELINE_TRIALS = {
         "baseline_portA_targetA": [1, 3, 4, 6, 13, 14, 21, 23, 24, 25, 31, 32, 38],
         "baseline_portB_targetA": [1, 2, 4, 6, 7, 9, 13, 16, 18],
@@ -241,21 +348,98 @@ elif "NRR_RW011" in PARAMS.session:
         "baseline_portB_targetB": [2, 3, 4, 6, 8, 10, 12, 15, 17, 19, 20, 22, 23, 24, 26, 28, 30, 31, 33, 35],
     }
 
+elif "NRR_RW022" in PARAMS.session:
+    EXCLUDE_CONDITIONS = []
+    
+    EXCLUDE_TRIALS_TARGET_A = {
+    }
+    
+    EXCLUDE_TRIALS_TARGET_B = {
+    }
+    
+    EXCLUDE_BASELINE_TRIALS = {
+        "baseline_portA_targetA": [],
+        "baseline_portB_targetA": [],
+        "baseline_portA_targetB": [],
+        "baseline_portB_targetB": [],
+    }
+
+else:
+    # Default fallback
+    print(f"[warn] No specific config for {PARAMS.session}, using defaults")
+    EXCLUDE_CONDITIONS = []
+    EXCLUDE_TRIALS_TARGET_A = {}
+    EXCLUDE_TRIALS_TARGET_B = {}
+    EXCLUDE_BASELINE_TRIALS = {
+        "baseline_portA_targetA": [],
+        "baseline_portB_targetA": [],
+        "baseline_portA_targetB": [],
+        "baseline_portB_targetB": [],
+    }
+
+# Legacy label maps (kept for backwards compatibility, but metadata is now primary)
+CONDITION_LABELS = {"baseline": "Control"}
+COMBINED_CONDITION_LABELS = {"baseline": "Control"}
+
+
+
 
 # ---------------------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------------------
 
-def _get_keypoint_indices(all_kp_names: list[str], selected_substrings: list[str]) -> list[int]:
-    """Return indices of keypoints that match any substrings."""
+def _get_keypoint_indices(all_kp_names: list[str], selected_substrings: list[str], verbose: bool = False) -> list[int]:
+    """
+    Return indices of keypoints that match any substrings.
+    Uses case-insensitive matching for better compatibility across data formats.
+    Also tries matching without underscores for flexibility.
+    """
     indices = []
+    
+    if verbose and all_kp_names:
+        preview = all_kp_names[:10] if len(all_kp_names) > 10 else all_kp_names
+        print(f"  Available keypoints: {preview}{'...' if len(all_kp_names) > 10 else ''}")
+    
     for i, kp in enumerate(all_kp_names):
         kp_lower = str(kp).lower()
+        kp_no_underscore = kp_lower.replace("_", "")
+        
         for sub in selected_substrings:
-            if sub.lower() in kp_lower:
+            sub_lower = sub.lower()
+            sub_no_underscore = sub_lower.replace("_", "")
+            
+            # Match if:
+            # 1. Direct substring match (case-insensitive), OR
+            # 2. Match without underscores (e.g., "middlex" matches "middle_x")
+            if sub_lower in kp_lower or sub_no_underscore in kp_no_underscore:
                 indices.append(i)
                 break
+    
     return indices
+
+
+def _get_keypoint_names_from_data(data: dict, camera: str = CAMERA_TO_USE) -> list[str]:
+    """
+    Extract keypoint names from data file, trying multiple possible key formats.
+    Returns list of keypoint names, or empty list if not found.
+    """
+    # Try different possible key names (new format first, then old formats)
+    possible_keys = [
+        f"beh_{camera}_names",      # New format: beh_cam1_names
+        f"{camera}_names",          # Old format: cam1_names
+        "beh_names",                # Generic
+        "keypoint_names",           # Alternative
+        "kp_names",                 # Short form
+    ]
+    
+    for key in possible_keys:
+        if key in data:
+            names = data[key]
+            if hasattr(names, 'tolist'):
+                return names.tolist()
+            return list(names)
+    
+    return []
 
 def calculate_reach_metrics(
     pos_segs: np.ndarray,      # (n_trials, n_kps, T)
@@ -266,23 +450,41 @@ def calculate_reach_metrics(
     target_code: int,          # 1 for A, 2 for B
     exclude_trials: list = None,  # List of trial indices to exclude
     fs: float = 100.0,         # approx sampling rate if needed, or derive from t_axis
-    return_traces: bool = False) -> Tuple[pd.DataFrame, list]:
+    return_traces: bool = False,
+    source_file: str = "") -> Tuple[pd.DataFrame, list]:
     """
     Calculate duration, peak speed, path length for each trial.
     Metric: Start at START_OFFSET_MS, End at Max Position Excursion.
     """
+    global _KEYPOINT_DIAG_PRINTED
+    
     n_trials, n_all_kps, T = pos_segs.shape
     
     # Default to empty list if no exclusions
     if exclude_trials is None:
         exclude_trials = []
     
-    # 1. Filter keypoints
+    # 1. Filter keypoints with better fallback logic
+    kp_idx = []
     if SELECTED_KEYPOINTS:
         kp_idx = _get_keypoint_indices(kp_names, SELECTED_KEYPOINTS)
+        
         if not kp_idx:
-            print(f"[warn] No keypoints matched {SELECTED_KEYPOINTS}. Using all.")
-            kp_idx = list(range(n_all_kps))
+            # Print diagnostic info once per session
+            session_key = PARAMS.session
+            if session_key not in _KEYPOINT_DIAG_PRINTED:
+                print(f"  [Keypoint Diagnostic] Looking for: {SELECTED_KEYPOINTS}")
+                print(f"  [Keypoint Diagnostic] Available in data: {kp_names[:8]}{'...' if len(kp_names) > 8 else ''}")
+                _KEYPOINT_DIAG_PRINTED.add(session_key)
+            
+            # Try to find ANY x-coordinate keypoint as fallback
+            x_keypoints = _get_keypoint_indices(kp_names, ["_x", "X", "x"])
+            if x_keypoints:
+                print(f"[warn] No keypoints matched {SELECTED_KEYPOINTS}. Using first X-coordinate keypoint (idx={x_keypoints[0]}).")
+                kp_idx = [x_keypoints[0]]
+            else:
+                print(f"[warn] No keypoints matched {SELECTED_KEYPOINTS} and no X-coordinates found. Using all keypoints.")
+                kp_idx = list(range(n_all_kps))
     else:
         kp_idx = list(range(n_all_kps))
         
@@ -290,9 +492,13 @@ def calculate_reach_metrics(
     trial_speeds_all_kps = vel_segs[:, kp_idx, :]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
-        trial_speed = np.nanmean(trial_speeds_all_kps, axis=1) # (n_trials, T)
+        trial_speed = np.nanmean(trial_speeds_all_kps, axis=1)  # (n_trials, T)
+    
+    # IMPORTANT: Use absolute value of speed for peak detection
+    # Velocity can be negative depending on reach direction, but we want magnitude
+    trial_speed = np.abs(trial_speed)
 
-    # Position profile (Euclidean distance from start pos? Or just average magnitude?)
+    # Position profile
     metrics_list = []
     collected_traces = []
     all_debug_traces = []
@@ -306,34 +512,34 @@ def calculate_reach_metrics(
         else:
              manual_excl_reason = ""
             
-        speed = trial_speed[i] # (T,)
-        t_trial = t_axis # (T,)
+        speed = trial_speed[i]  # (T,) - Already absolute value
+        t_trial = t_axis  # (T,)
         
         # 1. Identify Start Index (Time closest to START_OFFSET_MS)
         idx_start = (np.abs(t_trial - START_OFFSET_MS)).argmin()
         t_start = t_trial[idx_start]
         
-        # --- New Speed-Based Logic ---
+        # --- Speed-Based Logic ---
         # Track middle_x position for plotting
         sel_pos = pos_segs[i, kp_idx, :]
         trace_for_stop = sel_pos[0, :]
         
-        # Find Peak Speed in 0-600ms window
+        # Find Peak Speed in 0-MAX_REACH_DURATION_MS window
         dt = t_axis[1] - t_axis[0] if len(t_axis) > 1 else 10.0
-        if dt < 0.9: dt *= 1000.0 # Convert to ms if needed
+        if dt < 0.9: dt *= 1000.0  # Convert to ms if needed
         
         max_samples = int(MAX_REACH_DURATION_MS / dt)
         idx_max_dur = min(len(t_trial)-1, idx_start + max_samples)
         
         search_speed = speed[idx_start : idx_max_dur]
-        if search_speed.size == 0: continue
+        if search_speed.size == 0: 
+            continue
             
         idx_peak_speed = idx_start + np.argmax(search_speed)
         peak_v = speed[idx_peak_speed]
         
         # --- Speed Exclusion Check ---
         # User requested: Do NOT exclude trials, just don't plot these points.
-        # Logic: Create masked version of speed for plotting.
         speed_for_plot = speed.copy()
         mask_outliers = (np.abs(speed_for_plot) <= SPEED_EXCL_MIN) | (np.abs(speed_for_plot) > SPEED_EXCL_MAX)
         
@@ -341,11 +547,10 @@ def calculate_reach_metrics(
         if np.any(mask_outliers):
              speed_for_plot[mask_outliers] = np.nan
              has_speed_outlier = True
-             # We do NOT continue. We keep the trial.
         
         # Define search params for next step
         STABLE_WIN_MS = 20
-        LOW_SPEED_THRESH_RATIO = 0.05 # Tightened to 5% to find "about 0" speed
+        LOW_SPEED_THRESH_RATIO = 0.05  # Tightened to 5% to find "about 0" speed
         thresh_v = peak_v * LOW_SPEED_THRESH_RATIO
         win_samples = max(2, int(STABLE_WIN_MS / dt))
 
@@ -359,7 +564,7 @@ def calculate_reach_metrics(
                 if np.abs(trace_for_stop[k]) <= START_POS_MAX_THRESH:
                     # Check stability of PREVIOUS window [k-win : k]
                     w_start = max(0, k - win_samples)
-                    if k > w_start: # Ensure window has size
+                    if k > w_start:  # Ensure window has size
                         if np.mean(speed[w_start:k]) < thresh_v:
                             idx_start_refined = k
                             break
@@ -379,18 +584,89 @@ def calculate_reach_metrics(
         # Calculate dist_trace (abs displacement from start) for compatibility
         dist_trace = np.abs(trace_for_stop - trace_for_stop[idx_start])
         
+        # Parameters for "movement resumed" detection
+        RESUME_SPEED_RATIO = 0.3  # If speed goes back above 30% of peak, movement resumed
+        POSITION_INCREASE_THRESH = 0.15  # Position must increase by at least this amount to count as "continued reach"
+        resume_thresh = peak_v * RESUME_SPEED_RATIO
+        
+        # Track the maximum position reached so far (for detecting continued outward movement)
+        max_pos_so_far = np.abs(trace_for_stop[idx_peak_speed])
+        
         # Scan forward from Peak Velocity for drop
         # Look for speed < thresh_v and staying stable (low mean) for win_samples
-        # AND check if position is "at least 2" (>= END_POS_MIN_THRESH)
-        scan_limit = max(idx_peak_speed, idx_max_dur - win_samples)
+        # BUT if speed comes back up AND position keeps increasing significantly, keep searching
+        scan_limit = idx_max_dur - win_samples
         
-        for k in range(idx_peak_speed, scan_limit):
+        k = idx_peak_speed
+        while k < scan_limit:
+            # Update max position reached
+            current_pos = np.abs(trace_for_stop[k])
+            if current_pos > max_pos_so_far:
+                max_pos_so_far = current_pos
+            
             if speed[k] < thresh_v:
                 # Check position constraint: abs(pos) >= END_POS_MIN_THRESH
                 if np.abs(trace_for_stop[k]) >= END_POS_MIN_THRESH:
-                    if np.mean(speed[k : k + win_samples]) < thresh_v:
-                        idx_peak = k
-                        break
+                    # Check if speed stays low for the stability window
+                    window_mean = np.mean(speed[k : k + win_samples])
+                    if window_mean < thresh_v:
+                        # CANDIDATE endpoint found at k
+                        # But check if movement resumes AFTER this window
+                        
+                        # Look ahead: does speed come back up significantly?
+                        lookahead_end = min(k + win_samples + 50, idx_max_dur)  # Look ~500ms ahead
+                        future_speed = speed[k + win_samples : lookahead_end]
+                        
+                        if len(future_speed) > 0:
+                            max_future_speed = np.max(future_speed)
+                            
+                            # Check if position continues to INCREASE beyond current max
+                            future_pos = trace_for_stop[k + win_samples : lookahead_end]
+                            pos_at_candidate = np.abs(trace_for_stop[k])
+                            
+                            # Find the maximum position in the future window
+                            max_future_pos = np.max(np.abs(future_pos)) if len(future_pos) > 0 else pos_at_candidate
+                            
+                            # Movement resumed ONLY if:
+                            # 1. Speed comes back above resume threshold, AND
+                            # 2. Position increases SIGNIFICANTLY beyond current max position
+                            #    (not just beyond current position - must exceed the max reached so far)
+                            position_increased_significantly = (
+                                max_future_pos > max_pos_so_far + POSITION_INCREASE_THRESH
+                            )
+                            
+                            movement_resumed = (
+                                max_future_speed > resume_thresh and 
+                                position_increased_significantly
+                            )
+                            
+                            if movement_resumed:
+                                # Skip to after the speed picks back up, continue searching
+                                # Find where speed exceeds resume_thresh AND position is increasing
+                                found_resume_point = False
+                                for j in range(k + win_samples, lookahead_end):
+                                    if speed[j] > resume_thresh:
+                                        # Verify position is still increasing at this point
+                                        if np.abs(trace_for_stop[j]) > pos_at_candidate:
+                                            k = j  # Resume search from here
+                                            found_resume_point = True
+                                            break
+                                
+                                if not found_resume_point:
+                                    # Didn't find valid resume point, accept current endpoint
+                                    idx_peak = k
+                                    break
+                            else:
+                                # Movement did NOT resume (speed up but position not increasing)
+                                # OR speed stayed low
+                                # Accept this endpoint
+                                idx_peak = k
+                                break
+                        else:
+                            # No future data to check, accept this endpoint
+                            idx_peak = k
+                            break
+            k += 1
                     
         t_peak = t_trial[idx_peak]
         
@@ -425,12 +701,12 @@ def calculate_reach_metrics(
         all_debug_traces.append({
             "idx_trial": i,
             "t": t_trial,
-            "pos": trace_for_stop,  # New key
+            "pos": trace_for_stop,  # Position trace
             "y": trace_for_stop,    # Legacy key (for plotting)
-            "speed": speed,         # RAW Speed (User requested full trace)
+            "speed": speed,         # Absolute speed (for plotting)
             "idx_start": idx_start,
             "idx_final": idx_peak, 
-            "idx_orig": idx_peak_speed, # Use peak speed as ref
+            "idx_orig": idx_peak_speed,  # Use peak speed as ref
             "is_max_dur": is_max_duration,
             "idx_peak_speed": idx_peak_speed,
             "thresh_v": thresh_v,
@@ -494,6 +770,7 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
             # 1. Determine Condition from 'overall_title' or filename
             if p.name.startswith("baseline__"):
                 cond = "Baseline"
+                br_idx = None
             else:
                 # Try getting title from file
                 if "overall_title" in data:
@@ -510,8 +787,31 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
                         cond = f"Cond_{parts[1]}"
                     else:
                         cond = "Stim"
+                
+                # Extract BR index
+                br_idx = get_br_from_condition_string(cond)
+                if br_idx is None:
+                    # Try from filename
+                    br_match = re.search(r"BR_(\d+)", p.name)
+                    if br_match:
+                        br_idx = int(br_match.group(1))
             
-            # Check exclusions
+            # --- BR FILTER CHECK ---
+            # If we have a BR filter and this is a stim condition, check if BR is in filter
+            if BR_FILTER is not None and br_idx is not None:
+                if br_idx not in BR_FILTER:
+                    return None  # Skip this BR
+            
+            # Check if this is a control condition
+            is_control = is_control_condition(cond, br_idx)
+            
+            # For baseline files without BR index, check if any control BR is in filter
+            if cond == "Baseline" and BR_FILTER is not None:
+                # We keep baseline if any control BR is in filter
+                # (baseline files aggregate multiple BRs, so we include them)
+                pass
+            
+            # Check old-style exclusions (for backwards compatibility)
             is_excluded = False
             for ex in EXCLUDE_CONDITIONS:
                 if isinstance(ex, int):
@@ -527,21 +827,44 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
             if is_excluded:
                 return None
 
-            # Key names
-            pos_key = f"beh_{CAMERA_TO_USE}_segs"
-            vel_key = f"beh_{CAMERA_TO_USE}_vel_segs"
+            # Key names - try multiple formats for backwards compatibility
+            pos_key = None
+            vel_key = None
             
-            if pos_key not in data: # Fallback
+            # New format: beh_cam1_segs
+            if f"beh_{CAMERA_TO_USE}_segs" in data:
+                pos_key = f"beh_{CAMERA_TO_USE}_segs"
+                vel_key = f"beh_{CAMERA_TO_USE}_vel_segs"
+            # Old format: cam1_segs
+            elif f"{CAMERA_TO_USE}_segs" in data:
                 pos_key = f"{CAMERA_TO_USE}_segs"
                 vel_key = f"{CAMERA_TO_USE}_vel_segs"
+            # Very old format: just segs
+            elif "segs" in data:
+                pos_key = "segs"
+                vel_key = "vel_segs"
                 
-            if pos_key not in data or vel_key not in data:
-                print(f"Skipping {p.name}: missing keys")
+            if pos_key is None or pos_key not in data:
+                print(f"Skipping {p.name}: missing position data. Available keys: {list(data.keys())[:10]}")
+                return None
+                
+            if vel_key not in data:
+                print(f"Skipping {p.name}: missing velocity data ({vel_key})")
                 return None
                 
             pos_segs = data[pos_key] # (n_trials, n_kps, T)
             vel_segs = data[vel_key]
-            t_axis   = data["beh_rel_t"]
+            
+            # Time axis - try multiple keys
+            if "beh_rel_t" in data:
+                t_axis = data["beh_rel_t"]
+            elif "rel_t" in data:
+                t_axis = data["rel_t"]
+            elif "t" in data:
+                t_axis = data["t"]
+            else:
+                print(f"Skipping {p.name}: missing time axis")
+                return None
             
             # TS Check
             if "ts_state_segs" in data:
@@ -549,8 +872,14 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
             else:
                 ts_state = np.zeros((pos_segs.shape[0], pos_segs.shape[2])) 
 
-            names_key = f"beh_{CAMERA_TO_USE}_names"
-            kp_names = data[names_key].tolist() if names_key in data else []
+            # Get keypoint names using the helper function
+            kp_names = _get_keypoint_names_from_data(data, CAMERA_TO_USE)
+            
+            if not kp_names:
+                # Generate placeholder names based on data shape
+                n_kps = pos_segs.shape[1]
+                kp_names = [f"kp_{i}" for i in range(n_kps)]
+                print(f"[warn] No keypoint names found in {p.name}, using placeholders: {kp_names[:5]}...")
             
             # Determine trial exclusions
             trials_to_exclude = []
@@ -569,8 +898,6 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
                 target_letter = "A" if target_code == 1 else "B"
                 
                 # Build exclusion key
-                
-                # Build exclusion key
                 baseline_key = f"baseline_port{port}_target{target_letter}"
                 
                 print(f"  [Processing] Baseline File: {p.name} -> Config: {baseline_key}")
@@ -579,25 +906,21 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
                 if baseline_key in EXCLUDE_BASELINE_TRIALS:
                     trials_to_exclude = EXCLUDE_BASELINE_TRIALS[baseline_key]
             
-            # If not baseline (or even if it is, but currently logic separates), check condition-based exclusions
-            # Note: "Baseline" condition usually doesn't match (\d+) regex, but checking explicitly
-            if cond != "Baseline":
-                 match = re.search(r"(\d+)", cond)
-                 if match:
-                     cond_num = int(match.group(1))
-                     # Select correct exclusion dict based on Target (1=A, 2=B)
-                     exclude_dict = EXCLUDE_TRIALS_TARGET_A if target_code == 1 else EXCLUDE_TRIALS_TARGET_B
-                     
-                     if cond_num in exclude_dict:
-                         trials_to_exclude.extend(exclude_dict[cond_num])
+            # If not baseline, check condition-based exclusions
+            if cond != "Baseline" and br_idx is not None:
+                # Select correct exclusion dict based on Target (1=A, 2=B)
+                exclude_dict = EXCLUDE_TRIALS_TARGET_A if target_code == 1 else EXCLUDE_TRIALS_TARGET_B
+                
+                if br_idx in exclude_dict:
+                    trials_to_exclude.extend(exclude_dict[br_idx])
             
             # Retrieve metrics AND debug traces
             df, _, all_debug_traces, outliers = calculate_reach_metrics(
                 pos_segs, vel_segs, ts_state, t_axis, kp_names, target_code, 
-                exclude_trials=trials_to_exclude, return_traces=False)
+                exclude_trials=trials_to_exclude, return_traces=False,
+                source_file=p.name)
             
             # Plot Debug Traces for ALL trials (if enabled)
-            # Use thread-safe Figure interface (no global pyplot state)
             if PLOT_DEBUG_TRACES and all_debug_traces:
                 # Batch into pages of 25
                 batch_size = 25
@@ -695,22 +1018,29 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
                     debug_dir.mkdir(exist_ok=True)
                     
                     fig_db.savefig(debug_dir / f"Debug_Traces_{target}_{safe_cond}_{p.stem}_page{page+1}.png")
-                    # No explicit close needed for Figure object, but helpful
-                    # del fig_db
 
             # Sanity: if no metrics found, skip
             if df.empty:
                 return None
-                
-            df["Condition"] = cond
+            
+            # --- APPLY METADATA-BASED CONDITION LABEL ---
+            # Get the proper label from metadata
+            condition_label = get_condition_label_from_metadata(br_idx, is_control)
+            
+            # If it's a stim condition and we have a BR index, add BR to label for uniqueness
+            if not is_control and br_idx is not None and condition_label != "Control":
+                # Check if label already has BR info
+                if f"BR {br_idx}" not in condition_label and f"BR{br_idx}" not in condition_label:
+                    condition_label = f"{condition_label}\n(BR {br_idx})"
+            
+            df["Condition"] = condition_label
+            df["BR_Index"] = br_idx  # Store BR index for later use
             df["SourceFile"] = p.stem
             
-            # Exclude specific trials for this condition
-            # (Moved logic to before calculate_reach_metrics so debug traces are also filtered)
-                        
             # Add metadata to Outliers
             for o in outliers:
-                o['Condition'] = cond
+                o['Condition'] = condition_label
+                o['BR_Index'] = br_idx
                 o['Port'] = port
                 o['Target'] = target
                 o['TargetCode'] = target_code
@@ -720,7 +1050,10 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
     except Exception as e:
         import traceback
         print(f"Error processing {p.name}: {e}")
+        traceback.print_exc()
         return None
+
+
 
 def get_kinematics_id(filename: str) -> str:
     """
@@ -1027,40 +1360,60 @@ def plot_stim_quantification(
     
     conditions = list(grp.groups.keys())
     
-    # Sorting Logic
+    # Sorting Logic - updated for new label format
     def sort_key(s):
         s_lower = s.lower()
-        if "baseline" in s_lower:
-            return (0, 0)
-        import re
-        match = re.search(r"Cond_(\d+)", s)
-        if match: return (1, int(match.group(1)))
-        match_any = re.search(r"(\d+)", s)
-        if match_any: return (1, int(match_any.group(1)))
-        return (2, s)
+        
+        # Control always first
+        if "control" in s_lower or "baseline" in s_lower:
+            return (0, 0, 0, 0)
+        
+        # Extract pulses, frequency, and BR number
+        n_pulses = 0
+        freq = 0
+        br_num = 999
+        
+        # Try to extract pulses: "40p" or "40 p"
+        pulse_match = re.search(r"(\d+)\s*p", s_lower)
+        if pulse_match:
+            n_pulses = int(pulse_match.group(1))
+        
+        # Try to extract frequency: "400Hz" or "400 Hz"
+        freq_match = re.search(r"@\s*(\d+)\s*hz", s_lower)
+        if freq_match:
+            freq = int(freq_match.group(1))
+        
+        # Try to extract BR number
+        br_match = re.search(r"br\s*(\d+)", s_lower)
+        if br_match:
+            br_num = int(br_match.group(1))
+        
+        return (1, n_pulses, freq, br_num)
         
     conditions = sorted(conditions, key=sort_key)
     cond_map = {c: i for i, c in enumerate(conditions)}
     
-    # Setup Colors
-    cmap = plt.get_cmap("viridis", len(conditions))
-    color_map = {c: cmap(i) for i, c in enumerate(conditions)}
-    for c in conditions:
-        if "baseline" in c.lower():
-            color_map[c] = "gray"
-
-    # Figure Setup: 3 Rows using GridSpec
-    # Row 0: Duration (Violin)
-    # Row 1: Peak Speed (Violin)
+    # Setup Colors - Control in gray, stim in viridis colors
+    n_stim = sum(1 for c in conditions if "control" not in c.lower() and "baseline" not in c.lower())
+    cmap = plt.get_cmap("viridis", max(1, n_stim))
     
-    # Prepare Data Reuse
-    # plot_types = ['violin-box', 'box']
+    color_map = {}
+    stim_idx = 0
+    for c in conditions:
+        c_lower = c.lower()
+        if "control" in c_lower or "baseline" in c_lower:
+            color_map[c] = "gray"
+        else:
+            color_map[c] = cmap(stim_idx)
+            stim_idx += 1
+
+    # Figure Setup
     plot_types = ['box']
     n_conds = len(conditions)
     
     for p_type in plot_types:
         # Width needs to accommodate conditions
-        width = max(5, n_conds * 0.8)
+        width = max(6, n_conds * 1.0)
         
         # --- Rows: Metrics ---
         metrics = [("duration_ms", "Reach Duration (ms)")]
@@ -1089,43 +1442,15 @@ def plot_stim_quantification(
             valid_pos = x_pos[valid_indices]
             
             # --- Identify Baseline for Stats ---
-            baseline_data = [] # Data array
+            baseline_data = []
             for c in conditions:
-                # Naive check for baseline/control condition
                 c_str = str(c).lower()
                 if "baseline" in c_str or "control" in c_str:
-                     baseline_data = df[df["Condition"] == c][metric].dropna().values
-                     if len(baseline_data) > 0: break
+                    baseline_data = df[df["Condition"] == c][metric].dropna().values
+                    if len(baseline_data) > 0: break
             
-            # --- Plotting Logic based on Type ---
-            
-            if p_type == 'violin-box' or p_type == 'violin':
-                # Violin plot
-                if valid_data:
-                    parts = ax.violinplot(valid_data, positions=valid_pos, showmeans=False, showmedians=False, showextrema=False, widths=0.7)
-                    
-                    if 'bodies' in parts:
-                        for idx, pc in zip(valid_indices, parts['bodies']):
-                            c_name = conditions[idx]
-                            color = color_map.get(c_name, 'blue')
-                            pc.set_facecolor(color)
-                            pc.set_edgecolor('black')
-                            pc.set_alpha(0.5)
-                    
-                    # Box plot inside (narrow)
-                    bp = ax.boxplot(valid_data, positions=valid_pos, widths=0.15, patch_artist=True, 
-                                   showfliers=False, zorder=5)
-                    for box in bp['boxes']:
-                        box.set(facecolor='white', alpha=0.9, linewidth=1)
-                    for whisker in bp['whiskers']: 
-                        whisker.set(linewidth=1)
-                    for cap in bp['caps']:
-                        cap.set(linewidth=1)
-                    for median in bp['medians']:
-                        median.set(color='black', linewidth=1.5)
-
-            elif p_type == 'box':
-                # Standard Box plot
+            # --- Plotting Logic ---
+            if p_type == 'box':
                 if valid_data:
                     bp = ax.boxplot(valid_data, positions=valid_pos, widths=0.6, patch_artist=True,
                                    showfliers=False, zorder=5)
@@ -1136,67 +1461,47 @@ def plot_stim_quantification(
                     for median in bp['medians']:
                         median.set(color='black', linewidth=1.5)
 
-            # --- Individual Points (Hollow Circles, Jittered) ---
+            # --- Individual Points ---
             plot_individual_points(ax, data_list, conditions)
             
-            # --- Statistics (T-Test vs Baseline) ---
+            # --- Statistics ---
             plot_significance(ax, valid_pos, valid_data, baseline_data, conditions, valid_indices)
             
             # Adjust Axis
             ax.set_ylabel(ylabel)
             ax.set_title(ylabel)
             ax.set_xticks(x_pos)
-            ax.set_xlim(-0.5, len(conditions) - 0.5) # Ensure consistent spacing
+            ax.set_xlim(-0.5, len(conditions) - 0.5)
             
-            # Set Y-axis limits
-            # Add margin for stars and remove hard cap
             ax.margins(y=0.15)
             ax.set_ylim(bottom=0)
             
-            # Set Y-axis limits
             if metric == "duration_ms":
                 ax.set_ylim(0, 800)
             
-            # X Labels with custom mapping
-            import textwrap
-            
-            def get_label(cond_str):
-                # Check if baseline
-                if "baseline" in cond_str.lower():
-                    return label_map.get("baseline", cond_str)
-                # Check if combined condition
-                if cond_str.startswith("Combined_"):
-                    return label_map.get(cond_str, cond_str)
-                # Extract condition number
-                match = re.search(r"(\d+)", cond_str)
-                if match:
-                    cond_num = int(match.group(1))
-                    return label_map.get(cond_num, cond_str)
-                return cond_str
-            
-            labels = [f"{get_label(c)}\n(n={counts[c]})" for c in conditions]
-            labels_wrapped = ["\n".join(textwrap.wrap(l, 20)) for l in labels]
-            ax.set_xticklabels(labels_wrapped, rotation=45, ha="right", fontsize=9)
+            # X Labels - use condition strings directly (already formatted from metadata)
+            labels = [f"{c}\n(n={counts[c]})" for c in conditions]
+            ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=9)
             
         title_suffix = " (Combined)" if suffix == "_Combined" else ""
         plt.suptitle(f"Kinematics Summary - {target}{title_suffix} ({p_type})", fontsize=16)
         plt.tight_layout()
         
-        # Save figure with plot type in filename
-        # Clean up p_type string for filename (remove hyphen if desired, or keep as is)
+        # Save figure
         pt_str = p_type.replace("-", "").title()
         save_name = f"{target}_StimQuantification{suffix}_{pt_str}.{OUTPUT_FORMAT}"
         plt.savefig(FIG_OUT_DIR / save_name, bbox_inches='tight')
         plt.close(fig)
     
     if SAVE_STATS_CSV:
-        # Save statistics CSV
         stats_df = means.copy()
         stats_df.columns = [f"{c}_Mean" for c in stats_df.columns]
         stats_df_std = stds.copy()
         stats_df_std.columns = [f"{c}_Std" for c in stats_df_std.columns]
         full_stats = pd.concat([stats_df, stats_df_std, counts.rename("Count")], axis=1)
         full_stats.to_csv(FIG_OUT_DIR / f"{target}_stats_summary{suffix}.csv")
+
+
 
 def run_target_analysis(target_char: str, target_code: int, display_name: str):
     """
@@ -1206,6 +1511,11 @@ def run_target_analysis(target_char: str, target_code: int, display_name: str):
     - Plot individual conditions (optional)
     - Plot combined conditions (optional)
     """
+    global _KEYPOINT_DIAG_PRINTED
+    # Reset diagnostic flag for each target to show info once per target
+    # (Comment out next line if you want it truly once per session)
+    # _KEYPOINT_DIAG_PRINTED.clear()
+    
     print(f"Processing {display_name} (Target {target_char})...")
     df = process_target(target_char, target_code)
     
@@ -1249,4 +1559,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

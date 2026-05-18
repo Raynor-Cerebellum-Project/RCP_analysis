@@ -26,6 +26,7 @@ from RCP_analysis.python.functions.artifact_correction import IPCA_Artifact_Corr
 
 from spikeinterface.core import BaseRecording, BaseRecordingSegment
 
+
 class IPCACorrectedRecordingSegment(BaseRecordingSegment):
     def __init__(self, parent_recording_segment, micro_map, micro_corrected):
         """
@@ -81,6 +82,7 @@ class IPCACorrectedRecordingSegment(BaseRecordingSegment):
                 traces[chunk_idx_start:chunk_idx_end, :] = patch
                 
         return traces
+
 
 class IPCACorrectedRecording(BaseRecording):
     """
@@ -189,17 +191,99 @@ si.set_global_job_kwargs(**global_job_kwargs)
 # Cache for stim file checks to avoid redundant disk I/O
 STIM_CACHE = {}
 
+
+# =============================================================================
+# IPCA Helper Functions (matching UA_BR_analysis_mf.py logic)
+# =============================================================================
+
+def _find_first_significant_peak(tr_local, ref_ratio=0.5):
+    """
+    Given a local trace fragment (already roughly centred on a peak),
+    find the first peak in the absolute derivative that exceeds `ref_ratio` 
+    of the local maximum derivative.
+    Returns the index relative to the start of `tr_local`.
+    """
+    diff_abs = np.abs(np.diff(tr_local, prepend=tr_local[0]))
+    pk_idx = np.argmax(diff_abs)
+    max_d = diff_abs[pk_idx]
+    if max_d < 1e-6:
+        return pk_idx
+    for k in range(len(diff_abs)):
+        if diff_abs[k] > ref_ratio * max_d:
+            return k
+    return pk_idx
+
+
+def _get_electrode_region(elec_id):
+    """
+    Get region name for a Utah Array electrode based on 1-based ID.
+    Standard mapping:
+    - 1-64 = SMA
+    - 65-128 = PMd  
+    - 129-192 = M1i
+    - 193-256 = M1s
+    """
+    if 1 <= elec_id <= 64:
+        return "SMA"
+    elif 65 <= elec_id <= 128:
+        return "PMd"
+    elif 129 <= elec_id <= 192:
+        return "M1i"
+    elif 193 <= elec_id <= 256:
+        return "M1s"
+    return "Unknown"
+
+
+def _get_stim_frequency_from_metadata(br_idx):
+    """Get stimulation frequency from metadata CSV."""
+    stim_freq = 300.0  # default
+    if METADATA_CSV.exists():
+        try:
+            freq_map = rcp.get_metadata_mapping(METADATA_CSV, 'BR_File', 'Stim_Frequency_Hz')
+            stim_freq = float(freq_map.get(br_idx, 300.0))
+            if np.isnan(stim_freq):
+                stim_freq = 300.0
+        except Exception:
+            pass
+    return stim_freq
+
+
+def _get_ua_port_from_metadata(br_idx):
+    """Get UA port (A or B) from metadata CSV."""
+    ua_port = "A"  # default
+    if METADATA_CSV.exists():
+        try:
+            df_meta_raw = pd.read_csv(METADATA_CSV)
+            df_meta = _normalize_metadata(df_meta_raw)
+            if "br_file" in df_meta.columns:
+                br_col = pd.to_numeric(df_meta["br_file"], errors="coerce")
+                mask = br_col == br_idx
+                if mask.any():
+                    row_meta = df_meta.loc[mask].iloc[0]
+                    port_val = str(row_meta.get("ua_port", "A")).upper().strip()
+                    if port_val in ("A", "B"):
+                        ua_port = port_val
+        except Exception:
+            pass
+    return ua_port
+
+
+# =============================================================================
+# Peristim File Discovery
+# =============================================================================
+
 def find_peristim_files(sess_name, br_idx):
     found = []
     # Loop through categories
     for cat in ["control_reaches", "stim_reaches", "at_rest", "Grasp", "IMU", "continuous_stim"]:
         cat_dir = PERI_ROOT / cat
-        if not cat_dir.exists(): continue
+        if not cat_dir.exists(): 
+            continue
         
         # Check main cat dir
         pattern = f"peristim__*{sess_name}*BR_{br_idx:03d}*.npz"
         for p in cat_dir.glob(pattern):
-             found.append((cat, None, p))
+            found.append((cat, None, p))
              
         # Check target subdirs
         for target in ["target_A", "target_B"]:
@@ -208,7 +292,6 @@ def find_peristim_files(sess_name, br_idx):
                 for p in t_dir.glob(pattern):
                     found.append((cat, target, p))
     return found
-
 
 
 # =============================================================================
@@ -220,6 +303,7 @@ def _normalize_metadata(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = df_raw.copy()
     df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
     return df
+
 
 def _find_baseline_groups(df_norm: pd.DataFrame) -> dict:
     """
@@ -380,6 +464,7 @@ def apply_1f_detrending_chunked(epochs, rel_t_epoch, win_base=(-500, -50), fs=10
         
     return out
 
+
 def filter_zero_phase(epochs, fs, low, high, order=4, chunk_size=32):
     """
     Apply zero-phase bandpass filter using filtfilt along axis 2 (time).
@@ -414,167 +499,228 @@ def filter_zero_phase(epochs, fs, low, high, order=4, chunk_size=32):
         
     return out
 
+
 # =============================================================================
-# Helper Functions
+# IPCA Artifact Correction (matching UA_BR_analysis_mf.py logic exactly)
 # =============================================================================
 
-def apply_ipca_correction(rec_ns6, starts_ua, ends_ua):
+def apply_ipca_correction(rec_ns6, starts_ua, ends_ua, br_idx=None):
     """
     Applies IPCA artifact removal to stimulation windows, using cross-channel templates 
     learned individually per brain region.
+    
+    This function matches the logic in UA_BR_analysis_mf.py exactly.
     """
     if not USE_IPCA_CORRECTION or not starts_ua.size:
         return rec_ns6
 
     fs_ua = rec_ns6.get_sampling_frequency()
+    n_total = rec_ns6.get_num_samples()
     print(f"[IPCA] Starting Incremental PCA artifact correction on {starts_ua.size} blocks...")
     
-    # 1. Learn precise timestamps using derivative method
-    pulse_interval_ms = 1000.0 / PARAMS.stim_hz if hasattr(PARAMS, 'stim_hz') else 3.333
+    # Get stim frequency from metadata
+    stim_freq_meta = _get_stim_frequency_from_metadata(br_idx) if br_idx else 300.0
+    pulse_interval_ms = 1000.0 / stim_freq_meta
+    print(f"[IPCA] Using stim frequency {stim_freq_meta} Hz (interval: {pulse_interval_ms:.2f} ms)")
+    
+    # Get UA port for region mapping
+    ua_port = _get_ua_port_from_metadata(br_idx) if br_idx else "A"
+    
+    # Calculate sample indices for windows
     mw_start = int(IPCA_PULSE_WINDOW_MS[0] / 1000.0 * fs_ua)
-    mw_end   = int(IPCA_PULSE_WINDOW_MS[1] / 1000.0 * fs_ua)
+    mw_end = int(IPCA_PULSE_WINDOW_MS[1] / 1000.0 * fs_ua)
     
-    fw_start = int(-ARTRMV_MS_BEFORE / 1000.0 * fs_ua)
-    fw_end   = int(ARTRMV_TAIL_MS / 1000.0 * fs_ua)
+    interval_samp = int(pulse_interval_ms / 1000.0 * fs_ua)
+    refine_samp = max(int(0.15 / 1000.0 * fs_ua), 3)
+    coarse_radius = max(refine_samp, 3)
+    search_radius_samp = int((pulse_interval_ms * 0.4) / 1000.0 * fs_ua)
     
-    # Identify active channels that belong to a region
-    ch_ids = np.asarray(rec_ns6.get_channel_ids(), dtype=int)
-    if len(ch_ids) == 0:
+    # Get channel info
+    ch_ids = np.asarray(rec_ns6.get_channel_ids())
+    n_channels = len(ch_ids)
+    
+    if n_channels == 0:
         return rec_ns6
-        
-    def get_region(e):
-        if 1 <= e <= 64: return "SMA"
-        if 65 <= e <= 128: return "PMd"
-        if 129 <= e <= 192: return "M1i"
-        if 193 <= e <= 256: return "M1s"
-        return "Unknown"
-        
-    target_ch_regions = [get_region(e) for e in ch_ids]
     
-    # Load raw
-    print("[IPCA] Scanning Blackrock raw file sequentially for artifact triggers...")
+    # Try to parse electrode IDs from channel names for region mapping
+    try:
+        elec_ids = np.array([int(ch) for ch in ch_ids])
+    except (ValueError, TypeError):
+        elec_ids = np.arange(1, n_channels + 1)
     
-    micro_signal_list = []
-    micro_map = []  # (block_idx, p_start, p_end)
+    # Adjust electrode IDs for Port B
+    if ua_port == "B":
+        elec_ids_for_region = elec_ids + 128
+    else:
+        elec_ids_for_region = elec_ids
     
-    n_total = rec_ns6.get_num_samples()
-    interval_idx = int(pulse_interval_ms / 1000 * fs_ua)
-    search_radius_idx = int((pulse_interval_ms * 0.4) / 1000 * fs_ua)
-    refine_samp = max(int(0.2 / 1000.0 * fs_ua), 3)
+    # Map electrodes to regions
+    target_ch_regions = [_get_electrode_region(int(e)) for e in elec_ids_for_region]
     
-    def _find_first_significant_peak(tr_local, ref_ratio=0.5):
-        diff_abs = np.abs(np.diff(tr_local, prepend=tr_local[0]))
-        pk_idx = np.argmax(diff_abs)
-        max_d = diff_abs[pk_idx]
-        if max_d < 1e-6:
-            return pk_idx
-        for k in range(len(diff_abs)):
-            if diff_abs[k] > ref_ratio * max_d:
-                return k
-        return pk_idx
-        
+    # Use first channel as reference for pulse detection
+    ref_ch_name = ch_ids[0]
+    
+    print(f"[IPCA] Scanning for artifact triggers using channel {ref_ch_name}...")
+    
+    # Collect all pulse centres - matching UA_BR_analysis_mf.py logic exactly
+    all_pulse_centres = []
+    
     for i, (st, en) in enumerate(zip(starts_ua, ends_ua)):
-        # Coarse search
+        # Coarse search: find the first pulse in a wider window
         search_margin = int(20.0 / 1000 * fs_ua)
-        start_search  = st + fw_start - search_margin
-        end_search    = st + fw_end + search_margin
-        if start_search < 0 or end_search > n_total: continue
+        start_search = max(0, st - search_margin)
+        end_search = min(n_total, en + search_margin)
         
-        tr_search = rec_ns6.get_traces(start_frame=start_search, end_frame=end_search, channel_ids=[rec_ns6.get_channel_ids()[0]], return_in_uV=True)[:, 0]
-        tr_diff_search  = np.abs(np.diff(tr_search, prepend=tr_search[0]))
+        if end_search <= start_search:
+            continue
         
-        predicted_centre = -fw_start + search_margin
+        tr_search = rec_ns6.get_traces(
+            start_frame=start_search, end_frame=end_search,
+            channel_ids=[ref_ch_name], return_in_uV=True
+        )[:, 0]
+        
+        tr_diff_search = np.abs(np.diff(tr_search, prepend=tr_search[0]))
+        
+        # Expected position of first pulse within the search window
+        predicted_centre = st - start_search
         slop = int(5.0 / 1000 * fs_ua)
         win_lo = max(0, predicted_centre - slop)
         win_hi = min(len(tr_search), predicted_centre + slop)
         
+        if win_hi <= win_lo:
+            continue
+        
+        # Find the peak derivative in this window
         peak_in_win = np.argmax(tr_diff_search[win_lo:win_hi])
-        anchor_idx  = win_lo + peak_in_win
-        max_diff    = tr_diff_search[anchor_idx]
+        anchor_idx = win_lo + peak_in_win
+        max_diff = tr_diff_search[anchor_idx]
         
-        if max_diff < 5.0: continue
+        if max_diff < 5.0:
+            continue
         
+        # Scan left→right for the first threshold-crossing derivative
         first_pulse_in_search = None
         for k in range(win_lo, win_hi):
             if tr_diff_search[k] > 0.4 * max_diff:
                 first_pulse_in_search = k
                 break
-        if first_pulse_in_search is None: continue
+        if first_pulse_in_search is None:
+            first_pulse_in_search = anchor_idx
         
-        coarse_radius = max(refine_samp, 3)
-        rc_lo = max(0, first_pulse_in_search - coarse_radius)
-        rc_hi = min(len(tr_search), first_pulse_in_search + coarse_radius + 1)
-        if rc_hi <= rc_lo: continue
-        offset = _find_first_significant_peak(tr_search[rc_lo:rc_hi])
+        # Refine coarse centre to the earliest significant deflection
+        r_lo = max(0, first_pulse_in_search - coarse_radius)
+        r_hi = min(len(tr_search), first_pulse_in_search + coarse_radius + 1)
+        coarse_centre = r_lo + _find_first_significant_peak(tr_search[r_lo:r_hi])
         
-        coarse_centre = rc_lo + offset
-        true_start = start_search + coarse_centre
+        # Convert back to global sample index
+        true_first_pulse = start_search + coarse_centre
         
-        train_start_idx = true_start
-        train_end_idx   = en + fw_end
+        # Calculate stim duration and number of pulses
+        stim_dur_ms = (en - st) * 1000.0 / fs_ua
+        num_pulses = int(np.floor(stim_dur_ms / pulse_interval_ms)) + 1
         
-        if train_end_idx <= train_start_idx: continue
+        # Forward-walk from the true first pulse to find all pulses
+        local_max_diff = max_diff
+        pulse_centres_block = [true_first_pulse]
+        curr = true_first_pulse
         
-        anchor_final = true_start
-        pulse_centres = [anchor_final]
-        curr = anchor_final
-        while True:
-            nxt = curr + interval_idx
-            if nxt > train_end_idx: break
-            s_lo = max(0, nxt - search_radius_idx)
-            s_hi = min(n_total, nxt + search_radius_idx)
-            if s_hi <= s_lo: break
+        while len(pulse_centres_block) < num_pulses:
+            nxt = curr + interval_samp
             
-            tr_diff = np.abs(np.diff(rec_ns6.get_traces(start_frame=s_lo, end_frame=s_hi, channel_ids=[rec_ns6.get_channel_ids()[0]], return_in_uV=True)[:, 0]))
+            s_lo = max(0, nxt - search_radius_samp)
+            s_hi = min(n_total, nxt + search_radius_samp)
+            
+            if s_hi <= s_lo:
+                curr = nxt
+                pulse_centres_block.append(curr)
+                continue
+            
+            tr_local = rec_ns6.get_traces(
+                start_frame=s_lo, end_frame=s_hi,
+                channel_ids=[ref_ch_name], return_in_uV=True
+            )[:, 0]
+            
+            tr_diff = np.abs(np.diff(tr_local, prepend=tr_local[0]))
             peak_idx = np.argmax(tr_diff)
             
-            if tr_diff[peak_idx] < 0.15 * max_diff: break
+            if tr_diff[peak_idx] < 0.15 * local_max_diff:
+                curr = nxt
+            else:
+                curr = s_lo + peak_idx
             
-            curr = s_lo + peak_idx
-            pulse_centres.append(curr)
-            
-        pulse_centres = sorted(set(pulse_centres))
+            pulse_centres_block.append(curr)
         
-        for p_idx in pulse_centres:
+        # Refine each pulse centre
+        for p_idx in pulse_centres_block:
             r_lo = max(0, p_idx - refine_samp)
             r_hi = min(n_total, p_idx + refine_samp + 1)
-            if r_lo >= r_hi: continue
+            if r_lo >= r_hi:
+                all_pulse_centres.append(p_idx)
+                continue
             
-            true_centre = r_lo + _find_first_significant_peak(rec_ns6.get_traces(start_frame=r_lo, end_frame=r_hi, channel_ids=[rec_ns6.get_channel_ids()[0]], return_in_uV=True)[:, 0])
-            p_start = true_centre + mw_start
-            p_end   = true_centre + mw_end
+            tr_refine = rec_ns6.get_traces(
+                start_frame=r_lo, end_frame=r_hi,
+                channel_ids=[ref_ch_name], return_in_uV=True
+            )[:, 0]
             
-            if p_start >= 0 and p_end <= n_total:
-                micro_signal_list.append(rec_ns6.get_traces(start_frame=p_start, end_frame=p_end, return_in_uV=True).copy())
-                micro_map.append((p_start, p_end))
-
-    if not micro_signal_list:
+            tc = r_lo + _find_first_significant_peak(tr_refine)
+            all_pulse_centres.append(tc)
+    
+    # Remove duplicates and sort
+    all_pulse_centres = sorted(set(all_pulse_centres))
+    print(f"[IPCA] Found {len(all_pulse_centres)} total pulse centres")
+    
+    if not all_pulse_centres:
         print("[IPCA] No pulses successfully extracted, skipping correction.")
         return rec_ns6
+    
+    # Extract ALL channels for each pulse
+    micro_signal_list = []
+    micro_map = []
+    
+    for true_centre in all_pulse_centres:
+        p_start = true_centre + mw_start
+        p_end = true_centre + mw_end
         
-    micro_signal_array = np.stack(micro_signal_list) # (n_pulses, n_time, n_all_channels)
-    print(f"[IPCA] Extracted {len(micro_signal_array)} artifacts. Correcting...")
+        if p_start >= 0 and p_end <= n_total:
+            micro_signal_list.append(
+                rec_ns6.get_traces(start_frame=p_start, end_frame=p_end, return_in_uV=True).astype(np.float32).copy()
+            )
+            micro_map.append((p_start, p_end))
     
+    if not micro_signal_list:
+        print("[IPCA] No pulses extracted, skipping correction.")
+        return rec_ns6
+    
+    micro_signal_array = np.stack(micro_signal_list)
+    print(f"[IPCA] Extracted {len(micro_signal_array)} artifacts. Shape: {micro_signal_array.shape}")
+    
+    # Apply IPCA correction by region
     corrector = IPCA_Artifact_Correction(rank=IPCA_RANK)
-    
-    region_to_idxs = {}
-    for valid_ch_idx, reg_name in enumerate(target_ch_regions):
-        region_to_idxs.setdefault(reg_name, []).append(valid_ch_idx)
     micro_corrected = micro_signal_array.copy()
     n_stim, n_time, _ = micro_signal_array.shape
     
+    # Group channels by region
+    region_to_idxs = {}
+    for ch_idx, reg_name in enumerate(target_ch_regions):
+        region_to_idxs.setdefault(reg_name, []).append(ch_idx)
+    
     print("Cross-channel IPCA by region:")
     for reg, idxs in region_to_idxs.items():
-        if not idxs: continue
+        if not idxs:
+            continue
         
+        # Pool all pulses from channels within this region
         reg_signal = micro_signal_array[:, :, idxs]
         pooled_signal = np.transpose(reg_signal, (0, 2, 1)).reshape(-1, n_time)
         
+        # Learn the shared template for this region
         reg_template = Template()
         _, reg_template = corrector.ipca_template_per_channel(pooled_signal, reg_template)
         
         print(f"  [{reg}] Shared subspace learned from {len(idxs)} channels.")
         
+        # Apply this region's template to each channel
         for ch_idx in idxs:
             signal_ch = micro_signal_array[:, :, ch_idx].copy()
             baseline = np.mean(signal_ch[:, :3], axis=1, keepdims=True)
@@ -583,14 +729,20 @@ def apply_ipca_correction(rec_ns6, starts_ua, ends_ua):
             artifact = centered @ reg_template.weights.T @ reg_template.weights
             corr_ch = centered - artifact + baseline
             micro_corrected[:, :, ch_idx] = corr_ch
-            
-    print("[IPCA] Building dynamically-correcting IPCACorrectedRecording...")
+    
+    print("[IPCA] Building IPCACorrectedRecording...")
     rec_corr_mem = IPCACorrectedRecording(rec_ns6, micro_map, micro_corrected)
+    
+    del micro_signal_array, micro_corrected
+    gc.collect()
+    
     return rec_corr_mem
 
 
+# =============================================================================
+# SI Pipeline and Epoch Extraction
+# =============================================================================
 
-# --- Debug Plotting ---
 def build_lfp_preprocessing_pipeline(
     recording: si.BaseRecording,
     stim_indices_native: np.ndarray,
@@ -602,7 +754,15 @@ def build_lfp_preprocessing_pipeline(
     """
     # 1. Bandpass (1-200 Hz) BEFORE resampling
     print(f"    [SI Pipeline] Bandpass filter (1-200 Hz)...")
-    rec_filtered = spre.bandpass_filter(recording, freq_min=1.0, freq_max=200.0)
+    rec_filtered = spre.bandpass_filter(
+        recording, 
+        freq_min=1.0, 
+        freq_max=200.0,
+        filter_order=FILTER_ORDER,
+        dtype='float32',
+        add_reflect_padding=True,
+        ignore_low_freq_error=True,
+    )
     
     # 2. Resampling (30k -> 1k)
     # SI resample includes anti-aliasing filter
@@ -610,7 +770,6 @@ def build_lfp_preprocessing_pipeline(
     rec_resampled = spre.resample(rec_filtered, resample_rate=TARGET_FS)
     
     return rec_resampled
-
 
 def extract_single_epoch(rec_obj, center_idx, pre_samps, post_samps):
     """
@@ -652,7 +811,50 @@ def slice_epoch(data, t_axis, target_win):
     return data[:, :, mask], t_axis[mask]
 
 
+# =============================================================================
+# UA Mapping Helper
+# =============================================================================
 
+def _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, metadata_csv):
+    ua_port = "A"
+    if metadata_csv.exists():
+        try:
+            df_meta_raw = pd.read_csv(metadata_csv)
+            df_meta = _normalize_metadata(df_meta_raw)
+            if "br_file" in df_meta.columns:
+                br_col = pd.to_numeric(df_meta["br_file"], errors="coerce")
+                mask = br_col == br_idx
+                if mask.any():
+                    row_meta = df_meta.loc[mask].iloc[0]
+                    port_val = row_meta.get("_ua_port_norm") if "_ua_port_norm" in row_meta else (
+                        str(row_meta.get("ua_port", "UNKNOWN")).upper().strip() or "UNKNOWN"
+                    )
+                    if port_val in ("A", "B"):
+                        ua_port = port_val
+        except Exception as e:
+            print(f"    [WARN] Failed to read UA port: {e}")
+            
+    raw_ch_ids = np.asarray(rec_raw.get_channel_ids(), int)
+    if ua_port == "B":
+        raw_ch_ids += 128
+        
+    id_to_row = {ch: i for i, ch in enumerate(raw_ch_ids)}
+    active_elecs, active_rows = [], []
+    for elec_zero_idx, nsp_id in enumerate(UA_MAP):
+        if nsp_id is not None and not np.isnan(nsp_id) and nsp_id > 0 and int(nsp_id) in id_to_row:
+            active_elecs.append(elec_zero_idx + 1)
+            active_rows.append(id_to_row[int(nsp_id)])
+            
+    if len(active_rows) > 0:
+        rec_mapped = rec_raw.select_channels(
+            channel_ids=[rec_raw.channel_ids[r] for r in active_rows]
+        ).rename_channels(
+            new_channel_ids=[str(e) for e in active_elecs]
+        )
+        ua_ids_1based = np.array(active_elecs, dtype=int)
+        return rec_mapped, ua_ids_1based, ua_port
+    else:
+        return None, None, ua_port
 
 
 # =============================================================================
@@ -677,14 +879,16 @@ def process_baseline_group_utah(
     port_str = _sanitize(port)
     
     # 1. Discovery phase: Identify which targets have data for each session
-    all_events_by_br = {} # {br_idx: {target_label: event_ms}}
+    all_events_by_br = {}  # {br_idx: {target_label: event_ms}}
     for sess_info in session_infos:
         br_idx = sess_info["br_idx"]
         all_events_by_br[br_idx] = {}
         for target in ["target_A", "target_B", ""]:
             cat_dir = PERI_ROOT / "control_reaches"
-            if target: cat_dir = cat_dir / target
-            if not cat_dir.exists(): continue
+            if target:
+                cat_dir = cat_dir / target
+            if not cat_dir.exists():
+                continue
             
             pattern = f"peristim__*{sess_info['session']}*BR_{br_idx:03d}*.npz"
             matches = list(cat_dir.glob(pattern))
@@ -711,16 +915,19 @@ def process_baseline_group_utah(
         
         # Find Blackrock ns6 file
         ns6_files = [p for p in BR_ROOT.iterdir() if p.is_file() and f"_{br_idx:03d}" in p.name and p.suffix == '.ns6']
-        if not ns6_files: continue
+        if not ns6_files:
+            continue
         
         sess_path = ns6_files[0]
         try:
             print(f"      [Baseline] Loading BR {br_idx:03d} for labels: {labels_to_proc}")
             rec_raw = se.read_blackrock(str(sess_path), stream_name='nsx6', all_annotations=True)
-            rec_mapped, ua_ids_1based = _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, METADATA_CSV)
-            if rec_mapped is None: continue
+            rec_mapped, ua_ids_1based, ua_port = _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, METADATA_CSV)
+            if rec_mapped is None:
+                continue
             
-            if ua_ids_global is None: ua_ids_global = ua_ids_1based
+            if ua_ids_global is None:
+                ua_ids_global = ua_ids_1based
             
             fs_native = rec_mapped.get_sampling_frequency()
             rec_duration_ms = rec_raw.get_total_duration() * 1000.0
@@ -742,7 +949,8 @@ def process_baseline_group_utah(
                 
                 # Filter events to session duration
                 sess_ir_ms_valid = sess_ir_ms[(sess_ir_ms >= 0) & (sess_ir_ms < rec_duration_ms)]
-                if len(sess_ir_ms_valid) == 0: continue
+                if len(sess_ir_ms_valid) == 0:
+                    continue
                 
                 # Apply Baseline Trial Exclusions
                 exclusion_key = f"baseline_port{port}_target{label}"
@@ -754,7 +962,8 @@ def process_baseline_group_utah(
                             valid_mask[e_idx] = False
                     sess_ir_ms_valid = sess_ir_ms_valid[valid_mask]
 
-                if len(sess_ir_ms_valid) == 0: continue
+                if len(sess_ir_ms_valid) == 0:
+                    continue
                 
                 # Extract epochs
                 stim_start_samps = (sess_ir_ms_valid * fs_native / 1000.0).astype(np.int64)
@@ -783,8 +992,10 @@ def process_baseline_group_utah(
             continue
             
         target_suffix = f"_target_{'target_'+label if label != 'N' else ''}".replace("target_target_", "target_")
-        if label == "N": target_suffix = ""
-        else: target_suffix = f"_target_{label}"
+        if label == "N":
+            target_suffix = ""
+        else:
+            target_suffix = f"_target_{label}"
         
         out_name = f"aligned_lfp__baseline__Depth_{depth_str}_port_{port_str}{target_suffix}.npz"
         out_dir = UA_LFP_CKPT_ROOT / "control_reaches"
@@ -850,46 +1061,10 @@ def process_baseline_group_utah(
     
     gc.collect()
 
-def _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, metadata_csv):
-    ua_port = "A"
-    if metadata_csv.exists():
-        try:
-            df_meta_raw = pd.read_csv(metadata_csv)
-            df_meta = _normalize_metadata(df_meta_raw)
-            if "br_file" in df_meta.columns:
-                br_col = pd.to_numeric(df_meta["br_file"], errors="coerce")
-                mask = br_col == br_idx
-                if mask.any():
-                    row_meta = df_meta.loc[mask].iloc[0]
-                    port_val = row_meta.get("_ua_port_norm") if "_ua_port_norm" in row_meta else (
-                        str(row_meta.get("ua_port", "UNKNOWN")).upper().strip() or "UNKNOWN"
-                    )
-                    if port_val in ("A", "B"):
-                        ua_port = port_val
-        except Exception as e:
-            print(f"    [WARN] Failed to read UA port: {e}")
-            
-    raw_ch_ids = np.asarray(rec_raw.get_channel_ids(), int)
-    if ua_port == "B":
-        raw_ch_ids += 128
-        
-    id_to_row = {ch: i for i, ch in enumerate(raw_ch_ids)}
-    active_elecs, active_rows = [], []
-    for elec_zero_idx, nsp_id in enumerate(UA_MAP):
-        if nsp_id is not None and not np.isnan(nsp_id) and nsp_id > 0 and int(nsp_id) in id_to_row:
-            active_elecs.append(elec_zero_idx + 1)
-            active_rows.append(id_to_row[int(nsp_id)])
-            
-    if len(active_rows) > 0:
-        rec_mapped = rec_raw.select_channels(
-            channel_ids=[rec_raw.channel_ids[r] for r in active_rows]
-        ).rename_channels(
-            new_channel_ids=[str(e) for e in active_elecs]
-        )
-        ua_ids_1based = np.array(active_elecs, dtype=int)
-        return rec_mapped, ua_ids_1based
-    else:
-        return None, None
+
+# =============================================================================
+# Main Utah Session Processing
+# =============================================================================
 
 def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan: float, shift_sample: float):
     matches = [p for p in BR_ROOT.iterdir() if p.is_dir() and f"_{br_idx:03d}" in p.name]
@@ -903,17 +1078,19 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         ns2 = [f for f in ns_files if f.suffix == '.ns2']
         ns5 = [f for f in ns_files if f.suffix == '.ns5']
         
-        if ns6: sess_path = ns6[0]
-        elif ns2: sess_path = ns2[0]
-        elif ns5: sess_path = ns5[0]
-        elif ns_files: sess_path = ns_files[0]
+        if ns6:
+            sess_path = ns6[0]
+        elif ns2:
+            sess_path = ns2[0]
+        elif ns5:
+            sess_path = ns5[0]
+        elif ns_files:
+            sess_path = ns_files[0]
         else:
             print(f"[UA] Found directory {dir_path.name} but no .ns files inside.")
             return
-            
     else:
         # Check for files (flat structure)
-        # Look for .ns files
         matches_files = [p for p in BR_ROOT.iterdir() if p.is_file() and f"_{br_idx:03d}" in p.name and p.suffix in ['.ns2', '.ns5', '.ns6']]
         if matches_files:
             ns6 = [f for f in matches_files if f.suffix == '.ns6']
@@ -929,16 +1106,14 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
             return
 
     # Construct unique identifier for output filename
-    # If it's a file, sess_path.name includes extension. removing it for cleanliness in filename
     sess_id = sess_path.stem if sess_path.is_file() else sess_path.name
     
-    # Identfy all peristim files to process
+    # Identify all peristim files to process
     peristim_files = find_peristim_files(sess_name, br_idx)
     
     # Pre-check: if all potential outputs already exist, skip loading raw data
     all_outputs_exist = True
     if not peristim_files:
-        # Check standard stim name
         out_name = f"aligned_lfp__{sess_id}_stim_reaches.npz"
         if not (UA_LFP_CKPT_ROOT / "stim_reaches" / out_name).exists():
             all_outputs_exist = False
@@ -947,20 +1122,19 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
             target_str = f"_target_{target}" if target else ""
             out_name = f"aligned_lfp__{sess_id}_{cat}{target_str}.npz"
             target_dir = UA_LFP_CKPT_ROOT / cat
-            if target: target_dir = target_dir / target
+            if target:
+                target_dir = target_dir / target
             if not (target_dir / out_name).exists():
                 all_outputs_exist = False
                 break
     
     if all_outputs_exist:
-        # print(f"[UA] Skipping {sess_id}, all target-specific outputs exist.")
         return
         
     print(f"[UA] Processing {sess_id} (Source: {sess_path.name})")
     
     # Load Recording
     try:
-        # User requested to use nsx6
         print(f"  Loading Blackrock stream: nsx6")
         rec_raw = se.read_blackrock(str(sess_path), stream_name='nsx6', all_annotations=True)
     except Exception as e:
@@ -968,19 +1142,19 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         return
 
     # Mapping
-    rec_mapped, ua_ids_1based = _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, METADATA_CSV)
+    rec_mapped, ua_ids_1based, ua_port = _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, METADATA_CSV)
     if rec_mapped is None:
         print("[WARN] No mapped channels found.")
         return
     
-    # Identfy all peristim files to process
+    fs_native = rec_mapped.get_sampling_frequency()
+    
+    # Identify all peristim files to process
     peristim_files = find_peristim_files(sess_name, br_idx)
     
-    # If no peristim files found, fallback to standard stim detection for this session
-    # or skip if it's a known session type that SHOULD have peristim files.
+    # If no peristim files found, fallback to standard stim detection
     if not peristim_files:
         print(f"  [UA] No peristim files found for {sess_id}. Falling back to standard stim detection.")
-        # Load Stim for Blanking AND Alignment (Using Intan info mapped to UA time)
         stim_npz_path, intan_session_name = rcp.stim_npz_path_from_br_idx(br_idx, METADATA_CSV, NPRW_AUX_DATA)
         if not stim_npz_path or not stim_npz_path.exists():
             print("[UA] No stim stream found (Intan). Skipping.")
@@ -991,7 +1165,6 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         
         if block_bounds.size == 0:
             print("[UA] No stim events found.")
-            stim_indices_native = np.array([], dtype=int)
             stim_ms_ua_list = [np.array([])]
             cat_target_list = [("stim_reaches", None)]
         else:
@@ -1001,20 +1174,19 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
             stim_ms_ua_list = [stim_ms_ua]
             cat_target_list = [("stim_reaches", None)]
             
-            # For IPCA Correction Triggers (always use main stim)
-            fs_native = rec_mapped.get_sampling_frequency()
+            # For IPCA Correction Triggers
             scale = fs_native / fs_intan
             starts_ua = np.round((block_bounds[:, 0].astype(np.int64) - shift_sample) * scale).astype(np.int64)
-            ends_ua   = np.round((block_bounds[:, 1].astype(np.int64) - shift_sample) * scale).astype(np.int64)
+            ends_ua = np.round((block_bounds[:, 1].astype(np.int64) - shift_sample) * scale).astype(np.int64)
             
             n_total = rec_mapped.get_num_samples()
             ends_ua = np.minimum(ends_ua, n_total)
             valid = (ends_ua > starts_ua) & (starts_ua >= 0) & (ends_ua <= n_total)
             starts_ua = starts_ua[valid]
-            ends_ua   = ends_ua[valid]
+            ends_ua = ends_ua[valid]
             
             if len(starts_ua) > 0:
-                rec_mapped = apply_ipca_correction(rec_mapped, starts_ua, ends_ua)
+                rec_mapped = apply_ipca_correction(rec_mapped, starts_ua, ends_ua, br_idx=br_idx)
     else:
         # We have peristim files. Use the events from them.
         # But we STILL need stim bounds for IPCA correction if this is a stim session.
@@ -1023,16 +1195,15 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
             stim = rcp.load_stim_detection(stim_npz_path)
             block_bounds = stim.get("block_bounds_samples", [])
             if block_bounds.size > 0:
-                fs_native = rec_mapped.get_sampling_frequency()
                 scale = fs_native / fs_intan
                 starts_ua = np.round((block_bounds[:, 0].astype(np.int64) - shift_sample) * scale).astype(np.int64)
-                ends_ua   = np.round((block_bounds[:, 1].astype(np.int64) - shift_sample) * scale).astype(np.int64)
+                ends_ua = np.round((block_bounds[:, 1].astype(np.int64) - shift_sample) * scale).astype(np.int64)
                 
                 n_total = rec_mapped.get_num_samples()
                 ends_ua = np.minimum(ends_ua, n_total)
                 valid = (ends_ua > starts_ua) & (starts_ua >= 0) & (ends_ua <= n_total)
                 if valid.any():
-                    rec_mapped = apply_ipca_correction(rec_mapped, starts_ua[valid], ends_ua[valid])
+                    rec_mapped = apply_ipca_correction(rec_mapped, starts_ua[valid], ends_ua[valid], br_idx=br_idx)
 
         stim_ms_ua_list = []
         cat_target_list = []
@@ -1050,7 +1221,6 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         return
 
     # 2. Build SI Pipeline
-    # No blanking here (handled by IPCA or not needed for control)
     rec_proc = build_lfp_preprocessing_pipeline(
         rec_mapped, 
         stim_indices_native=np.array([], dtype=int),
@@ -1061,7 +1231,15 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     # Pre-calculate filtered recordings lazily
     filtered_recs = {}
     for band_name, (low, high) in LFP_BANDS.items():
-        filtered_recs[band_name] = spre.bandpass_filter(rec_proc, freq_min=low, freq_max=high)
+        filtered_recs[band_name] = spre.bandpass_filter(
+            rec_proc, 
+            freq_min=low, 
+            freq_max=high,
+            filter_order=FILTER_ORDER,
+            dtype='float32',
+            add_reflect_padding=True,
+            ignore_low_freq_error=True,
+        )
 
     # 3. Process each event set
     for stim_ms_ua, (cat, target) in zip(stim_ms_ua_list, cat_target_list):
@@ -1088,9 +1266,9 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000) + pad_samps
         post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000) + pad_samps
 
-        WIN_PRE   = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
-        WIN_POST  = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)
-        WIN_FULL  = (-EPOCH_PRE_MS, EPOCH_POST_MS)
+        WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
+        WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)
+        WIN_FULL = (-EPOCH_PRE_MS, EPOCH_POST_MS)
         
         results = {}
         valid_indices = []
@@ -1158,6 +1336,10 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     gc.collect()
 
 
+# =============================================================================
+# Stim Check Helper
+# =============================================================================
+
 def quick_check_stim(sess_path: Path, stream_name: str, intan_idx: int, br_idx: int) -> bool:
     """
     Check if stim file or aligned file exists and has events.
@@ -1167,13 +1349,13 @@ def quick_check_stim(sess_path: Path, stream_name: str, intan_idx: int, br_idx: 
     # 0. Check Aligned File First
     aligned_path = ALIGNED_CKPT_ROOT / f"aligned__{sess_name}__Intan_{intan_idx:03d}__BR_{br_idx:03d}.npz"
     if aligned_path.exists():
-         try:
-             aln = np.load(aligned_path, allow_pickle=True)
-             if "stim_ms" in aln and aln["stim_ms"].size > 0:
-                 print(f"    [Check] Found aligned file with {aln['stim_ms'].size} events: {aligned_path.name}")
-                 return True
-         except:
-             pass
+        try:
+            aln = np.load(aligned_path, allow_pickle=True)
+            if "stim_ms" in aln and aln["stim_ms"].size > 0:
+                print(f"    [Check] Found aligned file with {aln['stim_ms'].size} events: {aligned_path.name}")
+                return True
+        except:
+            pass
 
     stim_npz = NPRW_AUX_DATA / f"{sess_name}_Intan_streams" / "stim_stream.npz"
     
@@ -1183,9 +1365,9 @@ def quick_check_stim(sess_path: Path, stream_name: str, intan_idx: int, br_idx: 
     
     print(f"\nChecking stim for {sess_name}...")
 
-    # 1. Standard Stim Check
+    has_stim = False
     
-    # Try loading existing fast
+    # 1. Standard Stim Check
     if stim_npz.exists():
         try:
             print(f"    [Check] Loading existing {stim_npz.name}")
@@ -1200,24 +1382,7 @@ def quick_check_stim(sess_path: Path, stream_name: str, intan_idx: int, br_idx: 
             print(f"    [Check] Failed to load existing: {e}")
     
     STIM_CACHE[stim_npz] = has_stim
-    return has_stim
-
-    # Fallback to extraction if not found or empty?? 
-    # Actually, if existing file is empty, it means we already tried extracting and found nothing.
-    # So we shouldn't re-extract standard stim. 
-    # But if file didn't exist, we try extraction.
     
-    if not has_stim and not stim_npz.exists():
-        try:
-            print(f"    [Check] Extracting new stim file...")
-            stim_ext = rcp.extract_stim_npz(sess_path, out_dir=NPRW_AUX_DATA, stim_stream_name=stream_name, chanmap_perm=None)
-            if stim_ext is not None:
-                bounds = stim_ext.get("block_bounds_samples")
-                if bounds is not None and bounds.size > 0:
-                     has_stim = True
-        except Exception as e:
-            print(f"  [Check Stim] Failed: {e}")
-
     if has_stim:
         return True
 
@@ -1227,15 +1392,11 @@ def quick_check_stim(sess_path: Path, stream_name: str, intan_idx: int, br_idx: 
     # -------------------------------------------------------------------------
     print(f"    [Check] No stim found. Checking for baseline PeriStim files...")
     try:
-        # Look for baseline files in PERI_ROOT / Target_A and Target_B
-        sess_name = sess_path.name
-        
         for target in ["control_reaches/target_A", "control_reaches/target_B", "control_reaches", "Grasp", "IMU", "continuous_stim"]:
             target_dir = PERI_ROOT / target
             if not target_dir.exists():
                 continue
                 
-            # Pattern: peristim__*{sess_name}*.npz
             pattern = f"peristim__*{sess_name}*.npz"
             matches = list(target_dir.glob(pattern))
             
@@ -1257,6 +1418,11 @@ def quick_check_stim(sess_path: Path, stream_name: str, intan_idx: int, br_idx: 
             
     return False
 
+
+# =============================================================================
+# Main Entry Point
+# =============================================================================
+
 def main():
     if not SHIFT_CSV.exists():
         print(f"Error: {SHIFT_CSV} not found. Cannot proceed with aligned analysis.")
@@ -1271,8 +1437,8 @@ def main():
     # =========================================================================
     # Load Metadata to Identify Baseline Sessions
     # =========================================================================
-    baseline_br_idxs = set()  # BR indices that are baseline sessions
-    baseline_groups = {}  # {(port, depth): [session_info, ...]}
+    baseline_br_idxs = set()
+    baseline_groups = {}
     
     if METADATA_CSV.exists():
         print(f"\nLoading metadata from {METADATA_CSV.name}...")
@@ -1284,7 +1450,6 @@ def main():
             if groups:
                 print(f"Found {len(groups)} baseline groups: {list(groups.keys())}")
                 
-                # Build mapping BR -> (port, depth)
                 if "br_file" in df_meta.columns:
                     br_col = pd.to_numeric(df_meta["br_file"], errors="coerce")
                     for (port, depth), idxs in groups.items():
@@ -1293,7 +1458,6 @@ def main():
                             if pd.notna(br):
                                 baseline_br_idxs.add(int(br))
                                 
-                # Initialize groups for session collection
                 for key in groups:
                     baseline_groups[key] = []
                     
@@ -1308,11 +1472,9 @@ def main():
     # Per-Session Loop (Skip Baseline Sessions)
     # =========================================================================
     for row in rows:
-        # The CSV has 'intan_filename' (e.g., NRR_RW012_260116_something). We want the session name.
         if "session" in row:
             session_name = row["session"]
         elif "intan_filename" in row:
-            # Use the stem of the intan_filename to preserve unique session IDs (e.g. _004, _005)
             session_name = Path(row["intan_filename"]).stem
         else:
             continue
@@ -1327,13 +1489,11 @@ def main():
         if br_idx in baseline_br_idxs:
             print(f"\n[Baseline] Session {session_name} (BR={br_idx}) is baseline. Will process in group.")
             
-            # Find which group this belongs to and add session info
             if METADATA_CSV.exists():
                 try:
                     df_meta_raw = pd.read_csv(METADATA_CSV)
                     df_meta = _normalize_metadata(df_meta_raw)
                     
-                    # Find the row for this br_idx
                     if "br_file" in df_meta.columns:
                         br_col = pd.to_numeric(df_meta["br_file"], errors="coerce")
                         mask = br_col == br_idx
@@ -1346,7 +1506,6 @@ def main():
                                 str(row_meta.get("depth_mm", "n/a")).strip() or "n/a"
                             )
                             
-                            # Normalize port/depth the same way as _find_baseline_groups
                             port = str(port).upper().strip() or "UNKNOWN"
                             try:
                                 depth = float(depth)
@@ -1379,8 +1538,7 @@ def main():
             
         sess_path = valid_folders[0]
         
-        # --- Pre-Check Stim ---
-        # We check stim BEFORE running either NPRW or UA analysis
+        # Pre-Check Stim
         has_stim = quick_check_stim(sess_path, STIM_STREAM, intan_idx, br_idx)
         
         if not has_stim:
@@ -1415,6 +1573,6 @@ def main():
                 import traceback
                 traceback.print_exc()
 
+
 if __name__ == "__main__":
     main()
-

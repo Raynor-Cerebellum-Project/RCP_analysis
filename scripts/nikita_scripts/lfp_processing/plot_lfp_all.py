@@ -18,17 +18,17 @@ import io
 
 # --- Global Plotting Configuration ---
 FIGURE_CONFIG = {
-    'process_original': True,          # The existing heatmap/trace plot
-    'process_power_spectra': True,      # PSD (Pre vs Post)
-    'process_power_vs_time': True,      # Band power vs time (all arrays overlaid)
+    'process_original': False,          # The existing heatmap/trace plot
+    'process_power_spectra': False,      # PSD (Pre vs Post)
+    'process_power_vs_time': False,      # Band power vs time (all arrays overlaid)
     'process_band_stats': False,         # (Stage 2: New) Band Power Stats (Pre vs Post)
-    'process_inter_array_coherence': True, # 4x4 inter-array coherence grid (Utah only)
+    'process_inter_array_coherence': False, # 4x4 inter-array coherence grid (Utah only)
     'process_csd': False,                # Current Source Density (CSD) Analysis
     'process_single_channel_traces': False, # Isolated multi-band trace plot for one channel 
-    'process_spectrograms': True,            # Per-channel ERSP spectrograms (Utah only)
-    'process_band_overlays': True,          # Per-channel trial overlays for one band
+    'process_spectrograms': False,            # Per-channel ERSP spectrograms (Utah only)
+    'process_band_overlays': False,          # Per-channel trial overlays for one band
     'process_spatial_heatmaps': False,       # 8x8 spatial heatmaps at key timepoints
-    'process_spatial_gif': False,            # Animated GIF of spatial heatmaps
+    'process_spatial_gif': True,            # Animated GIF of spatial heatmaps
 }
 
 y_scaler = 1
@@ -91,7 +91,7 @@ PLOT_CONFIG = {
 
     # --- New Integrated Band Plotting Settings ---
     "band_plots": {
-        "selected_band": "beta",     # Options: 'delta', 'theta', 'alpha', 'beta', 'low_gamma', 'high_gamma'
+        "selected_band": "Low Gamma",     # Options: 'delta', 'theta', 'alpha', 'beta', 'low_gamma', 'high_gamma'
         "time_points_ms": [-400, -200, -50, 10, 50, 100, 150, 300],
         "overlay_alpha": 0.3,        # Opacity for individual trial lines 
         "heatmap_vmin": -6.0,        # dB lower bound
@@ -200,7 +200,7 @@ from RCP_analysis.python.functions.br_preproc import (
 )
 
 # Load mapping globally (or it will be reloaded in the main loop if preferred)
-MAPPING_CSV = Path(__file__).parent / "electrode_port_mapping.csv"
+MAPPING_CSV = Path(__file__).parent.parent.parent / "electrode_port_mapping.csv"
 nsp_to_elec_global, UTAH_ELEC_GRIDS, elec_to_region_global = load_electrode_mapping(MAPPING_CSV)
 
 def _region_grid(region_name: str):
@@ -561,7 +561,7 @@ def plot_band_overlays(band_dB, fs, t_ms, ua_ids_1based, session, fig_dir, confi
     # print(f"debug n_trials: {n_trials}, n_ch: {band_dB.shape[1]}, n_time: {band_dB.shape[2]}")
 
     # Build electrode_id -> channel_index mapping
-    elec_to_idx = build_elec_to_data_idx(ua_ids_1based, nsp_to_elec)
+    elec_to_idx = build_elec_to_data_idx(ua_ids_1based, nsp_to_elec, ua_port)
 
     # print(f"\n  === CHANNEL MAPPING DIAGNOSTIC ({session}) ===")
     # print(f"  Data shape: {band_dB.shape} (n_trials, n_ch, n_time)")
@@ -718,7 +718,7 @@ def plot_spatial_heatmaps(band_dB, t_ms, ua_ids_1based, session, fig_dir, config
         warnings.simplefilter("ignore")
         mean_band_dB = np.nanmean(band_dB, axis=0)  # (n_ch, n_time)
 
-    elec_to_idx = build_elec_to_data_idx(ua_ids_1based, nsp_to_elec)
+    elec_to_idx = build_elec_to_data_idx(ua_ids_1based, nsp_to_elec, ua_port)
 
     # print(f"    [DEBUG] elec_to_idx has {len(elec_to_idx)} entries")
     # print(f"    [DEBUG] ua_ids_1based: {ua_ids_1based[:10] if len(ua_ids_1based) > 10 else ua_ids_1based}...")
@@ -805,7 +805,13 @@ def generate_spatial_gif(band_dB, t_ms, ua_ids_1based, session, fig_dir, config,
         warnings.simplefilter("ignore")
         mean_band_dB = np.nanmean(band_dB, axis=0)  # (n_ch, n_time)
 
-    elec_to_idx = build_elec_to_data_idx(ua_ids_1based, nsp_to_elec)
+    elec_to_idx = build_elec_to_data_idx(ua_ids_1based, nsp_to_elec, ua_port)
+
+    # DEBUG: Add these lines here
+    print(f"  [DEBUG] ua_port: {ua_port}")
+    print(f"  [DEBUG] ua_ids_1based (first 10): {list(ua_ids_1based[:10])}")
+    print(f"  [DEBUG] nsp_to_elec sample: {dict(list(nsp_to_elec.items())[:10])}")
+    print(f"  [DEBUG] elec_to_idx sample: {dict(list(elec_to_idx.items())[:10])}")
     
     # Define time points for GIF frames
     gif_time_pts = np.arange(t_start, t_end + t_step, t_step)
@@ -2521,7 +2527,10 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                     del ersp_all
 
         # --- 9. Band Overlays & Spatial Heatmaps (Utah Only) ---
-        if is_utah and (FIGURE_CONFIG.get('process_band_overlays', False) or FIGURE_CONFIG.get('process_spatial_heatmaps', False)):
+        if is_utah and (FIGURE_CONFIG.get('process_band_overlays', False) 
+                or FIGURE_CONFIG.get('process_spatial_heatmaps', False)
+                or FIGURE_CONFIG.get('process_spatial_gif', False)):
+
             d_bb_full = data.get('broadband_full')
             ua_ids_1based = data.get('ua_ids_1based')
 
@@ -2591,7 +2600,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                         # print(f"  [DEBUG] After cropping: time {t_grid_ms[0]:.1f} to {t_grid_ms[-1]:.1f} ms, shape {band_dB_trials.shape}")
                         
                         # Update session_id name to include port for unique files
-                        session_id_port = f"{session_id}_{ua_port}"
+                        session_id_port = f"{session_id}"
                         
                         # Figure 1: Overlays (pass groups for region naming)
                         if FIGURE_CONFIG.get('process_band_overlays', False):

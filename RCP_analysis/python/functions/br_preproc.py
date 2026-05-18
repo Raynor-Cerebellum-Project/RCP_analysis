@@ -416,14 +416,23 @@ def get_region_grid(region_name: str, utah_elec_grids: dict):
     target = aliases.get(region_name, region_name)
     return utah_elec_grids.get(target, None)
 
-def build_elec_to_data_idx(ua_ids_1based, nsp_to_elec):
-    """Builds electrode_id -> channel index mapping based on valid NSP IDs."""
-    if ua_ids_1based is None or nsp_to_elec is None:
-        return {}
+def build_elec_to_data_idx(ua_ids_1based, nsp_to_elec, ua_port='A'):
+    """
+    Builds electrode_id -> channel index mapping.
     
+    For Port A: data channels 0-127 correspond to NSP 1-128
+    For Port B: data channels 0-127 correspond to NSP 129-256
+    """
     elec_to_idx = {}
-    for ch_idx, nsp_id in enumerate(ua_ids_1based):
-        nsp_id = int(nsp_id)
+    
+    # Determine NSP offset based on port
+    nsp_offset = 0 if ua_port == 'A' else 128
+    
+    # For each data channel index (0-127), determine which electrode it maps to
+    n_channels = len(ua_ids_1based) if ua_ids_1based is not None else 128
+    
+    for ch_idx in range(n_channels):
+        nsp_id = ch_idx + 1 + nsp_offset  # Channel 0 -> NSP 1 (Port A) or NSP 129 (Port B)
         elec_id = nsp_to_elec.get(nsp_id, -1)
         if elec_id > 0:
             elec_to_idx[elec_id] = ch_idx
