@@ -1,16 +1,14 @@
 clear all; close all; clc;
 addpath(genpath('functions'));
 
-session = 'BL_RW_003_Session_1';
-base_folder = fullfile('/Volumes/CullenLab_Server/Current Project Databases - NHP', ...
-    '2025 Cerebellum prosthesis/Bryan/Data', session);
+session = '20260326_NRR_RW027_fastig';
+
+base_folder = fullfile('/Volumes/data/Current Project Databases - NHP/2025 Cerebellum prosthesis/Nike/', session);
 search_folder = fullfile(base_folder, 'Calibrated');
 
-% === Identify File ===
-br_num = 10;  % example: change as needed
-% === File Info ===
-filepath = '/Volumes/CullenLab_Server/Current Project Databases - NHP/2025 Cerebellum prosthesis/Bryan/Data/BL_RW_003_Session_1/Calibrated/IntanFile_8/BL_closed_loop_STIM_003_010_Cal_stim_curated.mat';
-% === Load metadata ===
+br_num = 10;
+filepath = '/Volumes/data/Current Project Databases - NHP/2025 Cerebellum prosthesis/Nike/20260326_NRR_RW027_fastig/Calibrated/IntanFile_9/NRR_RW027_009_Cal.mat';
+
 meta_path = fullfile(base_folder, [session '_metadata_with_metrics.csv']);
 T = readtable(meta_path);
 

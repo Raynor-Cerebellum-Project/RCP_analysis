@@ -27,7 +27,7 @@ clear all; close all; clc;
 addpath(genpath(fullfile('..', 'functions')));
 
 %% Setup Paths
-session = 'Nike/20260304_NRR_RW020_Fastig';
+session = 'Nike/20260326_NRR_RW027_fastig';
 [~, session_name] = fileparts(session);
 
 [base_root, code_root, base_folder] = set_paths_cullen_lab(session);
@@ -78,9 +78,9 @@ target_fs = 1000;
 ds_factor = round(fs / target_fs);
 
 %% Load Metadata
-opts = detectImportOptions(metadata_csv_path);
+opts = detectImportOptions(metadata_csv);
 opts = setvartype(opts, 'Stim_Delay', 'string');
-T = readtable(metadata_csv_path, opts);
+T = readtable(metadata_csv, opts);
 has_stim_all = false(height(T), 1);  % Preallocate logical array
 
 %% Start parallel pool before trial loop

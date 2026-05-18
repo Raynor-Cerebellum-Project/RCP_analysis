@@ -30,7 +30,7 @@ clear all; close all; clc;
 addpath(genpath(fullfile('..', 'functions')));
 
 %% --- Setup Paths and Define session
-session = 'Nike/20260423_NRR_RW033_fastig';
+session = 'Nike/20260326_NRR_RW027_fastig';
 [~, session_name] = fileparts(session);
 % Get machine-specific root path
 [base_root, code_root, base_folder] = set_paths_cullen_lab(session);
@@ -39,7 +39,7 @@ relative_path = fullfile('Current Project Databases - NHP', ...
 %%
 search_folder      = fullfile(base_folder, 'Calibrated');
 fig_folder         = fullfile(base_folder, 'Figures', 'Behavior');
-metadata_csv_path  = fullfile(base_folder, 'Metadata', [session_name, '_metadata.csv']);
+metadata_csv  = fullfile(base_folder, 'Metadata', [session_name, '_metadata.csv']);
 raw_metrics_path   = fullfile(base_folder, 'Checkpoints', [session_name, '_raw_metrics_all.mat']);
 summary_path       = fullfile(base_folder, 'Checkpoints', [session_name, '_summarized_metrics.mat']);
 merged_baseline_path = fullfile(base_folder, 'Checkpoints', [session_name, '_merged_baseline.mat']);
@@ -122,10 +122,10 @@ switch session
         segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
         segment_fields = {'ipsi' , 'contra'};
     case 'Nike/20260326_NRR_RW027_fastig'
-        EndPoint_pos = 30; EndPoint_neg = -30;
+        EndPoint_pos = 35; EndPoint_neg = -45.5;
         % 1-6 weird
         baseline_file_nums = 14;%[1, 6, 14];
-        trial_indices = [8:9, 13, 15:22];%[2, 4:5, 8:9, 13, 15:22];
+        trial_indices = [8:9, 13]; %, 15:22];%[2, 4:5, 8:9, 13, 15:22];
         % at_rest_indices = [10, 11];
         segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
         segment_fields = {'ipsi' , 'contra'};
@@ -141,9 +141,9 @@ switch session
         EndPoint_pos = 30; EndPoint_neg = -30;
 end
 %% --- Load Metadata ---
-opts = detectImportOptions(metadata_csv_path);
+opts = detectImportOptions(metadata_csv);
 opts = setvartype(opts, 'Stim_Delay', 'string');
-T = readtable(metadata_csv_path, opts);
+T = readtable(metadata_csv, opts);
 %% --- Loop over each trial and analyze ---
 raw_metrics_all = cell(height(T), 1);  % Save all raw metrics (from analyze_metrics)
 all_trial_indices = sort([baseline_file_nums, trial_indices]);
@@ -179,8 +179,8 @@ for i = all_trial_indices
             if isfield(tmp.Data.segments, 'catch_pos')
                 segment_fields_use{end+1} = 'catch_pos';
             end
-            if isfield(tmp.Data.segments, 'catch_neg')
-                segment_fields_use{end+1} = 'catch_neg';
+            if isfield(tmp.Data.segments, 'contra_catch')
+                segment_fields_use{end+1} = 'contra_catch';
             end
         end
 
@@ -223,8 +223,8 @@ for f = 1:length(baseline_file_nums)
 end
 % --- Calculate summaries for merged baseline ---
 all_fields = fieldnames(merged_baseline);
-ipsi_fields = all_fields(contains(all_fields, '_pos'));
-contra_fields = all_fields(contains(all_fields, '_neg'));
+ipsi_fields = all_fields(contains(all_fields, 'ipsi'));
+contra_fields = all_fields(contains(all_fields, 'contra'));
 
 summary_ipsi = calculate_mean_metrics(merged_baseline, ipsi_fields, 'ipsi');
 summary_contra = calculate_mean_metrics(merged_baseline, contra_fields, 'contra');
@@ -273,7 +273,7 @@ for i = all_trial_indices
     ipsi_fields_main   = all_fields(contains(all_fields, 'ipsi') & ~contains(all_fields, 'catch'));
     contra_fields_main = all_fields(contains(all_fields, 'contra') & ~contains(all_fields, 'catch'));
     ipsi_fields_catch  = all_fields(contains(all_fields, 'catch_pos'));
-    contra_fields_catch= all_fields(contains(all_fields, 'catch_neg'));
+    contra_fields_catch= all_fields(contains(all_fields, 'contra_catch'));
 
     % --- Calculate summaries ---
     summary_ipsi_main   = calculate_mean_metrics(merged, ipsi_fields_main, 'ipsi');
@@ -341,16 +341,12 @@ for i = trial_indices
     cond_br = cond_struct.BR_File;
     meta_cond = T(T.BR_File == cond_br, :);
 
-    % === Determine baseline source ===
-    has_merged = isfield(cond_data, 'ipsi') || ...
-        isfield(cond_data, 'contra');
+    is_random_trial = strcmpi(string(meta_cond.Stim_Delay), 'Random');
 
-    if has_merged
-        base_data = cond_data;
-        baseline_file_used = i;
+    if is_random_trial
+        base_data = cond_data;  % baseline was merged in via combine_baseline_with_rand
     else
-        base_data = merged_baseline_summary;
-        baseline_file_used = NaN;
+        base_data = merged_baseline_summary;  % use external baseline
     end
 
     if iscell(meta_cond.Stim_Delay)
@@ -360,7 +356,7 @@ for i = trial_indices
     end
 
     % Special case for Random: run multiple fixed-delay comparisons
-    if ischar(raw_delay) && strcmpi(raw_delay, 'Random')
+    if strcmpi(raw_delay, 'Random')
         has_delay_subfields = isfield(cond_data, 'ipsi_0') || isfield(cond_data, 'ipsi_100') || isfield(cond_data, 'ipsi_200');
     
         if has_delay_subfields
@@ -416,7 +412,7 @@ for i = trial_indices
                 fig = plot_rand_condition_traces_neural(base_data, cond_data, side_label, false, ...
                     meta_cond, true, show_figs);
 
-                % === Save ===
+                % Save
                 side_short = side_label;  % e.g., 'pos' or 'neg'
                 trigger_clean = strrep(strtrim(meta_cond.Movement_Trigger{1}), ' ', '_');
                 stim_str_for_file = sprintf('%dCh_%dHz_%duA_%s', ...
@@ -461,15 +457,22 @@ for i = trial_indices
         try
             fig = plot_traces_neural(base_data, cond_data, side_label, false, ...
                 meta_cond, true, show_figs);
-            % Convert delay to numeric if it's a cell
-            if iscell(meta_cond.Stim_Delay)
-                delay_value = str2double(meta_cond.Stim_Delay{1});
+            raw_delay = string(meta_cond.Stim_Delay);
+            if strcmpi(raw_delay, "Random") || strcmpi(raw_delay, "NaN")
+                delay_value = NaN;
             else
-                delay_value = meta_cond.Stim_Delay;
+                delay_value = str2double(raw_delay);
             end
             % === Save ===
             side_short = side_label;
             trigger_clean = strrep(strtrim(meta_cond.Movement_Trigger{1}), ' ', '_');
+
+            if isnan(delay_value)
+                delay_str_for_file = 'RandomDelay';
+            else
+                delay_str_for_file = sprintf('%dmsdelay', delay_value);
+            end
+
             stim_str_for_file = sprintf('%dCh_%dHz_%duA_%dmsdelay_%s', ...
                 meta_cond.Channels, ...
                 meta_cond.Stim_Frequency_Hz, ...

@@ -30,26 +30,23 @@ for i = 1:length(segment_fields)
         if any(strcmp(name, skip_fields))
             continue;
         end
-
+        
         if strcmp(name, 'fr_traces') && iscell(M.fr_traces)
             nChans = length(M.fr_traces);
-            fr_mean = nan(nChans, 0);  % Will set cols after seeing first non-empty
-
+            fr_mean = [];  % true empty so isempty() works
             for ch = 1:nChans
                 ch_data = M.fr_traces{ch};  % [nTrials x nTimepoints]
                 if isempty(ch_data) || all(isnan(ch_data), 'all')
                     continue;
                 end
-
                 if isempty(fr_mean)
-                    fr_mean = nan(nChans, size(ch_data, 2));
+                    fr_mean = nan(nChans, size(ch_data, 2));  % now correctly initialized
                 end
-
-                % Average across trials (rows)
-                fr_mean(ch, :) = mean(ch_data, 1, 'omitnan');  % [1 x T]
+                fr_mean(ch, :) = mean(ch_data, 1, 'omitnan');
             end
-
-            S.fr_mean = fr_mean;  % [nChans x nTimepoints]
+            if ~isempty(fr_mean)
+                S.fr_mean = fr_mean;
+            end
             continue;
         end
 

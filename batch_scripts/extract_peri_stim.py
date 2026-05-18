@@ -1,3 +1,4 @@
+from curses import raw
 import re, json
 from scipy.io import savemat
 import RCP_analysis as rcp
@@ -869,7 +870,8 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
     aligned_npz     = np.load(aligned_path, allow_pickle=True)
     
     # meta
-    meta            = json.loads(aligned_npz["align_meta"].item()) if "align_meta" in aligned_npz.files else {}
+    raw = aligned_npz["align_meta"].item()
+    meta = raw if isinstance(raw, dict) else json.loads(raw)
     intan_filename  = meta.get("intan_filename", aligned_path.stem)
     br_idx          = int(meta.get("br_idx", -1))
     stim_dur        = float(meta.get("recording_stim_dur", 0.0))

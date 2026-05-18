@@ -24,14 +24,14 @@ paths:
   # session: "NRR_RW034"
 
   geom_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
-  
+
 kinematics:
   keypoints: [index, middle, hand, wrist, start, TA, TB]
   num_camera: 2
 
 preprocessing:
   has_BR: True
-  has_kinematics: False
+  has_kinematics: True
   has_VOG: False
   has_HR: False
   output_aligned_mat: True
