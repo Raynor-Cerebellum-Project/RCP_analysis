@@ -118,12 +118,41 @@ def _ua_perm_by_region(
     inv = np.flatnonzero(~valid)
     if inv.size:
         perm = np.concatenate([perm, inv])
-
     return perm
 
 def parse_bool(x) -> bool:
     return str(x).strip().lower() in {"1", "true", "t", "yes", "y"}
 
+def _to_mat(x) -> np.ndarray | dict:
+    """Recursively convert a value to something savemat can handle."""
+    if x is None:
+        return np.array([])
+    if isinstance(x, (np.ndarray, np.number, float, int, bool)):
+        return x
+    if isinstance(x, str):
+        return x
+    if isinstance(x, (list, tuple)):
+        return json.dumps(x, default=str)
+    if isinstance(x, dict):
+        # channel-keyed peaks dict: {int -> np.ndarray} → flat struct
+        if x and all(isinstance(k, (int, np.integer)) for k in x):
+            vals = list(x.values())
+            if vals and isinstance(vals[0], np.ndarray) and vals[0].dtype.kind in ('f', 'i', 'u'):
+                ch_ids = np.array(sorted(x.keys()), dtype=np.int32)
+                parts = [(np.asarray(x[ch], np.float64).ravel(), ch) for ch in ch_ids]
+                return dict(
+                    flat_values=np.concatenate([p for p, _ in parts]) if parts else np.array([], np.float64),
+                    flat_ch=np.concatenate([np.full(len(p), ch, np.int32) for p, ch in parts]) if parts else np.array([], np.int32),
+                    n_channels=np.int32(len(ch_ids)),
+                    ch_ids=ch_ids,
+                )
+        # general dict (e.g. nprw_meta, ua_meta): recurse, or JSON-encode if values aren't mat-safe
+        try:
+            return {k: _to_mat(v) for k, v in x.items()}
+        except Exception:
+            return json.dumps(x, default=str)
+    return json.dumps(x, default=str)
+            
 def main():
     br2video = rcp.get_metadata_mapping(METADATA_CSV, "BR_File", "Video_File")
     br2vog = rcp.get_metadata_mapping(METADATA_CSV, "BR_File", "VOG_File")
@@ -415,8 +444,8 @@ def main():
                 ir_ms=(ir_ms.astype(np.float32) if ir_ms is not None else np.array([], dtype=np.float32)),
                 stim_ms=(stim_ms.astype(np.float32) if stim_ms is not None else np.array([], dtype=np.float32)),
                 shift_ms=np.float32(shift_ms),
-
-                align_meta=json.dumps(aligned_meta),
+                
+                align_meta=aligned_meta,
             )
 
             if HAS_BR is True:
@@ -462,79 +491,10 @@ def main():
             
             if SAVE_MAT_FILE:
                 out_mat = out_npz.with_suffix(".mat")
-
-                def _to_mat_value(x):
-                    """
-                    Convert Python objects to something savemat can save
-                    """
-                    if x is None:
-                        return np.array([])
-                    if isinstance(x, (np.ndarray, np.number, float, int, bool)):
-                        return x
-                    if isinstance(x, str):
-                        return x
-                    if isinstance(x, (dict, list, tuple)):
-                        # safest: preserve structure via JSON
-                        return json.dumps(x, default=str)
-                    # fallback: stringify unknown objects
-                    return str(x)
-
-                mat_dict = dict(
-                    # Always present
-                    nprw_meta=_to_mat_value(nprw_meta),
-                    nprw_peak_ms=_to_mat_value(nprw_peak_ms),
-                    nprw_peak_amps=_to_mat_value(nprw_peak_amps),
-
-                    ir_ms=(ir_ms.astype(np.float32) if ir_ms is not None else np.array([], dtype=np.float32)),
-                    
-                    stim_ms=(stim_ms.astype(np.float32) if stim_ms is not None else np.array([], dtype=np.float32)),
-                    shift_ms=np.float32(shift_ms),
-
-                    # aligned metadata (JSON)
-                    align_meta=_to_mat_value(aligned_meta),
-                )
-
-                if HAS_BR is True:
-                    mat_dict.update(dict(
-                        ua_meta=_to_mat_value(ua_meta),
-                        ua_peak_ms=_to_mat_value(ua_peak_ms),
-                        ua_peak_amps=_to_mat_value(ua_peak_amps),
-
-                        ua_elec=np.asarray(ua_elec),
-                        ua_region=np.asarray(ua_region),
-                        ua_region_names=np.array(ua_region_names, dtype=object),
-                        ua_port=np.asarray(ua_port),
-                        ua_nsp=np.asarray(ua_nsp),
-                        ua_idx_rows=np.asarray(ua_idx_rows),
-
-                        hr_sig=_to_mat_value(hr_sig),
-
-                        ts_state_num=np.asarray(ts_state_num),
-                        ts_state_char=np.asarray(ts_state_char),
-                    ))
-
-                if HAS_KINEMATICS is True:
-                    mat_dict.update(dict(
-                        beh_ns5_sample=np.asarray(beh_ns5_sample),
-                        beh_cam0=np.asarray(beh_cam0),
-                        beh_cam1=np.asarray(beh_cam1),
-                        beh_cam0_cols=np.array(beh_cam0_cols, dtype=object),
-                        beh_cam1_cols=np.array(beh_cam1_cols, dtype=object),
-                        beh_t_ms=np.asarray(beh_t_ms),
-                    ))
-
-                if HAS_VOG is True:
-                    mat_dict.update(dict(
-                        vog_sig=_to_mat_value(vog_sig),
-                        vog_ns2_samp=np.asarray(vog_ns2_samp),
-                        vog_t_ms=np.asarray(vog_t_ms),
-                        vog_cols=np.asarray(vog_cols),
-                        vog_col_names=np.array(vog_col_names, dtype=object),
-                    ))
-
+                mat_dict = {k: _to_mat(v) for k, v in to_save.items()}
                 savemat(out_mat, mat_dict, do_compression=True)
                 print(f"[write] MATLAB aligned: {out_mat}")
-
+                
         except Exception as e:
             print(f"[error] Failed for session {row.get('session','?')}: {e}")
             continue

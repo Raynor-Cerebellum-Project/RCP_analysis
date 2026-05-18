@@ -1,6 +1,7 @@
-load('NRR_RW027_008_Cal.mat') % load your file
- 
-spikes = Data.mua(:);
+data_loc = '/Volumes/data/Current Project Databases - NHP/2025 Cerebellum prosthesis/Nike/20260326_NRR_RW027_fastig/Calibrated/IntanFile_9/NRR_RW027_009_Cal.mat';
+load(data_loc);
+%%
+spikes = Data.MU1(:);
 vel = Data.yaw_vel(:);
 
 pref_seg   = Data.segments.contra;
@@ -9,14 +10,15 @@ nonpref_seg = Data.segments.ipsi;
 pad = 800;                     % ms before/after peak
 t = -pad:pad;                 % time axis
 
+%%
 figure
-
-%% ================= PREF =================
+%% Preferred direction
 ntr = size(pref_seg,1);
 all_vel = nan(ntr,length(t));
 
-% ----- velocity panel -----
-subplot(2,2,1); hold on
+% Velocity panel
+subplot(2,2,1); hold on;
+set(gca, 'TickDir', 'out');
 
 for tr = 1:ntr
    
@@ -39,12 +41,14 @@ end
 
 plot(t,nanmean(all_vel,1),'r','LineWidth',2)
 
-title('Preferred velocity')
+title('Contra velocity')
 ylabel('Velocity')
+ylim([-100, 500])
 xlim([-pad pad])
 
 % ----- raster panel -----
-subplot(2,2,3); hold on
+subplot(2,2,3); hold on;
+set(gca, 'TickDir', 'out');
 
 for tr = 1:ntr
    
@@ -70,7 +74,7 @@ end
 
 xlabel('Time from peak velocity (ms)')
 ylabel('Trial')
-title('Preferred raster')
+title('Contra raster')
 xlim([-pad pad])
 
 
@@ -79,7 +83,8 @@ ntr = size(nonpref_seg,1);
 all_vel = nan(ntr,length(t));
 
 % ----- velocity panel -----
-subplot(2,2,2); hold on
+subplot(2,2,2); hold on;
+set(gca, 'TickDir', 'out');
 
 for tr = 1:ntr
    
@@ -102,12 +107,14 @@ end
 
 plot(t,nanmean(all_vel,1),'r','LineWidth',2)
 
-title('Non-preferred velocity')
+title('Ipsi velocity')
+ylim([-400, 100])
 xlim([-pad pad])
 
 
 % ----- raster panel -----
-subplot(2,2,4); hold on
+subplot(2,2,4); hold on;
+set(gca, 'TickDir', 'out');
 
 for tr = 1:ntr
    
@@ -133,8 +140,9 @@ end
 
 xlabel('Time from peak velocity (ms)')
 ylabel('Trial')
-title('Non-preferred raster')
+title('Ipsi raster')
 xlim([-pad pad])
 
 set(gcf,'Renderer','painters')
+set(gca, 'TickDir', 'out');
 print(gcf,'raster_plot','-dsvg','-painters')

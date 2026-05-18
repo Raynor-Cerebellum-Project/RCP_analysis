@@ -122,7 +122,7 @@ switch session
         segment_fields_random = {'ipsi_nan' , 'contra_nan', 'ipsi_0' , 'contra_0', 'ipsi_100' , 'contra_100', 'ipsi_200' , 'contra_200'};
         segment_fields = {'ipsi' , 'contra'};
     case 'Nike/20260326_NRR_RW027_fastig'
-        EndPoint_pos = 30; EndPoint_neg = -30;
+        EndPoint_pos = 35; EndPoint_neg = -45.5;
         % 1-6 weird
         baseline_file_nums = 14;%[1, 6, 14];
         trial_indices = [8:9, 13]; %, 15:22];%[2, 4:5, 8:9, 13, 15:22];
