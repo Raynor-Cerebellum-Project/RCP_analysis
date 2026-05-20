@@ -16,7 +16,7 @@ CAMERA_SYNC_CH = int(UA_CFG.get("camera_sync_ch", 134))
 TRIANGLE_SYNC_CH = int(UA_CFG.get("triangle_sync_ch", 138))
 PROCESS_ONLY = PARAMS.preprocessing.get("process_only")
 
-LOC_REFINE_N = 50        # like MATLAB's N
+LOC_REFINE_N = 3000        # increased to 100ms to catch larger shifts
         
 def _xcorr_normalized(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     x = np.asarray(x, float)
@@ -36,7 +36,7 @@ def _xcorr_normalized(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndar
     # Full cross-correlation
     c = np.correlate(x, y, mode="full")
     if c.size:
-        c /= (np.max(np.abs(c)) + 1e-12)
+        c /= (min(len(x), len(y)) + 1e-12)  # normalize by length so max is ~1
 
     # Lags: from -(len(y)-1) to (len(x)-1)
     lags = np.arange(-(y.size - 1), x.size)
@@ -52,6 +52,9 @@ def load_template(template_mat_path: Path) -> np.ndarray:
 
 def find_locs_via_template(adc_lock: np.ndarray, template: np.ndarray, fs: float, peak=0.95) -> np.ndarray:
     corr, lags = _xcorr_normalized(adc_lock[:300000], template) # Hard coded to first 300k samples to speed up
+    # Scale corr to max 1 for peak finding if it's very large
+    if corr.size and corr.max() > 0:
+        corr = corr / corr.max()
     try:
         from scipy.signal import find_peaks
         idx, _ = find_peaks(corr, height=peak)
@@ -71,7 +74,7 @@ def refine_shift_with_loc_and_br0(
     loc: int,                 # Intan offset where BR starts (from template on Intan)
     search_n_br: int,         # ± extra BR-sample shifts to try
     br_window_sec: float = 20.0,  # long window to capture triangle reversals
-    normalize_both: bool = False  # keep False to match MATLAB (normalize Intan only)
+    normalize_both: bool = True  # changed default to True
 ) -> tuple[int, int, float, dict]:
     """
     BR origin is 0. Align BR[0:W) against Intan starting at time loc/fs_intan,
@@ -87,53 +90,66 @@ def refine_shift_with_loc_and_br0(
     y_br = y_br.squeeze().astype(float, copy=False)
     N_b = int(y_br.size)
 
-    # ---- Normalize Intan only (MATLAB behavior) ----
-    x_i = adc_triangle_intan.astype(float, copy=False)
-    x_i = (x_i - x_i.mean()) / (np.ptp(x_i) + 1e-12)
-    if normalize_both:
-        y_br = (y_br - y_br.mean()) / (np.ptp(y_br) + 1e-12)
-
-    N_i = int(x_i.size)
-    if N_i == 0 or N_b < 8:
+    # ---- Get Intan Window (with padding for search) ----
+    # To search shifts ±search_n_br (in BR time), we need extra samples in Intan time
+    r = float(fs_intan) / float(fs_br)
+    search_n_intan = int(round(search_n_br * r))
+    
+    # We want Intan from loc - search_n_intan to loc + N_b*r + search_n_intan
+    i_start = loc - search_n_intan
+    i_end = int(loc + round(N_b * r) + search_n_intan)
+    
+    # Bound checks
+    N_i_total = adc_triangle_intan.size
+    i_start_safe = max(0, i_start)
+    i_end_safe = min(N_i_total, i_end)
+    
+    if i_end_safe <= i_start_safe or N_b < 8:
         return loc, 0, float("nan"), {"br_start": 0, "br_end": br_end, "best_n_br": 0, "best_rms": float("nan")}
-
-    # ---- Time bases (BR origin = 0) ----
-    t_i = np.arange(N_i, dtype=float) / float(fs_intan)   # Intan absolute times
-    t0  = float(loc) / float(fs_intan)                    # Intan time at 'loc'
-    t_m = np.arange(N_b, dtype=float) / float(fs_br)      # BR time grid 0..(N_b-1)
-    r   = float(fs_intan) / float(fs_br)                  # Intan samp / BR samp
-
-    # ---- Search integer BR shifts around the coarse shift ----
-    best_rms = np.inf
-    best_n   = 0
-    for n in range(-int(search_n_br), int(search_n_br) + 1):
-        # Shift on BR grid by n ⇒ add n/fs_br seconds on the Intan time axis
-        t_query = t0 + (n / float(fs_br)) + t_m
-        seg_on_br = np.interp(t_query, t_i, x_i, left=np.nan, right=np.nan)
-
-        # Edge handling if we run off Intan
-        if np.isnan(seg_on_br).any():
-            mval = np.nanmean(seg_on_br)
-            seg_on_br = np.where(np.isnan(seg_on_br), mval, seg_on_br)
-
-        rms = np.sqrt(np.mean((y_br - seg_on_br) ** 2))
-        if rms < best_rms:
-            best_rms = rms
-            best_n   = n
-
-    # ---- Convert best BR shift to Intan samples; final shift = loc + delta_i ----
-    delta_i = int(round(best_n * r))
-    shift  = int(np.clip(loc + delta_i, 0, N_i - 1))
-    dt_ms   = 1000.0 * delta_i / float(fs_intan)
+        
+    x_i_window = adc_triangle_intan[i_start_safe:i_end_safe].astype(float, copy=False)
+    
+    # Compute normalized cross correlation directly to find the best shift
+    # This handles scaling and DC offset naturally, and we can take abs() to handle inverted polarities
+    corr, lags = _xcorr_normalized(y_br, x_i_window)
+    
+    if corr.size == 0:
+        return loc, 0, float("nan"), {"br_start": 0, "br_end": br_end, "best_n_br": 0, "best_rms": float("nan")}
+        
+    # We want to find the lag that maximizes the absolute correlation
+    # lag = index_in_x_i_window - index_in_y_br
+    # So index_in_x_i_window = lag + index_in_y_br
+    # For BR origin (index_in_y_br = 0), this corresponds to index_in_x_i_window = lag
+    abs_corr = np.abs(corr)
+    
+    # Restrict search to the allowed search_n_br window
+    # lag corresponding to the center (no shift relative to 'loc') is:
+    expected_lag = loc - i_start_safe
+    
+    valid_lags_mask = (lags >= expected_lag - search_n_intan) & (lags <= expected_lag + search_n_intan)
+    
+    if not np.any(valid_lags_mask):
+        return loc, 0, float("nan"), {"br_start": 0, "br_end": br_end, "best_n_br": 0, "best_rms": float("nan")}
+        
+    best_idx = np.argmax(abs_corr[valid_lags_mask])
+    best_lag = lags[valid_lags_mask][best_idx]
+    max_corr = abs_corr[valid_lags_mask][best_idx]
+    
+    # The actual Intan index for BR[0] is i_start_safe + best_lag
+    shift_sample_intan = i_start_safe + best_lag
+    delta_i = shift_sample_intan - loc
+    best_n = delta_i / r
+    
+    dt_ms = 1000.0 * delta_i / float(fs_intan)
 
     dbg = {
         "br_start": 0,
         "br_end": br_end,
         "best_n_br": int(best_n),
-        "best_rms": float(best_rms),
+        "best_rms": float(1.0 - max_corr), # pseudo RMS
         "Li": int(max(8, round(N_b * r))),
     }
-    return shift, int(delta_i), float(dt_ms), dbg
+    return int(shift_sample_intan), int(delta_i), float(dt_ms), dbg
 
 def main():
     # Load Intan sessions (from processed Intan rate files)
@@ -224,7 +240,7 @@ def main():
                 if str(TRIANGLE_SYNC_CH) not in rec_br.get_channel_ids():
                     print(f"[note] TRIANGLE_SYNC_CH={str(TRIANGLE_SYNC_CH)} not found in BR channels; skipping BR refinement.")
                 else:
-                    use_br = False # TODO Set to true after fixing triangle alignment
+                    use_br = True # ENABLED triangle alignment
                 try:
                     dur_br_sec = rec_br.get_num_frames() / fs_br
                 except Exception:
@@ -243,7 +259,7 @@ def main():
                 shift_sample_intan, delta_intan_samples, dt_ms, debug_dict = refine_shift_with_loc_and_br0(
                     rec_br=rec_br, br_ch=str(TRIANGLE_SYNC_CH), fs_br=fs_br,
                     adc_triangle_intan=intan_triangle_signal, fs_intan=fs_intan,
-                    loc=loc, search_n_br=search_n_br, br_window_sec=20.0, normalize_both=False
+                    loc=loc, search_n_br=search_n_br, br_window_sec=20.0, normalize_both=True
                 )
                 # record ref_i as triangle_loc_sample and d_i as delta_samples
 
