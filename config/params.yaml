@@ -35,7 +35,7 @@ preprocessing:
   has_VOG: False
   has_HR: False
   output_aligned_mat: True
-  process_only: [] #[2, 3, 4, 5, 6, 7, 8, 9, 10, 11] # Input as BR indexes, e.g. [1, 2] to only process BR_001 and BR_002, if process all just leave as []
+  process_only: [31] #[2, 3, 4, 5, 6, 7, 8, 9, 10, 11] # Input as BR indexes, e.g. [1, 2] to only process BR_001 and BR_002, if process all just leave as []
   z_score_firing_rate: true  # If true, z-score firing rates per-trial before averaging for heatmap plots
 
 # ---- Spike preprocessing ----

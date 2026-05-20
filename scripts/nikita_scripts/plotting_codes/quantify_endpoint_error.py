@@ -83,7 +83,7 @@ TARGET_KEYPOINT_A = "TA"
 TARGET_KEYPOINT_B = "TB"
 
 # Analysis parameters
-WIN_MS = (-600.0, 600.0)
+WIN_MS = (-600.0, 3000.0)
 CAMERA_FPS = 100.0
 MAX_INTERP_GAP_FRAMES = 100
 MIN_FINGER_VALID_PCT = 50.0
@@ -91,7 +91,314 @@ MIN_APPROACH_TIME_MS = 100.0
 
 
 # Velocity smoothing window (frames)
-VELOCITY_SMOOTH_WINDOW = 5
+VELOCITY_SMOOTH_WINDOW = 3
+
+# for removing points based on 2D kinematics likelihood
+LIKELIHOOD_THRESHOLD = 0.35
+
+
+
+def load_2d_dlc_likelihoods(
+    dlc_2d_root: Path,
+    condition_name: str,  # e.g., "NRR_RW022_007"
+    keypoint: str = "middle",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Load likelihood values for a keypoint from both camera views.
+    
+    Args:
+        dlc_2d_root: Path to Video/DLC/ directory
+        condition_name: e.g., "NRR_RW022_007"
+        keypoint: Body part name (e.g., "middle", "TA", "TB")
+        
+    Returns:
+        likelihood_cam0: (N,) array of likelihoods from camera 0
+        likelihood_cam1: (N,) array of likelihoods from camera 1
+    """
+    # Find the CSV files - they have a complex suffix
+    cam0_files = list(dlc_2d_root.glob(f"{condition_name}_Cam-0DLC_*.csv"))
+    cam1_files = list(dlc_2d_root.glob(f"{condition_name}_Cam-1DLC_*.csv"))
+    
+    if not cam0_files or not cam1_files:
+        raise FileNotFoundError(f"Could not find 2D DLC files for {condition_name}")
+    
+    cam0_path = cam0_files[0]
+    cam1_path = cam1_files[0]
+    
+    # Load with multi-level header (rows 1 and 2 are bodyparts and coords)
+    df_cam0 = pd.read_csv(cam0_path, header=[1, 2], index_col=0)
+    df_cam1 = pd.read_csv(cam1_path, header=[1, 2], index_col=0)
+    
+    # Extract likelihood column for the keypoint
+    # Column structure: (bodypart, coord) -> e.g., ('middle', 'likelihood')
+    likelihood_cam0 = df_cam0[(keypoint, 'likelihood')].values.astype(float)
+    likelihood_cam1 = df_cam1[(keypoint, 'likelihood')].values.astype(float)
+    
+    return likelihood_cam0, likelihood_cam1
+
+def get_likelihood_mask(
+    dlc_2d_root: Path,
+    condition_name: str,
+    keypoint: str,
+    frame_indices: np.ndarray,
+    threshold: float = LIKELIHOOD_THRESHOLD,
+) -> Tuple[np.ndarray, int, int]:
+    """
+    Create a mask where True = VALID (both cameras have likelihood >= threshold).
+    
+    Args:
+        dlc_2d_root: Path to Video/DLC/ directory
+        condition_name: Condition name (e.g., "NRR_RW022_007")
+        keypoint: Body part name
+        frame_indices: Frame indices to check
+        threshold: Minimum likelihood (default 0.4)
+        
+    Returns:
+        valid_mask: (N,) boolean array, True where data is reliable
+        n_cam0_low: Number of frames with low cam0 likelihood
+        n_cam1_low: Number of frames with low cam1 likelihood
+    """
+    try:
+        likelihood_cam0, likelihood_cam1 = load_2d_dlc_likelihoods(
+            dlc_2d_root, condition_name, keypoint
+        )
+    except (FileNotFoundError, KeyError) as e:
+        print(f"    [warn] Could not load 2D likelihoods for {keypoint}: {e}")
+        # Return all True (don't mask anything) if we can't load likelihoods
+        return np.ones(len(frame_indices), dtype=bool), 0, 0
+    
+    n_frames_2d = len(likelihood_cam0)
+    
+    valid_mask = np.zeros(len(frame_indices), dtype=bool)
+    cam0_low = np.zeros(len(frame_indices), dtype=bool)
+    cam1_low = np.zeros(len(frame_indices), dtype=bool)
+    
+    for i, frame_idx in enumerate(frame_indices):
+        # Convert to 0-based index for the likelihood arrays
+        idx = int(frame_idx) - 1  # Adjust if your indexing differs
+        
+        if 0 <= idx < n_frames_2d:
+            cam0_ok = likelihood_cam0[idx] >= threshold
+            cam1_ok = likelihood_cam1[idx] >= threshold
+            valid_mask[i] = cam0_ok and cam1_ok
+            cam0_low[i] = not cam0_ok
+            cam1_low[i] = not cam1_ok
+        else:
+            valid_mask[i] = False
+            cam0_low[i] = True
+            cam1_low[i] = True
+    
+    return valid_mask, int(cam0_low.sum()), int(cam1_low.sum())
+
+def apply_likelihood_mask(
+    xyz: np.ndarray,
+    valid_mask: np.ndarray,
+) -> np.ndarray:
+    """
+    Set xyz values to NaN where likelihood is below threshold.
+    
+    Args:
+        xyz: (N, 3) position array
+        valid_mask: (N,) boolean array, True = valid
+        
+    Returns:
+        xyz_masked: (N, 3) array with invalid points set to NaN
+    """
+    xyz_masked = xyz.copy()
+    xyz_masked[~valid_mask] = np.nan
+    return xyz_masked
+
+
+def remove_high_velocity_points(
+    xyz: np.ndarray,
+    fps: float,
+    max_speed: float = 100.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Simple and direct: compute velocity, remove any frame where velocity > max_speed.
+    
+    Args:
+        xyz: (N, 3) position array
+        fps: Frames per second
+        max_speed: Maximum allowed speed (units per second)
+        
+    Returns:
+        xyz_clean: (N, 3) with bad frames set to NaN
+        outlier_mask: (N,) boolean, True = removed
+    """
+    n = len(xyz)
+    outlier_mask = np.zeros(n, dtype=bool)
+    xyz_clean = xyz.copy()
+    
+    if n < 2:
+        return xyz_clean, outlier_mask
+    
+    dt = 1.0 / fps
+    
+    # Compute velocity magnitude at each frame (using central difference where possible)
+    velocity = np.full(n, np.nan)
+    
+    for i in range(n):
+        if i == 0:
+            # Forward difference
+            if np.all(np.isfinite(xyz[0])) and np.all(np.isfinite(xyz[1])):
+                velocity[0] = np.linalg.norm(xyz[1] - xyz[0]) / dt
+        elif i == n - 1:
+            # Backward difference
+            if np.all(np.isfinite(xyz[-1])) and np.all(np.isfinite(xyz[-2])):
+                velocity[-1] = np.linalg.norm(xyz[-1] - xyz[-2]) / dt
+        else:
+            # Central difference (velocity at frame i based on frames i-1 and i+1)
+            if np.all(np.isfinite(xyz[i-1])) and np.all(np.isfinite(xyz[i+1])):
+                velocity[i] = np.linalg.norm(xyz[i+1] - xyz[i-1]) / (2 * dt)
+    
+    # Mark frames where velocity exceeds threshold
+    high_velocity = velocity > max_speed
+    
+    # For high velocity frames, we need to decide which point is bad.
+    # Strategy: if velocity[i] is high, mark frame i as bad
+    # (the velocity "belongs" to frame i in central difference)
+    outlier_mask = high_velocity & np.isfinite(velocity)
+    
+    # Also mark frames adjacent to high-velocity regions
+    # (because if v[i] is computed from frames i-1 and i+1, 
+    #  and it's too high, at least one of i-1, i, i+1 is wrong)
+    for i in range(n):
+        if outlier_mask[i]:
+            # The velocity at i is too high - mark i as bad
+            # Also check neighbors
+            if i > 0:
+                # Check velocity from i-1 to i
+                if np.all(np.isfinite(xyz[i-1])) and np.all(np.isfinite(xyz[i])):
+                    speed_to_i = np.linalg.norm(xyz[i] - xyz[i-1]) / dt
+                    if speed_to_i > max_speed:
+                        outlier_mask[i] = True  # Already true, but explicit
+            if i < n - 1:
+                # Check velocity from i to i+1
+                if np.all(np.isfinite(xyz[i])) and np.all(np.isfinite(xyz[i+1])):
+                    speed_from_i = np.linalg.norm(xyz[i+1] - xyz[i]) / dt
+                    if speed_from_i > max_speed:
+                        outlier_mask[i] = True
+    
+    # Set outlier positions to NaN
+    xyz_clean[outlier_mask] = np.nan
+    
+    return xyz_clean, outlier_mask
+
+def remove_bracketed_outlier_regions(
+    xyz: np.ndarray,
+    fps: float,
+    max_speed: float = 100.0,
+    max_region_frames: int = 50,  # Don't remove regions larger than this
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Remove entire regions that are bracketed by high-velocity jumps.
+    
+    If we detect: normal -> [high velocity jump] -> garbage -> [high velocity jump] -> normal
+    Then the entire garbage region (including the boundary points) gets removed.
+    
+    Args:
+        xyz: (N, 3) position array
+        fps: Frames per second
+        max_speed: Velocity threshold for detecting jumps
+        max_region_frames: Maximum size of region to remove (safety limit)
+        
+    Returns:
+        xyz_clean: (N, 3) with bad regions set to NaN
+        outlier_mask: (N,) boolean, True = removed
+    """
+    n = len(xyz)
+    outlier_mask = np.zeros(n, dtype=bool)
+    xyz_clean = xyz.copy()
+    
+    if n < 3:
+        return xyz_clean, outlier_mask
+    
+    dt = 1.0 / fps
+    
+    # Step 1: Find all high-velocity transitions
+    high_velocity_transitions = []  # List of (from_idx, to_idx) pairs
+    
+    for i in range(n - 1):
+        if np.all(np.isfinite(xyz[i])) and np.all(np.isfinite(xyz[i + 1])):
+            displacement = np.linalg.norm(xyz[i + 1] - xyz[i])
+            speed = displacement / dt
+            
+            if speed > max_speed:
+                high_velocity_transitions.append(i)  # Transition happens between i and i+1
+    
+    if len(high_velocity_transitions) < 2:
+        # Need at least 2 jumps to bracket a region
+        # Still remove individual high-velocity points
+        for trans_idx in high_velocity_transitions:
+            outlier_mask[trans_idx + 1] = True
+            xyz_clean[trans_idx + 1] = np.nan
+        return xyz_clean, outlier_mask
+    
+    # Step 2: Find bracketed regions (jump out, then jump back)
+    # A bracketed region is where we jump away and then jump back to near the original position
+    
+    regions_to_remove = []
+    used_transitions = set()
+    
+    for i, start_trans in enumerate(high_velocity_transitions):
+        if start_trans in used_transitions:
+            continue
+            
+        start_pos = xyz[start_trans]  # Position before the jump
+        
+        if not np.all(np.isfinite(start_pos)):
+            continue
+        
+        # Look for a return jump within max_region_frames
+        for j, end_trans in enumerate(high_velocity_transitions[i + 1:], i + 1):
+            region_size = end_trans - start_trans
+            
+            if region_size > max_region_frames:
+                break  # Too far, stop looking
+            
+            if end_trans in used_transitions:
+                continue
+            
+            # Position after the return jump
+            end_pos = xyz[end_trans + 1] if end_trans + 1 < n else None
+            
+            if end_pos is None or not np.all(np.isfinite(end_pos)):
+                continue
+            
+            # Check if we returned to near the starting position
+            # The return position should be closer to start than the jumped-to position
+            jumped_to_pos = xyz[start_trans + 1]
+            
+            if not np.all(np.isfinite(jumped_to_pos)):
+                continue
+            
+            dist_start_to_jumped = np.linalg.norm(jumped_to_pos - start_pos)
+            dist_start_to_end = np.linalg.norm(end_pos - start_pos)
+            
+            # Criterion: end position is much closer to start than the jumped position
+            # This indicates we jumped away and came back
+            if dist_start_to_end < dist_start_to_jumped * 0.5:
+                # Found a bracketed region!
+                regions_to_remove.append((start_trans + 1, end_trans))  # Remove from after first jump to including second jump point
+                used_transitions.add(start_trans)
+                used_transitions.add(end_trans)
+                break
+    
+    # Step 3: Remove the bracketed regions
+    for region_start, region_end in regions_to_remove:
+        for idx in range(region_start, region_end + 1):
+            outlier_mask[idx] = True
+            xyz_clean[idx] = np.nan
+    
+    # Step 4: Also remove any remaining isolated high-velocity transitions
+    for trans_idx in high_velocity_transitions:
+        if trans_idx not in used_transitions:
+            # This is an isolated jump - remove the point we jumped TO
+            outlier_mask[trans_idx + 1] = True
+            xyz_clean[trans_idx + 1] = np.nan
+    
+    return xyz_clean, outlier_mask
 
 
 def parse_args():
@@ -201,171 +508,694 @@ def interpolate_small_gaps(arr: np.ndarray, max_gap: int = 3) -> np.ndarray:
     return arr.squeeze() if arr.shape[1] == 1 else arr
 
 
-def detect_outliers_plateau(signal: np.ndarray, 
-                            min_plateau_frames: int = 2,
-                            max_plateau_frames: int = 20) -> np.ndarray:
-    """
-    Detect plateau outliers: sudden jump to a flat wrong level, then jump back.
+# def clean_finger_signal_v2(
+#     xyz: np.ndarray, 
+#     fps: float,
+#     rel_time_ms: np.ndarray = None,  # ADD THIS PARAMETER
+#     range_threshold_pct: float = 0.25,
+#     chunk_threshold_pct: float = 0.35,
+#     n_chunks: int = 5,
+#     start_end_frames: int = 10,
+#     max_interp_gap: int = 25,
+#     outlier_iqr_multiplier: float = 2.5,
+#     min_range_for_filtering: float = 0.5,
+#     reach_end_time_ms: float = 300.0,  # NEW: hardcoded reach end time
+#     max_speed: float = 100.0,
+# ) -> Tuple[np.ndarray, np.ndarray]:
+#     """
+#     Clean finger position signal using robust range-based and chunk-based outlier detection.
     
-    Key insight: Real movement has consistent velocity (smoothly changing signal).
-    Plateau outliers have: big jump → near-zero velocity → big jump back.
+#     Uses movement start (~0ms) and reach endpoint (~300ms) for range estimation,
+#     not the full window which may include the return movement.
+#     """
+#     n = len(xyz)
+#     combined_outlier_mask = np.zeros(n, dtype=bool)
+#     xyz_clean = xyz.copy()
     
-    Args:
-        signal: 1D array of values (one coordinate axis)
-        min_plateau_frames: Minimum frames the plateau must last
-        max_plateau_frames: Maximum frames to consider as plateau (longer = real movement)
+#     if n < 10:
+#         return xyz_clean, combined_outlier_mask
+
+#     jump_outliers = detect_impossible_jumps(xyz_clean, fps, max_speed=max_speed)
+#     combined_outlier_mask |= jump_outliers
+#     xyz_clean[jump_outliers] = np.nan
+
+    
+#     # === Determine start and end indices for range estimation ===
+#     if rel_time_ms is not None:
+#         # Start: around 0ms (movement onset)
+#         start_mask = (rel_time_ms >= -50) & (rel_time_ms <= 50)
+#         # End: around reach endpoint (~300ms), not return
+#         end_mask = (rel_time_ms >= reach_end_time_ms - 50) & (rel_time_ms <= reach_end_time_ms + 50)
         
-    Returns:
-        Boolean mask where True = outlier
+#         start_indices_global = np.where(start_mask)[0]
+#         end_indices_global = np.where(end_mask)[0]
+#     else:
+#         # Fallback: use first/last N frames
+#         start_indices_global = np.arange(min(start_end_frames, n))
+#         end_indices_global = np.arange(max(0, n - start_end_frames), n)
+    
+#     # === Compute overall movement magnitude across all axes ===
+#     overall_ranges = []
+#     for dim in range(3):
+#         valid_mask = np.isfinite(xyz[:, dim])
+#         if valid_mask.sum() > 5:
+#             overall_ranges.append(np.ptp(xyz[valid_mask, dim]))
+#         else:
+#             overall_ranges.append(0)
+    
+#     max_overall_range = max(overall_ranges) if overall_ranges else 1.0
+#     if max_overall_range < 1e-6:
+#         max_overall_range = 1.0
+    
+#     for dim in range(3):
+#         signal = xyz[:, dim].copy()
+#         dim_outliers = np.zeros(n, dtype=bool)
+        
+#         valid_mask = np.isfinite(signal)
+#         if valid_mask.sum() < 10:
+#             continue
+        
+#         valid_values = signal[valid_mask]
+        
+#         # === STEP 1: IQR-based extreme outlier detection ===
+#         q1 = np.percentile(valid_values, 25)
+#         q3 = np.percentile(valid_values, 75)
+#         iqr = q3 - q1
+        
+#         if iqr < 1e-6:
+#             iqr = np.std(valid_values) * 1.35
+        
+#         iqr_lower = q1 - outlier_iqr_multiplier * iqr
+#         iqr_upper = q3 + outlier_iqr_multiplier * iqr
+        
+#         extreme_outliers = valid_mask & ((signal < iqr_lower) | (signal > iqr_upper))
+#         dim_outliers |= extreme_outliers
+        
+#         # === STEP 2: Robust start/end estimation using hardcoded times ===
+#         clean_valid_mask = valid_mask & ~extreme_outliers
+        
+#         # Get start median (around 0ms)
+#         start_valid = clean_valid_mask.copy()
+#         if len(start_indices_global) > 0:
+#             start_valid &= np.isin(np.arange(n), start_indices_global)
+#         start_valid_idx = np.where(start_valid)[0]
+        
+#         if len(start_valid_idx) >= 3:
+#             start_median = np.median(signal[start_valid_idx])
+#         else:
+#             # Fallback: first valid points
+#             clean_valid_indices = np.where(clean_valid_mask)[0]
+#             if len(clean_valid_indices) >= 3:
+#                 start_median = np.median(signal[clean_valid_indices[:start_end_frames]])
+#             else:
+#                 continue
+        
+#         # Get end median (around 300ms, not return)
+#         end_valid = clean_valid_mask.copy()
+#         if len(end_indices_global) > 0:
+#             end_valid &= np.isin(np.arange(n), end_indices_global)
+#         end_valid_idx = np.where(end_valid)[0]
+        
+#         if len(end_valid_idx) >= 3:
+#             end_median = np.median(signal[end_valid_idx])
+#         else:
+#             # Fallback: use global median in that time region
+#             clean_valid_indices = np.where(clean_valid_mask)[0]
+#             if len(clean_valid_indices) >= 3:
+#                 end_median = np.median(signal[clean_valid_indices[-start_end_frames:]])
+#             else:
+#                 continue
+        
+#         # === STEP 3: Range-based detection ===
+#         range_min = min(start_median, end_median)
+#         range_max = max(start_median, end_median)
+#         range_span = range_max - range_min
+        
+#         effective_range_span = max(
+#             range_span,
+#             max_overall_range * 0.3,
+#             iqr * 1.5,
+#             min_range_for_filtering
+#         )
+        
+#         axis_has_meaningful_movement = range_span > min_range_for_filtering
+        
+#         if axis_has_meaningful_movement:
+#             buffer = effective_range_span * range_threshold_pct
+#             min_buffer = iqr * 0.5
+#             buffer = max(buffer, min_buffer)
+            
+#             allowed_min = range_min - buffer
+#             allowed_max = range_max + buffer
+            
+#             range_outliers = clean_valid_mask & ((signal < allowed_min) | (signal > allowed_max))
+#             dim_outliers |= range_outliers
+        
+#         # === STEP 4: Chunk-based detection ===
+#         still_clean_mask = valid_mask & ~dim_outliers
+#         chunk_size = max(1, n // n_chunks)
+        
+#         for chunk_idx in range(n_chunks):
+#             chunk_start = chunk_idx * chunk_size
+#             chunk_end = min((chunk_idx + 1) * chunk_size, n)
+            
+#             if chunk_idx == n_chunks - 1:
+#                 chunk_end = n
+            
+#             chunk_data = signal[chunk_start:chunk_end]
+#             chunk_clean = still_clean_mask[chunk_start:chunk_end]
+            
+#             if chunk_clean.sum() < 3:
+#                 continue
+            
+#             chunk_median = np.median(chunk_data[chunk_clean])
+#             chunk_iqr = np.percentile(chunk_data[chunk_clean], 75) - np.percentile(chunk_data[chunk_clean], 25)
+            
+#             if chunk_iqr < 1e-6:
+#                 chunk_iqr = effective_range_span * 0.2
+            
+#             for i in range(chunk_start, chunk_end):
+#                 if not still_clean_mask[i] or dim_outliers[i]:
+#                     continue
+                
+#                 deviation = abs(signal[i] - chunk_median)
+                
+#                 threshold = max(
+#                     chunk_iqr * (chunk_threshold_pct / 0.2),
+#                     effective_range_span * chunk_threshold_pct
+#                 )
+                
+#                 if not axis_has_meaningful_movement:
+#                     threshold *= 1.5
+                
+#                 if deviation > threshold:
+#                     dim_outliers[i] = True
+        
+#         combined_outlier_mask |= dim_outliers
+#         signal[dim_outliers] = np.nan
+#         xyz_clean[:, dim] = signal
+    
+#     # Interpolate the outlier regions
+#     xyz_clean = interpolate_small_gaps(xyz_clean, max_gap=max_interp_gap)
+    
+#     return xyz_clean, combined_outlier_mask
+
+
+def clean_finger_signal_v2(
+    xyz: np.ndarray, 
+    fps: float,
+    rel_time_ms: np.ndarray = None,
+    max_speed: float = 100.0,
+    max_interp_gap: int = 5,  # Only interpolate very small gaps (natural tracking loss)
+    position_outlier_std: float = 3.0,  # Remove points > N std from median
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    n = len(signal)
+    Clean finger position signal by:
+    1. Finding high-velocity jumps
+    2. Marking entire regions between jump-pairs as bad
+    3. Removing position outliers
+    4. Only interpolating small gaps (not cleaned regions)
+    """
+    n = len(xyz)
     outlier_mask = np.zeros(n, dtype=bool)
+    xyz_clean = xyz.copy()
     
     if n < 5:
-        return outlier_mask
+        return xyz_clean, outlier_mask
     
-    # Compute frame-to-frame differences
-    diff = np.zeros(n - 1)
+    dt = 1.0 / fps
+    
+    # === STEP 1: Find all frames involved in high-velocity transitions ===
+    velocity_outliers = np.zeros(n, dtype=bool)
+    
     for i in range(n - 1):
-        if np.isfinite(signal[i]) and np.isfinite(signal[i + 1]):
-            diff[i] = signal[i + 1] - signal[i]
-        else:
-            diff[i] = 0
+        if np.all(np.isfinite(xyz[i])) and np.all(np.isfinite(xyz[i + 1])):
+            speed = np.linalg.norm(xyz[i + 1] - xyz[i]) / dt
+            if speed > max_speed:
+                # Mark BOTH frames involved in the jump
+                velocity_outliers[i] = True
+                velocity_outliers[i + 1] = True
     
-    # Get valid differences for statistics
-    valid_diff = diff[diff != 0]
-    if len(valid_diff) < 5:
-        return outlier_mask
+    # === STEP 2: Find bracketed regions and mark everything inside ===
+    # Look for pattern: good -> bad -> ... -> bad -> good
+    # Where the "good" points before and after are similar
     
-    # Estimate typical small movement using MAD (robust)
-    abs_diff = np.abs(valid_diff)
-    typical_movement = np.median(abs_diff)
+    jump_indices = np.where(velocity_outliers)[0]
     
-    if typical_movement < 1e-9:
-        typical_movement = np.std(valid_diff) if np.std(valid_diff) > 0 else 1.0
-    
-    # A "jump" should be much larger than typical frame-to-frame movement
-    min_jump_size = 6.0 * typical_movement
-    
-    if min_jump_size < 1e-6:
-        return outlier_mask
-    
-    # Find large jumps (potential plateau starts/ends)
-    large_jump_idx = np.where(np.abs(diff) > min_jump_size)[0]
-    
-    if len(large_jump_idx) < 2:
-        return outlier_mask
-    
-    # Look for plateau pattern: jump UP/DOWN, stay relatively flat, jump back
-    used_jumps = set()
-    
-    for i in range(len(large_jump_idx)):
-        if i in used_jumps:
-            continue
+    if len(jump_indices) >= 2:
+        # Find pairs of jumps that bracket a bad region
+        i = 0
+        while i < len(jump_indices):
+            start_jump = jump_indices[i]
             
-        start_jump_idx = large_jump_idx[i]
-        start_jump_mag = diff[start_jump_idx]
-        start_jump_sign = np.sign(start_jump_mag)
-        
-        # Value before the jump
-        pre_jump_value = signal[start_jump_idx] if np.isfinite(signal[start_jump_idx]) else None
-        if pre_jump_value is None:
-            continue
-        
-        # Look for a return jump
-        for j in range(i + 1, len(large_jump_idx)):
-            if j in used_jumps:
-                continue
-                
-            end_jump_idx = large_jump_idx[j]
-            end_jump_mag = diff[end_jump_idx]
-            end_jump_sign = np.sign(end_jump_mag)
+            # Find the last good point before this jump
+            good_before = start_jump - 1
+            while good_before >= 0 and (velocity_outliers[good_before] or not np.all(np.isfinite(xyz[good_before]))):
+                good_before -= 1
             
-            plateau_length = end_jump_idx - start_jump_idx
-            
-            # Must be opposite sign
-            if start_jump_sign == end_jump_sign:
+            if good_before < 0:
+                i += 1
                 continue
             
-            # Plateau length check
-            if plateau_length < min_plateau_frames or plateau_length > max_plateau_frames:
-                continue
+            pos_before = xyz[good_before]
             
-            # Check if signal returns close to pre-jump value
-            post_jump_idx = end_jump_idx + 1
-            if post_jump_idx < n and np.isfinite(signal[post_jump_idx]):
-                post_jump_value = signal[post_jump_idx]
+            # Look for a return jump
+            for j in range(i + 1, len(jump_indices)):
+                end_jump = jump_indices[j]
                 
-                # How close does it return? Allow some tolerance
-                return_error = abs(post_jump_value - pre_jump_value)
-                jump_size = abs(start_jump_mag)
+                # Don't look too far
+                if end_jump - start_jump > 100:
+                    break
                 
-                # Should return to within 70% of jump size
-                if return_error < 0.7 * jump_size:
-                    # Check that plateau region is relatively flat
-                    plateau_start = start_jump_idx + 1
-                    plateau_end = end_jump_idx + 1
-                    plateau_values = signal[plateau_start:plateau_end]
-                    valid_plateau = plateau_values[np.isfinite(plateau_values)]
+                # Find the first good point after this jump
+                good_after = end_jump + 1
+                while good_after < n and (velocity_outliers[good_after] or not np.all(np.isfinite(xyz[good_after]))):
+                    good_after += 1
+                
+                if good_after >= n:
+                    continue
+                
+                pos_after = xyz[good_after]
+                
+                # Check if we returned to roughly the same position
+                dist_before_after = np.linalg.norm(pos_after - pos_before)
+                
+                # The "middle" of the bracketed region
+                mid_idx = (start_jump + end_jump) // 2
+                if np.all(np.isfinite(xyz[mid_idx])):
+                    dist_to_middle = np.linalg.norm(xyz[mid_idx] - pos_before)
                     
-                    if len(valid_plateau) >= min_plateau_frames:
-                        plateau_range = np.max(valid_plateau) - np.min(valid_plateau)
+                    # If middle is much further from start than end is, it's a garbage island
+                    if dist_to_middle > dist_before_after * 2 and dist_to_middle > 5:
+                        # Mark ENTIRE region as bad
+                        for k in range(start_jump, end_jump + 1):
+                            velocity_outliers[k] = True
                         
-                        # Plateau should be flatter than the jump size
-                        # (allow up to 50% of jump magnitude as internal variation)
-                        if plateau_range < 0.5 * jump_size:
-                            # This is a plateau outlier!
-                            outlier_mask[plateau_start:plateau_end] = True
-                            used_jumps.add(i)
-                            used_jumps.add(j)
-                            break
+                        # Skip to after this region
+                        i = j
+                        break
+            
+            i += 1
     
-    return outlier_mask
+    # === STEP 3: Position-based outlier detection (per axis) ===
+    position_outliers = np.zeros(n, dtype=bool)
+    
+    # Only use non-velocity-outlier points to compute statistics
+    clean_mask = ~velocity_outliers & np.all(np.isfinite(xyz), axis=1)
+    
+    if clean_mask.sum() > 10:
+        for dim in range(3):
+            clean_values = xyz[clean_mask, dim]
+            median_val = np.median(clean_values)
+            std_val = np.std(clean_values)
+            
+            if std_val > 1e-6:
+                for i in range(n):
+                    if np.isfinite(xyz[i, dim]) and not velocity_outliers[i]:
+                        if abs(xyz[i, dim] - median_val) > position_outlier_std * std_val:
+                            position_outliers[i] = True
+    
+    # === STEP 4: Combine all outliers ===
+    outlier_mask = velocity_outliers | position_outliers
+    xyz_clean[outlier_mask] = np.nan
+    
+    # === STEP 5: Only interpolate SMALL gaps (natural tracking losses, not cleaned regions) ===
+    # This is key: we don't want to interpolate across the garbage we just removed
+    xyz_clean = interpolate_small_gaps(xyz_clean, max_gap=max_interp_gap)
+    
+    return xyz_clean, outlier_mask
 
 
-def clean_finger_signal(xyz: np.ndarray, fps: float, 
-                        max_interp_gap: int = 25) -> Tuple[np.ndarray, np.ndarray]:
+def create_oscillation_summary_plot(
+    df: pd.DataFrame, 
+    output_dir: Path,
+    summary_br_list: Optional[List[int]] = None
+):
+    """Plot oscillation metrics by condition."""
+    
+    if summary_br_list:
+        df = df[df['br_idx'].isin(summary_br_list)].copy()
+    
+    success_df = df[df['status'] == 'success'].copy()
+    if len(success_df) == 0:
+        print("[warn] No successful reaches for oscillation plot")
+        return
+    
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    
+    conditions = sorted(success_df['condition_type'].unique())
+    
+    # 1. Number of direction changes by condition
+    ax = axes[0, 0]
+    data_by_cond = [success_df[success_df['condition_type'] == c]['n_direction_changes'].dropna() 
+                   for c in conditions]
+    bp = ax.boxplot(data_by_cond, labels=conditions, patch_artist=True)
+    colors = ['#808080' if 'control' in c.lower() else '#2E86AB' for c in conditions]
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+    ax.set_xlabel('Condition')
+    ax.set_ylabel('# Direction Changes')
+    ax.set_title('Movement Reversals by Condition')
+    ax.grid(True, alpha=0.3)
+    
+    # 2. Direction changes vs approach time
+    ax = axes[0, 1]
+    for cond in conditions:
+        subset = success_df[success_df['condition_type'] == cond]
+        color = '#808080' if 'control' in cond.lower() else '#2E86AB'
+        ax.scatter(subset['approach_time_ms'], subset['n_direction_changes'], 
+                   alpha=0.5, label=cond, s=30, c=color)
+    ax.set_xlabel('Approach Time (ms)')
+    ax.set_ylabel('# Direction Changes')
+    ax.set_title('Reversals vs Reach Duration')
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+    
+    # 3. Mean oscillation amplitude by condition
+    ax = axes[1, 0]
+    data_by_cond = [success_df[success_df['condition_type'] == c]['mean_oscillation_amplitude'].dropna() 
+                   for c in conditions]
+    # Filter out empty arrays
+    valid_data = [(d, c) for d, c in zip(data_by_cond, conditions) if len(d) > 0]
+    if valid_data:
+        data_only = [d for d, c in valid_data]
+        labels_only = [c for d, c in valid_data]
+        bp = ax.boxplot(data_only, labels=labels_only, patch_artist=True)
+        colors = ['#808080' if 'control' in c.lower() else '#2E86AB' for c in labels_only]
+        for patch, color in zip(bp['boxes'], colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+    ax.set_xlabel('Condition')
+    ax.set_ylabel('Mean Oscillation Amplitude')
+    ax.set_title('Oscillation Amplitude by Condition')
+    ax.grid(True, alpha=0.3)
+    
+    # 4. Direction changes by BR index
+    ax = axes[1, 1]
+    osc_by_br = success_df.groupby('br_idx').agg({
+        'n_direction_changes': ['mean', 'std', 'count']
+    })
+    osc_by_br.columns = ['mean', 'std', 'count']
+    osc_by_br = osc_by_br.sort_index()
+    
+    x = range(len(osc_by_br))
+    bars = ax.bar(x, osc_by_br['mean'].values, yerr=osc_by_br['std'].values,
+                  capsize=3, alpha=0.7, color='steelblue', edgecolor='black')
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"BR {idx}\n(n={int(osc_by_br.loc[idx, 'count'])})" 
+                       for idx in osc_by_br.index], fontsize=8)
+    ax.set_xlabel('BR Index')
+    ax.set_ylabel('Mean # Direction Changes')
+    ax.set_title('Oscillations by Recording')
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    plt.tight_layout()
+    
+    if summary_br_list:
+        br_str = '_BR_' + '_'.join(str(b) for b in sorted(summary_br_list))
+        save_path = output_dir / f"oscillation_metrics_summary{br_str}.png"
+    else:
+        save_path = output_dir / "oscillation_metrics_summary.png"
+    
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"[save] Oscillation summary: {save_path}")
+
+def compute_direction_changes_v2(
+    xyz: np.ndarray,
+    rel_time_ms: np.ndarray,
+    start_time_ms: float = 0.0,
+    end_time_ms: Optional[float] = None,
+    min_reversal_magnitude: float = 0.3,  # Minimum position change to count
+    min_reversal_duration_ms: float = 20.0,  # Minimum time between reversals
+    smoothing_window: int = 3,  # Light smoothing
+) -> dict:
     """
-    Clean finger position signal by detecting and interpolating plateau outliers.
+    Detect direction changes by finding local maxima/minima (peaks/valleys) 
+    in the primary movement axis position signal.
     
-    Plateau outliers are: sudden jump → flat region → sudden jump back.
-    Real movement (smooth changes) is preserved.
+    A direction change is a peak or valley where:
+    - The position change from previous extremum exceeds min_reversal_magnitude
+    - Sufficient time has passed since last reversal
     
     Args:
         xyz: (N, 3) position array
-        fps: Frame rate (for reference)
-        max_interp_gap: Maximum gap size to interpolate (frames)
+        rel_time_ms: (N,) time array relative to event
+        start_time_ms: Start of analysis window
+        end_time_ms: End of analysis window (None = use all data)
+        min_reversal_magnitude: Minimum position change to count as reversal
+        min_reversal_duration_ms: Minimum time between consecutive reversals
+        smoothing_window: Light smoothing window (frames) - set to 1 for no smoothing
         
     Returns:
-        cleaned_xyz: Cleaned position array
-        outlier_mask: Boolean mask of detected outliers (True = was outlier)
+        dict with direction change metrics
+    """
+    from scipy.signal import find_peaks
+    
+    n = len(xyz)
+    
+    if end_time_ms is None:
+        end_time_ms = rel_time_ms.max()
+    
+    time_mask = (rel_time_ms >= start_time_ms) & (rel_time_ms <= end_time_ms)
+    
+    if time_mask.sum() < 5:
+        return {
+            'n_direction_changes': 0,
+            'direction_change_times_ms': [],
+            'direction_change_positions': [],
+            'direction_change_types': [],  # 'peak' or 'valley'
+            'oscillation_amplitudes': [],
+            'mean_oscillation_amplitude': 0,
+            'total_oscillation_distance': 0,
+            'primary_axis': None,
+            'primary_axis_index': None,
+        }
+    
+    # Find primary movement axis
+    axis_ranges = []
+    for dim in range(3):
+        dim_data = xyz[time_mask, dim]
+        valid = np.isfinite(dim_data)
+        if valid.sum() > 2:
+            axis_ranges.append(np.ptp(dim_data[valid]))
+        else:
+            axis_ranges.append(0)
+    
+    primary_axis_idx = np.argmax(axis_ranges)
+    axis_names = ['x', 'y', 'z']
+    primary_axis_name = axis_names[primary_axis_idx]
+    primary_range = axis_ranges[primary_axis_idx]
+    
+    # Extract primary axis position within time window
+    window_indices = np.where(time_mask)[0]
+    pos_raw = xyz[window_indices, primary_axis_idx].copy()
+    time_window = rel_time_ms[window_indices]
+    
+    # Light smoothing (optional)
+    if smoothing_window > 1 and len(pos_raw) >= smoothing_window:
+        # Handle NaNs
+        valid_pos = np.isfinite(pos_raw)
+        if valid_pos.sum() > smoothing_window:
+            pos_smooth = pos_raw.copy()
+            pos_filled = np.interp(
+                np.arange(len(pos_raw)),
+                np.where(valid_pos)[0],
+                pos_raw[valid_pos]
+            )
+            pos_smooth = uniform_filter1d(pos_filled, size=smoothing_window, mode='nearest')
+            pos_smooth[~valid_pos] = np.nan
+        else:
+            pos_smooth = pos_raw
+    else:
+        pos_smooth = pos_raw
+    
+    # Find peaks (local maxima) and valleys (local minima)
+    valid_mask = np.isfinite(pos_smooth)
+    if valid_mask.sum() < 5:
+        return {
+            'n_direction_changes': 0,
+            'direction_change_times_ms': [],
+            'direction_change_positions': [],
+            'direction_change_types': [],
+            'oscillation_amplitudes': [],
+            'mean_oscillation_amplitude': 0,
+            'total_oscillation_distance': 0,
+            'primary_axis': primary_axis_name,
+            'primary_axis_index': primary_axis_idx,
+        }
+    
+    # Calculate minimum distance between peaks in frames
+    fps = 1000.0 / np.nanmedian(np.diff(time_window)) if len(time_window) > 1 else 100.0
+    min_distance_frames = max(1, int(min_reversal_duration_ms * fps / 1000.0))
+    
+    # Prominence = minimum height difference to count as a peak
+    # Scale by the axis range, but set a minimum
+    prominence = max(min_reversal_magnitude, primary_range * 0.05)
+    
+    # Find peaks (local maxima)
+    # Need to handle NaNs - interpolate for peak finding only
+    pos_for_peaks = np.interp(
+        np.arange(len(pos_smooth)),
+        np.where(valid_mask)[0],
+        pos_smooth[valid_mask]
+    )
+    
+    peaks, peak_props = find_peaks(
+        pos_for_peaks, 
+        prominence=prominence,
+        distance=min_distance_frames
+    )
+    
+    # Find valleys (local minima) by inverting
+    valleys, valley_props = find_peaks(
+        -pos_for_peaks,
+        prominence=prominence, 
+        distance=min_distance_frames
+    )
+    
+    # Combine and sort by time
+    extrema = []
+    for idx in peaks:
+        if valid_mask[idx]:  # Only include if original data was valid
+            extrema.append({
+                'frame_idx': idx,
+                'time_ms': time_window[idx],
+                'position': pos_smooth[idx],
+                'type': 'peak',
+                'global_idx': window_indices[idx],
+            })
+    
+    for idx in valleys:
+        if valid_mask[idx]:
+            extrema.append({
+                'frame_idx': idx,
+                'time_ms': time_window[idx],
+                'position': pos_smooth[idx],
+                'type': 'valley',
+                'global_idx': window_indices[idx],
+            })
+    
+    # Sort by time
+    extrema = sorted(extrema, key=lambda x: x['time_ms'])
+    
+    # Filter: alternating peaks and valleys, with minimum amplitude
+    filtered_extrema = []
+    oscillation_amplitudes = []
+    
+    for ext in extrema:
+        if not filtered_extrema:
+            filtered_extrema.append(ext)
+            continue
+        
+        last = filtered_extrema[-1]
+        
+        # Must alternate between peak and valley
+        if ext['type'] == last['type']:
+            # Same type - keep the more extreme one
+            if ext['type'] == 'peak' and ext['position'] > last['position']:
+                filtered_extrema[-1] = ext
+            elif ext['type'] == 'valley' and ext['position'] < last['position']:
+                filtered_extrema[-1] = ext
+            continue
+        
+        # Calculate amplitude of this reversal
+        amplitude = abs(ext['position'] - last['position'])
+        
+        if amplitude >= min_reversal_magnitude:
+            filtered_extrema.append(ext)
+            oscillation_amplitudes.append(amplitude)
+    
+    # Direction changes = number of extrema minus 1 (first one isn't a "change")
+    n_direction_changes = max(0, len(filtered_extrema) - 1)
+    
+    # Total oscillation distance
+    total_oscillation_distance = sum(oscillation_amplitudes)
+    
+    return {
+        'n_direction_changes': n_direction_changes,
+        'direction_change_times_ms': [e['time_ms'] for e in filtered_extrema],
+        'direction_change_positions': [e['position'] for e in filtered_extrema],
+        'direction_change_types': [e['type'] for e in filtered_extrema],
+        'direction_change_global_indices': [e['global_idx'] for e in filtered_extrema],
+        'oscillation_amplitudes': oscillation_amplitudes,
+        'mean_oscillation_amplitude': np.mean(oscillation_amplitudes) if oscillation_amplitudes else 0,
+        'total_oscillation_distance': total_oscillation_distance,
+        'primary_axis': primary_axis_name,
+        'primary_axis_index': primary_axis_idx,
+        'primary_axis_range': primary_range,
+        'extrema_details': filtered_extrema,
+    }
+
+
+def find_return_to_start(
+    xyz: np.ndarray,
+    rel_time_ms: np.ndarray,
+    start_time_ms: float = 0.0,
+    return_threshold_pct: float = 0.15,
+    min_search_time_ms: float = 200.0,
+) -> Tuple[int, float, str]:
+    """
+    Find when the hand returns close to its starting position.
+    
+    This extends the analysis window beyond just the endpoint to capture
+    the full reach-and-return movement.
+    
+    Args:
+        xyz: (N, 3) position array
+        rel_time_ms: (N,) time array
+        start_time_ms: Time to use as "start" reference
+        return_threshold_pct: How close to start counts as "returned" (% of max excursion)
+        min_search_time_ms: Don't look for return before this time
+        
+    Returns:
+        return_idx: Index of return point
+        return_time_ms: Time of return
+        status: Description of result
     """
     n = len(xyz)
-    combined_outlier_mask = np.zeros(n, dtype=bool)
-    xyz_clean = xyz.copy()
     
-    # Process each dimension independently
-    for dim in range(3):
-        signal = xyz[:, dim].copy()
-        
-        # Detect plateau outliers
-        dim_outliers = detect_outliers_plateau(
-            signal,
-            min_plateau_frames=2,
-            max_plateau_frames=20  # ~200ms at 100fps
-        )
-        
-        combined_outlier_mask |= dim_outliers
-        
-        # Set outliers to NaN for interpolation
-        signal[dim_outliers] = np.nan
-        xyz_clean[:, dim] = signal
+    # Get start position
+    start_mask = (rel_time_ms >= start_time_ms - 30) & (rel_time_ms <= start_time_ms + 30)
+    start_mask &= np.all(np.isfinite(xyz), axis=1)
     
-    # Interpolate the outlier regions
-    xyz_clean = interpolate_small_gaps(xyz_clean, max_gap=max_interp_gap)
+    if not start_mask.any():
+        return -1, np.nan, 'no_valid_start'
     
-    return xyz_clean, combined_outlier_mask
-
+    start_pos = np.median(xyz[start_mask], axis=0)
+    
+    # Compute distance from start at each time
+    dist_from_start = np.linalg.norm(xyz - start_pos, axis=1)
+    
+    # Find max excursion
+    valid_mask = np.isfinite(dist_from_start) & (rel_time_ms >= min_search_time_ms)
+    
+    if not valid_mask.any():
+        return -1, np.nan, 'no_valid_data_after_min_time'
+    
+    max_excursion = np.nanmax(dist_from_start[valid_mask])
+    max_excursion_idx = np.where(valid_mask)[0][np.nanargmax(dist_from_start[valid_mask])]
+    
+    # Define return threshold
+    return_distance = max_excursion * return_threshold_pct
+    
+    # Search for return AFTER max excursion
+    search_mask = (np.arange(n) > max_excursion_idx) & np.isfinite(dist_from_start)
+    
+    if not search_mask.any():
+        return -1, np.nan, 'no_data_after_max_excursion'
+    
+    # Find first point that comes within return_distance of start
+    search_indices = np.where(search_mask)[0]
+    
+    for idx in search_indices:
+        if dist_from_start[idx] <= return_distance:
+            return idx, rel_time_ms[idx], 'return_found'
+    
+    # Didn't fully return - return the closest point
+    closest_idx = search_indices[np.argmin(dist_from_start[search_indices])]
+    return closest_idx, rel_time_ms[closest_idx], 'partial_return'
 
 def smooth_signal(arr: np.ndarray, window: int = 5) -> np.ndarray:
     """
@@ -413,14 +1243,16 @@ def smooth_signal(arr: np.ndarray, window: int = 5) -> np.ndarray:
     return smoothed
 
 
-def compute_velocity(xyz: np.ndarray, dt_sec: float, smooth: bool = True) -> np.ndarray:
+def compute_velocity(xyz: np.ndarray, dt_sec: float, smooth: bool = True, 
+                     smooth_window: int = 3) -> np.ndarray:
     """
     Compute instantaneous velocity magnitude from 3D positions.
     
     Args:
         xyz: (N, 3) position array
         dt_sec: Time step in seconds
-        smooth: Whether to apply smoothing to velocity
+        smooth: Whether to apply smoothing
+        smooth_window: Smoothing window size (default: 3 for light smoothing)
         
     Returns:
         velocity: (N,) array of velocity magnitudes
@@ -432,7 +1264,6 @@ def compute_velocity(xyz: np.ndarray, dt_sec: float, smooth: bool = True) -> np.
     # Central difference for interior, forward/backward for edges
     vel_vec = np.zeros_like(xyz)
     
-    # Handle NaNs in position data
     for i in range(n):
         if i == 0:
             if np.all(np.isfinite(xyz[0])) and np.all(np.isfinite(xyz[1])):
@@ -452,10 +1283,11 @@ def compute_velocity(xyz: np.ndarray, dt_sec: float, smooth: bool = True) -> np.
     
     velocity = np.linalg.norm(vel_vec, axis=1)
     
-    if smooth:
-        velocity = smooth_signal(velocity, window=VELOCITY_SMOOTH_WINDOW)
+    if smooth and smooth_window > 1:
+        velocity = smooth_signal(velocity, window=smooth_window)
     
     return velocity
+
 
 
 def euclidean_distance(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -643,35 +1475,75 @@ def compute_jerk_metric(velocity: np.ndarray, dt_sec: float) -> float:
     return np.mean(np.abs(jerk))
 
 
-def check_reach_direction(distance: np.ndarray, rel_time_ms: np.ndarray,
-                          check_window_ms: float = 200.0,
-                          approach_required: float = 0.1) -> Tuple[bool, float, str]:
-    """Check if the hand is moving TOWARD the target."""
-    mask_pre = (rel_time_ms >= -100) & (rel_time_ms <= -20)
+def check_reach_direction_v2(
+    xyz: np.ndarray, 
+    rel_time_ms: np.ndarray,
+    check_window_ms: float = 200.0,
+    approach_required: float = 0.1,
+    target_pos: Optional[np.ndarray] = None,
+) -> Tuple[bool, float, str, int]:
+    """
+    Check if the hand is moving TOWARD the target using the primary movement axis.
+    
+    Returns:
+        is_approaching: True if moving toward target
+        net_change: Net distance change (negative = approaching)
+        reason: Description
+        primary_axis: Which axis (0=x, 1=y, 2=z) had most movement
+    """
+    # Find primary movement axis (most change in first 200ms)
+    mask_analysis = (rel_time_ms >= 0) & (rel_time_ms <= check_window_ms)
+    mask_analysis &= np.all(np.isfinite(xyz), axis=1)
+    
+    if mask_analysis.sum() < 5:
+        return True, 0.0, 'insufficient_data', 0
+    
+    # Calculate range for each axis
+    axis_ranges = []
+    for dim in range(3):
+        dim_data = xyz[mask_analysis, dim]
+        axis_ranges.append(np.ptp(dim_data))
+    
+    primary_axis = np.argmax(axis_ranges)
+    axis_names = ['x', 'y', 'z']
+    
+    # Get start and end values on primary axis
+    mask_start = (rel_time_ms >= -50) & (rel_time_ms <= 30)
+    mask_start &= np.isfinite(xyz[:, primary_axis])
+    
     mask_end = (rel_time_ms >= check_window_ms - 30) & (rel_time_ms <= check_window_ms + 30)
+    mask_end &= np.isfinite(xyz[:, primary_axis])
     
-    valid_pre = mask_pre & np.isfinite(distance)
-    valid_end = mask_end & np.isfinite(distance)
+    if not mask_start.any() or not mask_end.any():
+        return True, 0.0, 'insufficient_data', primary_axis
     
-    if not valid_pre.any():
-        mask_start = (rel_time_ms >= 0) & (rel_time_ms <= 30)
-        valid_pre = mask_start & np.isfinite(distance)
+    pos_at_start = np.median(xyz[mask_start, primary_axis])
+    pos_at_end = np.median(xyz[mask_end, primary_axis])
     
-    if not valid_pre.any() or not valid_end.any():
-        return True, 0.0, 'insufficient_data'
+    # Determine expected direction based on target
+    if target_pos is not None and np.isfinite(target_pos[primary_axis]):
+        target_on_axis = target_pos[primary_axis]
+        
+        # Expected direction: toward target
+        expected_direction = np.sign(target_on_axis - pos_at_start)
+        actual_direction = np.sign(pos_at_end - pos_at_start)
+        
+        movement_magnitude = abs(pos_at_end - pos_at_start)
+        movement_threshold = axis_ranges[primary_axis] * approach_required
+        
+        if movement_magnitude < movement_threshold:
+            return True, 0.0, f'minimal_movement_{axis_names[primary_axis]}', primary_axis
+        
+        if expected_direction == actual_direction:
+            return True, -(pos_at_end - pos_at_start) * expected_direction, \
+                   f'approaching_on_{axis_names[primary_axis]}', primary_axis
+        else:
+            return False, (pos_at_end - pos_at_start) * expected_direction, \
+                   f'moving_away_on_{axis_names[primary_axis]}', primary_axis
     
-    dist_at_start = np.median(distance[valid_pre])
-    dist_at_end = np.median(distance[valid_end])
-    
-    net_change = dist_at_end - dist_at_start
-    threshold = dist_at_start * approach_required
-    
-    if net_change > threshold:
-        return False, net_change, f'moved_away_{net_change:.2f}'
-    elif net_change > 0:
-        return True, net_change, f'minimal_movement_{net_change:.2f}'
-    else:
-        return True, net_change, f'approaching_{-net_change:.2f}'
+    # No target - just report the movement
+    net_change = pos_at_end - pos_at_start
+    return True, net_change, f'movement_on_{axis_names[primary_axis]}', primary_axis
 
 
 def find_first_closest_approach(distance: np.ndarray, rel_time_ms: np.ndarray,
@@ -742,6 +1614,7 @@ def safe_nanmean(arr):
     return np.nanmean(arr[finite_mask])
 
 
+
 def process_single_reach(
     dlc_df: pd.DataFrame,
     event_frame: int,
@@ -749,6 +1622,8 @@ def process_single_reach(
     fps: float,
     finger_keypoint: str = FINGER_KEYPOINT,
     target_keypoint: str = TARGET_KEYPOINT_A,
+    dlc_2d_root: Path = None,
+    condition_name: str = None,
     debug: bool = False,
 ) -> dict:
     """Process a single reach to compute endpoint error and trajectory metrics."""
@@ -780,21 +1655,56 @@ def process_single_reach(
             'endpoint_error': np.nan,
         }
     
-    # Calculate data quality
+    # Calculate raw data quality (before any cleaning)
     pct_finger_valid_raw = np.mean(np.all(np.isfinite(finger_xyz_raw), axis=1)) * 100
     pct_target_valid_raw = np.mean(np.all(np.isfinite(target_xyz_raw), axis=1)) * 100
     
-    # Clean finger positions
-    finger_xyz_clean, outlier_mask = clean_finger_signal(
-        finger_xyz_raw, fps, 
-        max_interp_gap=MAX_INTERP_GAP_FRAMES
-    )
+    # === Apply likelihood-based masking ===
+    n_finger_masked = 0
+    n_finger_cam0_low = 0
+    n_finger_cam1_low = 0
+    n_target_masked = 0
     
-    n_outliers_detected = outlier_mask.sum()
+    if dlc_2d_root is not None and condition_name is not None:
+        # Get likelihood mask for finger
+        finger_valid_mask, n_finger_cam0_low, n_finger_cam1_low = get_likelihood_mask(
+            dlc_2d_root, condition_name, finger_keypoint, 
+            frame_indices, threshold=LIKELIHOOD_THRESHOLD
+        )
+        finger_xyz_masked = apply_likelihood_mask(finger_xyz_raw, finger_valid_mask)
+        n_finger_masked = (~finger_valid_mask).sum()
+        
+        # Get likelihood mask for target
+        target_valid_mask, _, _ = get_likelihood_mask(
+            dlc_2d_root, condition_name, target_keypoint,
+            frame_indices, threshold=LIKELIHOOD_THRESHOLD
+        )
+        target_xyz_masked = apply_likelihood_mask(target_xyz_raw, target_valid_mask)
+        n_target_masked = (~target_valid_mask).sum()
+        
+        if debug:
+            print(f"    [likelihood] Finger: {n_finger_masked}/{len(frame_indices)} masked "
+                  f"(cam0_low={n_finger_cam0_low}, cam1_low={n_finger_cam1_low})")
+            print(f"    [likelihood] Target: {n_target_masked}/{len(frame_indices)} masked")
+    else:
+        # No 2D likelihoods available - use raw data
+        finger_xyz_masked = finger_xyz_raw.copy()
+        target_xyz_masked = target_xyz_raw.copy()
+        finger_valid_mask = np.all(np.isfinite(finger_xyz_raw), axis=1)
+    
+    finger_xyz_clean, outlier_mask = clean_finger_signal_v2(
+        finger_xyz_masked, fps,
+        rel_time_ms=rel_time_ms,
+        max_interp_gap=MAX_INTERP_GAP_FRAMES,
+        max_speed=100.0,
+    )
+
+    
+    # Calculate post-cleaning data quality
     pct_finger_valid_clean = np.mean(np.all(np.isfinite(finger_xyz_clean), axis=1)) * 100
     
-    # Get target position
-    target_pos = get_target_position_for_reach(target_xyz_raw, method='median')
+    # Get target position (use masked target data)
+    target_pos = get_target_position_for_reach(target_xyz_masked, method='median')
     
     if not np.all(np.isfinite(target_pos)):
         return {
@@ -805,7 +1715,8 @@ def process_single_reach(
             'pct_finger_valid_raw': pct_finger_valid_raw,
             'pct_finger_valid_clean': pct_finger_valid_clean,
             'pct_target_valid_raw': pct_target_valid_raw,
-            'n_outliers_detected': n_outliers_detected,
+            'n_finger_masked_by_likelihood': n_finger_masked,
+            'n_target_masked_by_likelihood': n_target_masked,
         }
     
     if pct_finger_valid_clean < MIN_FINGER_VALID_PCT:
@@ -817,18 +1728,23 @@ def process_single_reach(
             'pct_finger_valid_raw': pct_finger_valid_raw,
             'pct_finger_valid_clean': pct_finger_valid_clean,
             'pct_target_valid_raw': pct_target_valid_raw,
-            'n_outliers_detected': n_outliers_detected,
+            'n_finger_masked_by_likelihood': n_finger_masked,
+            'n_target_masked_by_likelihood': n_target_masked,
             'target_x': target_pos[0],
             'target_y': target_pos[1],
             'target_z': target_pos[2],
         }
     
-    # Compute distance
+    # Compute distance to target
     distance = euclidean_distance(finger_xyz_clean, target_pos)
     
-    # Check direction
-    is_approaching, net_change, direction_reason = check_reach_direction(
-        distance, rel_time_ms, check_window_ms=200.0, approach_required=0.1
+    # Check reach direction
+    is_approaching, net_change, direction_reason, primary_axis = check_reach_direction_v2(
+        finger_xyz_clean,
+        rel_time_ms,
+        check_window_ms=200.0,
+        approach_required=0.1,
+        target_pos=target_pos,
     )
     
     if not is_approaching:
@@ -838,10 +1754,12 @@ def process_single_reach(
             'drop_reason': 'direction_away',
             'endpoint_error': np.nan,
             'net_distance_change': net_change,
+            'primary_movement_axis': primary_axis,
             'pct_finger_valid_raw': pct_finger_valid_raw,
             'pct_finger_valid_clean': pct_finger_valid_clean,
             'pct_target_valid_raw': pct_target_valid_raw,
-            'n_outliers_detected': n_outliers_detected,
+            'n_finger_masked_by_likelihood': n_finger_masked,
+            'n_target_masked_by_likelihood': n_target_masked,
             'target_x': target_pos[0],
             'target_y': target_pos[1],
             'target_z': target_pos[2],
@@ -849,7 +1767,7 @@ def process_single_reach(
     
     # Compute velocity
     dt_sec = 1.0 / fps
-    velocity = compute_velocity(finger_xyz_clean, dt_sec, smooth=True)
+    velocity = compute_velocity(finger_xyz_clean, dt_sec, smooth=True, smooth_window=3)
     
     # Find closest approach
     approach_idx, min_distance, approach_method = find_first_closest_approach(
@@ -868,7 +1786,8 @@ def process_single_reach(
             'pct_finger_valid_raw': pct_finger_valid_raw,
             'pct_finger_valid_clean': pct_finger_valid_clean,
             'pct_target_valid_raw': pct_target_valid_raw,
-            'n_outliers_detected': n_outliers_detected,
+            'n_finger_masked_by_likelihood': n_finger_masked,
+            'n_target_masked_by_likelihood': n_target_masked,
             'target_x': target_pos[0],
             'target_y': target_pos[1],
             'target_z': target_pos[2],
@@ -886,11 +1805,24 @@ def process_single_reach(
             'pct_finger_valid_raw': pct_finger_valid_raw,
             'pct_finger_valid_clean': pct_finger_valid_clean,
             'pct_target_valid_raw': pct_target_valid_raw,
-            'n_outliers_detected': n_outliers_detected,
+            'n_finger_masked_by_likelihood': n_finger_masked,
+            'n_target_masked_by_likelihood': n_target_masked,
             'target_x': target_pos[0],
             'target_y': target_pos[1],
             'target_z': target_pos[2],
         }
+    
+    # Compute oscillation metrics
+    oscillation_end_ms = approach_time_ms + 50
+    oscillation_metrics = compute_direction_changes_v2(
+        finger_xyz_clean,
+        rel_time_ms,
+        start_time_ms=0.0,
+        end_time_ms=oscillation_end_ms,
+        min_reversal_magnitude=0.3,
+        min_reversal_duration_ms=20.0,
+        smoothing_window=3,
+    )
     
     # === COMPUTE TRAJECTORY METRICS ===
     reach_mask = (rel_time_ms >= 0) & (rel_time_ms <= approach_time_ms + 50)
@@ -952,12 +1884,25 @@ def process_single_reach(
         'min_dip_velocity': dip_metrics['min_velocity'],
         'velocity_recovery': dip_metrics['velocity_recovery'],
         
-        # Data quality
-        'net_distance_change_200ms': net_change,
+        # Data quality - likelihood-based
         'pct_finger_valid_raw': pct_finger_valid_raw,
         'pct_finger_valid_clean': pct_finger_valid_clean,
         'pct_target_valid_raw': pct_target_valid_raw,
-        'n_outliers_detected': n_outliers_detected,
+        'n_finger_masked_by_likelihood': n_finger_masked,
+        'n_finger_cam0_low': n_finger_cam0_low,
+        'n_finger_cam1_low': n_finger_cam1_low,
+        'n_target_masked_by_likelihood': n_target_masked,
+        
+        # Direction detection
+        'primary_movement_axis': oscillation_metrics['primary_axis'],
+        'direction_check_axis': ['x', 'y', 'z'][primary_axis],
+        'net_distance_change_200ms': net_change,
+        
+        # Oscillation metrics
+        'n_direction_changes': oscillation_metrics['n_direction_changes'],
+        'total_oscillation_distance': oscillation_metrics['total_oscillation_distance'],
+        'mean_oscillation_amplitude': oscillation_metrics['mean_oscillation_amplitude'],
+        'oscillation_analysis_end_ms': oscillation_end_ms,
     }
 
 
@@ -977,6 +1922,7 @@ def find_condition_name_for_br(br_idx: int) -> Optional[str]:
 def process_peristim_file(
     peristim_path: Path,
     dlc_3d_root: Path,
+    dlc_2d_root: Path,
     behv_aligned_root: Path,
     condition_type: str,
     target_filter: str = 'A',
@@ -1149,6 +2095,8 @@ def process_peristim_file(
             fps=fps,
             finger_keypoint=FINGER_KEYPOINT,
             target_keypoint=reach_target_kp,
+            dlc_2d_root=dlc_2d_root,
+            condition_name=condition_name,
             debug=debug and i < 3,
         )
         
@@ -1229,95 +2177,6 @@ def print_session_summary(combined_df: pd.DataFrame):
     
     print("="*70 + "\n")
 
-
-def create_summary_plots(df: pd.DataFrame, output_dir: Path, summary_br_list: Optional[List[int]] = None):
-    """Create summary visualization plots."""
-    
-    if summary_br_list:
-        df = df[df['br_idx'].isin(summary_br_list)].copy()
-        if len(df) == 0:
-            return
-    
-    df = df[df['status'] == 'success'].copy()
-    if len(df) == 0:
-        return
-    
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-    
-    conditions = df['condition_type'].unique()
-    
-    # 1. Endpoint error distribution
-    ax = axes[0, 0]
-    for cond in conditions:
-        subset = df[df['condition_type'] == cond]['endpoint_error'].dropna()
-        if len(subset) > 0:
-            ax.hist(subset, bins=20, alpha=0.5, label=f'{cond} (n={len(subset)})', density=True)
-    ax.set_xlabel('Endpoint Error (distance)')
-    ax.set_ylabel('Density')
-    ax.set_title('Endpoint Error Distribution')
-    ax.legend()
-    
-    # 2. Trajectory straightness by condition
-    ax = axes[0, 1]
-    df.boxplot(column='straightness', by='condition_type', ax=ax)
-    ax.set_xlabel('Condition Type')
-    ax.set_ylabel('Straightness (1 = perfectly straight)')
-    ax.set_title('Trajectory Straightness')
-    plt.suptitle('')
-    
-    # 3. Path length by condition
-    ax = axes[0, 2]
-    df.boxplot(column='path_length', by='condition_type', ax=ax)
-    ax.set_xlabel('Condition Type')
-    ax.set_ylabel('Path Length (distance)')
-    ax.set_title('Path Length')
-    plt.suptitle('')
-    
-    # 4. Peak velocity by condition
-    ax = axes[1, 0]
-    df.boxplot(column='peak_velocity', by='condition_type', ax=ax)
-    ax.set_xlabel('Condition Type')
-    ax.set_ylabel('Peak Velocity')
-    ax.set_title('Peak Velocity')
-    plt.suptitle('')
-    
-    # 5. Velocity dip magnitude
-    ax = axes[1, 1]
-    dip_df = df[df['dip_detected'] == True]
-    if len(dip_df) > 0:
-        dip_df.boxplot(column='dip_magnitude', by='condition_type', ax=ax)
-        ax.set_title('Velocity Dip Magnitude\n(reaches with detected dips)')
-    else:
-        ax.text(0.5, 0.5, 'No velocity dips detected', ha='center', va='center', transform=ax.transAxes)
-        ax.set_title('Velocity Dip Magnitude')
-    ax.set_xlabel('Condition Type')
-    ax.set_ylabel('Dip Magnitude')
-    plt.suptitle('')
-    
-    # 6. Dip detection rate by BR index
-    ax = axes[1, 2]
-    if 'dip_detected' in df.columns:
-        dip_by_br = df.groupby('br_idx')['dip_detected'].mean() * 100
-        ax.bar(range(len(dip_by_br)), dip_by_br.values)
-        ax.set_xticks(range(len(dip_by_br)))
-        ax.set_xticklabels([str(idx) for idx in dip_by_br.index])
-    ax.set_xlabel('BR Index')
-    ax.set_ylabel('% Reaches with Velocity Dip')
-    ax.set_title('Velocity Dip Detection Rate')
-    
-    plt.tight_layout()
-    
-    if summary_br_list:
-        br_str = '_BR_' + '_'.join(str(b) for b in sorted(summary_br_list))
-        plot_path = output_dir / f"trajectory_metrics_summary{br_str}.png"
-    else:
-        plot_path = output_dir / "trajectory_metrics_summary.png"
-    
-    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"[save] Summary plot: {plot_path}")
-
-
 def plot_single_reach_diagnostic(
     dlc_df: pd.DataFrame,
     event_frame: int,
@@ -1329,8 +2188,9 @@ def plot_single_reach_diagnostic(
     reach_result: dict,
     finger_keypoint: str = FINGER_KEYPOINT,
     target_keypoint: str = TARGET_KEYPOINT_A,
+    dlc_2d_root: Path = None,
 ):
-    """Create diagnostic plot for a single reach."""
+    """Create diagnostic plot for a single reach with position-based direction change markers."""
     from mpl_toolkits.mplot3d import Axes3D
     
     pre_frames, post_frames = win_frames
@@ -1345,24 +2205,49 @@ def plot_single_reach_diagnostic(
     except ValueError:
         return
     
-    finger_xyz_clean, outlier_mask = clean_finger_signal(
-        finger_xyz_raw, fps, max_interp_gap=MAX_INTERP_GAP_FRAMES
+    if dlc_2d_root is not None and condition_name is not None:
+        # Apply likelihood mask to finger
+        finger_valid_mask, _, _ = get_likelihood_mask(
+            dlc_2d_root, condition_name, finger_keypoint,
+            frame_indices, threshold=LIKELIHOOD_THRESHOLD
+        )
+        finger_xyz_masked = apply_likelihood_mask(finger_xyz_raw, finger_valid_mask)
+        
+        # Apply likelihood mask to target
+        target_valid_mask, _, _ = get_likelihood_mask(
+            dlc_2d_root, condition_name, target_keypoint,
+            frame_indices, threshold=LIKELIHOOD_THRESHOLD
+        )
+        target_xyz_masked = apply_likelihood_mask(target_xyz_raw, target_valid_mask)
+    else:
+        finger_xyz_masked = finger_xyz_raw.copy()
+        target_xyz_masked = target_xyz_raw.copy()
+
+    finger_xyz_clean, outlier_mask = clean_finger_signal_v2(
+        finger_xyz_masked, fps, 
+        rel_time_ms=rel_time_ms,
+        max_interp_gap=MAX_INTERP_GAP_FRAMES,
+        max_speed=100.0,
     )
     
-    target_pos = get_target_position_for_reach(target_xyz_raw, method='median')
+    
+    target_pos = get_target_position_for_reach(target_xyz_masked, method='median')
+
     
     if not np.all(np.isfinite(target_pos)):
         target_pos = np.array([np.nan, np.nan, np.nan])
     
     distance = euclidean_distance(finger_xyz_clean, target_pos)
     
-    is_approaching, net_change, direction_reason = check_reach_direction(
-        distance, rel_time_ms, check_window_ms=200.0, approach_required=0.1
+    is_approaching, net_change, direction_reason, primary_axis_check = check_reach_direction_v2(
+        finger_xyz_clean, rel_time_ms, 
+        check_window_ms=200.0, 
+        approach_required=0.1,
+        target_pos=target_pos,
     )
     
     dt_sec = 1.0 / fps
-    velocity_raw = compute_velocity(finger_xyz_clean, dt_sec, smooth=False)
-    velocity_smooth = compute_velocity(finger_xyz_clean, dt_sec, smooth=True)
+    velocity = compute_velocity(finger_xyz_clean, dt_sec, smooth=True, smooth_window=3)
     
     approach_idx, min_dist, method = find_first_closest_approach(
         distance,
@@ -1371,95 +2256,137 @@ def plot_single_reach_diagnostic(
         first_approach_threshold=0.3,
     )
     
+    # Compute direction changes using position-based method
+    oscillation_end_ms = rel_time_ms[approach_idx] + 50 if approach_idx >= 0 else 600.0
+    oscillation_metrics = compute_direction_changes_v2(
+        finger_xyz_clean,
+        rel_time_ms,
+        start_time_ms=0.0,
+        end_time_ms=oscillation_end_ms,
+        min_reversal_magnitude=0.3,
+        min_reversal_duration_ms=20.0,
+        smoothing_window=3,
+    )
+    
     status = reach_result.get('status', 'unknown')
     drop_reason = reach_result.get('drop_reason', '')
     
-    fig = plt.figure(figsize=(18, 14))
+    fig = plt.figure(figsize=(18, 16))
     
     # 1. Distance over time
     ax1 = fig.add_subplot(3, 2, 1)
-    ax1.axvspan(rel_time_ms.min(), MIN_APPROACH_TIME_MS, alpha=0.1, color='gray', 
-                label=f'Before min approach ({MIN_APPROACH_TIME_MS}ms)')
+    ax1.axvspan(rel_time_ms.min(), MIN_APPROACH_TIME_MS, alpha=0.1, color='gray')
     ax1.plot(rel_time_ms, distance, 'b-', lw=1.5, label='Distance to target')
-    ax1.axvline(0, color='r', ls='--', lw=2, label='Event (stim/IR)')
-    ax1.axvline(MIN_APPROACH_TIME_MS, color='orange', ls=':', lw=2, label=f'Min approach time')
+    ax1.axvline(0, color='r', ls='--', lw=2, label='Event')
+    ax1.axvline(MIN_APPROACH_TIME_MS, color='orange', ls=':', lw=2, label='Min approach')
     
     if approach_idx >= 0 and status == 'success':
         approach_time = rel_time_ms[approach_idx]
         ax1.axvline(approach_time, color='g', ls='-', lw=2, label='Closest approach')
         ax1.scatter([approach_time], [min_dist], c='g', s=100, zorder=5)
-        ax1.annotate(f'{approach_time:.0f} ms\n{min_dist:.2f}', 
-                    xy=(approach_time, min_dist),
-                    xytext=(approach_time + 50, min_dist + 0.5),
-                    fontsize=9, 
-                    arrowprops=dict(arrowstyle='->', color='green'))
     
     ax1.set_xlabel('Time relative to event (ms)')
     ax1.set_ylabel('Distance to target')
-    ax1.set_title(f'Distance to Target Over Time\nMethod: {method}')
+    ax1.set_title(f'Distance to Target | Method: {method}')
     ax1.legend(loc='upper right', fontsize=7)
     ax1.grid(True, alpha=0.3)
     
-    # 2. Velocity over time
+    # 2. PRIMARY AXIS POSITION with peaks/valleys marked
     ax2 = fig.add_subplot(3, 2, 2)
-    ax2.plot(rel_time_ms, velocity_raw, 'purple', lw=0.5, alpha=0.3, label='Raw velocity')
-    ax2.plot(rel_time_ms, velocity_smooth, 'purple', lw=1.5, label='Smoothed velocity')
-    ax2.axvline(0, color='r', ls='--', lw=2)
-    ax2.axvline(MIN_APPROACH_TIME_MS, color='orange', ls=':', lw=2)
+    
+    primary_axis_idx = oscillation_metrics.get('primary_axis_index', 0)
+    primary_axis_name = oscillation_metrics.get('primary_axis', 'x')
+    
+    if primary_axis_idx is not None:
+        primary_pos = finger_xyz_clean[:, primary_axis_idx]
+        ax2.plot(rel_time_ms, primary_pos, 'purple', lw=1.5, 
+                label=f'{primary_axis_name.upper()} position (primary axis)')
+        
+        # Mark peaks and valleys
+        dc_times = oscillation_metrics.get('direction_change_times_ms', [])
+        dc_positions = oscillation_metrics.get('direction_change_positions', [])
+        dc_types = oscillation_metrics.get('direction_change_types', [])
+        
+        for t, p, typ in zip(dc_times, dc_positions, dc_types):
+            if typ == 'peak':
+                ax2.scatter([t], [p], c='red', s=100, marker='^', zorder=5, 
+                           edgecolors='black', linewidths=1)
+            else:  # valley
+                ax2.scatter([t], [p], c='blue', s=100, marker='v', zorder=5,
+                           edgecolors='black', linewidths=1)
+        
+        # Add legend entries for markers
+        ax2.scatter([], [], c='red', s=100, marker='^', label='Peak (max)', edgecolors='black')
+        ax2.scatter([], [], c='blue', s=100, marker='v', label='Valley (min)', edgecolors='black')
+    
+    ax2.axvline(0, color='r', ls='--', lw=2, alpha=0.5)
+    ax2.axvline(MIN_APPROACH_TIME_MS, color='orange', ls=':', lw=2, alpha=0.5)
     if approach_idx >= 0 and status == 'success':
-        ax2.axvline(rel_time_ms[approach_idx], color='g', ls='-', lw=2)
+        ax2.axvline(rel_time_ms[approach_idx], color='g', ls='-', lw=2, alpha=0.5)
     
-    dip_detected = reach_result.get('dip_detected', False)
-    if dip_detected:
-        dip_time = reach_result.get('dip_time_ms', np.nan)
-        if np.isfinite(dip_time):
-            ax2.axvline(dip_time, color='cyan', ls='--', lw=2, label='Velocity dip')
-    
+    n_changes = oscillation_metrics.get('n_direction_changes', 0)
+    total_osc_dist = oscillation_metrics.get('total_oscillation_distance', 0)
     ax2.set_xlabel('Time relative to event (ms)')
-    ax2.set_ylabel('Velocity (distance/s)')
-    ax2.set_title('Finger Velocity Over Time')
+    ax2.set_ylabel(f'{primary_axis_name.upper()} Position')
+    ax2.set_title(f'Primary Axis Position | {n_changes} direction changes | Total oscillation: {total_osc_dist:.2f}')
     ax2.legend(loc='upper right', fontsize=8)
     ax2.grid(True, alpha=0.3)
     
-    # 3. Finger X, Y, Z positions
+    # 3. All position axes
     ax3 = fig.add_subplot(3, 2, 3)
     colors = ['red', 'green', 'blue']
     labels = ['X', 'Y', 'Z']
+    
     for dim, (color, label) in enumerate(zip(colors, labels)):
-        ax3.plot(rel_time_ms, finger_xyz_raw[:, dim], color=color, lw=0.5, alpha=0.3)
-        ax3.plot(rel_time_ms, finger_xyz_clean[:, dim], color=color, lw=1.5, label=f'Finger {label}')
+        lw = 2.5 if dim == primary_axis_idx else 1.0
+        alpha = 1.0 if dim == primary_axis_idx else 0.5
+        ax3.plot(rel_time_ms, finger_xyz_raw[:, dim], color=color, lw=0.5, alpha=0.2)
+        ax3.plot(rel_time_ms, finger_xyz_clean[:, dim], color=color, lw=lw, alpha=alpha,
+                label=f'{label}' + (' (primary)' if dim == primary_axis_idx else ''))
+    
+    # Mark direction changes on primary axis
+    if primary_axis_idx is not None:
+        for t, p, typ in zip(dc_times, dc_positions, dc_types):
+            marker = '^' if typ == 'peak' else 'v'
+            color = 'red' if typ == 'peak' else 'blue'
+            ax3.scatter([t], [p], c=color, s=60, marker=marker, zorder=5,
+                       edgecolors='black', linewidths=0.5)
     
     if outlier_mask.any():
-        outlier_times = rel_time_ms[outlier_mask]
-        for ot in outlier_times:
-            ax3.axvline(ot, color='gray', ls=':', alpha=0.3)
-        ax3.axvline(np.nan, color='gray', ls=':', alpha=0.3, label=f'Outliers (n={outlier_mask.sum()})')
+        ax3.axvline(np.nan, color='gray', ls=':', alpha=0.5, 
+                   label=f'Outliers removed (n={outlier_mask.sum()})')
     
     ax3.axvline(0, color='r', ls='--', lw=2, alpha=0.5)
-    ax3.axvline(MIN_APPROACH_TIME_MS, color='orange', ls=':', lw=2, alpha=0.5)
     if approach_idx >= 0 and status == 'success':
         ax3.axvline(rel_time_ms[approach_idx], color='g', ls='-', lw=2, alpha=0.5)
     ax3.set_xlabel('Time relative to event (ms)')
     ax3.set_ylabel('Position')
-    ax3.set_title('Finger Position (X, Y, Z) Over Time\n(faint = raw, solid = cleaned)')
+    ax3.set_title('All Position Axes (faint=raw, solid=cleaned)')
     ax3.legend(loc='upper right', fontsize=8)
     ax3.grid(True, alpha=0.3)
     
-    # 4. Target X, Y, Z positions
+    # 4. Velocity magnitude (still useful for speed info)
     ax4 = fig.add_subplot(3, 2, 4)
-    for dim, (color, label) in enumerate(zip(colors, labels)):
-        ax4.plot(rel_time_ms, target_xyz_raw[:, dim], color=color, lw=1.5, 
-                label=f'Target {label}', marker='.', markersize=2)
-        if np.isfinite(target_pos[dim]):
-            ax4.axhline(target_pos[dim], color=color, ls='--', lw=1, alpha=0.5)
+    ax4.plot(rel_time_ms, velocity, 'purple', lw=1.5, label='Speed (3D magnitude)')
     ax4.axvline(0, color='r', ls='--', lw=2, alpha=0.5)
+    ax4.axvline(MIN_APPROACH_TIME_MS, color='orange', ls=':', lw=2, alpha=0.5)
+    if approach_idx >= 0 and status == 'success':
+        ax4.axvline(rel_time_ms[approach_idx], color='g', ls='-', lw=2, alpha=0.5)
+    
+    # Mark velocity dip if detected
+    dip_detected = reach_result.get('dip_detected', False)
+    if dip_detected:
+        dip_time = reach_result.get('dip_time_ms', np.nan)
+        if np.isfinite(dip_time):
+            ax4.axvline(dip_time, color='cyan', ls='--', lw=2, label='Velocity dip')
+    
     ax4.set_xlabel('Time relative to event (ms)')
-    ax4.set_ylabel('Position')
-    ax4.set_title(f'Target Position (X, Y, Z) Over Time\n(dashed = median used for distance calc)')
+    ax4.set_ylabel('Speed')
+    ax4.set_title('Movement Speed (3D velocity magnitude)')
     ax4.legend(loc='upper right', fontsize=8)
     ax4.grid(True, alpha=0.3)
     
-    # 5. 3D Trajectory
+    # 5. 3D Trajectory with direction change markers
     ax5 = fig.add_subplot(3, 2, 5, projection='3d')
     
     valid_clean = np.all(np.isfinite(finger_xyz_clean), axis=1)
@@ -1473,7 +2400,21 @@ def plot_single_reach_diagnostic(
     
     if np.all(np.isfinite(target_pos)):
         ax5.scatter([target_pos[0]], [target_pos[1]], [target_pos[2]], 
-                   c='red', s=300, marker='*', label='Target', zorder=10)
+                   c='gold', s=300, marker='*', label='Target', zorder=10,
+                   edgecolors='black', linewidths=1)
+    
+    # Mark direction changes in 3D
+    dc_global_indices = oscillation_metrics.get('direction_change_global_indices', [])
+    for i, global_idx in enumerate(dc_global_indices):
+        if global_idx < len(finger_xyz_clean) and np.all(np.isfinite(finger_xyz_clean[global_idx])):
+            typ = dc_types[i] if i < len(dc_types) else 'peak'
+            marker = '^' if typ == 'peak' else 'v'
+            color = 'red' if typ == 'peak' else 'blue'
+            ax5.scatter([finger_xyz_clean[global_idx, 0]], 
+                       [finger_xyz_clean[global_idx, 1]],
+                       [finger_xyz_clean[global_idx, 2]], 
+                       c=color, s=100, marker=marker, edgecolors='black', 
+                       linewidths=1, zorder=8)
     
     if approach_idx >= 0 and status == 'success' and valid_clean[approach_idx]:
         ax5.scatter([finger_xyz_clean[approach_idx, 0]], 
@@ -1481,33 +2422,29 @@ def plot_single_reach_diagnostic(
                    [finger_xyz_clean[approach_idx, 2]], 
                    c='green', s=200, marker='o', edgecolors='black', 
                    linewidths=2, label='Closest approach', zorder=10)
-        if np.all(np.isfinite(target_pos)):
-            ax5.plot([finger_xyz_clean[approach_idx, 0], target_pos[0]],
-                    [finger_xyz_clean[approach_idx, 1], target_pos[1]],
-                    [finger_xyz_clean[approach_idx, 2], target_pos[2]],
-                    'g--', lw=2, alpha=0.7)
     
     if valid_clean.any():
         first_valid = np.where(valid_clean)[0][0]
         ax5.scatter([finger_xyz_clean[first_valid, 0]], 
                    [finger_xyz_clean[first_valid, 1]],
                    [finger_xyz_clean[first_valid, 2]], 
-                   c='blue', s=150, marker='s', edgecolors='black',
+                   c='cyan', s=150, marker='s', edgecolors='black',
                    linewidths=2, label='Start', zorder=10)
     
     ax5.set_xlabel('X')
     ax5.set_ylabel('Y')
     ax5.set_zlabel('Z')
-    ax5.set_title('3D Finger Trajectory')
+    ax5.set_title('3D Trajectory (▲=peak, ▼=valley)')
     ax5.legend(loc='upper left', fontsize=8)
     
-    # 6. Top-down view XY
+    # 6. Top-down XY view
     ax6 = fig.add_subplot(3, 2, 6)
     
     if valid_clean.any():
         valid_xyz = finger_xyz_clean[valid_clean]
         valid_times = rel_time_ms[valid_clean]
         
+        # Draw trajectory
         for i in range(len(valid_xyz) - 1):
             t_norm = (valid_times[i] - valid_times.min()) / (valid_times.max() - valid_times.min() + 1e-6)
             color = plt.cm.coolwarm(t_norm)
@@ -1519,30 +2456,37 @@ def plot_single_reach_diagnostic(
                         c=valid_times, cmap='coolwarm', s=20, alpha=0.8, zorder=5)
         plt.colorbar(sc, ax=ax6, label='Time (ms)')
     
+    # Mark direction changes
+    for i, global_idx in enumerate(dc_global_indices):
+        if global_idx < len(finger_xyz_clean) and np.all(np.isfinite(finger_xyz_clean[global_idx, :2])):
+            typ = dc_types[i] if i < len(dc_types) else 'peak'
+            marker = '^' if typ == 'peak' else 'v'
+            color = 'red' if typ == 'peak' else 'blue'
+            ax6.scatter([finger_xyz_clean[global_idx, 0]], 
+                       [finger_xyz_clean[global_idx, 1]], 
+                       c=color, s=100, marker=marker, edgecolors='black', 
+                       linewidths=1, zorder=8)
+    
     if np.all(np.isfinite(target_pos)):
-        ax6.scatter([target_pos[0]], [target_pos[1]], c='red', s=300, marker='*', 
-                   label='Target', zorder=10)
+        ax6.scatter([target_pos[0]], [target_pos[1]], c='gold', s=300, marker='*', 
+                   label='Target', zorder=10, edgecolors='black', linewidths=1)
     
     if approach_idx >= 0 and status == 'success' and valid_clean[approach_idx]:
         ax6.scatter([finger_xyz_clean[approach_idx, 0]], 
                    [finger_xyz_clean[approach_idx, 1]], 
                    c='green', s=200, marker='o', edgecolors='black', 
                    linewidths=2, label='Closest approach', zorder=10)
-        if np.all(np.isfinite(target_pos)):
-            ax6.plot([finger_xyz_clean[approach_idx, 0], target_pos[0]],
-                    [finger_xyz_clean[approach_idx, 1], target_pos[1]],
-                    'g--', lw=2, alpha=0.7)
     
     if valid_clean.any():
         first_valid = np.where(valid_clean)[0][0]
         ax6.scatter([finger_xyz_clean[first_valid, 0]], 
                    [finger_xyz_clean[first_valid, 1]], 
-                   c='blue', s=150, marker='s', edgecolors='black',
+                   c='cyan', s=150, marker='s', edgecolors='black',
                    linewidths=2, label='Start', zorder=10)
     
     ax6.set_xlabel('X')
     ax6.set_ylabel('Y')
-    ax6.set_title('Trajectory Top-Down (XY)')
+    ax6.set_title('Top-Down View (XY)')
     ax6.legend(loc='best', fontsize=8)
     ax6.set_aspect('equal')
     ax6.grid(True, alpha=0.3)
@@ -1551,8 +2495,9 @@ def plot_single_reach_diagnostic(
     if status == 'success':
         title_color = 'green'
         straightness = reach_result.get('straightness', np.nan)
-        dip_str = " | DIP DETECTED" if dip_detected else ""
-        status_str = f'SUCCESS - Error: {min_dist:.2f} | Time: {rel_time_ms[approach_idx]:.0f}ms | Straightness: {straightness:.3f}{dip_str}'
+        dip_str = " | DIP" if dip_detected else ""
+        osc_str = f" | {n_changes} reversals" if n_changes > 0 else ""
+        status_str = f'SUCCESS - Error: {min_dist:.2f} | Time: {rel_time_ms[approach_idx]:.0f}ms | Straightness: {straightness:.3f}{dip_str}{osc_str}'
     else:
         title_color = 'red'
         status_str = f'DROPPED - {status}: {drop_reason}'
@@ -1570,101 +2515,77 @@ def plot_single_reach_diagnostic(
     diag_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(diag_dir / f"reach_{reach_idx:03d}.png", dpi=100, bbox_inches='tight')
     plt.close(fig)
-
-
-def plot_population_diagnostics(df: pd.DataFrame, output_dir: Path, summary_br_list: Optional[List[int]] = None):
-    """Create population-level diagnostic plots."""
+    
+def create_approach_and_error_summary(
+    df: pd.DataFrame, 
+    output_dir: Path, 
+    summary_br_list: Optional[List[int]] = None
+):
+    """Create a 2-panel figure: approach time histogram and endpoint error distribution."""
     
     if summary_br_list:
         df = df[df['br_idx'].isin(summary_br_list)].copy()
     
     success_df = df[df['status'] == 'success'].copy()
     
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    if len(success_df) == 0:
+        print("[warn] No successful reaches for summary plot")
+        return
+    
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    
+    conditions = sorted(success_df['condition_type'].unique())
+    colors_map = {'control': '#808080', 'stim': '#2E86AB', 'continuous_stim': '#E94F37'}
     
     # 1. Approach time histogram
-    ax = axes[0, 0]
-    if len(success_df) > 0:
-        for cond in success_df['condition_type'].unique():
-            subset = success_df[success_df['condition_type'] == cond]
-            ax.hist(subset['approach_time_ms'], bins=30, alpha=0.5, label=cond)
+    ax = axes[0]
+    for cond in conditions:
+        subset = success_df[success_df['condition_type'] == cond]
+        color = colors_map.get(cond, '#2E86AB')
+        ax.hist(subset['approach_time_ms'], bins=30, alpha=0.5, 
+                label=f'{cond} (n={len(subset)})', color=color, edgecolor='black', linewidth=0.5)
+    
     ax.axvline(0, color='r', ls='--', lw=2, label='Event time')
-    ax.axvline(MIN_APPROACH_TIME_MS, color='orange', ls=':', lw=2, label=f'Min approach ({MIN_APPROACH_TIME_MS}ms)')
-    ax.set_xlabel('Approach Time (ms)')
-    ax.set_ylabel('Count')
-    ax.set_title('When does closest approach occur?')
-    ax.legend()
+    ax.axvline(MIN_APPROACH_TIME_MS, color='orange', ls=':', lw=2, 
+               label=f'Min approach ({MIN_APPROACH_TIME_MS:.0f}ms)')
+    ax.set_xlabel('Approach Time (ms)', fontsize=11)
+    ax.set_ylabel('Count', fontsize=11)
+    ax.set_title('Time to Closest Approach', fontsize=12, fontweight='bold')
+    ax.legend(loc='upper right', fontsize=9)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.grid(True, alpha=0.3, axis='y')
     
-    # 2. Error vs straightness
-    ax = axes[0, 1]
-    if len(success_df) > 0:
-        for cond in success_df['condition_type'].unique():
-            subset = success_df[success_df['condition_type'] == cond]
-            ax.scatter(subset['straightness'], subset['endpoint_error'], 
-                      alpha=0.5, label=cond, s=30)
-    ax.set_xlabel('Trajectory Straightness')
-    ax.set_ylabel('Endpoint Error')
-    ax.set_title('Error vs Straightness')
-    ax.legend()
+    # 2. Endpoint error distribution
+    ax = axes[1]
+    for cond in conditions:
+        subset = success_df[success_df['condition_type'] == cond]['endpoint_error'].dropna()
+        if len(subset) > 0:
+            color = colors_map.get(cond, '#2E86AB')
+            ax.hist(subset, bins=20, alpha=0.5, 
+                    label=f'{cond} (n={len(subset)})', color=color, 
+                    edgecolor='black', linewidth=0.5, density=True)
     
-    # 3. Finger validity
-    ax = axes[0, 2]
-    if 'pct_finger_valid_clean' in df.columns:
-        ax.hist(df['pct_finger_valid_clean'].dropna(), bins=20, alpha=0.7, color='blue')
-        ax.axvline(MIN_FINGER_VALID_PCT, color='r', ls='--', lw=2, 
-                   label=f'Min required ({MIN_FINGER_VALID_PCT}%)')
-        ax.legend()
-    ax.set_xlabel('% Frames with Valid Finger Position')
-    ax.set_ylabel('Count')
-    ax.set_title('Finger Tracking Quality')
-    
-    # 4. Drop reasons
-    ax = axes[1, 0]
-    drop_df = df[df['status'] != 'success']
-    if len(drop_df) > 0 and 'drop_reason' in drop_df.columns:
-        drop_counts = drop_df['drop_reason'].value_counts()
-        ax.pie(drop_counts.values, labels=drop_counts.index, autopct='%1.1f%%')
-        ax.set_title(f'Drop Reasons (n={len(drop_df)})')
-    else:
-        ax.text(0.5, 0.5, 'No dropped reaches', ha='center', va='center', transform=ax.transAxes)
-    
-    # 5. Velocity dip by BR
-    ax = axes[1, 1]
-    if len(success_df) > 0 and 'dip_detected' in success_df.columns:
-        dip_by_br = success_df.groupby('br_idx')['dip_detected'].mean() * 100
-        x = range(len(dip_by_br))
-        ax.bar(x, dip_by_br.values, alpha=0.7, color='steelblue')
-        ax.set_xticks(x)
-        ax.set_xticklabels([str(idx) for idx in dip_by_br.index])
-        ax.set_xlabel('BR Index')
-        ax.set_ylabel('% with Velocity Dip')
-        ax.set_title('Velocity Dip Detection by Condition')
-    
-    # 6. Error by BR
-    ax = axes[1, 2]
-    if len(success_df) > 0:
-        br_means = success_df.groupby('br_idx')['endpoint_error'].mean().sort_index()
-        br_stds = success_df.groupby('br_idx')['endpoint_error'].std().sort_index()
-        br_counts = success_df.groupby('br_idx')['endpoint_error'].count().sort_index()
-        
-        x = range(len(br_means))
-        ax.bar(x, br_means.values, yerr=br_stds.values, capsize=3, alpha=0.7)
-        ax.set_xticks(x)
-        ax.set_xticklabels([f'{idx}\n(n={br_counts[idx]})' for idx in br_means.index], fontsize=8)
-        ax.set_xlabel('BR Index')
-        ax.set_ylabel('Mean Endpoint Error')
-        ax.set_title('Error by Condition')
+    ax.set_xlabel('Endpoint Error (distance)', fontsize=11)
+    ax.set_ylabel('Density', fontsize=11)
+    ax.set_title('Endpoint Error Distribution', fontsize=12, fontweight='bold')
+    ax.legend(loc='upper right', fontsize=9)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.grid(True, alpha=0.3, axis='y')
     
     plt.tight_layout()
     
+    # Save
     if summary_br_list:
         br_str = '_BR_' + '_'.join(str(b) for b in sorted(summary_br_list))
-        fig.savefig(output_dir / f"population_diagnostics{br_str}.png", dpi=150, bbox_inches='tight')
+        save_path = output_dir / f"approach_and_error_summary{br_str}.png"
     else:
-        fig.savefig(output_dir / "population_diagnostics.png", dpi=150, bbox_inches='tight')
+        save_path = output_dir / "approach_and_error_summary.png"
+    
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"[save] Population diagnostics saved")
-
+    print(f"[save] Approach & error summary: {save_path}")
 
 
 def get_condition_label_from_peristim(peristim_path: Path) -> str:
@@ -1998,6 +2919,15 @@ def main():
         dlc_3d_root = Path(VIDEO_ROOT) / "DLC_3D"
     
     print(f"[info] Using DLC_3D root: {dlc_3d_root}")
+
+    # Set up 2D DLC root for likelihood masking
+    dlc_2d_root = Path(VIDEO_ROOT) / "DLC"
+    if not dlc_2d_root.exists():
+        print(f"[warn] 2D DLC root not found: {dlc_2d_root}")
+        print("[warn] Likelihood-based masking will be disabled")
+        dlc_2d_root = None
+    else:
+        print(f"[info] Using DLC_2D root for likelihood masking: {dlc_2d_root}")
     
     behv_aligned_root = BEHV_CKPT_ROOT
     
@@ -2021,6 +2951,7 @@ def main():
             df = process_peristim_file(
                 peristim_path=peri_path,
                 dlc_3d_root=dlc_3d_root,
+                dlc_2d_root=dlc_2d_root,
                 behv_aligned_root=behv_aligned_root,
                 condition_type=condition_type,
                 target_filter=args.target,
@@ -2080,6 +3011,7 @@ def main():
                 reach_result=row.to_dict(),
                 finger_keypoint=FINGER_KEYPOINT,
                 target_keypoint=target_kp,
+                dlc_2d_root=dlc_2d_root,
             )
     
     print(f"[save] Diagnostics: {RESULTS_ROOT / 'diagnostics'}")
@@ -2101,12 +3033,15 @@ def main():
         summary.to_csv(summary_csv)
         print(f"[save] Summary: {summary_csv}")
         print(summary)
-        
-        create_summary_plots(combined_df, RESULTS_ROOT, summary_br_list=args.summary_br)
+
+
+    # Oscillation summary plot
+    success_df = combined_df[combined_df['status'] == 'success'].copy()
+    if len(success_df) > 0 and 'n_direction_changes' in success_df.columns:
+        create_approach_and_error_summary(combined_df, RESULTS_ROOT, summary_br_list=args.summary_br)
+        create_oscillation_summary_plot(combined_df, RESULTS_ROOT, summary_br_list=args.summary_br)
     
-    plot_population_diagnostics(combined_df, RESULTS_ROOT, summary_br_list=args.summary_br)
-    
-    # === NEW: Create publication-quality SVG figure ===
+    # === Create publication-quality SVG figure ===
     print("\n[info] Building condition labels...")
     condition_labels = build_condition_labels(combined_df, peri_roots)
     

@@ -18,7 +18,6 @@ from spikeinterface.core import BaseRecording, BaseRecordingSegment
 # SI tries to check the __version__ of the module. Since the module is __mp_main__, it crashes.
 __version__ = "1.0.0"
 
-
 # Suppress annoying SpikeInterface provenance warning when manually reconstructing memory arrays
 warnings.filterwarnings("ignore", message="The extractor is not serializable to file. The provenance will not be saved.")
 
@@ -140,6 +139,86 @@ UA_CKPT_OUT = UA_CKPT_ROOT
 
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
+
+
+
+def detect_artifacts_matched_filter(trace, template, fs, expected_times=None, 
+                                     search_radius_ms=1.0, threshold_std=3.0):
+    """
+    Detect artifact times using matched filtering with a learned template.
+    
+    Parameters
+    ----------
+    trace : 1D array
+        The signal to search (in µV)
+    template : 1D array
+        The normalized artifact template
+    fs : float
+        Sampling frequency in Hz
+    expected_times : array or None
+        Expected artifact sample indices (from Intan timing). If provided,
+        detection is refined around these times. If None, finds all peaks.
+    search_radius_ms : float
+        Search radius around expected times (ms)
+    threshold_std : float
+        Detection threshold in standard deviations above baseline correlation
+        
+    Returns
+    -------
+    detected_times : array
+        Sample indices where artifacts were detected
+    correlation : array
+        The matched filter output (for debugging)
+    """
+    from scipy.signal import correlate
+    
+    # Cross-correlate (matched filter)
+    correlation = correlate(trace, template, mode='same')
+    
+    search_radius_samp = int(search_radius_ms / 1000 * fs)
+    
+    if expected_times is not None and len(expected_times) > 0:
+        # Refine detection around expected times
+        detected_times = []
+        
+        for expected in expected_times:
+            lo = max(0, expected - search_radius_samp)
+            hi = min(len(correlation), expected + search_radius_samp)
+            
+            if hi <= lo:
+                detected_times.append(expected)
+                continue
+            
+            # Find peak correlation in this window
+            local_corr = correlation[lo:hi]
+            peak_idx = np.argmax(local_corr)
+            detected_times.append(lo + peak_idx)
+        
+        return np.array(detected_times), correlation
+    
+    else:
+        # Global detection: find all peaks above threshold
+        corr_std = np.std(correlation)
+        corr_mean = np.mean(correlation)
+        threshold = corr_mean + threshold_std * corr_std
+        
+        # Find peaks above threshold
+        above_thresh = correlation > threshold
+        detected_times = []
+        in_peak = False
+        peak_start = 0
+        
+        for i in range(len(above_thresh)):
+            if above_thresh[i] and not in_peak:
+                in_peak = True
+                peak_start = i
+            elif not above_thresh[i] and in_peak:
+                in_peak = False
+                peak_idx = peak_start + np.argmax(correlation[peak_start:i])
+                detected_times.append(peak_idx)
+        
+        return np.array(detected_times), correlation
+
 
 def _find_first_significant_peak(tr_local, ref_ratio=0.5):
     """
@@ -295,6 +374,8 @@ def main():
             ends_ua   = ends_ua[valid]
 
             if starts_ua.size:
+
+
                 if USE_IPCA_CORRECTION:
                     print(f"[IPCA] Starting Incremental PCA artifact correction on {starts_ua.size} blocks...")
                     
@@ -309,261 +390,933 @@ def main():
                     micro_n_time = mw_end - mw_start
                     
                     interval_samp = int(pulse_interval_ms / 1000.0 * fs_ua)
-                    refine_samp = max(int(0.15 / 1000.0 * fs_ua), 3)  # 0.15ms like debug script
+                    refine_samp = max(int(0.15 / 1000.0 * fs_ua), 3)
                     coarse_radius = max(refine_samp, 3)
                     search_radius_samp = int((pulse_interval_ms * 0.4) / 1000.0 * fs_ua)
                     
-                    # Reference channel for pulse detection
+                    # Reference channels for pulse detection - ONE PER REGION
                     center_elecs_A = {0: 29, 1: 93, 2: 165, 3: 229}
                     center_elecs_B = {0: 37, 1: 101, 2: 157, 3: 221}
                     center_elecs = center_elecs_A if ua_port == 'A' else center_elecs_B
-                    ref_elec_id = center_elecs.get(0, 37)
-                    ref_matches = np.where(ua_elec == ref_elec_id)[0]
-                    ref_ch_idx = ref_matches[0] if ref_matches.size > 0 else 0
-                    ref_ch_name = rec_ns6.get_channel_ids()[ref_ch_idx]
                     
-                    print(f"[IPCA] Pulse detection via electrode {ref_elec_id} (ch {ref_ch_name})...")
+                    # Build list of reference channels (one per region)
+                    ref_channels = []  # List of (region_idx, elec_id, ch_idx, ch_name)
+                    for region_idx, elec_id in center_elecs.items():
+                        matches = np.where(ua_elec == elec_id)[0]
+                        if matches.size > 0:
+                            ch_idx = matches[0]
+                            ch_name = rec_ns6.get_channel_ids()[ch_idx]
+                            ref_channels.append((region_idx, elec_id, ch_idx, ch_name))
+                            print(f"[IPCA] Region {region_idx}: reference electrode {elec_id} (ch {ch_name})")
+                        else:
+                            print(f"[IPCA] Region {region_idx}: electrode {elec_id} not found, skipping")
                     
-                    # Collect all pulse centres - MATCHING THE DEBUG SCRIPT LOGIC
-                    all_pulse_centres = []
-                    
-                    for i, (st, en) in enumerate(zip(starts_ua, ends_ua)):
-                        # ── Coarse search: find the first pulse in a wider window ────
-                        # This is the KEY step that the debug script does!
-                        search_margin = int(20.0 / 1000 * fs_ua)  # 20ms margin
-                        start_search = max(0, st - search_margin)
-                        end_search = min(n_total, en + search_margin)
-                        
-                        if end_search <= start_search:
-                            continue
-                        
-                        tr_search = rec_ns6.get_traces(
-                            start_frame=start_search, end_frame=end_search,
-                            channel_ids=[ref_ch_name], return_in_uV=True
-                        )[:, 0]
-                        
-                        tr_diff_search = np.abs(np.diff(tr_search, prepend=tr_search[0]))
-                        
-                        # Expected position of first pulse within the search window
-                        predicted_centre = st - start_search  # where we THINK the first pulse is
-                        slop = int(5.0 / 1000 * fs_ua)  # 5ms tolerance
-                        win_lo = max(0, predicted_centre - slop)
-                        win_hi = min(len(tr_search), predicted_centre + slop)
-                        
-                        if win_hi <= win_lo:
-                            continue
-                        
-                        # Find the peak derivative in this window
-                        peak_in_win = np.argmax(tr_diff_search[win_lo:win_hi])
-                        anchor_idx = win_lo + peak_in_win
-                        max_diff = tr_diff_search[anchor_idx]
-                        
-                        if max_diff < 5.0:  # No credible artifact
-                            continue
-                        
-                        # Scan left→right for the first threshold-crossing derivative
-                        first_pulse_in_search = None
-                        for k in range(win_lo, win_hi):
-                            if tr_diff_search[k] > 0.4 * max_diff:
-                                first_pulse_in_search = k
-                                break
-                        if first_pulse_in_search is None:
-                            first_pulse_in_search = anchor_idx
-                        
-                        # Refine coarse centre to the earliest significant deflection
-                        r_lo = max(0, first_pulse_in_search - coarse_radius)
-                        r_hi = min(len(tr_search), first_pulse_in_search + coarse_radius + 1)
-                        coarse_centre = r_lo + _find_first_significant_peak(tr_search[r_lo:r_hi])
-                        
-                        # Convert back to global sample index - THIS IS THE TRUE FIRST PULSE
-                        true_first_pulse = start_search + coarse_centre
-                        
-                        # Now calculate stim duration and number of pulses
-                        stim_dur_ms = (en - st) * 1000.0 / fs_ua
-                        num_pulses = int(np.floor(stim_dur_ms / pulse_interval_ms)) + 1
-                        
-                        # Forward-walk from the true first pulse to find all pulses
-                        local_max_diff = max_diff  # Use the max from the search
-                        
-                        pulse_centres_block = [true_first_pulse]
-                        curr = true_first_pulse
-                        
-                        while len(pulse_centres_block) < num_pulses:
-                            nxt = curr + interval_samp
-                            
-                            s_lo = max(0, nxt - search_radius_samp)
-                            s_hi = min(n_total, nxt + search_radius_samp)
-                            
-                            if s_hi <= s_lo:
-                                curr = nxt
-                                pulse_centres_block.append(curr)
-                                continue
-                            
-                            tr_local = rec_ns6.get_traces(
-                                start_frame=s_lo, end_frame=s_hi,
-                                channel_ids=[ref_ch_name], return_in_uV=True
-                            )[:, 0]
-                            
-                            tr_diff = np.abs(np.diff(tr_local, prepend=tr_local[0]))
-                            peak_idx = np.argmax(tr_diff)
-                            
-                            if tr_diff[peak_idx] < 0.15 * local_max_diff:
-                                curr = nxt  # Weak peak, use expected
-                            else:
-                                curr = s_lo + peak_idx
-                            
-                            pulse_centres_block.append(curr)
-                        
-                        # Refine each pulse centre
-                        for p_idx in pulse_centres_block:
-                            r_lo = max(0, p_idx - refine_samp)
-                            r_hi = min(n_total, p_idx + refine_samp + 1)
-                            if r_lo >= r_hi:
-                                all_pulse_centres.append(p_idx)
-                                continue
-                            
-                            tr_refine = rec_ns6.get_traces(
-                                start_frame=r_lo, end_frame=r_hi,
-                                channel_ids=[ref_ch_name], return_in_uV=True
-                            )[:, 0]
-                            
-                            tc = r_lo + _find_first_significant_peak(tr_refine)
-                            all_pulse_centres.append(tc)
-                    
-                    # Remove duplicates and sort
-                    all_pulse_centres = sorted(set(all_pulse_centres))
-                    print(f"[IPCA] Found {len(all_pulse_centres)} total pulse centres")
-                    
-                    # Now extract ALL channels for each pulse
-                    micro_signal_list = []
-                    micro_map = []
-                    
-                    for true_centre in all_pulse_centres:
-                        p_start = true_centre + mw_start
-                        p_end = true_centre + mw_end
-                        
-                        if p_start >= 0 and p_end <= n_total:
-                            micro_signal_list.append(
-                                rec_ns6.get_traces(start_frame=p_start, end_frame=p_end).astype(np.float32).copy()
-                            )
-                            micro_map.append((p_start, p_end))
-                    
-                    if not micro_signal_list:
-                        print("[IPCA] No pulses extracted, skipping correction.")
+                    if not ref_channels:
+                        print("[IPCA] No reference channels found, skipping correction.")
                         rec_hp = spre.highpass_filter(rec_ns6, freq_min=float(PARAMS.highpass_hz))
                         rec_artif_removed = rec_hp
                     else:
-                        micro_signal_array = np.stack(micro_signal_list)
-                        print(f"[IPCA] Extracted {len(micro_signal_array)} artifacts. Shape: {micro_signal_array.shape}")
+                        # Collect pulse centres PER REGION
+                        # Key: region_idx, Value: list of pulse sample indices
+                        pulse_centres_by_region = {r[0]: [] for r in ref_channels}
                         
-                        from RCP_analysis.python.functions.artifact_correction import Template
-                        corrector = IPCA_Artifact_Correction(rank=IPCA_RANK)
-                        micro_corrected = micro_signal_array.copy()
-                        
-                        # Group valid channels by region for per-region IPCA
-                        valid_idx = np.where(ua_elec > 0)[0]
-                        target_ch_regions = [int(ua_region[i]) for i in valid_idx]
-                        
-                        region_to_idxs = {}
-                        for valid_ch_idx, reg_idx in zip(valid_idx, target_ch_regions):
-                            reg_name = ua_region_names[reg_idx] if reg_idx >= 0 else "Unknown"
-                            region_to_idxs.setdefault(reg_name, []).append(valid_ch_idx)
-                        
-                        n_stim, n_time, _ = micro_signal_array.shape
-                        
-                        print("Cross-channel IPCA by region:")
-                        for reg, idxs in region_to_idxs.items():
-                            if not idxs:
+                        for i, (st, en) in enumerate(zip(starts_ua, ends_ua)):
+                            search_margin = int(20.0 / 1000 * fs_ua)
+                            start_search = max(0, st - search_margin)
+                            end_search = min(n_total, en + search_margin)
+                            
+                            if end_search <= start_search:
                                 continue
                             
-                            # Pool all pulses from channels within this region
-                            reg_signal = micro_signal_array[:, :, idxs]  # (n_stim, n_time, n_reg_ch)
-                            pooled_signal = np.transpose(reg_signal, (0, 2, 1)).reshape(-1, n_time)
-                            
-                            # Learn the shared template for this region
-                            reg_template = Template()
-                            _, reg_template = corrector.ipca_template_per_channel(pooled_signal, reg_template)
-                            
-                            print(f"  [{reg}] Shared subspace learned from {len(idxs)} channels.")
-                            
-                            # Apply this region's template to each channel
-                            for ch_idx in idxs:
-                                signal_ch = micro_signal_array[:, :, ch_idx].copy()
-                                micro_corrected[:, :, ch_idx] = corrector.apply_template(signal_ch, reg_template)
+                            # Detect pulses for EACH reference channel
+                            for region_idx, elec_id, ch_idx, ref_ch_name in ref_channels:
+                                tr_search = rec_ns6.get_traces(
+                                    start_frame=start_search, end_frame=end_search,
+                                    channel_ids=[ref_ch_name], return_in_uV=True
+                                )[:, 0]
+                                
+                                tr_diff_search = np.abs(np.diff(tr_search, prepend=tr_search[0]))
+                                
+                                predicted_centre = st - start_search
+                                slop = int(5.0 / 1000 * fs_ua)
+                                win_lo = max(0, predicted_centre - slop)
+                                win_hi = min(len(tr_search), predicted_centre + slop)
+                                
+                                if win_hi <= win_lo:
+                                    continue
+                                
+                                peak_in_win = np.argmax(tr_diff_search[win_lo:win_hi])
+                                anchor_idx = win_lo + peak_in_win
+                                max_diff = tr_diff_search[anchor_idx]
+                                
+                                if max_diff < 5.0:
+                                    continue
+                                
+                                first_pulse_in_search = None
+                                for k in range(win_lo, win_hi):
+                                    if tr_diff_search[k] > 0.4 * max_diff:
+                                        first_pulse_in_search = k
+                                        break
+                                if first_pulse_in_search is None:
+                                    first_pulse_in_search = anchor_idx
+                                
+                                r_lo = max(0, first_pulse_in_search - coarse_radius)
+                                r_hi = min(len(tr_search), first_pulse_in_search + coarse_radius + 1)
+                                coarse_centre = r_lo + _find_first_significant_peak(tr_search[r_lo:r_hi])
+                                
+                                true_first_pulse = start_search + coarse_centre
+                                
+                                stim_dur_ms = (en - st) * 1000.0 / fs_ua
+                                num_pulses = int(np.floor(stim_dur_ms / pulse_interval_ms)) + 1
+                                
+                                local_max_diff = max_diff
+                                pulse_centres_block = [true_first_pulse]
+                                curr = true_first_pulse
+                                
+                                while len(pulse_centres_block) < num_pulses:
+                                    nxt = curr + interval_samp
+                                    
+                                    s_lo = max(0, nxt - search_radius_samp)
+                                    s_hi = min(n_total, nxt + search_radius_samp)
+                                    
+                                    if s_hi <= s_lo:
+                                        curr = nxt
+                                        pulse_centres_block.append(curr)
+                                        continue
+                                    
+                                    tr_local = rec_ns6.get_traces(
+                                        start_frame=s_lo, end_frame=s_hi,
+                                        channel_ids=[ref_ch_name], return_in_uV=True
+                                    )[:, 0]
+                                    
+                                    tr_diff = np.abs(np.diff(tr_local, prepend=tr_local[0]))
+                                    peak_idx = np.argmax(tr_diff)
+                                    
+                                    if tr_diff[peak_idx] < 0.15 * local_max_diff:
+                                        curr = nxt
+                                    else:
+                                        curr = s_lo + peak_idx
+                                    
+                                    pulse_centres_block.append(curr)
+                                
+                                # Refine each pulse centre
+                                for p_idx in pulse_centres_block:
+                                    r_lo = max(0, p_idx - refine_samp)
+                                    r_hi = min(n_total, p_idx + refine_samp + 1)
+                                    if r_lo >= r_hi:
+                                        pulse_centres_by_region[region_idx].append(p_idx)
+                                        continue
+                                    
+                                    tr_refine = rec_ns6.get_traces(
+                                        start_frame=r_lo, end_frame=r_hi,
+                                        channel_ids=[ref_ch_name], return_in_uV=True
+                                    )[:, 0]
+                                    
+                                    tc = r_lo + _find_first_significant_peak(tr_refine)
+                                    pulse_centres_by_region[region_idx].append(tc)
                         
-                        print("[IPCA] Building IPCACorrectedRecording (no channel_mask)...")
-                        rec_corr_mem = IPCACorrectedRecording(rec_ns6, micro_map, micro_corrected)
+                        # Remove duplicates and sort for each region
+                        for region_idx in pulse_centres_by_region:
+                            pulse_centres_by_region[region_idx] = sorted(set(pulse_centres_by_region[region_idx]))
+                            print(f"[IPCA] Region {region_idx}: found {len(pulse_centres_by_region[region_idx])} pulse centres")
                         
-                        # Debug plotting...
-                        # (keep your existing debug code here)
+                        # Build channel-to-region mapping
+                        ch_to_region = {}
+                        for ch_idx in range(rec_ns6.get_num_channels()):
+                            if ch_idx < len(ua_region):
+                                ch_to_region[ch_idx] = int(ua_region[ch_idx])
+                            else:
+                                ch_to_region[ch_idx] = 0  # Default to region 0
+                        
+                        # Extract windows PER CHANNEL using its region's pulse times
+                        # Structure: micro_signal_by_region[region_idx] = list of (n_time, n_channels_in_region) arrays
+                        micro_signal_by_region = {r: [] for r in pulse_centres_by_region}
+                        micro_map_by_region = {r: [] for r in pulse_centres_by_region}
+                        channels_by_region = {r: [] for r in pulse_centres_by_region}
+                        
+                        # Group channels by region
+                        for ch_idx in range(rec_ns6.get_num_channels()):
+                            region_idx = ch_to_region[ch_idx]
+                            if region_idx in channels_by_region:
+                                channels_by_region[region_idx].append(ch_idx)
+                        
+                        # Extract for each region using that region's pulse times
+                        for region_idx, pulse_centres in pulse_centres_by_region.items():
+                            ch_idxs = channels_by_region.get(region_idx, [])
+                            if not ch_idxs or not pulse_centres:
+                                continue
+                            
+                            ch_names = [rec_ns6.get_channel_ids()[ci] for ci in ch_idxs]
+                            
+                            for true_centre in pulse_centres:
+                                p_start = true_centre + mw_start
+                                p_end = true_centre + mw_end
+                                
+                                if p_start >= 0 and p_end <= n_total:
+                                    traces = rec_ns6.get_traces(
+                                        start_frame=p_start, end_frame=p_end,
+                                        channel_ids=ch_names
+                                    ).astype(np.float32).copy()
+                                    micro_signal_by_region[region_idx].append(traces)
+                                    micro_map_by_region[region_idx].append((p_start, p_end))
+                        
+                        # Now we need to combine into a single micro_signal_array and micro_map
+                        # But each region may have different numbers of pulses detected
+                        # For IPCA correction, we need consistent pulse counts
+                        
+                        # Find the minimum pulse count across regions to align
+                        min_pulses = min(len(v) for v in micro_signal_by_region.values() if v)
+                        
+                        if min_pulses == 0:
+                            print("[IPCA] No pulses extracted, skipping correction.")
+                            rec_hp = spre.highpass_filter(rec_ns6, freq_min=float(PARAMS.highpass_hz))
+                            rec_artif_removed = rec_hp
+                        else:
+                            print(f"[IPCA] Using {min_pulses} pulses (minimum across regions)")
+                            
+                            # Build combined arrays
+                            # micro_signal_array: (n_pulses, n_time, n_channels)
+                            # micro_map: list of (start, end) tuples - use region 0's timing as reference
+                            
+                            n_channels = rec_ns6.get_num_channels()
+                            micro_signal_array = np.zeros((min_pulses, micro_n_time, n_channels), dtype=np.float32)
+                            
+                            # Use region 0's map as the "master" map for the recording replacement
+                            # (This determines where in the recording the corrected data goes)
+                            master_region = list(pulse_centres_by_region.keys())[0]
+                            micro_map = micro_map_by_region[master_region][:min_pulses]
+                            
+                            # Fill in each region's channels with their own aligned extractions
+                            for region_idx, ch_idxs in channels_by_region.items():
+                                if not ch_idxs or region_idx not in micro_signal_by_region:
+                                    continue
+                                
+                                region_signals = micro_signal_by_region[region_idx][:min_pulses]
+                                
+                                for pulse_idx, traces in enumerate(region_signals):
+                                    for local_ch_idx, global_ch_idx in enumerate(ch_idxs):
+                                        if local_ch_idx < traces.shape[1]:
+                                            micro_signal_array[pulse_idx, :, global_ch_idx] = traces[:, local_ch_idx]
+                            
+                            print(f"[IPCA] Extracted {micro_signal_array.shape[0]} artifacts. Shape: {micro_signal_array.shape}")
+                            
+                            # Rest of IPCA correction stays the same...
+                            from RCP_analysis.python.functions.artifact_correction import Template
+                            corrector = IPCA_Artifact_Correction(rank=IPCA_RANK)
+                            micro_corrected = micro_signal_array.copy()
+                            
+                            valid_idx = np.where(ua_elec > 0)[0]
+                            target_ch_regions = [int(ua_region[i]) for i in valid_idx]
+                            
+                            region_to_idxs = {}
+                            for valid_ch_idx, reg_idx in zip(valid_idx, target_ch_regions):
+                                reg_name = ua_region_names[reg_idx] if reg_idx >= 0 else "Unknown"
+                                region_to_idxs.setdefault(reg_name, []).append(valid_ch_idx)
+                            
+                            n_stim, n_time, _ = micro_signal_array.shape
+                            
+                            print("Cross-channel IPCA by region:")
+                            for reg, idxs in region_to_idxs.items():
+                                if not idxs:
+                                    continue
+                                
+                                reg_signal = micro_signal_array[:, :, idxs]
+                                pooled_signal = np.transpose(reg_signal, (0, 2, 1)).reshape(-1, n_time)
+                                
+                                reg_template = Template()
+                                _, reg_template = corrector.ipca_template_per_channel(pooled_signal, reg_template)
+                                
+                                print(f"  [{reg}] Shared subspace learned from {len(idxs)} channels.")
+                                
+                                for ch_idx in idxs:
+                                    signal_ch = micro_signal_array[:, :, ch_idx].copy()
+                                    micro_corrected[:, :, ch_idx] = corrector.apply_template(signal_ch, reg_template)
+                            
+                            print("[IPCA] Building IPCACorrectedRecording...")
+                            rec_corr_mem = IPCACorrectedRecording(rec_ns6, micro_map, micro_corrected)
+                            
+                            print("[IPCA] Filter after correction...")
+                            rec_hp = spre.highpass_filter(rec_corr_mem, freq_min=float(PARAMS.highpass_hz))
+                            rec_artif_removed = rec_hp
+                            
+                            del micro_signal_array, micro_corrected
+                            gc.collect()
+                            
+                            # --- DEBUG PLOTTING (same as before) ---
+                            ch_si_id = None
+                            for ci, elec_id in enumerate(ua_elec):
+                                if int(elec_id) == 24:
+                                    ch_si_id = rec_ns6.get_channel_ids()[ci]
+                                    break
+                                    
+                            if ch_si_id is not None:
+                                import matplotlib.pyplot as plt
+                                MAX_DEBUG_BLOCKS = 20
+                                n_blocks = min(len(starts_ua), MAX_DEBUG_BLOCKS)
+                                fig, axes = plt.subplots(n_blocks, 3, figsize=(18, 2.5 * n_blocks))
+                                if n_blocks == 1: axes = axes[np.newaxis, :]
+                                
+                                fs = rec_ns6.get_sampling_frequency()
+                                win_samp_pre  = int(5.0  * fs / 1000.0)
+                                win_samp_post = int(20.0 * fs / 1000.0)
+                                time_axis = np.linspace(-5.0, 20.0, win_samp_pre + win_samp_post)
+                                
+                                for b_idx, s_anchor in enumerate(starts_ua[:n_blocks]):
+                                    s0 = int(s_anchor) - win_samp_pre
+                                    s1 = int(s_anchor) + win_samp_post
+                                    s0 = max(0, s0)
+                                    s1 = min(rec_ns6.get_num_samples(), s1)
+                                    n_samp = s1 - s0
+                                    t_ax = time_axis[:n_samp]
+                                    
+                                    raw_trace  = rec_ns6.get_traces(start_frame=s0, end_frame=s1, channel_ids=[ch_si_id], return_in_uV=True).flatten()
+                                    corr_trace = rec_corr_mem.get_traces(start_frame=s0, end_frame=s1, channel_ids=[ch_si_id], return_in_uV=True).flatten()
+                                    artifact_trace = raw_trace - corr_trace
+                                    
+                                    axes[b_idx, 0].plot(t_ax, raw_trace,      color='k',    lw=1,   alpha=0.8)
+                                    axes[b_idx, 0].axvline(0, color='r', linestyle='--', alpha=0.4)
+                                    axes[b_idx, 1].plot(t_ax, artifact_trace, color='r',    lw=1,   alpha=0.9)
+                                    axes[b_idx, 1].axvline(0, color='r', linestyle='--', alpha=0.4)
+                                    axes[b_idx, 2].plot(t_ax, corr_trace,     color='blue', lw=1.2, alpha=0.9)
+                                    axes[b_idx, 2].axvline(0, color='r', linestyle='--', alpha=0.4)
+                                    for c in range(3):
+                                        axes[b_idx, c].set_ylabel(f"T{b_idx+1} (µV)", fontsize=7)
+                                    if b_idx == 0:
+                                        axes[0, 0].set_title("Raw",             fontsize=9)
+                                        axes[0, 1].set_title("Learned Artifact",fontsize=9)
+                                        axes[0, 2].set_title("Corrected",       fontsize=9)
+                                    
+                                for c in range(3):
+                                    axes[-1, c].set_xlabel("Time rel. stim onset (ms)")
+                                fig.suptitle(f"IPCA Debug | Ch 24 | BR sess {br_idx:03d}")
+                                fig.tight_layout()
+                                out_fig = UA_CKPT_OUT.parent.parent / "figures" / f"debug_MACRO_UA_br{br_idx:03d}_ch24.png"
+                                out_fig.parent.mkdir(parents=True, exist_ok=True)
+                                fig.savefig(out_fig, dpi=150)
+                                plt.close(fig)
+                                print(f"!!! SAVED MACRO DEBUG FIG FOR CH 24: {out_fig}")
                         
                         print("[IPCA] Filter after correction...")
                         rec_hp = spre.highpass_filter(rec_corr_mem, freq_min=float(PARAMS.highpass_hz))
                         rec_artif_removed = rec_hp
                         
-                        del micro_signal_array, micro_corrected
                         gc.collect()
-                        # --- TEMPORARY MACRO-WINDOW PLOTTING FOR CH 24 ---
-                        # Plot -5ms to +20ms directly from SpikeInterface stream (Continuous)
-                        ch_si_id = None
-                        for ci, elec_id in enumerate(ua_elec):
-                            if int(elec_id) == 24:
-                                ch_si_id = rec_ns6.get_channel_ids()[ci]
-                                break
-                                
-                        if ch_si_id is not None:
-                            import matplotlib.pyplot as plt
-                            MAX_DEBUG_BLOCKS = 20  # Cap to avoid hanging on continuous stim
-                            n_blocks = min(len(starts_ua), MAX_DEBUG_BLOCKS)
-                            fig, axes = plt.subplots(n_blocks, 3, figsize=(18, 2.5 * n_blocks))
-                            if n_blocks == 1: axes = axes[np.newaxis, :]
-                            
-                            fs = rec_ns6.get_sampling_frequency()
-                            win_samp_pre  = int(5.0  * fs / 1000.0)  # 5ms before
-                            win_samp_post = int(20.0 * fs / 1000.0)  # 20ms after
-                            time_axis = np.linspace(-5.0, 20.0, win_samp_pre + win_samp_post)
-                            
-                            for b_idx, s_anchor in enumerate(starts_ua[:n_blocks]):
-                                s0 = int(s_anchor) - win_samp_pre
-                                s1 = int(s_anchor) + win_samp_post
-                                s0 = max(0, s0)
-                                s1 = min(rec_ns6.get_num_samples(), s1)
-                                n_samp = s1 - s0
-                                t_ax = time_axis[:n_samp]
-                                
-                                raw_trace  = rec_ns6.get_traces(start_frame=s0, end_frame=s1, channel_ids=[ch_si_id], return_in_uV=True).flatten()
-                                corr_trace = rec_corr_mem.get_traces(start_frame=s0, end_frame=s1, channel_ids=[ch_si_id], return_in_uV=True).flatten()
-                                artifact_trace = raw_trace - corr_trace
-                                
-                                axes[b_idx, 0].plot(t_ax, raw_trace,      color='k',    lw=1,   alpha=0.8)
-                                axes[b_idx, 0].axvline(0, color='r', linestyle='--', alpha=0.4)
-                                axes[b_idx, 1].plot(t_ax, artifact_trace, color='r',    lw=1,   alpha=0.9)
-                                axes[b_idx, 1].axvline(0, color='r', linestyle='--', alpha=0.4)
-                                axes[b_idx, 2].plot(t_ax, corr_trace,     color='blue', lw=1.2, alpha=0.9)
-                                axes[b_idx, 2].axvline(0, color='r', linestyle='--', alpha=0.4)
-                                for c in range(3):
-                                    axes[b_idx, c].set_ylabel(f"T{b_idx+1} (µV)", fontsize=7)
-                                if b_idx == 0:
-                                    axes[0, 0].set_title("Raw",             fontsize=9)
-                                    axes[0, 1].set_title("Learned Artifact",fontsize=9)
-                                    axes[0, 2].set_title("Corrected",        fontsize=9)
-                                
-                            for c in range(3):
-                                axes[-1, c].set_xlabel("Time rel. stim onset (ms)")
-                            fig.suptitle(f"IPCA Debug | Ch 24 | BR sess {br_idx:03d}")
-                            fig.tight_layout()
-                            out_fig = UA_CKPT_OUT.parent.parent / "figures" / f"debug_MACRO_UA_br{br_idx:03d}_ch24.png"
-                            out_fig.parent.mkdir(parents=True, exist_ok=True)
-                            fig.savefig(out_fig, dpi=150)
-                            plt.close(fig)
-                            print(f"!!! SAVED MACRO DEBUG FIG FOR CH 24: {out_fig}")
-                        # --------------------------------------------------
+
+                # if USE_IPCA_CORRECTION:
+                #     print(f"[IPCA] Starting Incremental PCA artifact correction on {starts_ua.size} blocks...")
                     
-                    print("[IPCA] Filter after correction...")
-                    rec_hp = spre.highpass_filter(rec_corr_mem, freq_min=float(PARAMS.highpass_hz))
-                    rec_artif_removed = rec_hp
+                #     # ── Load artifact template for matched filtering ──
+                #     artifact_template_path = REPO_ROOT / 'config' / f'artifact_template_UA_Port{ua_port}.npz'
+                #     if artifact_template_path.exists():
+                #         tpl_data = np.load(artifact_template_path)
+                #         artifact_template = tpl_data['template_norm']
+                #         tpl_fs = float(tpl_data['fs'])
+                        
+                #         # Resample template if sampling rates differ
+                #         if abs(tpl_fs - fs_ua) > 1.0:
+                #             from scipy.interpolate import interp1d
+                #             n_old = len(artifact_template)
+                #             n_new = int(n_old * fs_ua / tpl_fs)
+                #             x_old = np.linspace(0, 1, n_old)
+                #             x_new = np.linspace(0, 1, n_new)
+                #             artifact_template = interp1d(x_old, artifact_template, kind='linear')(x_new)
+                #             artifact_template = artifact_template / np.linalg.norm(artifact_template)
+                        
+                #         USE_MATCHED_FILTER = True
+                #         print(f"[IPCA] Loaded artifact template from {artifact_template_path.name}")
+                #     else:
+                #         USE_MATCHED_FILTER = False
+                #         print(f"[IPCA] No artifact template found at {artifact_template_path}, using derivative detection")
                     
-                    gc.collect()
+                #     # ── Setup constants ──
+                #     stim_freq_meta = float(rcp.get_metadata_mapping(METADATA_CSV, 'BR_File', 'Stim_Frequency_Hz').get(br_idx, 400.0))
+                #     if np.isnan(stim_freq_meta): stim_freq_meta = 400.0
+                #     pulse_interval_ms = 1000.0 / stim_freq_meta
+                #     print(f"[IPCA] Using stim frequency {stim_freq_meta} Hz (interval: {pulse_interval_ms:.2f} ms)")
+                    
+                #     mw_start = int(IPCA_PULSE_WINDOW_MS[0] / 1000.0 * fs_ua)
+                #     mw_end = int(IPCA_PULSE_WINDOW_MS[1] / 1000.0 * fs_ua)
+                #     micro_n_time = mw_end - mw_start
+                    
+                #     interval_samp = int(pulse_interval_ms / 1000.0 * fs_ua)
+                #     refine_samp = max(int(0.15 / 1000.0 * fs_ua), 3)
+                #     coarse_radius = max(refine_samp, 3)
+                #     search_radius_samp = int((pulse_interval_ms * 0.4) / 1000.0 * fs_ua)
+                    
+                #     # ── Reference channel for pulse detection ──
+                #     center_elecs_A = {0: 29, 1: 93, 2: 165, 3: 229}
+                #     center_elecs_B = {0: 37, 1: 101, 2: 157, 3: 221}
+                #     center_elecs = center_elecs_A if ua_port == 'A' else center_elecs_B
+                #     ref_elec_id = center_elecs.get(0, 37)
+                #     ref_matches = np.where(ua_elec == ref_elec_id)[0]
+                #     ref_ch_idx = ref_matches[0] if ref_matches.size > 0 else 0
+                #     ref_ch_name = rec_ns6.get_channel_ids()[ref_ch_idx]
+                    
+                #     print(f"[IPCA] Pulse detection via electrode {ref_elec_id} (ch {ref_ch_name})...")
+                    
+                #     # ── Matched filter detection function ──
+                #     def detect_artifacts_matched_filter(trace, template, fs, expected_times=None, 
+                #                                         search_radius_ms=1.0):
+                #         """
+                #         Detect artifact times using matched filtering with a learned template.
+                #         """
+                #         from scipy.signal import correlate
+                        
+                #         # Cross-correlate (matched filter)
+                #         correlation = correlate(trace, template, mode='same')
+                        
+                #         search_radius_samp = int(search_radius_ms / 1000 * fs)
+                        
+                #         if expected_times is not None and len(expected_times) > 0:
+                #             # Refine detection around expected times
+                #             detected_times = []
+                            
+                #             for expected in expected_times:
+                #                 lo = max(0, int(expected) - search_radius_samp)
+                #                 hi = min(len(correlation), int(expected) + search_radius_samp)
+                                
+                #                 if hi <= lo:
+                #                     detected_times.append(int(expected))
+                #                     continue
+                                
+                #                 # Find peak correlation in this window
+                #                 local_corr = correlation[lo:hi]
+                #                 peak_idx = np.argmax(local_corr)
+                #                 detected_times.append(lo + peak_idx)
+                            
+                #             return np.array(detected_times), correlation
+                        
+                #         else:
+                #             # Global detection: find all peaks above threshold
+                #             corr_std = np.std(correlation)
+                #             corr_mean = np.mean(correlation)
+                #             threshold = corr_mean + 3.0 * corr_std
+                            
+                #             above_thresh = correlation > threshold
+                #             detected_times = []
+                #             in_peak = False
+                #             peak_start = 0
+                            
+                #             for i in range(len(above_thresh)):
+                #                 if above_thresh[i] and not in_peak:
+                #                     in_peak = True
+                #                     peak_start = i
+                #                 elif not above_thresh[i] and in_peak:
+                #                     in_peak = False
+                #                     peak_idx = peak_start + np.argmax(correlation[peak_start:i])
+                #                     detected_times.append(peak_idx)
+                            
+                #             return np.array(detected_times), correlation
+                    
+                #     # ── Collect all pulse centres ──
+                #     all_pulse_centres = []
+                    
+                #     for i, (st, en) in enumerate(zip(starts_ua, ends_ua)):
+                #         search_margin = int(20.0 / 1000 * fs_ua)
+                #         start_search = max(0, st - search_margin)
+                #         end_search = min(n_total, en + search_margin)
+                        
+                #         if end_search <= start_search:
+                #             continue
+                        
+                #         # Extract reference channel trace
+                #         tr_search = rec_ns6.get_traces(
+                #             start_frame=start_search, end_frame=end_search,
+                #             channel_ids=[ref_ch_name], return_in_uV=True
+                #         )[:, 0]
+                        
+                #         # Calculate expected pulse times within this block
+                #         stim_dur_ms = (en - st) * 1000.0 / fs_ua
+                #         num_pulses = int(np.floor(stim_dur_ms / pulse_interval_ms)) + 1
+                        
+                #         # Expected times relative to start_search
+                #         predicted_first = st - start_search
+                #         expected_times_local = predicted_first + np.arange(num_pulses) * interval_samp
+                #         expected_times_local = expected_times_local[expected_times_local < len(tr_search)]
+                        
+                #         if USE_MATCHED_FILTER and len(expected_times_local) > 0:
+                #             # ── Matched filter detection ──
+                #             detected_local, correlation = detect_artifacts_matched_filter(
+                #                 tr_search, 
+                #                 artifact_template, 
+                #                 fs_ua,
+                #                 expected_times=expected_times_local,
+                #                 search_radius_ms=1.5,
+                #             )
+                            
+                #             # Convert to global indices
+                #             pulse_centres_block = (start_search + detected_local).tolist()
+                            
+                #         else:
+                #             # ── Fallback: derivative-based detection ──
+                #             tr_diff_search = np.abs(np.diff(tr_search, prepend=tr_search[0]))
+                            
+                #             predicted_centre = st - start_search
+                #             slop = int(5.0 / 1000 * fs_ua)
+                #             win_lo = max(0, predicted_centre - slop)
+                #             win_hi = min(len(tr_search), predicted_centre + slop)
+                            
+                #             if win_hi <= win_lo:
+                #                 continue
+                            
+                #             peak_in_win = np.argmax(tr_diff_search[win_lo:win_hi])
+                #             anchor_idx = win_lo + peak_in_win
+                #             max_diff = tr_diff_search[anchor_idx]
+                            
+                #             if max_diff < 5.0:
+                #                 continue
+                            
+                #             first_pulse_in_search = None
+                #             for k in range(win_lo, win_hi):
+                #                 if tr_diff_search[k] > 0.4 * max_diff:
+                #                     first_pulse_in_search = k
+                #                     break
+                #             if first_pulse_in_search is None:
+                #                 first_pulse_in_search = anchor_idx
+                            
+                #             r_lo = max(0, first_pulse_in_search - coarse_radius)
+                #             r_hi = min(len(tr_search), first_pulse_in_search + coarse_radius + 1)
+                #             coarse_centre = r_lo + _find_first_significant_peak(tr_search[r_lo:r_hi])
+                            
+                #             true_first_pulse = start_search + coarse_centre
+                            
+                #             # Forward-walk
+                #             local_max_diff = max_diff
+                #             pulse_centres_block = [true_first_pulse]
+                #             curr = true_first_pulse
+                            
+                #             while len(pulse_centres_block) < num_pulses:
+                #                 nxt = curr + interval_samp
+                #                 s_lo = max(0, nxt - search_radius_samp)
+                #                 s_hi = min(n_total, nxt + search_radius_samp)
+                                
+                #                 if s_hi <= s_lo:
+                #                     curr = nxt
+                #                     pulse_centres_block.append(curr)
+                #                     continue
+                                
+                #                 tr_local = rec_ns6.get_traces(
+                #                     start_frame=s_lo, end_frame=s_hi,
+                #                     channel_ids=[ref_ch_name], return_in_uV=True
+                #                 )[:, 0]
+                                
+                #                 tr_diff = np.abs(np.diff(tr_local, prepend=tr_local[0]))
+                #                 peak_idx = np.argmax(tr_diff)
+                                
+                #                 if tr_diff[peak_idx] < 0.15 * local_max_diff:
+                #                     curr = nxt
+                #                 else:
+                #                     curr = s_lo + peak_idx
+                                
+                #                 pulse_centres_block.append(curr)
+                        
+                #         # Add to global list
+                #         all_pulse_centres.extend(pulse_centres_block)
+                    
+                #     # Remove duplicates and sort
+                #     all_pulse_centres = sorted(set(all_pulse_centres))
+                #     print(f"[IPCA] Found {len(all_pulse_centres)} total pulse centres")
+                    
+                #     # ── Extract ALL channels for each pulse ──
+                #     micro_signal_list = []
+                #     micro_map = []
+                    
+                #     for true_centre in all_pulse_centres:
+                #         p_start = true_centre + mw_start
+                #         p_end = true_centre + mw_end
+                        
+                #         if p_start >= 0 and p_end <= n_total:
+                #             micro_signal_list.append(
+                #                 rec_ns6.get_traces(start_frame=p_start, end_frame=p_end).astype(np.float32).copy()
+                #             )
+                #             micro_map.append((p_start, p_end))
+                    
+                #     if not micro_signal_list:
+                #         print("[IPCA] No pulses extracted, skipping correction.")
+                #         rec_hp = spre.highpass_filter(rec_ns6, freq_min=float(PARAMS.highpass_hz))
+                #         rec_artif_removed = rec_hp
+                #     else:
+                #         micro_signal_array = np.stack(micro_signal_list)
+                #         print(f"[IPCA] Extracted {len(micro_signal_array)} artifacts. Shape: {micro_signal_array.shape}")
+                        
+                #         from RCP_analysis.python.functions.artifact_correction import Template
+                #         corrector = IPCA_Artifact_Correction(rank=IPCA_RANK)
+                #         micro_corrected = micro_signal_array.copy()
+                        
+                #         # ── Group valid channels by region for per-region IPCA ──
+                #         valid_idx = np.where(ua_elec > 0)[0]
+                #         target_ch_regions = [int(ua_region[i]) for i in valid_idx]
+                        
+                #         region_to_idxs = {}
+                #         for valid_ch_idx, reg_idx in zip(valid_idx, target_ch_regions):
+                #             reg_name = ua_region_names[reg_idx] if reg_idx >= 0 else "Unknown"
+                #             region_to_idxs.setdefault(reg_name, []).append(valid_ch_idx)
+                        
+                #         n_stim, n_time, _ = micro_signal_array.shape
+                        
+                #         print("Cross-channel IPCA by region:")
+                #         for reg, idxs in region_to_idxs.items():
+                #             if not idxs:
+                #                 continue
+                            
+                #             # Pool all pulses from channels within this region
+                #             reg_signal = micro_signal_array[:, :, idxs]
+                #             pooled_signal = np.transpose(reg_signal, (0, 2, 1)).reshape(-1, n_time)
+                            
+                #             # Learn the shared template for this region
+                #             reg_template = Template()
+                #             _, reg_template = corrector.ipca_template_per_channel(pooled_signal, reg_template)
+                            
+                #             print(f"  [{reg}] Shared subspace learned from {len(idxs)} channels.")
+                            
+                #             # Apply this region's template to each channel
+                #             for ch_idx in idxs:
+                #                 signal_ch = micro_signal_array[:, :, ch_idx].copy()
+                #                 micro_corrected[:, :, ch_idx] = corrector.apply_template(signal_ch, reg_template)
+                        
+                #         print("[IPCA] Building IPCACorrectedRecording...")
+                #         rec_corr_mem = IPCACorrectedRecording(rec_ns6, micro_map, micro_corrected)
+                        
+                #         # ── Debug plotting ──
+                #         ch_si_id = None
+                #         for ci, elec_id in enumerate(ua_elec):
+                #             if int(elec_id) == 24:
+                #                 ch_si_id = rec_ns6.get_channel_ids()[ci]
+                #                 break
+                                
+                #         if ch_si_id is not None:
+                #             import matplotlib.pyplot as plt
+                #             MAX_DEBUG_BLOCKS = 20
+                #             n_blocks = min(len(starts_ua), MAX_DEBUG_BLOCKS)
+                #             fig, axes = plt.subplots(n_blocks, 3, figsize=(18, 2.5 * n_blocks))
+                #             if n_blocks == 1: axes = axes[np.newaxis, :]
+                            
+                #             fs = rec_ns6.get_sampling_frequency()
+                #             win_samp_pre = int(5.0 * fs / 1000.0)
+                #             win_samp_post = int(20.0 * fs / 1000.0)
+                #             time_axis = np.linspace(-5.0, 20.0, win_samp_pre + win_samp_post)
+                            
+                #             for b_idx, s_anchor in enumerate(starts_ua[:n_blocks]):
+                #                 s0 = int(s_anchor) - win_samp_pre
+                #                 s1 = int(s_anchor) + win_samp_post
+                #                 s0 = max(0, s0)
+                #                 s1 = min(rec_ns6.get_num_samples(), s1)
+                #                 n_samp = s1 - s0
+                #                 t_ax = time_axis[:n_samp]
+                                
+                #                 raw_trace = rec_ns6.get_traces(start_frame=s0, end_frame=s1, channel_ids=[ch_si_id], return_in_uV=True).flatten()
+                #                 corr_trace = rec_corr_mem.get_traces(start_frame=s0, end_frame=s1, channel_ids=[ch_si_id], return_in_uV=True).flatten()
+                #                 artifact_trace = raw_trace - corr_trace
+                                
+                #                 axes[b_idx, 0].plot(t_ax, raw_trace, color='k', lw=1, alpha=0.8)
+                #                 axes[b_idx, 0].axvline(0, color='r', linestyle='--', alpha=0.4)
+                #                 axes[b_idx, 1].plot(t_ax, artifact_trace, color='r', lw=1, alpha=0.9)
+                #                 axes[b_idx, 1].axvline(0, color='r', linestyle='--', alpha=0.4)
+                #                 axes[b_idx, 2].plot(t_ax, corr_trace, color='blue', lw=1.2, alpha=0.9)
+                #                 axes[b_idx, 2].axvline(0, color='r', linestyle='--', alpha=0.4)
+                                
+                #                 for c in range(3):
+                #                     axes[b_idx, c].set_ylabel(f"T{b_idx+1} (µV)", fontsize=7)
+                #                 if b_idx == 0:
+                #                     axes[0, 0].set_title("Raw", fontsize=9)
+                #                     axes[0, 1].set_title("Learned Artifact", fontsize=9)
+                #                     axes[0, 2].set_title("Corrected", fontsize=9)
+                            
+                #             for c in range(3):
+                #                 axes[-1, c].set_xlabel("Time rel. stim onset (ms)")
+                #             fig.suptitle(f"IPCA Debug (Matched Filter) | Ch 24 | BR sess {br_idx:03d}")
+                #             fig.tight_layout()
+                #             out_fig = UA_CKPT_OUT.parent.parent / "figures" / f"debug_MACRO_UA_br{br_idx:03d}_ch24.png"
+                #             out_fig.parent.mkdir(parents=True, exist_ok=True)
+                #             fig.savefig(out_fig, dpi=150)
+                #             plt.close(fig)
+                #             print(f"[IPCA] Saved debug figure: {out_fig}")
+                        
+                #         print("[IPCA] Applying highpass filter after correction...")
+                #         rec_hp = spre.highpass_filter(rec_corr_mem, freq_min=float(PARAMS.highpass_hz))
+                #         rec_artif_removed = rec_hp
+                        
+                #         del micro_signal_array, micro_corrected
+                #         gc.collect()
+
+                # if USE_IPCA_CORRECTION:
+                #     print(f"[IPCA] Starting Incremental PCA artifact correction on {starts_ua.size} blocks...")
+                    
+                #     # ── Setup constants ──
+                #     stim_freq_meta = float(rcp.get_metadata_mapping(METADATA_CSV, 'BR_File', 'Stim_Frequency_Hz').get(br_idx, 400.0))
+                #     if np.isnan(stim_freq_meta): stim_freq_meta = 400.0
+                #     pulse_interval_ms = 1000.0 / stim_freq_meta
+                #     print(f"[IPCA] Using stim frequency {stim_freq_meta} Hz (interval: {pulse_interval_ms:.2f} ms)")
+                    
+                #     mw_start = int(IPCA_PULSE_WINDOW_MS[0] / 1000.0 * fs_ua)
+                #     mw_end = int(IPCA_PULSE_WINDOW_MS[1] / 1000.0 * fs_ua)
+                #     micro_n_time = mw_end - mw_start
+                    
+                #     interval_samp = int(pulse_interval_ms / 1000.0 * fs_ua)
+                #     refine_samp = max(int(0.15 / 1000.0 * fs_ua), 3)
+                #     coarse_radius = max(refine_samp, 3)
+                #     search_radius_samp = int((pulse_interval_ms * 0.4) / 1000.0 * fs_ua)
+                    
+                #     # ── Reference channels for pulse detection (one per region) ──
+                #     center_elecs_A = {0: 29, 1: 93, 2: 165, 3: 229}
+                #     center_elecs_B = {0: 37, 1: 101, 2: 157, 3: 221}
+                #     center_elecs = center_elecs_A if ua_port == 'A' else center_elecs_B
+                #     ref_elec_id = center_elecs.get(0, 37)
+                #     ref_matches = np.where(ua_elec == ref_elec_id)[0]
+                #     ref_ch_idx = ref_matches[0] if ref_matches.size > 0 else 0
+                #     ref_ch_name = rec_ns6.get_channel_ids()[ref_ch_idx]
+                    
+                #     print(f"[IPCA] Pulse detection via electrode {ref_elec_id} (ch {ref_ch_name})...")
+                    
+                #     # ── Create HIGH-PASS FILTERED version for artifact detection only ──
+                #     print("[IPCA] Creating HPF recording for artifact detection...")
+                #     rec_hpf_detect = spre.highpass_filter(rec_ns6, freq_min=300.0)
+                    
+                #     # ── Helper function for peak finding ──
+                #     def _find_first_significant_peak(signal_chunk):
+                #         """Return index of earliest significant deflection."""
+                #         centered = np.abs(signal_chunk - np.mean(signal_chunk))
+                #         if np.max(centered) < 1e-9:
+                #             return len(signal_chunk) // 2
+                #         threshold = 0.4 * np.max(centered)
+                #         first_crossing = int(np.argmax(centered > threshold))
+                #         lo = max(0, first_crossing - 2)
+                #         hi = min(len(centered), first_crossing + 3)
+                #         return lo + int(np.argmax(centered[lo:hi]))
+                    
+                #     # ── Collect all pulse centres using HPF signal for detection ──
+                #     all_pulse_centres = []
+                    
+                #     for i, (st, en) in enumerate(zip(starts_ua, ends_ua)):
+                #         search_margin = int(20.0 / 1000 * fs_ua)
+                #         start_search = max(0, st - search_margin)
+                #         end_search = min(n_total, en + search_margin)
+                        
+                #         if end_search <= start_search:
+                #             continue
+                        
+                #         # ══════════════════════════════════════════════════════════════
+                #         # KEY CHANGE: Use HPF signal for detection
+                #         # ══════════════════════════════════════════════════════════════
+                #         tr_search_hpf = rec_hpf_detect.get_traces(
+                #             start_frame=start_search, end_frame=end_search,
+                #             channel_ids=[ref_ch_name], return_in_uV=True
+                #         )[:, 0]
+                        
+                #         tr_diff_search = np.abs(np.diff(tr_search_hpf, prepend=tr_search_hpf[0]))
+                        
+                #         predicted_centre = st - start_search
+                #         slop = int(5.0 / 1000 * fs_ua)
+                #         win_lo = max(0, predicted_centre - slop)
+                #         win_hi = min(len(tr_search_hpf), predicted_centre + slop)
+                        
+                #         if win_hi <= win_lo:
+                #             continue
+                        
+                #         peak_in_win = np.argmax(tr_diff_search[win_lo:win_hi])
+                #         anchor_idx = win_lo + peak_in_win
+                #         max_diff = tr_diff_search[anchor_idx]
+                        
+                #         if max_diff < 5.0:
+                #             continue
+                        
+                #         # Scan for first threshold crossing
+                #         first_pulse_in_search = None
+                #         for k in range(win_lo, win_hi):
+                #             if tr_diff_search[k] > 0.4 * max_diff:
+                #                 first_pulse_in_search = k
+                #                 break
+                #         if first_pulse_in_search is None:
+                #             first_pulse_in_search = anchor_idx
+                        
+                #         # Refine using HPF signal
+                #         r_lo = max(0, first_pulse_in_search - coarse_radius)
+                #         r_hi = min(len(tr_search_hpf), first_pulse_in_search + coarse_radius + 1)
+                #         coarse_centre = r_lo + _find_first_significant_peak(tr_search_hpf[r_lo:r_hi])
+                        
+                #         true_first_pulse = start_search + coarse_centre
+                        
+                #         # Calculate number of pulses
+                #         stim_dur_ms = (en - st) * 1000.0 / fs_ua
+                #         num_pulses = int(np.floor(stim_dur_ms / pulse_interval_ms)) + 1
+                        
+                #         # Forward-walk using HPF signal
+                #         local_max_diff = max_diff
+                #         pulse_centres_block = [true_first_pulse]
+                #         curr = true_first_pulse
+                        
+                #         while len(pulse_centres_block) < num_pulses:
+                #             nxt = curr + interval_samp
+                #             s_lo = max(0, nxt - search_radius_samp)
+                #             s_hi = min(n_total, nxt + search_radius_samp)
+                            
+                #             if s_hi <= s_lo:
+                #                 curr = nxt
+                #                 pulse_centres_block.append(curr)
+                #                 continue
+                            
+                #             # Use HPF for detection
+                #             tr_local_hpf = rec_hpf_detect.get_traces(
+                #                 start_frame=s_lo, end_frame=s_hi,
+                #                 channel_ids=[ref_ch_name], return_in_uV=True
+                #             )[:, 0]
+                            
+                #             tr_diff = np.abs(np.diff(tr_local_hpf, prepend=tr_local_hpf[0]))
+                #             peak_idx = np.argmax(tr_diff)
+                            
+                #             if tr_diff[peak_idx] < 0.15 * local_max_diff:
+                #                 curr = nxt
+                #             else:
+                #                 curr = s_lo + peak_idx
+                            
+                #             pulse_centres_block.append(curr)
+                        
+                #         # Refine each pulse centre using HPF
+                #         for p_idx in pulse_centres_block:
+                #             r_lo = max(0, p_idx - refine_samp)
+                #             r_hi = min(n_total, p_idx + refine_samp + 1)
+                #             if r_lo >= r_hi:
+                #                 all_pulse_centres.append(p_idx)
+                #                 continue
+                            
+                #             tr_refine_hpf = rec_hpf_detect.get_traces(
+                #                 start_frame=r_lo, end_frame=r_hi,
+                #                 channel_ids=[ref_ch_name], return_in_uV=True
+                #             )[:, 0]
+                            
+                #             tc = r_lo + _find_first_significant_peak(tr_refine_hpf)
+                #             all_pulse_centres.append(tc)
+                        
+                #         all_pulse_centres.extend(pulse_centres_block)
+                    
+                #     # Remove duplicates and sort
+                #     all_pulse_centres = sorted(set(all_pulse_centres))
+                #     print(f"[IPCA] Found {len(all_pulse_centres)} total pulse centres (detected on HPF signal)")
+                    
+                #     # ══════════════════════════════════════════════════════════════════
+                #     # KEY: Extract from RAW (unfiltered) signal for IPCA learning
+                #     # ══════════════════════════════════════════════════════════════════
+                #     micro_signal_list = []
+                #     micro_map = []
+                    
+                #     for true_centre in all_pulse_centres:
+                #         p_start = true_centre + mw_start
+                #         p_end = true_centre + mw_end
+                        
+                #         if p_start >= 0 and p_end <= n_total:
+                #             # Extract from RAW signal (rec_ns6), not HPF
+                #             micro_signal_list.append(
+                #                 rec_ns6.get_traces(start_frame=p_start, end_frame=p_end).astype(np.float32).copy()
+                #             )
+                #             micro_map.append((p_start, p_end))
+                    
+                #     if not micro_signal_list:
+                #         print("[IPCA] No pulses extracted, skipping correction.")
+                #         rec_hp = spre.highpass_filter(rec_ns6, freq_min=float(PARAMS.highpass_hz))
+                #         rec_artif_removed = rec_hp
+                #     else:
+                #         micro_signal_array = np.stack(micro_signal_list)
+                #         print(f"[IPCA] Extracted {len(micro_signal_array)} artifacts from RAW signal. Shape: {micro_signal_array.shape}")
+                        
+                #         from RCP_analysis.python.functions.artifact_correction import Template
+                #         corrector = IPCA_Artifact_Correction(rank=IPCA_RANK)
+                #         micro_corrected = micro_signal_array.copy()
+                        
+                #         # ── Group valid channels by region for per-region IPCA ──
+                #         valid_idx = np.where(ua_elec > 0)[0]
+                #         target_ch_regions = [int(ua_region[i]) for i in valid_idx]
+                        
+                #         region_to_idxs = {}
+                #         for valid_ch_idx, reg_idx in zip(valid_idx, target_ch_regions):
+                #             reg_name = ua_region_names[reg_idx] if reg_idx >= 0 else "Unknown"
+                #             region_to_idxs.setdefault(reg_name, []).append(valid_ch_idx)
+                        
+                #         n_stim, n_time, _ = micro_signal_array.shape
+                        
+                #         print("Cross-channel IPCA by region:")
+                #         for reg, idxs in region_to_idxs.items():
+                #             if not idxs:
+                #                 continue
+                            
+                #             # Pool all pulses from channels within this region
+                #             reg_signal = micro_signal_array[:, :, idxs]
+                #             pooled_signal = np.transpose(reg_signal, (0, 2, 1)).reshape(-1, n_time)
+                            
+                #             # Learn the shared template for this region
+                #             reg_template = Template()
+                #             _, reg_template = corrector.ipca_template_per_channel(pooled_signal, reg_template)
+                            
+                #             print(f"  [{reg}] Shared subspace learned from {len(idxs)} channels.")
+                            
+                #             # Apply this region's template to each channel
+                #             for ch_idx in idxs:
+                #                 signal_ch = micro_signal_array[:, :, ch_idx].copy()
+                #                 micro_corrected[:, :, ch_idx] = corrector.apply_template(signal_ch, reg_template)
+                        
+                #         print("[IPCA] Building IPCACorrectedRecording...")
+                #         rec_corr_mem = IPCACorrectedRecording(rec_ns6, micro_map, micro_corrected)
+                        
+                #         # ── Debug plotting ──
+                #         ch_si_id = None
+                #         for ci, elec_id in enumerate(ua_elec):
+                #             if int(elec_id) == 24:
+                #                 ch_si_id = rec_ns6.get_channel_ids()[ci]
+                #                 break
+                                
+                #         if ch_si_id is not None:
+                #             import matplotlib.pyplot as plt
+                #             MAX_DEBUG_BLOCKS = 20
+                #             n_blocks = min(len(starts_ua), MAX_DEBUG_BLOCKS)
+                #             fig, axes = plt.subplots(n_blocks, 3, figsize=(18, 2.5 * n_blocks))
+                #             if n_blocks == 1: axes = axes[np.newaxis, :]
+                            
+                #             fs = rec_ns6.get_sampling_frequency()
+                #             win_samp_pre = int(5.0 * fs / 1000.0)
+                #             win_samp_post = int(20.0 * fs / 1000.0)
+                #             time_axis = np.linspace(-5.0, 20.0, win_samp_pre + win_samp_post)
+                            
+                #             for b_idx, s_anchor in enumerate(starts_ua[:n_blocks]):
+                #                 s0 = int(s_anchor) - win_samp_pre
+                #                 s1 = int(s_anchor) + win_samp_post
+                #                 s0 = max(0, s0)
+                #                 s1 = min(rec_ns6.get_num_samples(), s1)
+                #                 n_samp = s1 - s0
+                #                 t_ax = time_axis[:n_samp]
+                                
+                #                 raw_trace = rec_ns6.get_traces(start_frame=s0, end_frame=s1, channel_ids=[ch_si_id], return_in_uV=True).flatten()
+                #                 corr_trace = rec_corr_mem.get_traces(start_frame=s0, end_frame=s1, channel_ids=[ch_si_id], return_in_uV=True).flatten()
+                #                 artifact_trace = raw_trace - corr_trace
+                                
+                #                 axes[b_idx, 0].plot(t_ax, raw_trace, color='k', lw=1, alpha=0.8)
+                #                 axes[b_idx, 0].axvline(0, color='r', linestyle='--', alpha=0.4)
+                #                 axes[b_idx, 1].plot(t_ax, artifact_trace, color='r', lw=1, alpha=0.9)
+                #                 axes[b_idx, 1].axvline(0, color='r', linestyle='--', alpha=0.4)
+                #                 axes[b_idx, 2].plot(t_ax, corr_trace, color='blue', lw=1.2, alpha=0.9)
+                #                 axes[b_idx, 2].axvline(0, color='r', linestyle='--', alpha=0.4)
+                                
+                #                 for c in range(3):
+                #                     axes[b_idx, c].set_ylabel(f"T{b_idx+1} (µV)", fontsize=7)
+                #                 if b_idx == 0:
+                #                     axes[0, 0].set_title("Raw", fontsize=9)
+                #                     axes[0, 1].set_title("Learned Artifact", fontsize=9)
+                #                     axes[0, 2].set_title("Corrected", fontsize=9)
+                            
+                #             for c in range(3):
+                #                 axes[-1, c].set_xlabel("Time rel. stim onset (ms)")
+                #             fig.suptitle(f"IPCA Debug (HPF Detection) | Ch 24 | BR sess {br_idx:03d}")
+                #             fig.tight_layout()
+                #             out_fig = UA_CKPT_OUT.parent.parent / "figures" / f"debug_MACRO_UA_br{br_idx:03d}_ch24.png"
+                #             out_fig.parent.mkdir(parents=True, exist_ok=True)
+                #             fig.savefig(out_fig, dpi=150)
+                #             plt.close(fig)
+                #             print(f"[IPCA] Saved debug figure: {out_fig}")
+                        
+                #         print("[IPCA] Applying highpass filter after correction...")
+                #         rec_hp = spre.highpass_filter(rec_corr_mem, freq_min=float(PARAMS.highpass_hz))
+                #         rec_artif_removed = rec_hp
+                        
+                #         del micro_signal_array, micro_corrected
+                #         gc.collect()
 
                 else:
                     # Legacy 0-blanking method
