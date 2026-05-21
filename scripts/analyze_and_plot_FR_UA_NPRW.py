@@ -13,7 +13,7 @@ BATCH_SCRIPTS = [
     # "NPRW_Intan_analysis_threshold.py", # can be run at any   
     # "compute_br_to_intan_shifts.py",
     # "UA_BR_analysis_threshold.py",
-    # "UA_BR_analysis_mf.py",
+    "UA_BR_analysis_mf.py",
     "make_aligned_npz_and_mat.py",
     "extract_peri_stim.py",
     # "generate_stim_summary.py",

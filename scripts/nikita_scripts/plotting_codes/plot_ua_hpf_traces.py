@@ -23,7 +23,7 @@ matplotlib.rcParams["svg.fonttype"] = "none"
 # ──────────────────────────────────────────────────
 # USER SETTINGS
 # ──────────────────────────────────────────────────
-CONDITION   = 56             # BR index  (= condition number)
+CONDITION   = 10             # BR index  (= condition number)
 PROBE       = "UA"           # Exclusively analyzing Utah Array channels
 CHANNELS    = list(range(1, 256))   # Electrode IDs to plot (1–256)
 WINDOW_MS   = (-200.0, 200.0)      # (start, end) relative to stim onset
@@ -32,7 +32,7 @@ TRIALS_TO_PLOT = [5] #[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,2
 PLOT_WAVEFORM = True          # If True, plot spike waveforms on the right
 # ──────────────────────────────────────────────────
 
-REPO_ROOT   = Path(__file__).resolve().parents[1]
+REPO_ROOT   = Path(__file__).resolve().parents[3]
 PARAMS      = rcp.load_experiment_params(REPO_ROOT / "config" / "params.yaml", repo_root=REPO_ROOT)
 SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
 SESSION     = getattr(PARAMS, "session", "UNKNOWN")
@@ -118,7 +118,11 @@ def main():
     print(f"[info] Aligned file: {aligned_path.name}")
 
     # ── Parse metadata ──
-    meta = json.loads(z["align_meta"].item()) if "align_meta" in z.files else {}
+    if "align_meta" in z.files:
+        raw_meta = z["align_meta"].item() if z["align_meta"].ndim == 0 else z["align_meta"]
+        meta = raw_meta if isinstance(raw_meta, dict) else json.loads(raw_meta)
+    else:
+        meta = {}
     intan_filename = meta.get("intan_filename", "")
     shift_ms = float(meta.get("shift_ms", 0.0))
 

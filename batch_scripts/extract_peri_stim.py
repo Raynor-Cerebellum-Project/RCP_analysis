@@ -1,4 +1,3 @@
-from curses import raw
 import re, json
 from scipy.io import savemat
 import RCP_analysis as rcp
