@@ -20,6 +20,15 @@ fs    = 1000;   % Blackrock behavioral data sample rate (Hz)
 fs_30 = 30000;  % Intan / neural sample rate (Hz)
 
 [b, a] = butter(4, 2 / (fs/2), 'high');
+
+% Field name compatibility: Bert uses different naming conventions
+if ~isfield(Data, 'yaw_vel') && isfield(Data, 'headYawVel')
+    Data.yaw_vel = Data.headYawVel;
+end
+if ~isfield(Data, 'head_pos') && isfield(Data, 'headYawPos')
+    Data.head_pos = Data.headYawPos;
+end
+
 Data.headYawVel_filtered = filtfilt(b, a, Data.yaw_vel);
 accel = diff(Data.yaw_vel) / 0.001;
 
@@ -56,6 +65,11 @@ end
 if ~isempty(stim_mat_path) && exist(stim_mat_path, 'file')
     S = load(stim_mat_path);
 
+    % Normalize field name: accept 'stim_data' or 'Stim_data'
+    if ~isfield(S, 'Stim_data') && isfield(S, 'stim_data')
+        S.Stim_data = S.stim_data;
+    end
+
     if isfield(S, 'Stim_data') && isfield(Data, 'Intan_idx')
         % S.Stim_data: 128 x N_intan at 30 kHz (Intan clock)
         % Collapse across channels: any nonzero sample = stim active
@@ -66,13 +80,17 @@ if ~isempty(stim_mat_path) && exist(stim_mat_path, 'file')
 
         % Deduplicate bursts separated by less than 150 ms at 30 kHz
         min_gap_30k = round(0.150 * fs_30);
-        keep = [true, diff(rising_intan) > min_gap_30k];
-        burst_intan = rising_intan(keep);
+        if isempty(rising_intan)
+            burst_intan = [];
+        else
+            keep = [true, diff(rising_intan) > min_gap_30k];
+            burst_intan = rising_intan(keep);
+        end
 
         % Convert Intan-sample burst times to Blackrock 1 kHz sample indices
         % Data.Intan_idx(1, bk) = Intan sample for Blackrock sample bk
         % Invert via nearest-neighbour lookup in the monotonic Intan_idx vector
-        intan_map = double(Data.Intan_idx(1,:));  % 1 x N_intan at 30 kHz; bk_idx/30 gives 1 kHz Blackrock index
+        intan_map = double(Data.Intan_idx(1,:));
         burst_starts_bk = zeros(length(burst_intan), 1);
         for bi = 1:length(burst_intan)
             [~, bk_idx] = min(abs(intan_map - burst_intan(bi)));
@@ -90,6 +108,9 @@ if ~isempty(stim_mat_path) && exist(stim_mat_path, 'file')
 end
 
 has_stim_file = ~isempty(burst_starts_bk);
+
+% Initialize output
+MetricStruct = struct();
 
 % Loop over segment fields
 for i = 1:length(segment_fields)
@@ -112,7 +133,7 @@ for i = 1:length(segment_fields)
         sdv = metadata_row.Stim_Delay;
         if iscell(sdv), sdv = sdv{1}; end
         if strcmpi(sdv, 'Random')
-            % Delay encoded in field name suffix e.g. 'active_pos_100'
+            % Delay encoded in field name suffix e.g. 'active_like_stim_pos_100'
             tokens = regexp(field, '_(\d+)$', 'tokens');
             if ~isempty(tokens)
                 stim_delay = str2double(tokens{1}{1});
@@ -127,16 +148,14 @@ for i = 1:length(segment_fields)
 
     % Per-segment alignment
     for s = 1:N
-
-        % --- Segment(s,:) defines the search region only ---
-        % Use a wide search window around the expected movement onset
+        % Segment(s,:) defines the search region only
         if isfield(metadata_row, 'Movement_Trigger') && strcmpi(metadata_row.Movement_Trigger{1}, 'End')
             search_center = Segment(s,2);
         else
             search_center = Segment(s,1);
         end
         search_start = search_center - 20;
-        search_end   = search_center + 100;
+        search_end   = search_center + 200;
 
         % Bounds check on search window
         if search_start <= 0 || search_end > length(Data.yaw_vel)
@@ -147,9 +166,8 @@ for i = 1:length(segment_fields)
         vel_search   = Data.yaw_vel(search_start:search_end);
         thresh_cross = find(abs(vel_search) > 85, 1);
         if ~isempty(thresh_cross)
-            onset_global      = search_start + thresh_cross - 1;
-            vel_thresh_idx(s) = thresh_cross;
-            segments3(s,:)    = [onset_global - 800, onset_global + 1200];
+            onset_global   = search_start + thresh_cross - 1;
+            segments3(s,:) = [onset_global - 800, onset_global + 1200];
         else
             segments3(s,:) = [search_center - 800, search_center + 1200];
         end
@@ -161,7 +179,6 @@ for i = 1:length(segment_fields)
 
             if ~isempty(valid_bursts)
                 chosen_burst = valid_bursts(1);
-
                 win_start = chosen_burst - (800 + stim_delay);
                 win_end   = chosen_burst + (1200 - stim_delay);
                 segments3_from_stim(s,:) = [win_start, win_end];
@@ -189,7 +206,7 @@ for i = 1:length(segment_fields)
     velocity_filtered_traces = nan(N, 2001);
 
     for s = 1:N
-        % Choose final window: prefer stim/velocity-aligned window, fall back to search window
+        % Choose final window: prefer stim-aligned, fall back to vel-threshold
         if ~any(isnan(segments3_from_stim(s,:)))
             idx = segments3_from_stim(s,:);
         else
@@ -200,7 +217,7 @@ for i = 1:length(segment_fields)
 
         vel_seg   = Data.yaw_vel(idx(1):idx(2));
         pos_seg   = Data.head_pos(idx(1):idx(2));
-        accel_seg = accel(idx(1):idx(2));
+        accel_seg = accel(idx(1):min(idx(2), length(accel)));
         vel_filt  = Data.headYawVel_filtered(idx(1):idx(2));
 
         velocity_traces(s,:)          = vel_seg;
@@ -208,7 +225,7 @@ for i = 1:length(segment_fields)
         acceleration_traces(s,:)      = accel_seg;
         velocity_filtered_traces(s,:) = vel_filt;
 
-        % Velocity threshold index (>85 deg/s) — always compute
+        % Velocity threshold index (>85 deg/s) within extracted window
         thresh_cross = find(abs(vel_seg) > 85, 1);
         if ~isempty(thresh_cross)
             vel_thresh_idx(s) = thresh_cross;
@@ -244,16 +261,13 @@ for i = 1:length(segment_fields)
     if do_plot
         t = linspace(-800, 1200, 2001);
         fig = figure('Visible', 'off', 'Position', [100, 100, 1200, 500]);
-
         subplot(1,2,1); hold on;
         for s = 1:N
             plot(t, velocity_traces(s,:), 'Color', [0.5 0.5 0.5 0.3]);
-
             if ~isnan(vel_thresh_idx(s))
                 plot(t(vel_thresh_idx(s)), velocity_traces(s, vel_thresh_idx(s)), ...
                     'go', 'MarkerSize', 5, 'LineWidth', 1.2);
             end
-
             if length(acceleration_traces(s,:)) >= 1400
                 a_slice = acceleration_traces(s, 1050:1400);
                 zc_idx  = find(diff(sign(a_slice)) ~= 0, 1);
@@ -262,7 +276,6 @@ for i = 1:length(segment_fields)
                         'ro', 'MarkerSize', 5, 'LineWidth', 1.2);
                 end
             end
-
             if ~any(isnan(stim_idx_relative(s,:)))
                 stim_range = stim_idx_relative(s,:);
                 stim_times = (stim_range - 1) / fs * 1000 + t(1);
@@ -279,17 +292,14 @@ for i = 1:length(segment_fields)
         subplot(1,2,2); hold on;
         for s = 1:N
             plot(t, position_traces(s,:), 'Color', [0.3 0.3 1 0.3]);
-
             if length(acceleration_traces(s,:)) >= 1500
                 a_slice = acceleration_traces(s, 1050:1500);
-                p_slice = position_traces(s, 1050:1500);
                 zc_idx  = find(diff(sign(a_slice)) ~= 0, 1);
                 if ~isempty(zc_idx)
                     plot(t(1050 + zc_idx - 1), position_traces(s, 1050 + zc_idx - 1), ...
                         'ro', 'MarkerSize', 5, 'LineWidth', 1.2);
                 end
             end
-
             if ~any(isnan(stim_idx_relative(s,:)))
                 stim_range = stim_idx_relative(s,:);
                 stim_times = (stim_range - 1) / fs * 1000 + t(1);

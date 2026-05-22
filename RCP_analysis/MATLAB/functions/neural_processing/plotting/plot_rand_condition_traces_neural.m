@@ -37,12 +37,12 @@ is_ipsi = contains(side_label, 'pos');
 suffix = ternary(is_ipsi, 'ipsi', 'contra');
 
 % === Metadata ===
-if contains(side_label, 'ipsi')
-    suffix = 'ipsi';
-    polarity = 'ipsi';
+if contains(side_label, 'ipsi') || contains(side_label, 'neg')
+    suffix   = 'ipsi';
+    polarity = side_label;  % use the full label as-is
 else
-    suffix = 'contra';
-    polarity = 'contra';
+    suffix   = 'contra';
+    polarity = side_label;
 end
 
 base_side_label = sprintf('%s_nan', polarity);
