@@ -9,10 +9,8 @@ BATCH_SCRIPTS = [
     # run curation_scripts/OCR_frame_mapping_BT_edit.py on raw videos first -> copy into Video/OCR separate from Video/DLC
     # "align_dlc_two_cams_to_br.py",
     # "align_VOG_to_br.py",
-    # "NPRW_Intan_analysis_mf.py", # can be run at any   
-    # "NPRW_Intan_analysis_threshold.py", # can be run at any   
-    # "compute_br_to_intan_shifts.py",
-    # "UA_BR_analysis_threshold.py",
+    "NPRW_Intan_analysis_mf.py",
+    "compute_br_to_intan_shifts.py",
     "UA_BR_analysis_mf.py",
     "make_aligned_npz_and_mat.py",
     "extract_peri_stim.py",
