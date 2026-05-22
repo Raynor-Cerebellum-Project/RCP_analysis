@@ -868,127 +868,20 @@ def main():
                         interval_ua_samples_nominal = pulse_interval_ms / 1000.0 * fs_ua
 
                         # ══════════════════════════════════════════════════════════════════════
-                        # MEASURE ACTUAL PULSE INTERVAL FROM DATA (HIGH PRECISION)
-                        # Use MULTIPLE blocks, MULTIPLE channels, and SUB-SAMPLE precision
+                        # CALCULATE ACTUAL PULSE INTERVAL (CLOCK DRIFT CORRECTED)
+                        # Measured: stimulator runs ~1.33% slower than nominal
+                        # 400 Hz nominal → 394.7 Hz actual (76 samples instead of 75)
                         # ══════════════════════════════════════════════════════════════════════
-                        print("[CALIBRATE] Measuring actual stimulation interval with high precision...")
+                        CLOCK_DRIFT_FACTOR = 1.0133  # Empirically measured across multiple sessions
 
-                        all_intervals = []
+                        nominal_interval_samples = pulse_interval_ms / 1000.0 * fs_ua
+                        interval_ua_samples = nominal_interval_samples * CLOCK_DRIFT_FACTOR
 
-                        # Use multiple blocks for calibration
-                        n_cal_blocks = min(5, len(starts_intan))
-
-                        for cal_block_idx in range(n_cal_blocks):
-                            cal_st_intan = starts_intan[cal_block_idx]
-                            cal_en_intan = ends_intan[cal_block_idx]
-                            
-                            # Convert to UA time
-                            cal_anchor_ua = int(np.round((cal_st_intan - shift_samp_intan) * scale_corrected))
-                            cal_end_ua = int(np.round((cal_en_intan - shift_samp_intan) * scale_corrected))
-                            
-                            # Add margin for detection
-                            margin_samp = int(5.0 / 1000.0 * fs_ua)
-                            cal_start = max(0, cal_anchor_ua - margin_samp)
-                            cal_end = min(n_total, cal_end_ua + margin_samp)
-                            
-                            if cal_end <= cal_start:
-                                continue
-                            
-                            # Use MULTIPLE channels and take median
-                            n_cal_channels = min(10, rec_ns6.get_num_channels())
-                            cal_channel_indices = np.linspace(0, rec_ns6.get_num_channels() - 1, n_cal_channels, dtype=int)
-                            
-                            for cal_ch_idx in cal_channel_indices:
-                                cal_ch_name = rec_ns6.get_channel_ids()[int(cal_ch_idx)]
-                                
-                                try:
-                                    cal_trace = rec_ns6.get_traces(
-                                        start_frame=cal_start, end_frame=cal_end,
-                                        channel_ids=[cal_ch_name], return_in_uV=True
-                                    ).flatten()
-                                    
-                                    # Use derivative for peak detection
-                                    cal_diff = np.abs(np.diff(cal_trace, prepend=cal_trace[0]))
-                                    
-                                    # Threshold
-                                    cal_threshold = np.percentile(cal_diff, 99.5)
-                                    if cal_threshold < 10.0:
-                                        continue
-                                    
-                                    # Find peaks with SUB-SAMPLE precision using parabolic interpolation
-                                    cal_peaks_subsample = []
-                                    in_peak = False
-                                    peak_start = 0
-                                    
-                                    for i in range(1, len(cal_diff) - 1):
-                                        if cal_diff[i] > cal_threshold and not in_peak:
-                                            in_peak = True
-                                            peak_start = i
-                                        elif cal_diff[i] < cal_threshold * 0.5 and in_peak:
-                                            in_peak = False
-                                            # Find integer peak
-                                            peak_region = cal_diff[peak_start:i]
-                                            if len(peak_region) == 0:
-                                                continue
-                                            peak_idx_local = np.argmax(peak_region)
-                                            peak_idx = peak_start + peak_idx_local
-                                            
-                                            # Sub-sample refinement using parabolic interpolation
-                                            if 1 <= peak_idx < len(cal_diff) - 1:
-                                                y0 = float(cal_diff[peak_idx - 1])
-                                                y1 = float(cal_diff[peak_idx])
-                                                y2 = float(cal_diff[peak_idx + 1])
-                                                
-                                                # Parabolic interpolation for sub-sample peak
-                                                denom = y0 - 2 * y1 + y2
-                                                if abs(denom) > 1e-6:
-                                                    delta = 0.5 * (y0 - y2) / denom
-                                                    delta = np.clip(delta, -0.5, 0.5)  # Sanity check
-                                                else:
-                                                    delta = 0.0
-                                                
-                                                cal_peaks_subsample.append(peak_idx + delta)
-                                            else:
-                                                cal_peaks_subsample.append(float(peak_idx))
-                                    
-                                    if len(cal_peaks_subsample) >= 3:
-                                        cal_peaks_subsample = np.array(cal_peaks_subsample)
-                                        cal_intervals = np.diff(cal_peaks_subsample)
-                                        
-                                        # Filter outliers
-                                        nominal = interval_ua_samples_nominal
-                                        valid = cal_intervals[(cal_intervals > nominal * 0.7) & (cal_intervals < nominal * 1.3)]
-                                        
-                                        all_intervals.extend(valid.tolist())
-                                        
-                                except Exception as e:
-                                    continue
-
-                        # Compute high-precision interval
-                        if len(all_intervals) >= 10:
-                            measured_interval = np.median(all_intervals)
-                            interval_std = np.std(all_intervals)
-                            measured_freq = fs_ua / measured_interval
-                            
-                            print(f"[CALIBRATE] Collected {len(all_intervals)} interval measurements from {n_cal_blocks} blocks, {n_cal_channels} channels")
-                            print(f"[CALIBRATE] Nominal interval: {interval_ua_samples_nominal:.4f} samples ({stim_freq_meta:.2f} Hz)")
-                            print(f"[CALIBRATE] Measured interval: {measured_interval:.4f} ± {interval_std:.4f} samples ({measured_freq:.4f} Hz)")
-                            print(f"[CALIBRATE] Difference: {measured_interval - interval_ua_samples_nominal:.4f} samples/pulse")
-                            
-                            # Sanity check: if std is too high, something is wrong
-                            if interval_std > 2.0:
-                                print(f"[CALIBRATE] WARNING: High variance ({interval_std:.2f})! Falling back to nominal.")
-                                interval_ua_samples = interval_ua_samples_nominal
-                            else:
-                                interval_ua_samples = measured_interval
-                                print(f"[CALIBRATE] Using HIGH-PRECISION interval: {interval_ua_samples:.6f} samples")
-                        else:
-                            print(f"[CALIBRATE] Not enough measurements ({len(all_intervals)}), using nominal")
-                            interval_ua_samples = interval_ua_samples_nominal
-
-                        # ══════════════════════════════════════════════════════════════════════
-                        # END CALIBRATION
-                        # ══════════════════════════════════════════════════════════════════════
+                        actual_freq = fs_ua / interval_ua_samples
+                        print(f"[IPCA] Stim timing correction applied:")
+                        print(f"[IPCA]   Nominal: {stim_freq_meta:.1f} Hz ({nominal_interval_samples:.2f} samples)")
+                        print(f"[IPCA]   Actual:  {actual_freq:.1f} Hz ({interval_ua_samples:.2f} samples)")
+                        print(f"[IPCA]   Correction: +{interval_ua_samples - nominal_interval_samples:.2f} samples/pulse")
 
                         
 
@@ -1112,95 +1005,71 @@ def main():
                         print(f"[IPCA] Extracted {len(micro_signal_array)} artifacts. Shape: {micro_signal_array.shape}")
 
                         # ══════════════════════════════════════════════════════════════════════
-                        # DIAGNOSTIC: Measure actual artifact alignment drift
+                        # DIAGNOSTIC: Quick artifact alignment check
                         # ══════════════════════════════════════════════════════════════════════
-                        print("[DIAGNOSTIC] Checking artifact alignment across pulses...")
+                        import matplotlib.pyplot as plt
 
-                        # Pick a channel with clear artifacts (use one of your reference channels)
-                        test_ch_idx = min(10, n_channels - 1)  # Channel 10, or last channel if fewer
+                        test_ch_idx = min(10, n_channels - 1)
                         test_ch_name = rec_ns6.get_channel_ids()[test_ch_idx]
-
-                        n_pulses_to_check = min(50, micro_signal_array.shape[0])
+                        n_check = min(50, micro_signal_array.shape[0])
                         window_center = micro_signal_array.shape[1] // 2
 
-                        # Find the peak (max absolute derivative) location in each extracted window
-                        peak_locations = []
-                        for i in range(n_pulses_to_check):
-                            waveform = micro_signal_array[i, :, test_ch_idx]
-                            diff_abs = np.abs(np.diff(waveform, prepend=waveform[0]))
-                            peak_loc = np.argmax(diff_abs)
-                            peak_locations.append(peak_loc)
+                        # Find peak locations
+                        peak_locs = []
+                        for i in range(n_check):
+                            wf = micro_signal_array[i, :, test_ch_idx]
+                            peak_locs.append(np.argmax(np.abs(np.diff(wf, prepend=wf[0]))))
+                        peak_locs = np.array(peak_locs)
+                        drift = peak_locs - window_center
 
-                        peak_locations = np.array(peak_locations)
-                        drift_from_center = peak_locations - window_center
+                        # Stats
+                        drift_std = np.std(drift)
+                        drift_range = drift.max() - drift.min()
+                        alignment_ok = drift_range <= 3  # Good if peaks vary by ≤3 samples
 
-                        print(f"[DIAGNOSTIC] Channel: {test_ch_name} (idx {test_ch_idx})")
-                        print(f"[DIAGNOSTIC] Window center: {window_center}")
-                        print(f"[DIAGNOSTIC] Peak locations (first 10): {peak_locations[:10]}")
-                        print(f"[DIAGNOSTIC] Drift from center (first 10): {drift_from_center[:10]}")
-                        print(f"[DIAGNOSTIC] Drift from center (last 10): {drift_from_center[-10:]}")
-                        print(f"[DIAGNOSTIC] Mean drift: {np.mean(drift_from_center):.2f} samples")
-                        print(f"[DIAGNOSTIC] Drift range: {drift_from_center.min()} to {drift_from_center.max()} samples")
+                        # Single-panel diagnostic
+                        fig, ax = plt.subplots(figsize=(10, 4))
 
-                        # Calculate drift rate (samples per pulse)
-                        if len(drift_from_center) > 1:
-                            drift_rate = np.polyfit(np.arange(len(drift_from_center)), drift_from_center, 1)[0]
-                            print(f"[DIAGNOSTIC] Drift rate: {drift_rate:.4f} samples/pulse")
-                            print(f"[DIAGNOSTIC] This equals {drift_rate * stim_freq_meta:.2f} samples/second")
-                            print(f"[DIAGNOSTIC] Or {drift_rate * stim_freq_meta / fs_ua * 1000:.4f} ms/second")
+                        # Overlay all waveforms (normalized)
+                        time_ms = (np.arange(micro_signal_array.shape[1]) - window_center) / fs_ua * 1000
+                        for i in range(min(30, n_check)):
+                            wf = micro_signal_array[i, :, test_ch_idx]
+                            wf_norm = (wf - wf.mean()) / (wf.std() + 1e-6)
+                            ax.plot(time_ms, wf_norm, 'b-', alpha=0.15, lw=0.8)
 
-                        # Plot the drift
-                        import matplotlib.pyplot as plt
-                        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+                        # Mean waveform
+                        mean_wf = micro_signal_array[:n_check, :, test_ch_idx].mean(axis=0)
+                        mean_wf_norm = (mean_wf - mean_wf.mean()) / (mean_wf.std() + 1e-6)
+                        ax.plot(time_ms, mean_wf_norm, 'r-', lw=2, label='Mean artifact')
 
-                        # Top left: Drift over pulse index
-                        axes[0, 0].plot(drift_from_center, 'b.-')
-                        axes[0, 0].axhline(0, color='r', linestyle='--', alpha=0.5)
-                        axes[0, 0].set_xlabel('Pulse Index')
-                        axes[0, 0].set_ylabel('Peak Location - Window Center (samples)')
-                        axes[0, 0].set_title(f'Artifact Drift Over Pulses\nDrift rate: {drift_rate:.4f} samples/pulse')
-                        axes[0, 0].grid(True, alpha=0.3)
+                        ax.axvline(0, color='k', linestyle='--', alpha=0.5, lw=1)
+                        ax.set_xlabel('Time from expected center (ms)', fontsize=11)
+                        ax.set_ylabel('Normalized amplitude', fontsize=11)
+                        ax.set_xlim(time_ms[0], time_ms[-1])
 
-                        # Top right: Overlay first vs last waveforms
-                        axes[0, 1].plot(micro_signal_array[0, :, test_ch_idx], 'g-', label='Pulse 0', alpha=0.8)
-                        axes[0, 1].plot(micro_signal_array[n_pulses_to_check//2, :, test_ch_idx], 'b-', label=f'Pulse {n_pulses_to_check//2}', alpha=0.8)
-                        axes[0, 1].plot(micro_signal_array[n_pulses_to_check-1, :, test_ch_idx], 'r-', label=f'Pulse {n_pulses_to_check-1}', alpha=0.8)
-                        axes[0, 1].axvline(window_center, color='k', linestyle='--', alpha=0.5, label='Window center')
-                        axes[0, 1].set_xlabel('Sample in window')
-                        axes[0, 1].set_ylabel('Amplitude')
-                        axes[0, 1].set_title('Waveform Comparison: First, Middle, Last')
-                        axes[0, 1].legend()
-                        axes[0, 1].grid(True, alpha=0.3)
+                        # Status indicator
+                        status = "✓ ALIGNED" if alignment_ok else "✗ MISALIGNED"
+                        status_color = "green" if alignment_ok else "red"
 
-                        # Bottom left: Waterfall plot of first 20 pulses
-                        n_waterfall = min(20, n_pulses_to_check)
-                        for i in range(n_waterfall):
-                            offset = i * np.std(micro_signal_array[:n_waterfall, :, test_ch_idx]) * 2
-                            axes[1, 0].plot(micro_signal_array[i, :, test_ch_idx] + offset, 'b-', alpha=0.7, lw=0.8)
-                        axes[1, 0].axvline(window_center, color='r', linestyle='--', alpha=0.5)
-                        axes[1, 0].set_xlabel('Sample in window')
-                        axes[1, 0].set_ylabel('Pulse index (offset)')
-                        axes[1, 0].set_title(f'First {n_waterfall} Pulses (waterfall)')
+                        ax.set_title(
+                            f'BR {br_idx:03d} | Ch {test_ch_name} | {n_check} pulses\n'
+                            f'Peak jitter: {drift_std:.1f} samples (range: {drift_range}) — {status}',
+                            fontsize=12, color=status_color if not alignment_ok else 'black'
+                        )
 
-                        # Bottom right: Histogram of peak locations
-                        axes[1, 1].hist(peak_locations, bins=20, edgecolor='black', alpha=0.7)
-                        axes[1, 1].axvline(window_center, color='r', linestyle='--', label='Window center')
-                        axes[1, 1].set_xlabel('Peak location in window')
-                        axes[1, 1].set_ylabel('Count')
-                        axes[1, 1].set_title('Distribution of Peak Locations')
-                        axes[1, 1].legend()
+                        ax.legend(loc='upper right')
+                        ax.grid(True, alpha=0.3)
 
-                        plt.suptitle(f'Artifact Alignment Diagnostic - BR {br_idx:03d} - Ch {test_ch_name}')
                         plt.tight_layout()
-                        diag_path = UA_CKPT_OUT.parent.parent / "figures" / f"diagnostic_drift_br{br_idx:03d}.png"
+                        diag_path = UA_CKPT_OUT.parent.parent / "figures" / f"artifact_alignment_br{br_idx:03d}.png"
                         diag_path.parent.mkdir(parents=True, exist_ok=True)
-                        plt.savefig(diag_path, dpi=150)
+                        plt.savefig(diag_path, dpi=120)
                         plt.close()
-                        print(f"[DIAGNOSTIC] Saved drift analysis to {diag_path}")
 
-                        # ══════════════════════════════════════════════════════════════════════
-                        # END DIAGNOSTIC
-                        # ══════════════════════════════════════════════════════════════════════
+                        # Console summary
+                        print(f"[DIAG] Artifact alignment: {status}")
+                        print(f"[DIAG]   Peak jitter: {drift_std:.2f} samples (range: {drift_range})")
+                        print(f"[DIAG]   Saved: {diag_path.name}")
                         
                         # ══════════════════════════════════════════════════════════════════════
                         # STEP 4: REGION-WISE IPCA CORRECTION
