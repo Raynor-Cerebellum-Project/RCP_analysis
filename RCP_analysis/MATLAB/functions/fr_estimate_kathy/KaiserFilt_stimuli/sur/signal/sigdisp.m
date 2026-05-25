@@ -1,3 +1,0 @@
-%  Synonym for dispnew;
-
-   dispnew;

@@ -291,18 +291,6 @@ Analyzes reach kinematics (Duration, Peak Speed) comparing stimulation condition
 
 See examples: [Nike's plots for reaching](https://docs.google.com/presentation/d/1L_EA5BOvmqIdInJ0WPRp5rtgeDXCOmu6qmt2yeqPC-s/edit?slide=id.g3afc5261748_0_102#slide=id.g3afc5261748_0_102)
 
-
-# Headturn analysis in MATLAB
-## May need to run batch_processing_neural (artifact correction) on the cluster
-
-1. Change session name and input metadata info in each script (control, at rest, trials)
-2. Run `~/RCP_analysis/MATLAB/batch_scripts/parse_delays.m`, if the experiment has Random trials but need delay segmentation
-3. Run `~/RCP_analysis/MATLAB/batch_scripts/batch_processing_neural.m`
-4. Run `~/RCP_analysis/MATLAB/batch_scripts/batch_analyze_behavior.m`
-5. Run `~/RCP_analysis/MATLAB/batch_scripts/batch_analyze_with_neural.m`
-
-See examples: [Bert's plots for headturn](https://docs.google.com/presentation/d/1z6fLBiO8Wbell_FSsJK0Mcj66stKMJZmZtJu6tcY7FA/edit?slide=id.g35fb40ee04d_0_42#slide=id.g35fb40ee04d_0_42)
-
 ## TODOs
 - Switch to hdf5 / NWB format
 - Refine alignment using the triangle sync pulse
