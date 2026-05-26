@@ -2,7 +2,8 @@
 .ruff_cache
 .vscode/
 
-# Data and results
+# Config, data, and results
+config/params.yaml
 data/
 results/
 
