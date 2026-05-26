@@ -121,7 +121,7 @@ def plot_utah_impedances(data_list, name, vmax, out_path):
     total_chs = sum(len(b[0]) for b in blocks)
     height_ratios = [len(b[0]) / total_chs for b in blocks]
     
-    fig = plt.figure(figsize=(max(8, len(dates) * 0.35 + 3), max(6, total_chs * 0.04 + 2)))
+    fig = plt.figure(figsize=(0.4 * max(8, len(dates) * 0.35 + 3), max(6, total_chs * 0.04 + 2)))
     gs = gridspec.GridSpec(len(blocks), 2, width_ratios=[1, 0.05], 
                            height_ratios=height_ratios, hspace=0.08, wspace=0.05)
     
@@ -167,7 +167,7 @@ def plot_region_trends(data_list, name, out_path):
         
     dates = [item[0] for item in data_list]
     
-    fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(3, 6), sharex=True)
     colors = {'SMA': 'tab:blue', 'PMd': 'tab:orange', 'M1i': 'tab:green', 'M1s': 'tab:red'}
     
     for region_name, lo, hi in UTAH_REGIONS:
@@ -200,13 +200,13 @@ def plot_region_trends(data_list, name, out_path):
     axes[0].axhline(800, color='gray', linestyle='--', alpha=0.5)
     axes[0].axhspan(15, 800, alpha=0.1, color='green')
     axes[0].legend(loc='upper right')
-    axes[0].set_title(f'{name} - Regional Trends', fontsize=14, fontweight='bold')
+    axes[0].set_title(f'{name} - Regional Trends', fontsize=12, fontweight='bold')
     
     axes[1].set_ylabel('% Good Channels\n(15-800 kOhm)', fontsize=11)
     axes[1].set_ylim(0, 105)
     axes[1].legend(loc='lower right')
     
-    plt.xticks(rotation=45, ha='right')
+    plt.xticks(rotation=45, ha='right', fontsize=6)
     plt.xlabel('Date', fontsize=11)
     
     fig.tight_layout()

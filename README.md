@@ -127,6 +127,8 @@ Preprocessing and spike sorting are handled in Python using [SpikeInterface](htt
 ## 4. BR / UA Neural data preprocessing
 `batch_scripts/UA_BR_analysis_mf.py`
 
+![alt text](https://github.com/Raynor-Cerebellum-Project/RCP_analysis/blob/main/docs/utah_array_analysis_and_artifact_correction.png "artifact correction schematic")
+
 **Steps:**
 1. Load geometry and mapping (`.xlsm` file)
 2. Build `.npz` for auxiliary data (channels in .ns5 and .ns2 file, HR, touchscreen ... etc.)
