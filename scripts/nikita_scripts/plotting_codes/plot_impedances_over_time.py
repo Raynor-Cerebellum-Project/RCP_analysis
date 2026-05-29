@@ -214,6 +214,88 @@ def plot_region_trends(data_list, name, out_path):
     plt.close(fig)
     print(f"Saved: {out_path}")
 
+def get_region_name(channel):
+    """Get the region name for a given channel number"""
+    for region_name, lo, hi in UTAH_REGIONS:
+        if lo <= channel <= hi:
+            return region_name
+    return "Unknown"
+
+def export_impedances_to_csv(data_list, name, out_path):
+    """Export all impedance data to a CSV file with electrodes as rows and dates as columns"""
+    if not data_list:
+        print(f"No data to export for {name}")
+        return
+    
+    # Get all unique channels across all dates
+    all_chs = set()
+    for _, d in data_list:
+        all_chs.update(d.keys())
+    all_chs = sorted(list(all_chs))
+    
+    # Get all dates
+    dates = [item[0] for item in data_list]
+    
+    # Build the data for the CSV
+    rows = []
+    for ch in all_chs:
+        row = {
+            'Channel': ch,
+            'Region': get_region_name(ch)
+        }
+        for date, d in data_list:
+            row[date] = d.get(ch, np.nan)
+        rows.append(row)
+    
+    # Create DataFrame and save
+    df = pd.DataFrame(rows)
+    
+    # Reorder columns: Channel, Region, then dates in order
+    cols = ['Channel', 'Region'] + dates
+    df = df[cols]
+    
+    df.to_csv(out_path, index=False, float_format='%.2f')
+    print(f"Saved CSV: {out_path}")
+    
+    # Also create a summary statistics CSV
+    summary_path = out_path.parent / (out_path.stem + "_summary.csv")
+    export_summary_stats(data_list, name, summary_path)
+
+def export_summary_stats(data_list, name, out_path):
+    """Export summary statistics (median, mean, % good) per region per date"""
+    if not data_list:
+        return
+    
+    summary_rows = []
+    for date, d in data_list:
+        for region_name, lo, hi in UTAH_REGIONS:
+            region_vals = [v for ch, v in d.items() if lo <= ch <= hi]
+            if region_vals:
+                n_total = len(region_vals)
+                n_good = sum(1 for v in region_vals if 15 <= v <= 800)
+                n_low = sum(1 for v in region_vals if v < 15)
+                n_high = sum(1 for v in region_vals if v > 800)
+                
+                summary_rows.append({
+                    'Date': date,
+                    'Region': region_name,
+                    'N_Channels': n_total,
+                    'Median_kOhm': np.median(region_vals),
+                    'Mean_kOhm': np.mean(region_vals),
+                    'Std_kOhm': np.std(region_vals),
+                    'Min_kOhm': np.min(region_vals),
+                    'Max_kOhm': np.max(region_vals),
+                    'N_Good_15_800': n_good,
+                    'Pct_Good': 100 * n_good / n_total,
+                    'N_Low_lt15': n_low,
+                    'N_High_gt800': n_high
+                })
+    
+    df_summary = pd.DataFrame(summary_rows)
+    df_summary.to_csv(out_path, index=False, float_format='%.2f')
+    print(f"Saved summary CSV: {out_path}")
+
+
 def main():
     print("Loading metadata...")
     df = pd.read_excel(METADATA_PATH)
@@ -280,7 +362,10 @@ def main():
                                  OUTPUT_DIR / f"{name}_Impedances_Over_Time.png")
             plot_region_trends(data, name, 
                                OUTPUT_DIR / f"{name}_Regional_Trends.png")
-    
+            
+            export_impedances_to_csv(data, name,
+                                     OUTPUT_DIR / f"{name}_Impedances_All_Electrodes.csv")
+
     print("Done!")
 
 if __name__ == "__main__":
