@@ -133,6 +133,7 @@ RATES = PARAMS.UA_rate_est
 BIN_MS     = RATES.get("bin_ms")
 SIGMA_MS   = RATES.get("sigma_ms")
 THRESH     = RATES.get("detect_threshold")
+# THRESH = 16
 PEAK_SIGN  = RATES.get("peak_sign")
 ARTRMV_MS_BEFORE = float(RATES.get("remove_ms_before", 5.0))
 ARTRMV_TAIL_MS   = float(RATES.get("remove_tail_ms_after", 5.0))
@@ -140,8 +141,8 @@ ARTRMV_TAIL_MS   = float(RATES.get("remove_tail_ms_after", 5.0))
 
 # --- IPCA Artifact Correction Settings ---
 USE_IPCA_CORRECTION  = True
-IPCA_RANK            = 7
-IPCA_PULSE_WINDOW_MS = (-0.3, 0.3)
+IPCA_RANK            = 10
+IPCA_PULSE_WINDOW_MS = (-0.4, 0.3)
 # ----------------------------------------
 
 
@@ -167,6 +168,188 @@ UA_CKPT_OUT = UA_CKPT_ROOT
 global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chunk)
 si.set_global_job_kwargs(**global_job_kwargs)
 
+
+# ══════════════════════════════════════════════════════════════════════
+# AMPLITUDE FILTERING OPTIONS
+# You can use any combination of these:
+# ══════════════════════════════════════════════════════════════════════
+
+# Absolute thresholds (µV) - same for all channels
+MIN_AMPLITUDE_UV = 25.0
+MAX_AMPLITUDE_UV = 1000.0
+
+MIN_SNR = 2.0                # Minimum signal-to-noise ratio (amplitude / noise_level)
+                             # Typical values: 2.0 (permissive) to 5.0 (strict)
+
+
+def filter_peaks_by_amplitude_fast(peaks, recording, noise_levels, 
+                                    min_amplitude_uv=None, 
+                                    max_amplitude_uv=None,
+                                    min_snr=None,
+                                    max_snr=None,
+                                    peak_sign="neg",
+                                    window_samples=20):
+    """
+    Fast vectorized amplitude/SNR filtering using batch waveform extraction.
+    """
+    from spikeinterface.core import extract_waveforms
+    
+    n_peaks = len(peaks)
+    if n_peaks == 0:
+        return peaks, np.array([]), np.array([])
+    
+    print(f"  [Amplitude Filter] Extracting amplitudes for {n_peaks:,} peaks...")
+    
+    fs = recording.get_sampling_frequency()
+    n_channels = recording.get_num_channels()
+    channel_ids = recording.get_channel_ids()
+    
+    # Get gain for µV conversion
+    try:
+        gains = recording.get_property('gain_to_uV')
+        if gains is None:
+            gains = np.ones(n_channels)
+    except:
+        gains = np.ones(n_channels)
+    
+    noise_levels_uv = noise_levels * gains
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # BATCH EXTRACTION: Load chunks of the recording and find amplitudes
+    # ══════════════════════════════════════════════════════════════════════
+    
+    amplitudes = np.zeros(n_peaks, dtype=np.float32)
+    
+    # Sort peaks by sample index for efficient sequential reading
+    sort_idx = np.argsort(peaks['sample_index'])
+    sorted_peaks = peaks[sort_idx]
+    
+    # Process in large time chunks (e.g., 10 seconds at a time)
+    chunk_duration_samples = int(10.0 * fs)  # 10 seconds
+    n_samples_total = recording.get_num_samples()
+    
+    peak_idx = 0  # Current position in sorted_peaks
+    
+    for chunk_start in range(0, n_samples_total, chunk_duration_samples):
+        chunk_end = min(chunk_start + chunk_duration_samples, n_samples_total)
+        
+        # Find peaks in this chunk (with padding for window)
+        chunk_start_padded = max(0, chunk_start - window_samples)
+        chunk_end_padded = min(n_samples_total, chunk_end + window_samples)
+        
+        # Find which peaks fall in this chunk
+        peaks_in_chunk_mask = (
+            (sorted_peaks['sample_index'] >= chunk_start) & 
+            (sorted_peaks['sample_index'] < chunk_end)
+        )
+        peaks_in_chunk_idx = np.where(peaks_in_chunk_mask)[0]
+        
+        if len(peaks_in_chunk_idx) == 0:
+            continue
+        
+        # Load entire chunk at once (FAST!)
+        traces = recording.get_traces(
+            start_frame=chunk_start_padded, 
+            end_frame=chunk_end_padded,
+            return_in_uV=True
+        )  # Shape: (n_samples_in_chunk, n_channels)
+        
+        # Extract amplitude for each peak in this chunk
+        for idx in peaks_in_chunk_idx:
+            peak = sorted_peaks[idx]
+            sample_idx = peak['sample_index']
+            ch_idx = peak['channel_index']
+            
+            # Local indices within this chunk
+            local_sample = sample_idx - chunk_start_padded
+            s0 = max(0, local_sample - window_samples)
+            s1 = min(traces.shape[0], local_sample + window_samples)
+            
+            snippet = traces[s0:s1, ch_idx]
+            
+            if peak_sign == "neg":
+                amp = np.abs(np.min(snippet))
+            elif peak_sign == "pos":
+                amp = np.max(snippet)
+            else:
+                amp = np.max(np.abs(snippet))
+            
+            amplitudes[idx] = amp
+        
+        # Progress update
+        n_done = peaks_in_chunk_idx[-1] + 1 if len(peaks_in_chunk_idx) > 0 else 0
+        if n_done > 0 and n_done % 500000 < len(peaks_in_chunk_idx):
+            print(f"    Processed {n_done:,}/{n_peaks:,} peaks...")
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # UN-SORT amplitudes back to original peak order
+    # ══════════════════════════════════════════════════════════════════════
+    unsort_idx = np.argsort(sort_idx)
+    amplitudes = amplitudes[unsort_idx]
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # CALCULATE SNR (vectorized)
+    # ══════════════════════════════════════════════════════════════════════
+    channel_indices = peaks['channel_index']
+    snr_values = amplitudes / noise_levels_uv[channel_indices]
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # APPLY THRESHOLDS (vectorized)
+    # ══════════════════════════════════════════════════════════════════════
+    keep_mask = np.ones(n_peaks, dtype=bool)
+    
+    reject_min_uv = 0
+    reject_max_uv = 0
+    reject_min_snr = 0
+    reject_max_snr = 0
+    
+    if min_amplitude_uv is not None:
+        bad = amplitudes < min_amplitude_uv
+        reject_min_uv = np.sum(bad & keep_mask)
+        keep_mask &= ~bad
+    
+    if max_amplitude_uv is not None:
+        bad = amplitudes > max_amplitude_uv
+        reject_max_uv = np.sum(bad & keep_mask)
+        keep_mask &= ~bad
+    
+    if min_snr is not None:
+        bad = snr_values < min_snr
+        reject_min_snr = np.sum(bad & keep_mask)
+        keep_mask &= ~bad
+    
+    if max_snr is not None:
+        bad = snr_values > max_snr
+        reject_max_snr = np.sum(bad & keep_mask)
+        keep_mask &= ~bad
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # OUTPUT
+    # ══════════════════════════════════════════════════════════════════════
+    filtered_peaks = peaks[keep_mask]
+    kept_amplitudes = amplitudes[keep_mask]
+    kept_snr = snr_values[keep_mask]
+    
+    n_removed = n_peaks - len(filtered_peaks)
+    print(f"[Amplitude Filter] Results:")
+    print(f"  Total peaks: {n_peaks:,}")
+    print(f"  Kept: {len(filtered_peaks):,} ({100*len(filtered_peaks)/n_peaks:.1f}%)")
+    print(f"  Removed: {n_removed:,} ({100*n_removed/n_peaks:.1f}%)")
+    
+    if min_amplitude_uv is not None:
+        print(f"    - Below {min_amplitude_uv} µV: {reject_min_uv:,}")
+    if max_amplitude_uv is not None:
+        print(f"    - Above {max_amplitude_uv} µV: {reject_max_uv:,}")
+    if min_snr is not None:
+        print(f"    - Below SNR {min_snr}: {reject_min_snr:,}")
+    if max_snr is not None:
+        print(f"    - Above SNR {max_snr}: {reject_max_snr:,}")
+    
+    if len(kept_amplitudes) > 0:
+        print(f"  Kept amplitude range: {kept_amplitudes.min():.1f} - {kept_amplitudes.max():.1f} µV")
+        print(f"  Kept SNR range: {kept_snr.min():.1f} - {kept_snr.max():.1f}")
+    
+    return filtered_peaks, kept_amplitudes, kept_snr
 
 def main():
     sess_folders = BR_SESSION_FOLDERS
@@ -194,7 +377,7 @@ def main():
         ua_template = np.load(template_path)
     else:
         # Fallback to general UA template if PortB specific is missing
-        single_template_path = REPO_ROOT / 'config' / "median_extremum_templates_norm_UA.npy"
+        single_template_path = REPO_ROOT / 'config' / "median_extremum_templates_norm.npy"
         if single_template_path.exists():
             ua_template = np.load(single_template_path)
         else:
@@ -283,6 +466,8 @@ def main():
             valid = (ends_ua > starts_ua) & (starts_ua >= 0) & (ends_ua <= n_total)
             starts_ua = starts_ua[valid]
             ends_ua   = ends_ua[valid]
+            starts_intan = starts_intan[valid]
+            ends_intan = ends_intan[valid]      
 
             if starts_ua.size:
                 if USE_IPCA_CORRECTION:
@@ -613,10 +798,18 @@ def main():
                         # DEBUG PLOTTING
                         # ══════════════════════════════════════════════════════════════════════
                         ch_si_id = None
+                        el_out = ""
                         for ci, elec_id in enumerate(ua_elec):
-                            if int(elec_id) == 24:
-                                ch_si_id = rec_ns6.get_channel_ids()[ci]
-                                break
+                            if ua_port == 'B':
+                                if int(elec_id) == 24:
+                                    el_out = "24"
+                                    ch_si_id = rec_ns6.get_channel_ids()[ci]
+                                    break
+                            else:
+                                if int(elec_id) == 30:
+                                    el_out = "30"
+                                    ch_si_id = rec_ns6.get_channel_ids()[ci]
+                                    break
                                 
                         if ch_si_id is not None:
                             import matplotlib.pyplot as plt
@@ -649,7 +842,7 @@ def main():
                                 axes[b_idx, 2].plot(t_ax, corr_trace,     color='blue', lw=1.2, alpha=0.9)
                                 axes[b_idx, 2].axvline(0, color='r', linestyle='--', alpha=0.4)
                                 for c in range(3):
-                                    axes[b_idx, c].set_ylabel(f"T{b_idx+1} (µV)", fontsize=7)
+                                    axes[b_idx, c].set_ylabel(f"T{b_idx+1}", fontsize=7)
                                 if b_idx == 0:
                                     axes[0, 0].set_title("Raw",             fontsize=9)
                                     axes[0, 1].set_title("Learned Artifact",fontsize=9)
@@ -657,13 +850,13 @@ def main():
                                 
                             for c in range(3):
                                 axes[-1, c].set_xlabel("Time rel. stim onset (ms)")
-                            fig.suptitle(f"IPCA Debug | Ch 24 | BR sess {br_idx:03d}")
+                            fig.suptitle(f"IPCA Debug | Ch {el_out} | BR sess {br_idx:03d}")
                             fig.tight_layout()
-                            out_fig = UA_CKPT_OUT.parent.parent / "figures" / f"debug_MACRO_UA_br{br_idx:03d}_ch24.png"
+                            out_fig = UA_CKPT_OUT.parent.parent / "figures" / f"debug_MACRO_UA_br{br_idx:03d}_ch{el_out}.png"
                             out_fig.parent.mkdir(parents=True, exist_ok=True)
                             fig.savefig(out_fig, dpi=150)
                             plt.close(fig)
-                            print(f"!!! SAVED MACRO DEBUG FIG FOR CH 24: {out_fig}")
+                            print(f"!!! SAVED MACRO DEBUG FIG FOR CH {el_out}: {out_fig}")
 
                 else:
                     # Legacy 0-blanking method
@@ -732,14 +925,11 @@ def main():
             peaks = detect_peaks(
                 rec_artif_removed,
                 method="matched_filtering",
-                method_kwargs=dict(
-                    detect_threshold=THRESH,
-                    peak_sign=PEAK_SIGN,
-                    ms_before=ms_before,
-                    prototype=ua_template,
-                    radius_um=0,  # 1D thresholding on matched filter result per channel
-                    weight_method={"mode": "gaussian_2d"}
-                ),
+                detect_threshold=THRESH,
+                peak_sign=PEAK_SIGN,
+                ms_before=ms_before,
+                prototype=ua_template,
+                radius_um=0,
                 n_jobs=1,
             )
                 
@@ -752,6 +942,28 @@ def main():
                 peak_sign=PEAK_SIGN,
                 noise_levels=noise_levels,
             )
+
+        if any([MIN_AMPLITUDE_UV, MAX_AMPLITUDE_UV, MIN_SNR]):
+            print(f"[Filter] Applying amplitude/SNR filtering:")
+            if MIN_AMPLITUDE_UV:
+                print(f"  - Min amplitude: {MIN_AMPLITUDE_UV} µV")
+            if MAX_AMPLITUDE_UV:
+                print(f"  - Max amplitude: {MAX_AMPLITUDE_UV} µV")
+            if MIN_SNR:
+                print(f"  - Min SNR: {MIN_SNR}")
+            
+            peaks, peak_amplitudes, peak_snr = filter_peaks_by_amplitude_fast(
+                peaks,
+                rec_artif_removed,
+                noise_levels,
+                min_amplitude_uv=MIN_AMPLITUDE_UV,
+                max_amplitude_uv=MAX_AMPLITUDE_UV,
+                min_snr=MIN_SNR,
+                peak_sign=PEAK_SIGN,
+            )
+        else:
+            peak_amplitudes = None
+            peak_snr = None
         
         # Threshold to get touchscreen state
         ts_state_num = np.zeros(0, dtype=np.int8)
