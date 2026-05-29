@@ -1,0 +1,35 @@
+# comparison_config.yaml
+
+# Data root (Nike folder containing all sessions)
+data_root: "Y:/Current Project Databases - NHP/2025 Cerebellum prosthesis/Nike"
+
+# Session specifications (no date needed - script finds folders automatically)
+session_specs:
+  # NRR_RW011:
+  #   control: 4
+  #   stim: 6
+  # NRR_RW012:
+  #   control: 3
+  #   stim: 12
+  # NRR_RW016:
+  #   control: 16
+  #   stim: 14
+  NRR_RW022:
+    control: 1
+    stim: 9
+  # NRR_RW032:
+    # control: 20
+    # stim: 21
+
+# Target label ('A' or 'B')
+target: "A"
+
+# Output directory
+output_dir: "comparison_results"
+
+# Time windows [start_ms, end_ms, label]
+time_windows:
+  - [-600, -425, "win1_baseline"]
+  - [-400, -225, "win2_early"]
+  - [-200, -25, "win3_late"]
+  - [0, 175, "win4_post"]
