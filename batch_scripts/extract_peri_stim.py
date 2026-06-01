@@ -61,7 +61,7 @@ PROCESS_ONLY = PARAMS.preprocessing.get("process_only")  # list of BR indices to
 KEYPOINTS_ORDER = tuple(PARAMS.kinematics.get("keypoints", []))
 
 # Plotting config
-WIN_MS            = (-600.0, 600.0)
+WIN_MS            = (-800.0, 600.0)
 NORMALIZE_FIRST_MS = 150.0
 MIN_TRIALS        = 1
 MIN_BIN_COVERAGE_FRAC = 0.9  # require at least x% of trials finite per bin
