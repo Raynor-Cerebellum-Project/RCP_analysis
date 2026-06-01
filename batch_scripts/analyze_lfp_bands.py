@@ -127,7 +127,7 @@ EXCLUDE_BASELINE_TRIALS = {
     Analyzes LFP bands (Alpha, Beta, Low/High Gamma) for NPRW (Intan) and Utah Array (Blackrock)
     
     Pipeline:
-      1. Extraction: Loads stimulation events and extracts epochs (-500ms to +1000ms) with padding.
+      1. Extraction: Loads stimulation events and extracts epochs (-1000ms to +1000ms) with padding.
       2. Blanking: Applies 'copy_baseline' blanking to remove stim artifacts (-5ms to +101ms).
       3. Local CMR (Intan): Subtracts common median within local radius (loaded from config). 
       4. Utah CMR: DISABLED.
@@ -153,14 +153,12 @@ BLANK_POST_MS = 101.0
 EPOCH_PRE_MS = 1000.0
 EPOCH_POST_MS = 1000.0
 PAD_MS = 1000.0 # Padding for zero-phase filtering
-PLOT_1F_DEBUG = True # Optional flag to save figure comparing 1/f correction
+# PLOT_1F_DEBUG = False # Optional flag to save figure comparing 1/f correction
 
 # --- IPCA Artifact Correction Settings ---
 USE_IPCA_CORRECTION  = True
 IPCA_RANK            = 10
-IPCA_PULSE_WINDOW_MS = (-0.2, 0.3)
-ARTRMV_MS_BEFORE = 5.0
-ARTRMV_TAIL_MS   = 5.0
+IPCA_PULSE_WINDOW_MS = (-0.4, 0.3)
 
 # ---------- CONFIG ----------
 # Bands of interest
@@ -205,23 +203,6 @@ STIM_CACHE = {}
 # IPCA Helper Functions (matching UA_BR_analysis_mf.py logic)
 # =============================================================================
 
-def _find_first_significant_peak(tr_local, ref_ratio=0.5):
-    """
-    Given a local trace fragment (already roughly centred on a peak),
-    find the first peak in the absolute derivative that exceeds `ref_ratio` 
-    of the local maximum derivative.
-    Returns the index relative to the start of `tr_local`.
-    """
-    diff_abs = np.abs(np.diff(tr_local, prepend=tr_local[0]))
-    pk_idx = np.argmax(diff_abs)
-    max_d = diff_abs[pk_idx]
-    if max_d < 1e-6:
-        return pk_idx
-    for k in range(len(diff_abs)):
-        if diff_abs[k] > ref_ratio * max_d:
-            return k
-    return pk_idx
-
 
 def _get_electrode_region(elec_id):
     """
@@ -245,13 +226,13 @@ def _get_electrode_region(elec_id):
 
 def _get_stim_frequency_from_metadata(br_idx):
     """Get stimulation frequency from metadata CSV."""
-    stim_freq = 300.0  # default
+    stim_freq = 400.0  # default
     if METADATA_CSV.exists():
         try:
             freq_map = rcp.get_metadata_mapping(METADATA_CSV, 'BR_File', 'Stim_Frequency_Hz')
-            stim_freq = float(freq_map.get(br_idx, 300.0))
+            stim_freq = float(freq_map.get(br_idx, 400.0))
             if np.isnan(stim_freq):
-                stim_freq = 300.0
+                stim_freq = 400.0
         except Exception:
             pass
     return stim_freq
@@ -356,122 +337,122 @@ def _find_baseline_groups(df_norm: pd.DataFrame) -> dict:
 # Core Cleaning Functions
 # =============================================================================
 
-def apply_1f_detrending_chunked(epochs, rel_t_epoch, win_base=(-500, -50), fs=1000.0, chunk_size=32, plot_debug=False, debug_out_dir=None):
-    """
-    Applies adaptive 1/f spectral subtraction in the time-domain using a baseline period.
-    Processes channels in chunks to prevent OOM.
+# def apply_1f_detrending_chunked(epochs, rel_t_epoch, win_base=(-500, -50), fs=1000.0, chunk_size=32, plot_debug=False, debug_out_dir=None):
+#     """
+#     Applies adaptive 1/f spectral subtraction in the time-domain using a baseline period.
+#     Processes channels in chunks to prevent OOM.
 
-    Args:
-        epochs (np.ndarray): (n_trials, n_ch, n_time)
-        rel_t_epoch (np.ndarray): Time axis in ms
-        win_base (tuple): Baseline window (start_ms, end_ms) for 1/f fitting
-        fs (float): Sampling rate (Hz)
-        chunk_size (int): Channels per chunk
+#     Args:
+#         epochs (np.ndarray): (n_trials, n_ch, n_time)
+#         rel_t_epoch (np.ndarray): Time axis in ms
+#         win_base (tuple): Baseline window (start_ms, end_ms) for 1/f fitting
+#         fs (float): Sampling rate (Hz)
+#         chunk_size (int): Channels per chunk
         
-    Returns:
-        np.ndarray: 1/f detrended epochs
-    """
-    out = np.empty_like(epochs)
-    n_trials, n_ch, n_time = epochs.shape
+#     Returns:
+#         np.ndarray: 1/f detrended epochs
+#     """
+#     out = np.empty_like(epochs)
+#     n_trials, n_ch, n_time = epochs.shape
     
-    # 1. Isolate Baseline Segment
-    mask_base = (rel_t_epoch >= win_base[0]) & (rel_t_epoch < win_base[1])
-    n_base = np.sum(mask_base)
+#     # 1. Isolate Baseline Segment
+#     mask_base = (rel_t_epoch >= win_base[0]) & (rel_t_epoch < win_base[1])
+#     n_base = np.sum(mask_base)
     
-    if n_base < 10:
-        print("    [1/f Detrend] Warning: Baseline window too short. Skipping 1/f detrending.")
-        return epochs.copy()
+#     if n_base < 10:
+#         print("    [1/f Detrend] Warning: Baseline window too short. Skipping 1/f detrending.")
+#         return epochs.copy()
         
-    print(f"    [1/f Detrend] Estimating 1/f curve from local baseline: {win_base} ms ({n_base} pts)")
+#     print(f"    [1/f Detrend] Estimating 1/f curve from local baseline: {win_base} ms ({n_base} pts)")
         
-    # Frequencies
-    f_base = np.fft.rfftfreq(n_base, 1/fs)
-    f_full = np.fft.rfftfreq(n_time, 1/fs)
+#     # Frequencies
+#     f_base = np.fft.rfftfreq(n_base, 1/fs)
+#     f_full = np.fft.rfftfreq(n_time, 1/fs)
     
-    # Valid frequencies > 0 to avoid log(0)
-    valid_base = f_base > 0
-    f_valid_base = f_base[valid_base]
-    f_valid_full = f_full[f_full > 0]
+#     # Valid frequencies > 0 to avoid log(0)
+#     valid_base = f_base > 0
+#     f_valid_base = f_base[valid_base]
+#     f_valid_full = f_full[f_full > 0]
     
-    # Pre-compute design matrix for log-log linear regression (FOOOF-lite)
-    x_log = np.log10(f_valid_base)
-    X_mat = np.vstack([np.ones_like(x_log), x_log]).T  # (F, 2)
-    X_pinv = np.linalg.pinv(X_mat)                     # (2, F)
+#     # Pre-compute design matrix for log-log linear regression (FOOOF-lite)
+#     x_log = np.log10(f_valid_base)
+#     X_mat = np.vstack([np.ones_like(x_log), x_log]).T  # (F, 2)
+#     X_pinv = np.linalg.pinv(X_mat)                     # (2, F)
     
-    # FFT magnitude scales cleanly by sqrt(N) for pink noise 
-    scale_factor = np.sqrt(n_time / n_base)
-    f_log_full = np.log10(f_valid_full)[np.newaxis, np.newaxis, :]
+#     # FFT magnitude scales cleanly by sqrt(N) for pink noise 
+#     scale_factor = np.sqrt(n_time / n_base)
+#     f_log_full = np.log10(f_valid_full)[np.newaxis, np.newaxis, :]
     
-    for start_ch in range(0, n_ch, chunk_size):
-        end_ch = min(start_ch + chunk_size, n_ch)
-        chunk_epochs = epochs[:, start_ch:end_ch, :]
+#     for start_ch in range(0, n_ch, chunk_size):
+#         end_ch = min(start_ch + chunk_size, n_ch)
+#         chunk_epochs = epochs[:, start_ch:end_ch, :]
         
-        # 2. Extract baseline chunk
-        chunk_base = chunk_epochs[:, :, mask_base]
+#         # 2. Extract baseline chunk
+#         chunk_base = chunk_epochs[:, :, mask_base]
         
-        # 3. Compute Baseline Magnitude
-        X_base = np.fft.rfft(chunk_base, axis=2)
-        M_base = np.abs(X_base)[:, :, valid_base]
+#         # 3. Compute Baseline Magnitude
+#         X_base = np.fft.rfft(chunk_base, axis=2)
+#         M_base = np.abs(X_base)[:, :, valid_base]
         
-        # Avoid log(0) in magnitudes
-        M_base = np.maximum(M_base, 1e-10)
-        y_log = np.log10(M_base)
+#         # Avoid log(0) in magnitudes
+#         M_base = np.maximum(M_base, 1e-10)
+#         y_log = np.log10(M_base)
         
-        # 4. Fit 1/f coefficients per trial/channel: log(M) = c + alpha * log(f)
-        n_tr, n_c = y_log.shape[0], y_log.shape[1]
-        y_reshaped = y_log.reshape(-1, len(f_valid_base)).T  # (F, T*C)
-        beta = X_pinv @ y_reshaped                           # (2, T*C)
-        beta = beta.reshape(2, n_tr, n_c)
+#         # 4. Fit 1/f coefficients per trial/channel: log(M) = c + alpha * log(f)
+#         n_tr, n_c = y_log.shape[0], y_log.shape[1]
+#         y_reshaped = y_log.reshape(-1, len(f_valid_base)).T  # (F, T*C)
+#         beta = X_pinv @ y_reshaped                           # (2, T*C)
+#         beta = beta.reshape(2, n_tr, n_c)
         
-        c = beta[0, :, :, np.newaxis]
-        alpha = beta[1, :, :, np.newaxis]
+#         c = beta[0, :, :, np.newaxis]
+#         alpha = beta[1, :, :, np.newaxis]
         
-        # 5. Synthesize 1/f envelope for full time window
-        # log(M_1f) = c + alpha * log(f_full)
-        M_1f_log = c + alpha * f_log_full
+#         # 5. Synthesize 1/f envelope for full time window
+#         # log(M_1f) = c + alpha * log(f_full)
+#         M_1f_log = c + alpha * f_log_full
         
-        # Convert out of log space and apply sqrt(N) scaling to match the full FFT window
-        M_1f_valid = (10 ** M_1f_log) * scale_factor
+#         # Convert out of log space and apply sqrt(N) scaling to match the full FFT window
+#         M_1f_valid = (10 ** M_1f_log) * scale_factor
         
-        # Construct full 1/f magnitude (DC = 0 to preserve global mean voltage)
-        M_1f = np.zeros((n_tr, n_c, len(f_full)))
-        M_1f[:, :, f_full > 0] = M_1f_valid
+#         # Construct full 1/f magnitude (DC = 0 to preserve global mean voltage)
+#         M_1f = np.zeros((n_tr, n_c, len(f_full)))
+#         M_1f[:, :, f_full > 0] = M_1f_valid
         
-        # 6. Apply Spectral Subtraction to Full Epoch
-        X_full = np.fft.rfft(chunk_epochs, axis=2)
-        M_full = np.abs(X_full)
-        Phase_full = np.angle(X_full)
+#         # 6. Apply Spectral Subtraction to Full Epoch
+#         X_full = np.fft.rfft(chunk_epochs, axis=2)
+#         M_full = np.abs(X_full)
+#         Phase_full = np.angle(X_full)
         
-        # Subtract the theoretical 1/f noise floor, floor at 0 to avoid negative amplitudes
-        M_clean = np.maximum(M_full - M_1f, 0)
+#         # Subtract the theoretical 1/f noise floor, floor at 0 to avoid negative amplitudes
+#         M_clean = np.maximum(M_full - M_1f, 0)
         
-        # Reconstruct complex FFT array
-        X_clean = M_clean * np.exp(1j * Phase_full)
+#         # Reconstruct complex FFT array
+#         X_clean = M_clean * np.exp(1j * Phase_full)
         
-        # Inverse FFT back to time domain
-        chunk_clean = np.fft.irfft(X_clean, n=n_time, axis=2)
+#         # Inverse FFT back to time domain
+#         chunk_clean = np.fft.irfft(X_clean, n=n_time, axis=2)
         
-        if plot_debug and start_ch == 0 and debug_out_dir is not None:
-            import matplotlib.pyplot as plt
-            from pathlib import Path
-            fig, ax = plt.subplots(1, 1, figsize=(10, 4))
-            ax.plot(rel_t_epoch, chunk_epochs[0, 0, :], label='Original', alpha=0.7)
-            ax.plot(rel_t_epoch, chunk_clean[0, 0, :], label='1/f Detrended', alpha=0.7)
-            ax.axvspan(win_base[0], win_base[1], color='gray', alpha=0.2, label='Baseline Window')
-            ax.set_xlabel("Time (ms)")
-            ax.set_ylabel("Amplitude")
-            ax.set_title("1/f Detrending Debug (Trial 0, Ch 0)")
-            ax.legend(loc="upper right")
+#         if plot_debug and start_ch == 0 and debug_out_dir is not None:
+#             import matplotlib.pyplot as plt
+#             from pathlib import Path
+#             fig, ax = plt.subplots(1, 1, figsize=(10, 4))
+#             ax.plot(rel_t_epoch, chunk_epochs[0, 0, :], label='Original', alpha=0.7)
+#             ax.plot(rel_t_epoch, chunk_clean[0, 0, :], label='1/f Detrended', alpha=0.7)
+#             ax.axvspan(win_base[0], win_base[1], color='gray', alpha=0.2, label='Baseline Window')
+#             ax.set_xlabel("Time (ms)")
+#             ax.set_ylabel("Amplitude")
+#             ax.set_title("1/f Detrending Debug (Trial 0, Ch 0)")
+#             ax.legend(loc="upper right")
             
-            out_path = Path(debug_out_dir) / "debug_1f_detrend.png"
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            plt.savefig(out_path, bbox_inches='tight')
-            plt.close(fig)
-            print(f"    [1/f Detrend] Saved debug plot to {out_path}")
+#             out_path = Path(debug_out_dir) / "debug_1f_detrend.png"
+#             out_path.parent.mkdir(parents=True, exist_ok=True)
+#             plt.savefig(out_path, bbox_inches='tight')
+#             plt.close(fig)
+#             print(f"    [1/f Detrend] Saved debug plot to {out_path}")
             
-        out[:, start_ch:end_ch, :] = chunk_clean
+#         out[:, start_ch:end_ch, :] = chunk_clean
         
-    return out
+#     return out
 
 
 def filter_zero_phase(epochs, fs, low, high, order=4, chunk_size=32):
@@ -509,244 +490,6 @@ def filter_zero_phase(epochs, fs, low, high, order=4, chunk_size=32):
     return out
 
 
-# =============================================================================
-# IPCA Artifact Correction (matching UA_BR_analysis_mf.py logic exactly)
-# =============================================================================
-
-# def apply_ipca_correction(rec_ns6, starts_ua, ends_ua, br_idx=None):
-#     """
-#     Applies IPCA artifact removal to stimulation windows, using cross-channel templates 
-#     learned individually per brain region.
-    
-#     This function matches the logic in UA_BR_analysis_mf.py exactly.
-#     """
-#     if not USE_IPCA_CORRECTION or not starts_ua.size:
-#         return rec_ns6
-
-#     fs_ua = rec_ns6.get_sampling_frequency()
-#     n_total = rec_ns6.get_num_samples()
-#     print(f"[IPCA] Starting Incremental PCA artifact correction on {starts_ua.size} blocks...")
-    
-#     # Get stim frequency from metadata
-#     stim_freq_meta = _get_stim_frequency_from_metadata(br_idx) if br_idx else 300.0
-#     pulse_interval_ms = 1000.0 / stim_freq_meta
-#     print(f"[IPCA] Using stim frequency {stim_freq_meta} Hz (interval: {pulse_interval_ms:.2f} ms)")
-    
-#     # Get UA port for region mapping
-#     ua_port = _get_ua_port_from_metadata(br_idx) if br_idx else "A"
-    
-#     # Calculate sample indices for windows
-#     mw_start = int(IPCA_PULSE_WINDOW_MS[0] / 1000.0 * fs_ua)
-#     mw_end = int(IPCA_PULSE_WINDOW_MS[1] / 1000.0 * fs_ua)
-    
-#     interval_samp = int(pulse_interval_ms / 1000.0 * fs_ua)
-#     refine_samp = max(int(0.15 / 1000.0 * fs_ua), 3)
-#     coarse_radius = max(refine_samp, 3)
-#     search_radius_samp = int((pulse_interval_ms * 0.4) / 1000.0 * fs_ua)
-    
-#     # Get channel info
-#     ch_ids = np.asarray(rec_ns6.get_channel_ids())
-#     n_channels = len(ch_ids)
-    
-#     if n_channels == 0:
-#         return rec_ns6
-    
-#     # Try to parse electrode IDs from channel names for region mapping
-#     try:
-#         elec_ids = np.array([int(ch) for ch in ch_ids])
-#     except (ValueError, TypeError):
-#         elec_ids = np.arange(1, n_channels + 1)
-    
-#     # Adjust electrode IDs for Port B
-#     if ua_port == "B":
-#         elec_ids_for_region = elec_ids + 128
-#     else:
-#         elec_ids_for_region = elec_ids
-    
-#     # Map electrodes to regions
-#     target_ch_regions = [_get_electrode_region(int(e)) for e in elec_ids_for_region]
-    
-#     # Use first channel as reference for pulse detection
-#     ref_ch_name = ch_ids[0]
-    
-#     print(f"[IPCA] Scanning for artifact triggers using channel {ref_ch_name}...")
-    
-#     # Collect all pulse centres - matching UA_BR_analysis_mf.py logic exactly
-#     all_pulse_centres = []
-    
-#     for i, (st, en) in enumerate(zip(starts_ua, ends_ua)):
-#         # Coarse search: find the first pulse in a wider window
-#         search_margin = int(20.0 / 1000 * fs_ua)
-#         start_search = max(0, st - search_margin)
-#         end_search = min(n_total, en + search_margin)
-        
-#         if end_search <= start_search:
-#             continue
-        
-#         tr_search = rec_ns6.get_traces(
-#             start_frame=start_search, end_frame=end_search,
-#             channel_ids=[ref_ch_name], return_in_uV=True
-#         )[:, 0]
-        
-#         tr_diff_search = np.abs(np.diff(tr_search, prepend=tr_search[0]))
-        
-#         # Expected position of first pulse within the search window
-#         predicted_centre = st - start_search
-#         slop = int(5.0 / 1000 * fs_ua)
-#         win_lo = max(0, predicted_centre - slop)
-#         win_hi = min(len(tr_search), predicted_centre + slop)
-        
-#         if win_hi <= win_lo:
-#             continue
-        
-#         # Find the peak derivative in this window
-#         peak_in_win = np.argmax(tr_diff_search[win_lo:win_hi])
-#         anchor_idx = win_lo + peak_in_win
-#         max_diff = tr_diff_search[anchor_idx]
-        
-#         if max_diff < 5.0:
-#             continue
-        
-#         # Scan left→right for the first threshold-crossing derivative
-#         first_pulse_in_search = None
-#         for k in range(win_lo, win_hi):
-#             if tr_diff_search[k] > 0.4 * max_diff:
-#                 first_pulse_in_search = k
-#                 break
-#         if first_pulse_in_search is None:
-#             first_pulse_in_search = anchor_idx
-        
-#         # Refine coarse centre to the earliest significant deflection
-#         r_lo = max(0, first_pulse_in_search - coarse_radius)
-#         r_hi = min(len(tr_search), first_pulse_in_search + coarse_radius + 1)
-#         coarse_centre = r_lo + _find_first_significant_peak(tr_search[r_lo:r_hi])
-        
-#         # Convert back to global sample index
-#         true_first_pulse = start_search + coarse_centre
-        
-#         # Calculate stim duration and number of pulses
-#         stim_dur_ms = (en - st) * 1000.0 / fs_ua
-#         num_pulses = int(np.floor(stim_dur_ms / pulse_interval_ms)) + 1
-        
-#         # Forward-walk from the true first pulse to find all pulses
-#         local_max_diff = max_diff
-#         pulse_centres_block = [true_first_pulse]
-#         curr = true_first_pulse
-        
-#         while len(pulse_centres_block) < num_pulses:
-#             nxt = curr + interval_samp
-            
-#             s_lo = max(0, nxt - search_radius_samp)
-#             s_hi = min(n_total, nxt + search_radius_samp)
-            
-#             if s_hi <= s_lo:
-#                 curr = nxt
-#                 pulse_centres_block.append(curr)
-#                 continue
-            
-#             tr_local = rec_ns6.get_traces(
-#                 start_frame=s_lo, end_frame=s_hi,
-#                 channel_ids=[ref_ch_name], return_in_uV=True
-#             )[:, 0]
-            
-#             tr_diff = np.abs(np.diff(tr_local, prepend=tr_local[0]))
-#             peak_idx = np.argmax(tr_diff)
-            
-#             if tr_diff[peak_idx] < 0.15 * local_max_diff:
-#                 curr = nxt
-#             else:
-#                 curr = s_lo + peak_idx
-            
-#             pulse_centres_block.append(curr)
-        
-#         # Refine each pulse centre
-#         for p_idx in pulse_centres_block:
-#             r_lo = max(0, p_idx - refine_samp)
-#             r_hi = min(n_total, p_idx + refine_samp + 1)
-#             if r_lo >= r_hi:
-#                 all_pulse_centres.append(p_idx)
-#                 continue
-            
-#             tr_refine = rec_ns6.get_traces(
-#                 start_frame=r_lo, end_frame=r_hi,
-#                 channel_ids=[ref_ch_name], return_in_uV=True
-#             )[:, 0]
-            
-#             tc = r_lo + _find_first_significant_peak(tr_refine)
-#             all_pulse_centres.append(tc)
-    
-#     # Remove duplicates and sort
-#     all_pulse_centres = sorted(set(all_pulse_centres))
-#     print(f"[IPCA] Found {len(all_pulse_centres)} total pulse centres")
-    
-#     if not all_pulse_centres:
-#         print("[IPCA] No pulses successfully extracted, skipping correction.")
-#         return rec_ns6
-    
-#     # Extract ALL channels for each pulse
-#     micro_signal_list = []
-#     micro_map = []
-    
-#     for true_centre in all_pulse_centres:
-#         p_start = true_centre + mw_start
-#         p_end = true_centre + mw_end
-        
-#         if p_start >= 0 and p_end <= n_total:
-#             micro_signal_list.append(
-#                 rec_ns6.get_traces(start_frame=p_start, end_frame=p_end, return_in_uV=True).astype(np.float32).copy()
-#             )
-#             micro_map.append((p_start, p_end))
-    
-#     if not micro_signal_list:
-#         print("[IPCA] No pulses extracted, skipping correction.")
-#         return rec_ns6
-    
-#     micro_signal_array = np.stack(micro_signal_list)
-#     print(f"[IPCA] Extracted {len(micro_signal_array)} artifacts. Shape: {micro_signal_array.shape}")
-    
-#     # Apply IPCA correction by region
-#     corrector = IPCA_Artifact_Correction(rank=IPCA_RANK)
-#     micro_corrected = micro_signal_array.copy()
-#     n_stim, n_time, _ = micro_signal_array.shape
-    
-#     # Group channels by region
-#     region_to_idxs = {}
-#     for ch_idx, reg_name in enumerate(target_ch_regions):
-#         region_to_idxs.setdefault(reg_name, []).append(ch_idx)
-    
-#     print("Cross-channel IPCA by region:")
-#     for reg, idxs in region_to_idxs.items():
-#         if not idxs:
-#             continue
-        
-#         # Pool all pulses from channels within this region
-#         reg_signal = micro_signal_array[:, :, idxs]
-#         pooled_signal = np.transpose(reg_signal, (0, 2, 1)).reshape(-1, n_time)
-        
-#         # Learn the shared template for this region
-#         reg_template = Template()
-#         _, reg_template = corrector.ipca_template_per_channel(pooled_signal, reg_template)
-        
-#         print(f"  [{reg}] Shared subspace learned from {len(idxs)} channels.")
-        
-#         # Apply this region's template to each channel
-#         for ch_idx in idxs:
-#             signal_ch = micro_signal_array[:, :, ch_idx].copy()
-#             baseline = np.mean(signal_ch[:, :3], axis=1, keepdims=True)
-#             centered = signal_ch - baseline
-            
-#             artifact = centered @ reg_template.weights.T @ reg_template.weights
-#             corr_ch = centered - artifact + baseline
-#             micro_corrected[:, :, ch_idx] = corr_ch
-    
-#     print("[IPCA] Building IPCACorrectedRecording...")
-#     rec_corr_mem = IPCACorrectedRecording(rec_ns6, micro_map, micro_corrected)
-    
-#     del micro_signal_array, micro_corrected
-#     gc.collect()
-    
-#     return rec_corr_mem
-
 def apply_ipca_correction(rec_ns6, starts_ua, ends_ua, br_idx=None, fs_intan=30000.0, shift_samp_intan=0.0):
     """
     Applies IPCA artifact removal to stimulation windows, using cross-channel templates 
@@ -765,7 +508,7 @@ def apply_ipca_correction(rec_ns6, starts_ua, ends_ua, br_idx=None, fs_intan=300
     print(f"[IPCA] Starting Incremental PCA artifact correction on {len(starts_ua)} blocks...")
     
     # Get stim frequency from metadata
-    stim_freq_meta = _get_stim_frequency_from_metadata(br_idx) if br_idx else 300.0
+    stim_freq_meta = _get_stim_frequency_from_metadata(br_idx) if br_idx else 400.0
     pulse_interval_ms = 1000.0 / stim_freq_meta
     print(f"[IPCA] Using stim frequency {stim_freq_meta} Hz (interval: {pulse_interval_ms:.2f} ms)")
     
@@ -1290,11 +1033,13 @@ def process_baseline_group_utah(
         n_time = concat_epochs.shape[2]
         rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
 
-        print(f"    [Cleaning] 1/f Detrending baseline epochs...")
-        concat_epochs_clean = apply_1f_detrending_chunked(
-            concat_epochs, rel_t_epoch, win_base=(-EPOCH_PRE_MS + 100.0, EPOCH_POST_MS - 100.0), fs=TARGET_FS,
-            plot_debug=PLOT_1F_DEBUG, debug_out_dir=UA_LFP_CKPT_ROOT.parent.parent / "figures" / "UA_LFP" / "debug"
-        )
+        # print(f"    [Cleaning] 1/f Detrending baseline epochs...")
+        # concat_epochs_clean = apply_1f_detrending_chunked(
+        #     concat_epochs, rel_t_epoch, win_base=(-EPOCH_PRE_MS + 100.0, EPOCH_POST_MS - 100.0), fs=TARGET_FS,
+        #     plot_debug=PLOT_1F_DEBUG, debug_out_dir=UA_LFP_CKPT_ROOT.parent.parent / "figures" / "UA_LFP" / "debug"
+        # )
+
+        concat_epochs_clean = concat_epochs
 
         WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
         WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)
@@ -1578,12 +1323,14 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         n_time = pre_samps + post_samps
         rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
 
-        print(f"    [Cleaning] 1/f Detrending broadband...")
-        segs_bb_clean = apply_1f_detrending_chunked(
-            segs_bb, rel_t_epoch, win_base=(-EPOCH_PRE_MS + 100.0, EPOCH_POST_MS - 100.0), fs=TARGET_FS,
-            plot_debug=PLOT_1F_DEBUG, debug_out_dir=UA_LFP_CKPT_ROOT.parent.parent / "figures" / "UA_LFP" / "debug"
-        )
+        # print(f"    [Cleaning] 1/f Detrending broadband...")
+        # segs_bb_clean = apply_1f_detrending_chunked(
+        #     segs_bb, rel_t_epoch, win_base=(-EPOCH_PRE_MS + 100.0, EPOCH_POST_MS - 100.0), fs=TARGET_FS,
+        #     plot_debug=PLOT_1F_DEBUG, debug_out_dir=UA_LFP_CKPT_ROOT.parent.parent / "figures" / "UA_LFP" / "debug"
+        # )
         
+        segs_bb_clean = segs_bb
+
         results['broadband_full'], t_full = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_FULL)
         results['broadband_pre'], t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
         results['broadband_post'], t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)

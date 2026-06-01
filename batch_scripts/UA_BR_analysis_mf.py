@@ -175,7 +175,7 @@ si.set_global_job_kwargs(**global_job_kwargs)
 # ══════════════════════════════════════════════════════════════════════
 
 # Absolute thresholds (µV) - same for all channels
-MIN_AMPLITUDE_UV = 25.0
+MIN_AMPLITUDE_UV = None
 MAX_AMPLITUDE_UV = 1000.0
 
 MIN_SNR = 2.0                # Minimum signal-to-noise ratio (amplitude / noise_level)
