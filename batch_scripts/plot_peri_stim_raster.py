@@ -21,13 +21,17 @@ from functools import lru_cache
 # =============================================================================
 
 # Which probe types to process
-PROCESS_NPRW = False          # Set False to skip NPRW plots
+PROCESS_NPRW = True          # Set False to skip NPRW plots
 PROCESS_UA = True            # Set False to skip Utah Array plots
 PROCESS_DIFF_PLOTS = True    # Set False to skip difference plots (Stim - Control, etc.)
 
 # Which plot views to generate
 GENERATE_STANDARD_VIEW = True   # (-500, 500) ms window
 GENERATE_ZOOM_VIEW = True       # Dynamic zoom window with 5ms bins
+
+# Which views get difference plots
+DIFF_PLOTS_STANDARD = True      # Generate diff plots for standard (-500, 500) view
+DIFF_PLOTS_ZOOM = True          # Generate diff plots for zoom view
 
 # Parallel processing settings
 N_JOBS = 8                   # Number of parallel jobs (-1 for all cores)
@@ -38,7 +42,7 @@ DPI_OUTPUT = 100             # Lower = faster, smaller files (try 72 for drafts)
 SKIP_EXISTING = False        # Skip files that already have output plots
 
 # Debug/verbose output
-VERBOSE = True               # Print debug messages
+VERBOSE = False               # Print debug messages
 
 # =============================================================================
 # PLOT SETTINGS
@@ -48,11 +52,12 @@ VERBOSE = True               # Print debug messages
 WIN_PLOT_MS = (-500.0, 500.0)
 
 # Build PLOT_VIEWS based on configuration
+# Format: (window, bin_ms, suffix, generate_diff)
 PLOT_VIEWS = []
 if GENERATE_STANDARD_VIEW:
-    PLOT_VIEWS.append(((-500.0, 500.0), None, ''))        # standard view
+    PLOT_VIEWS.append(((-500.0, 500.0), None, '', DIFF_PLOTS_STANDARD))
 if GENERATE_ZOOM_VIEW:
-    PLOT_VIEWS.append((None, 5.0, '_zoom'))               # zoomed view with 5 ms bins
+    PLOT_VIEWS.append((None, 5.0, '_zoom', DIFF_PLOTS_ZOOM))
 
 # Raster dots style
 RASTER_MARKER = 'o'
@@ -66,7 +71,11 @@ PSTH_EDGE_COLOR = 'k'
 PSTH_LINEWIDTH = 0.5
 PSTH_YLIM = (0, 100)
 PSTH_YLIM_ZOOM = (0, 50)
-DIFF_YLIM = (-5, 12)
+
+# Difference plot y-limits (now in z-score units)
+DIFF_YLIM = (-4, 6)  # z-score units (standard deviations from baseline)
+DIFF_YLIM_STANDARD = (-4, 6)  # For standard view
+DIFF_YLIM_ZOOM = (-4, 6)      # For zoom view
 
 # Figure sizes
 FIG_SIZE_RW = (48, 24)
@@ -87,17 +96,6 @@ PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStim"
 def load_electrode_mapping_cached(csv_path_str: str):
     """
     Load electrode mapping from CSV (cached).
-    
-    Returns:
-        elec_info: dict mapping electrode_id -> {
-            'nsp_id': global NSP ID (1-256),
-            'port': 'A' or 'B',
-            'region': array name,
-            'row': grid row,
-            'col': grid col,
-            'local_nsp': local NSP ID (1-128)
-        }
-        region_grids: {region: 8x8 array of electrode IDs}
     """
     csv_path = Path(csv_path_str)
     elec_info = {}
@@ -118,20 +116,14 @@ def load_electrode_mapping_cached(csv_path_str: str):
             c = int(row['GridCol'])
             
             # Determine port from string
-            if 'A' in port_str.upper():
-                port = 'A'
-                local_nsp = nsp_id  # Port A: global 1-128 = local 1-128
-            else:
-                port = 'B'
-                local_nsp = nsp_id - 128  # Port B: global 129-256 = local 1-128
+            port = 'A' if 'A' in port_str.upper() else 'B'
 
             elec_info[elec_id] = {
-                'nsp_id': nsp_id,
-                'port': port,
+                'nsp_id': nsp_id,      # Global NSP ID (1-256)
+                'port': port,           # 'A' or 'B'
                 'region': region,
                 'row': r,
                 'col': c,
-                'local_nsp': local_nsp
             }
 
             if region not in region_grids:
@@ -143,7 +135,6 @@ def load_electrode_mapping_cached(csv_path_str: str):
 
     return elec_info, region_grids
 
-
 def load_electrode_mapping(csv_path: Path):
     """Wrapper to call cached version with string path."""
     return load_electrode_mapping_cached(str(csv_path))
@@ -151,46 +142,83 @@ def load_electrode_mapping(csv_path: Path):
 
 def build_elec_to_data_idx(ua_ids_1based, elec_info, recording_port='A'):
     """
-    Build electrode_id -> channel index mapping for a specific recording port.
+    Build electrode_id -> channel index mapping.
+    
+    For Port A: data channels 0-127 correspond to NSP 1-128
+    For Port B: data channels 0-127 correspond to NSP 129-256
     
     Parameters
     ----------
-    ua_ids_1based : array-like or None
-        Local NSP IDs for each channel (1-128 as recorded).
-        If None, assumes sequential 1-128.
+    ua_ids_1based : array or None
+        If provided, the actual NSP IDs in the data (1-based), or Electrode IDs.
+        If None, assumes sequential mapping based on port.
     elec_info : dict
-        Mapping from electrode ID to electrode info (from CSV).
+        Electrode info from CSV: {elec_id: {'nsp_id': ..., 'port': ..., 'region': ..., ...}}
     recording_port : str
-        'A' or 'B' - which port the recording was made from.
+        'A' or 'B'
     
     Returns
     -------
-    elec_to_idx : dict
-        Mapping from electrode ID to channel index in the data array.
+    dict
+        {electrode_id: channel_index} mapping
     """
     elec_to_idx = {}
+    recording_port = recording_port.upper()
     
-    # Build reverse lookup: for the recording port, map local_nsp -> electrode_id
-    local_nsp_to_elec = {}
-    for elec_id, info in elec_info.items():
-        if info['port'] == recording_port.upper():
-            local_nsp_to_elec[info['local_nsp']] = elec_id
+    port_elecs = {elec_id for elec_id, info in elec_info.items() if info['port'] == recording_port}
     
+    # Check if the values in ua_ids_1based are physical Electrode IDs for this port
+    is_elec_ids = False
     if ua_ids_1based is not None and len(ua_ids_1based) > 0:
-        for ch_idx, local_nsp_id in enumerate(ua_ids_1based):
+        valid_elecs_count = sum(1 for x in ua_ids_1based if int(x) in port_elecs)
+        if valid_elecs_count > len(ua_ids_1based) * 0.5:
+            is_elec_ids = True
+            
+    if is_elec_ids:
+        for ch_idx, elec_id_raw in enumerate(ua_ids_1based):
             try:
-                local_nsp_id = int(local_nsp_id)
+                elec_id = int(elec_id_raw)
+                elec_to_idx[elec_id] = ch_idx
+            except (ValueError, TypeError):
+                continue
+    elif ua_ids_1based is not None and len(ua_ids_1based) > 0:
+        # Build reverse lookup: NSP_ID -> electrode_id
+        nsp_to_elec = {}
+        for elec_id, info in elec_info.items():
+            nsp_to_elec[info['nsp_id']] = elec_id
+        
+        # Determine NSP offset based on port
+        nsp_offset = 0 if recording_port == 'A' else 128
+        
+        # Use the actual channel IDs from the data as NSP IDs
+        for ch_idx, nsp_id_raw in enumerate(ua_ids_1based):
+            try:
+                nsp_id = int(nsp_id_raw)
             except (ValueError, TypeError):
                 continue
             
-            elec_id = local_nsp_to_elec.get(local_nsp_id)
+            # If the data contains local IDs (1-128), add the port offset
+            if 1 <= nsp_id <= 128:
+                global_nsp_id = nsp_id + nsp_offset
+            else:
+                # Already global (129-256 range)
+                global_nsp_id = nsp_id
+            
+            elec_id = nsp_to_elec.get(global_nsp_id)
             if elec_id is not None:
                 elec_to_idx[elec_id] = ch_idx
     else:
-        # Fallback: assume sequential local NSP IDs 1-128
+        # No ua_ids_1based - assume sequential mapping
+        # Build reverse lookup: NSP_ID -> electrode_id
+        nsp_to_elec = {}
+        for elec_id, info in elec_info.items():
+            nsp_to_elec[info['nsp_id']] = elec_id
+            
+        nsp_offset = 0 if recording_port == 'A' else 128
+        # Channel 0 -> NSP 1 (Port A) or NSP 129 (Port B)
         for ch_idx in range(128):
-            local_nsp_id = ch_idx + 1
-            elec_id = local_nsp_to_elec.get(local_nsp_id)
+            global_nsp_id = ch_idx + 1 + nsp_offset
+            elec_id = nsp_to_elec.get(global_nsp_id)
             if elec_id is not None:
                 elec_to_idx[elec_id] = ch_idx
     
@@ -200,43 +228,60 @@ def build_elec_to_data_idx(ua_ids_1based, elec_info, recording_port='A'):
 def get_active_regions(ua_ids_1based, elec_info, recording_port='A'):
     """
     Determine which regions have active channels in this recording.
-    
-    Parameters
-    ----------
-    ua_ids_1based : array-like
-        Local NSP IDs (1-128) for each channel.
-    elec_info : dict
-        Electrode info dictionary.
-    recording_port : str
-        'A' or 'B' for which port was recorded.
-    
-    Returns
-    -------
-    list of str
-        Region names that have active channels, in REGION_ORDER.
     """
-    REGION_ORDER = ["M1i", "M1s", "PMd", "SMA"]
+    REGION_ORDER = ["SMA", "PMd", "M1i", "M1s"]
+    recording_port = recording_port.upper()
     
-    # Build reverse lookup for this port
-    local_nsp_to_elec = {}
-    for elec_id, info in elec_info.items():
-        if info['port'] == recording_port.upper():
-            local_nsp_to_elec[info['local_nsp']] = elec_id
+    if ua_ids_1based is None or len(ua_ids_1based) == 0:
+        # Fallback: return all regions for this port
+        active = set()
+        for elec_id, info in elec_info.items():
+            if info['port'] == recording_port:
+                active.add(info['region'])
+        return [r for r in REGION_ORDER if r in active]
     
-    active_regs = set()
+    port_elecs = {elec_id for elec_id, info in elec_info.items() if info['port'] == recording_port}
     
-    if ua_ids_1based is not None:
-        for local_nsp_id in ua_ids_1based:
+    # Check if the values in ua_ids_1based are physical Electrode IDs
+    is_elec_ids = False
+    valid_elecs_count = sum(1 for x in ua_ids_1based if int(x) in port_elecs)
+    if valid_elecs_count > len(ua_ids_1based) * 0.5:
+        is_elec_ids = True
+        
+    active_regions = set()
+    if is_elec_ids:
+        for elec_id_raw in ua_ids_1based:
             try:
-                local_nsp_id = int(local_nsp_id)
-                elec_id = local_nsp_to_elec.get(local_nsp_id)
-                if elec_id is not None:
-                    reg = elec_info[elec_id]['region']
-                    active_regs.add(reg)
-            except:
+                elec_id = int(elec_id_raw)
+            except (ValueError, TypeError):
                 continue
+            
+            info = elec_info.get(elec_id)
+            if info is not None:
+                active_regions.add(info['region'])
+    else:
+        # Build NSP -> electrode lookup (all electrodes)
+        nsp_to_elec = {info['nsp_id']: elec_id for elec_id, info in elec_info.items()}
+        nsp_offset = 0 if recording_port == 'A' else 128
+        
+        for nsp_id_raw in ua_ids_1based:
+            try:
+                nsp_id = int(nsp_id_raw)
+            except (ValueError, TypeError):
+                continue
+            
+            # Try direct lookup
+            elec_id = nsp_to_elec.get(nsp_id)
+            
+            # Try with offset if needed
+            if elec_id is None and 1 <= nsp_id <= 128:
+                elec_id = nsp_to_elec.get(nsp_id + nsp_offset)
+            
+            if elec_id is not None:
+                region = elec_info[elec_id]['region']
+                active_regions.add(region)
     
-    return [r for r in REGION_ORDER if r in active_regs]
+    return [r for r in REGION_ORDER if r in active_regions]
 
 
 def get_electrodes_for_port(elec_info, region, recording_port):
@@ -358,6 +403,48 @@ def _rebin_from_peaks_fast(peaks_dict, events_ms, win_ms, bin_ms, stim_dur_ms=0.
     return counts, centers, edges
 
 
+def compute_zscore_diff(stim_counts, baseline_counts, min_std=0.1):
+    """
+    Compute z-scored difference between stim and baseline.
+    
+    Z = (stim_mean - baseline_mean) / baseline_std
+    
+    Parameters
+    ----------
+    stim_counts : ndarray
+        Shape (n_trials, n_channels, n_bins) - stimulus condition counts
+    baseline_counts : ndarray
+        Shape (n_trials, n_channels, n_bins) - baseline condition counts
+    min_std : float
+        Minimum standard deviation to avoid division by zero
+    
+    Returns
+    -------
+    z_diff : ndarray
+        Shape (n_channels, n_bins) - z-scored difference
+    stim_mean : ndarray
+        Shape (n_channels, n_bins) - mean of stim counts
+    baseline_mean : ndarray
+        Shape (n_channels, n_bins) - mean of baseline counts
+    baseline_std : ndarray
+        Shape (n_channels, n_bins) - std of baseline counts
+    """
+    # Compute means across trials
+    stim_mean = np.nanmean(stim_counts, axis=0)  # (n_channels, n_bins)
+    baseline_mean = np.nanmean(baseline_counts, axis=0)  # (n_channels, n_bins)
+    
+    # Compute std across trials for baseline
+    baseline_std = np.nanstd(baseline_counts, axis=0)  # (n_channels, n_bins)
+    
+    # Avoid division by zero
+    baseline_std = np.maximum(baseline_std, min_std)
+    
+    # Compute z-score
+    z_diff = (stim_mean - baseline_mean) / baseline_std
+    
+    return z_diff, stim_mean, baseline_mean, baseline_std
+
+
 def plot_channel_group_fast(ax_raster, ax_psth, 
                             peak_times, events_ms, 
                             binned_counts, bin_edges, 
@@ -439,6 +526,7 @@ def plot_channel_group_fast(ax_raster, ax_psth,
 def load_reference_data(all_files, metadata_df=None):
     """
     Scans all files for 'control_reaches' and 'at_rest'.
+    Now stores full trial-by-trial counts for z-score computation.
     """
     if not PROCESS_DIFF_PLOTS:
         return {'controls': {}, 'rest': {}}
@@ -486,20 +574,16 @@ def load_reference_data(all_files, metadata_df=None):
                     max_trials = n_trials
                     entry = {
                         'n_trials': n_trials, 
-                        'NPRW': None, 'UA': None, 
                         'NPRW_peaks': None, 'UA_peaks': None, 
-                        'ctrl_events': None
+                        'ctrl_events': None,
+                        'file_path': f,  # Store file path for later reloading if needed
                     }
                     if 'event_ms' in data: 
                         entry['ctrl_events'] = np.asarray(data['event_ms']).flatten()
-                    if PROCESS_NPRW and 'NPRW_counts' in data:
-                        entry['NPRW'] = np.nansum(data['NPRW_counts'], axis=0) / max(n_trials, 1)
-                        if 'NPRW_edges_ms' in data: entry['NPRW_edges_ms'] = data['NPRW_edges_ms']
-                        if 'NPRW_peak_ms_dedup' in data: entry['NPRW_peaks'] = data['NPRW_peak_ms_dedup'].item()
-                    if PROCESS_UA and 'UA_counts' in data:
-                        entry['UA'] = np.nansum(data['UA_counts'], axis=0) / max(n_trials, 1)
-                        if 'UA_edges_ms' in data: entry['UA_edges_ms'] = data['UA_edges_ms']
-                        if 'UA_peak_ms_dedup' in data: entry['UA_peaks'] = data['UA_peak_ms_dedup'].item()
+                    if PROCESS_NPRW and 'NPRW_peak_ms_dedup' in data:
+                        entry['NPRW_peaks'] = data['NPRW_peak_ms_dedup'].item()
+                    if PROCESS_UA and 'UA_peak_ms_dedup' in data:
+                        entry['UA_peaks'] = data['UA_peak_ms_dedup'].item()
                     best_data = entry
             except: 
                 continue
@@ -522,20 +606,16 @@ def load_reference_data(all_files, metadata_df=None):
             if key not in references['rest'] or n_trials > references['rest'][key]['n_trials']:
                 entry = {
                     'n_trials': n_trials, 
-                    'NPRW': None, 'UA': None, 
                     'NPRW_peaks': None, 'UA_peaks': None, 
-                    'ctrl_events': None
+                    'ctrl_events': None,
+                    'file_path': f,
                 }
                 if 'event_ms' in data: 
                     entry['ctrl_events'] = np.asarray(data['event_ms']).flatten()
-                if PROCESS_NPRW and 'NPRW_counts' in data:
-                    entry['NPRW'] = np.nansum(data['NPRW_counts'], axis=0) / max(n_trials, 1)
-                    if 'NPRW_edges_ms' in data: entry['NPRW_edges_ms'] = data['NPRW_edges_ms']
-                    if 'NPRW_peak_ms_dedup' in data: entry['NPRW_peaks'] = data['NPRW_peak_ms_dedup'].item()
-                if PROCESS_UA and 'UA_counts' in data:
-                    entry['UA'] = np.nansum(data['UA_counts'], axis=0) / max(n_trials, 1)
-                    if 'UA_edges_ms' in data: entry['UA_edges_ms'] = data['UA_edges_ms']
-                    if 'UA_peak_ms_dedup' in data: entry['UA_peaks'] = data['UA_peak_ms_dedup'].item()
+                if PROCESS_NPRW and 'NPRW_peak_ms_dedup' in data:
+                    entry['NPRW_peaks'] = data['NPRW_peak_ms_dedup'].item()
+                if PROCESS_UA and 'UA_peak_ms_dedup' in data:
+                    entry['UA_peaks'] = data['UA_peak_ms_dedup'].item()
                 references['rest'][key] = entry
         except: 
             continue
@@ -739,8 +819,15 @@ def process_nprw(data, meta, references, bad_nprw):
     if rows == 0: 
         rows = 1
     
+    # Build mapping from channel key to index in counts_data (ONCE, outside all loops)
+    try:
+        all_ch_keys_sorted = sorted(peaks_dict.keys(), key=lambda x: int(x))
+    except:
+        all_ch_keys_sorted = sorted(peaks_dict.keys())
+    ch_key_to_counts_idx = {ch_key: idx for idx, ch_key in enumerate(all_ch_keys_sorted)}
+
     # Loop over plot views
-    for view_win_in, view_bin_ms, view_suffix in PLOT_VIEWS:
+    for view_win_in, view_bin_ms, view_suffix, generate_diff in PLOT_VIEWS:
         if view_win_in is None:
             sd = meta['stim_dur_ms'] if meta['stim_dur_ms'] > 0 else 100.0
             view_win = (-100.0, sd + 100.0)
@@ -770,8 +857,9 @@ def process_nprw(data, meta, references, bad_nprw):
             ax_raster = fig_rw.add_subplot(gs[2*r, c])
             ax_psth = fig_rw.add_subplot(gs[2*r+1, c], sharex=ax_raster)
             
-            ch_idx = i 
-            binned = counts_data[:, ch_idx, :] if ch_idx < counts_data.shape[1] else None
+            # Use the pre-built mapping to get correct index
+            ch_idx = ch_key_to_counts_idx.get(ch)
+            binned = counts_data[:, ch_idx, :] if ch_idx is not None and ch_idx < counts_data.shape[1] else None
             peak_times = peaks_dict.get(ch, [])
             
             plot_channel_group_fast(
@@ -797,21 +885,29 @@ def process_nprw(data, meta, references, bad_nprw):
         fig_rw.savefig(save_dir / fig_name, dpi=DPI_OUTPUT, bbox_inches='tight')
         plt.close(fig_rw)
 
-        # Difference plots
-        if PROCESS_DIFF_PLOTS and meta['cond_type'] == "STIM" and references is not None:
-            _process_nprw_diff_plots(
-                counts_data, centers_ms, edges_ms, view_win, view_bin_ms, view_suffix,
-                sorted_ch_ids, n_ch, rows, cols, meta, references
+        # Difference plots (z-scored)
+        if generate_diff and PROCESS_DIFF_PLOTS and meta['cond_type'] == "STIM" and references is not None:
+            # Determine appropriate y-limits for this view
+            diff_ylim = DIFF_YLIM_ZOOM if view_bin_ms is not None else DIFF_YLIM_STANDARD
+            
+            _process_nprw_diff_plots_zscore(
+                peaks_dict, meta['event_ms'], counts_data, centers_ms, edges_ms, 
+                view_win, view_bin_ms, view_suffix,
+                sorted_ch_ids, n_ch, rows, cols, meta, references, ch_key_to_counts_idx,
+                diff_ylim=diff_ylim
             )
 
 
-def _process_nprw_diff_plots(counts_data, centers_ms, edges_ms, view_win, view_bin_ms, view_suffix,
-                              sorted_ch_ids, n_ch, rows, cols, meta, references):
-    """Generate NPRW difference plots."""
+def _process_nprw_diff_plots_zscore(peaks_dict, stim_events_ms, stim_counts, centers_ms, edges_ms, 
+                                     view_win, view_bin_ms, view_suffix,
+                                     sorted_ch_ids, n_ch, rows, cols, meta, references, 
+                                     ch_key_to_counts_idx, diff_ylim=DIFF_YLIM):
+    """Generate NPRW z-scored difference plots."""
     ctrl_entry = references['controls'].get(meta['target_folder'])
     rest_entry = references['rest'].get((meta['stim_freq_hz'], meta['stim_dur_ms']))
     
-    def get_norm_ref(entry, ref_type='NPRW'):
+    def get_baseline_counts(entry, ref_type='NPRW'):
+        """Rebin baseline data to match stim data binning."""
         if entry is None or entry.get(f'{ref_type}_peaks') is None:
             return None
         pk_dict = entry[f'{ref_type}_peaks']
@@ -819,31 +915,34 @@ def _process_nprw_diff_plots(counts_data, centers_ms, edges_ms, view_win, view_b
         if len(ev_ms) == 0: 
             return None
         
+        # Use same binning as stim data
+        bin_width = view_bin_ms if view_bin_ms else 20.0
         c_ref, _, _ = _rebin_from_peaks_fast(
-            pk_dict, ev_ms, view_win, 
-            view_bin_ms if view_bin_ms else 20.0,
-            0.0, 0.0, 0.0
+            pk_dict, ev_ms, view_win, bin_width, 0.0, 0.0, 0.0
         )
-        return np.nansum(c_ref, axis=0) / max(c_ref.shape[0], 1)
+        return c_ref  # Return full trial-by-trial counts for z-score
 
-    ctrl_norm = get_norm_ref(ctrl_entry, 'NPRW')
-    rest_norm = get_norm_ref(rest_entry, 'NPRW')
+    ctrl_counts = get_baseline_counts(ctrl_entry, 'NPRW')
+    rest_counts = get_baseline_counts(rest_entry, 'NPRW')
     
     diff_configs = []
-    if ctrl_norm is not None:
-        diff_configs.append(('stim_control_diff', 'Stim - Control', ctrl_norm))
-    if rest_norm is not None:
-        diff_configs.append(('stim_rest_diff', 'Stim - Rest', rest_norm))
-    if ctrl_norm is not None and rest_norm is not None:
-        diff_configs.append(('stim_rest_control_diff', 'Stim - Control - Rest', ctrl_norm + rest_norm))
+    if ctrl_counts is not None:
+        diff_configs.append(('stim_control_diff', 'Stim - Control (Z)', ctrl_counts))
+    if rest_counts is not None:
+        diff_configs.append(('stim_rest_diff', 'Stim - Rest (Z)', rest_counts))
     
-    stim_norm = np.nansum(counts_data, axis=0) / max(counts_data.shape[0], 1)
-    
-    for dir_name, title_suffix, baseline_norm in diff_configs:
-        if stim_norm.shape != baseline_norm.shape:
+    for dir_name, title_suffix, baseline_counts in diff_configs:
+        # Check shape compatibility
+        if stim_counts.shape[1:] != baseline_counts.shape[1:]:
+            if VERBOSE:
+                print(f"  [Warn] Shape mismatch: stim {stim_counts.shape} vs baseline {baseline_counts.shape}")
             continue
-            
-        diff_norm = stim_norm - baseline_norm
+        
+        # Compute z-scored difference
+        z_diff, stim_mean, baseline_mean, baseline_std = compute_zscore_diff(
+            stim_counts, baseline_counts, min_std=0.1
+        )
+        
         fig_diff = plt.figure(figsize=FIG_SIZE_RW)
         gs_diff = gridspec.GridSpec(rows, cols, figure=fig_diff, hspace=0.3, wspace=0.3)
         
@@ -854,35 +953,47 @@ def _process_nprw_diff_plots(counts_data, centers_ms, edges_ms, view_win, view_b
             r, c = i // cols, i % cols
             ax_diff = fig_diff.add_subplot(gs_diff[r, c])
             
-            if i < diff_norm.shape[0]:
+            # Use the mapping to get correct index
+            ch_idx = ch_key_to_counts_idx.get(ch)
+            
+            if ch_idx is not None and ch_idx < z_diff.shape[0]:
                 found_diff = True
-                d_ch = diff_norm[i, :]
-                bar_colors = np.where(d_ch >= 0, 'tab:green', 'tab:red')
+                z_ch = z_diff[ch_idx, :]
                 
-                if centers_ms is not None and len(d_ch) == len(centers_ms):
+                # Color based on z-score sign
+                bar_colors = np.where(z_ch >= 0, 'tab:green', 'tab:red')
+                
+                if centers_ms is not None and len(z_ch) == len(centers_ms):
                     bw = view_bin_ms if view_bin_ms else (np.nanmedian(np.diff(centers_ms)) if len(centers_ms) > 1 else 20.0)
-                    ax_diff.bar(centers_ms, d_ch, width=bw, align='center', color=bar_colors, edgecolor='none')
-                elif edges_ms is not None:
-                    ax_diff.bar(edges_ms[:-1], d_ch, width=np.diff(edges_ms), align='edge', color=bar_colors, edgecolor='none')
+                    ax_diff.bar(centers_ms, z_ch, width=bw, align='center', color=bar_colors, edgecolor='none')
+                elif edges_ms is not None and len(z_ch) == len(edges_ms) - 1:
+                    ax_diff.bar(edges_ms[:-1], z_ch, width=np.diff(edges_ms), align='edge', color=bar_colors, edgecolor='none')
                 
-                if np.nansum(np.abs(d_ch)) > 0:
+                # Add reference lines
+                ax_diff.axhline(0, color='k', linestyle='-', linewidth=0.5, alpha=0.5)
+                ax_diff.axhline(2, color='gray', linestyle=':', linewidth=0.5, alpha=0.5)  # +2 SD
+                ax_diff.axhline(-2, color='gray', linestyle=':', linewidth=0.5, alpha=0.5)  # -2 SD
+                
+                if np.nansum(np.abs(z_ch)) > 0:
                     ax_diff.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
             else:
                 ax_diff.axis('off')
             
             ax_diff.set_title(f"Ch {ch}", fontsize=10, pad=2)
             ax_diff.set_xlim(view_win)
-            ax_diff.set_ylim(DIFF_YLIM)
+            ax_diff.set_ylim(diff_ylim)
+            ax_diff.set_ylabel('Z-score', fontsize=6) if c == 0 else None
             ax_diff.spines['top'].set_visible(False)
             ax_diff.spines['right'].set_visible(False)
+            ax_diff.tick_params(axis='both', which='major', labelsize=6)
             if r < rows - 1: 
                 ax_diff.set_xticklabels([])
 
         if found_diff:
-            fig_diff.suptitle(f"{meta['overall_title']} | NPRW Diff ({title_suffix}){meta['stim_chs_str']}", fontsize=20)
+            fig_diff.suptitle(f"{meta['overall_title']} | NPRW {title_suffix}{meta['stim_chs_str']}", fontsize=20)
             save_diff_dir = FIG_ROOT / dir_name / meta['target_folder']
             save_diff_dir.mkdir(parents=True, exist_ok=True)
-            fig_diff_name = f"[diff]_Cond{meta['br_idx']:03d}_{meta['cond_type']}_NPRW{view_suffix}.png"
+            fig_diff_name = f"[diff_zscore]_Cond{meta['br_idx']:03d}_{meta['cond_type']}_NPRW{view_suffix}.png"
             fig_diff.savefig(save_diff_dir / fig_diff_name, dpi=DPI_OUTPUT, bbox_inches='tight')
         plt.close(fig_diff)
 
@@ -966,20 +1077,25 @@ def process_ua(data, meta, references, bad_ua, metadata_df):
     
     # Build a reverse mapping: channel_index -> list of possible keys in peaks_dict
     # This handles different key formats (str vs int, 0-based vs 1-based)
-    def get_peak_times_for_channel(ch_idx):
-        """Try multiple key formats to find spike times for a channel."""
-        # Try different key formats
+    def get_peak_times_for_electrode(elec_id, elec_to_idx, peaks_dict):
+        """Get spike times for an electrode using various key formats."""
+        ch_idx = elec_to_idx.get(elec_id)
+        if ch_idx is None:
+            return []
+        
+        # Try different key formats in peaks_dict
         possible_keys = [
-            str(ch_idx),           # "0", "1", etc.
-            ch_idx,                # 0, 1, etc. (int)
-            str(ch_idx + 1),       # "1", "2", etc. (1-based)
-            ch_idx + 1,            # 1, 2, etc. (1-based int)
+            ch_idx,                # int: 0, 1, 2, ...
+            str(ch_idx),           # str: "0", "1", "2", ...
+            ch_idx + 1,            # 1-based int
+            str(ch_idx + 1),       # 1-based str
         ]
         
         for key in possible_keys:
             spikes = peaks_dict.get(key)
             if spikes is not None and len(spikes) > 0:
                 return spikes
+        
         return []
     
     # Get active regions
@@ -993,7 +1109,7 @@ def process_ua(data, meta, references, bad_ua, metadata_df):
         print(f"  [Debug] Active regions: {plot_regions}")
 
     # Loop over plot views
-    for view_win_in, view_bin_ms, view_suffix in PLOT_VIEWS:
+    for view_win_in, view_bin_ms, view_suffix, generate_diff in PLOT_VIEWS:
         if view_win_in is None:
             sd = meta['stim_dur_ms'] if meta['stim_dur_ms'] > 0 else 100.0
             view_win = (-100.0, sd + 100.0)
@@ -1041,53 +1157,49 @@ def process_ua(data, meta, references, bad_ua, metadata_df):
                     ax_raster = fig_ua.add_subplot(gs[2*r, c])
                     ax_psth = fig_ua.add_subplot(gs[2*r+1, c], sharex=ax_raster)
                     
-                    # Check if this electrode is on the recording port
-                    if elec_id in port_electrodes:
-                        idx = elec_to_idx.get(elec_id)
-                        
-                        if idx is not None and 0 <= idx < counts_data.shape[1]:
-                            found_channels = True
-                            binned = counts_data[:, idx, :]
-                            
-                            # Get spike times using the helper function
-                            peak_times = get_peak_times_for_channel(idx)
-                            
-                            if len(peak_times) > 0:
-                                channels_with_spikes += 1
-                            
-                            # Get electrode info for display
-                            info = elec_info_global.get(elec_id, {})
-                            local_nsp = info.get('local_nsp', idx + 1)
-                            
-                            plot_channel_group_fast(
-                                ax_raster, ax_psth, peak_times, meta['event_ms'], binned, edges_ms,
-                                f"E{elec_id} (L{local_nsp})", stim_dur_ms=0.0, 
-                                blank_pre_ms=0.0, blank_post_ms=0.0, 
-                                bin_centers=centers_ms,
-                                n_trials_ref=meta['n_trials_ref'], win_ms=view_win, psth_ylim=cur_ylim
-                            )
-                        else:
-                            # Electrode is on this port but not found in data
-                            ax_raster.axis('off')
-                            ax_psth.axis('off')
-                            info = elec_info_global.get(elec_id, {})
-                            local_nsp = info.get('local_nsp', '?')
-                            ax_raster.text(0.5, 0.5, f"E{elec_id}\nL{local_nsp}\nNo Data", 
-                                           ha='center', va='center', 
-                                           transform=ax_raster.transAxes, fontsize=8, alpha=0.3)
-                    else:
-                        # Electrode is on the OTHER port - show as unavailable
+                    # Check if electrode exists and is on our recording port
+                    if elec_id <= 0:
                         ax_raster.axis('off')
                         ax_psth.axis('off')
-                        if elec_id > 0:
-                            other_port = 'B' if recording_port == 'A' else 'A'
-                            ax_raster.text(0.5, 0.5, f"E{elec_id}\nPort {other_port}", 
-                                           ha='center', va='center', 
-                                           transform=ax_raster.transAxes, fontsize=8, 
-                                           alpha=0.3, color='gray')
+                        continue
                     
-                    if 2*r+1 < 14:
-                        ax_psth.set_xticklabels([])
+                    info = elec_info_global.get(elec_id, {})
+                    elec_port = info.get('port', '')
+                    
+                    if elec_port != recording_port:
+                        # Electrode is on the OTHER port
+                        ax_raster.axis('off')
+                        ax_psth.axis('off')
+                        ax_raster.text(0.5, 0.5, f"E{elec_id}\nPort {elec_port}", 
+                                    ha='center', va='center', 
+                                    transform=ax_raster.transAxes, fontsize=8, 
+                                    alpha=0.3, color='gray')
+                        continue
+                    
+                    # Get channel index for this electrode
+                    ch_idx = elec_to_idx.get(elec_id)
+                    
+                    if ch_idx is not None and 0 <= ch_idx < counts_data.shape[1]:
+                        found_channels = True
+                        binned = counts_data[:, ch_idx, :]
+                        peak_times = get_peak_times_for_electrode(elec_id, elec_to_idx, peaks_dict)
+                        
+                        if len(peak_times) > 0:
+                            channels_with_spikes += 1
+                        
+                        plot_channel_group_fast(
+                            ax_raster, ax_psth, peak_times, meta['event_ms'], binned, edges_ms,
+                            f"E{elec_id}", stim_dur_ms=0.0,
+                            blank_pre_ms=0.0, blank_post_ms=0.0,
+                            bin_centers=centers_ms,
+                            n_trials_ref=meta['n_trials_ref'], win_ms=view_win, psth_ylim=cur_ylim
+                        )
+                    else:
+                        ax_raster.axis('off')
+                        ax_psth.axis('off')
+                        ax_raster.text(0.5, 0.5, f"E{elec_id}\nNo Data", 
+                                    ha='center', va='center', 
+                                    transform=ax_raster.transAxes, fontsize=8, alpha=0.3)
 
             if VERBOSE:
                 print(f"  [Debug] Region {reg_target}: {channels_with_spikes} channels have spike data")
@@ -1106,20 +1218,29 @@ def process_ua(data, meta, references, bad_ua, metadata_df):
                     print(f"  [Warn] No channels found for region {reg_target} on Port {recording_port}")
                 plt.close(fig_ua)
 
-        # Difference plots
-        if PROCESS_DIFF_PLOTS and meta['cond_type'] == "STIM" and references is not None:
-            _process_ua_diff_plots(
-                counts_data, centers_ms, edges_ms, view_win, view_bin_ms, view_suffix,
-                plot_regions, elec_to_idx, recording_port, ua_ids_1based, meta, references
+        # Difference plots (z-scored)
+        if generate_diff and PROCESS_DIFF_PLOTS and meta['cond_type'] == "STIM" and references is not None:
+            # Determine appropriate y-limits for this view
+            diff_ylim = DIFF_YLIM_ZOOM if view_bin_ms is not None else DIFF_YLIM_STANDARD
+            
+            _process_ua_diff_plots_zscore(
+                peaks_dict, meta['event_ms'], counts_data, centers_ms, edges_ms, 
+                view_win, view_bin_ms, view_suffix,
+                plot_regions, elec_to_idx, recording_port, ua_ids_1based, meta, references,
+                diff_ylim=diff_ylim
             )
 
-def _process_ua_diff_plots(counts_data, centers_ms, edges_ms, view_win, view_bin_ms, view_suffix,
-                           plot_regions, elec_to_idx, recording_port, ua_ids_1based, meta, references):
-    """Generate UA difference plots."""
+
+def _process_ua_diff_plots_zscore(peaks_dict, stim_events_ms, stim_counts, centers_ms, edges_ms, 
+                                   view_win, view_bin_ms, view_suffix,
+                                   plot_regions, elec_to_idx, recording_port, ua_ids_1based, 
+                                   meta, references, diff_ylim=DIFF_YLIM):
+    """Generate UA z-scored difference plots."""
     ctrl_entry = references['controls'].get(meta['target_folder'])
     rest_entry = references['rest'].get((meta['stim_freq_hz'], meta['stim_dur_ms']))
 
-    def get_norm_ref_ua(entry):
+    def get_baseline_counts_ua(entry):
+        """Rebin baseline data to match stim data binning."""
         if entry is None or entry.get('UA_peaks') is None:
             return None
         pk_dict = entry['UA_peaks']
@@ -1127,31 +1248,32 @@ def _process_ua_diff_plots(counts_data, centers_ms, edges_ms, view_win, view_bin
         if len(ev_ms) == 0: 
             return None
         
+        bin_width = view_bin_ms if view_bin_ms else 20.0
         c_ref, _, _ = _rebin_from_peaks_fast(
-            pk_dict, ev_ms, view_win, 
-            view_bin_ms if view_bin_ms else 20.0, 
-            0.0, 0.0, 0.0
+            pk_dict, ev_ms, view_win, bin_width, 0.0, 0.0, 0.0
         )
-        return np.nansum(c_ref, axis=0) / max(c_ref.shape[0], 1)
+        return c_ref
 
-    ctrl_norm_ua = get_norm_ref_ua(ctrl_entry)
-    rest_norm_ua = get_norm_ref_ua(rest_entry)
+    ctrl_counts = get_baseline_counts_ua(ctrl_entry)
+    rest_counts = get_baseline_counts_ua(rest_entry)
 
     diff_configs_ua = []
-    if ctrl_norm_ua is not None:
-        diff_configs_ua.append(('stim_control_diff', 'Stim - Control', ctrl_norm_ua))
-    if rest_norm_ua is not None:
-        diff_configs_ua.append(('stim_rest_diff', 'Stim - Rest', rest_norm_ua))
-    if ctrl_norm_ua is not None and rest_norm_ua is not None:
-        diff_configs_ua.append(('stim_rest_control_diff', 'Stim - Control - Rest', ctrl_norm_ua + rest_norm_ua))
+    if ctrl_counts is not None:
+        diff_configs_ua.append(('stim_control_diff', 'Stim - Control (Z)', ctrl_counts))
+    if rest_counts is not None:
+        diff_configs_ua.append(('stim_rest_diff', 'Stim - Rest (Z)', rest_counts))
     
-    stim_norm = np.nansum(counts_data, axis=0) / max(counts_data.shape[0], 1)
-    
-    for dir_name, title_suffix, baseline_norm in diff_configs_ua:
-        if stim_norm.shape != baseline_norm.shape:
+    for dir_name, title_suffix, baseline_counts in diff_configs_ua:
+        # Check shape compatibility
+        if stim_counts.shape[1:] != baseline_counts.shape[1:]:
+            if VERBOSE:
+                print(f"  [Warn] UA Shape mismatch: stim {stim_counts.shape} vs baseline {baseline_counts.shape}")
             continue
-            
-        diff_norm = stim_norm - baseline_norm
+        
+        # Compute z-scored difference
+        z_diff, stim_mean, baseline_mean, baseline_std = compute_zscore_diff(
+            stim_counts, baseline_counts, min_std=0.1
+        )
         
         for reg_target in plot_regions:
             grid_elec = UTAH_ELEC_GRIDS.get(reg_target)
@@ -1172,18 +1294,23 @@ def _process_ua_diff_plots(counts_data, centers_ms, edges_ms, view_win, view_bin
                     if elec_id in port_electrodes:
                         idx = elec_to_idx.get(elec_id)
                         
-                        if idx is not None and 0 <= idx < diff_norm.shape[0]:
+                        if idx is not None and 0 <= idx < z_diff.shape[0]:
                             found_diff = True
-                            d_ch = diff_norm[idx, :]
-                            bar_colors = np.where(d_ch >= 0, 'tab:green', 'tab:red')
+                            z_ch = z_diff[idx, :]
+                            bar_colors = np.where(z_ch >= 0, 'tab:green', 'tab:red')
                             
-                            if centers_ms is not None and len(d_ch) == len(centers_ms):
+                            if centers_ms is not None and len(z_ch) == len(centers_ms):
                                 bw = view_bin_ms if view_bin_ms else (np.nanmedian(np.diff(centers_ms)) if len(centers_ms) > 1 else 20.0)
-                                ax_diff.bar(centers_ms, d_ch, width=bw, align='center', color=bar_colors, edgecolor='none')
-                            elif edges_ms is not None:
-                                ax_diff.bar(edges_ms[:-1], d_ch, width=np.diff(edges_ms), align='edge', color=bar_colors, edgecolor='none')
+                                ax_diff.bar(centers_ms, z_ch, width=bw, align='center', color=bar_colors, edgecolor='none')
+                            elif edges_ms is not None and len(z_ch) == len(edges_ms) - 1:
+                                ax_diff.bar(edges_ms[:-1], z_ch, width=np.diff(edges_ms), align='edge', color=bar_colors, edgecolor='none')
                             
-                            if np.nansum(np.abs(d_ch)) > 0:
+                            # Add reference lines
+                            ax_diff.axhline(0, color='k', linestyle='-', linewidth=0.5, alpha=0.5)
+                            ax_diff.axhline(2, color='gray', linestyle=':', linewidth=0.5, alpha=0.5)
+                            ax_diff.axhline(-2, color='gray', linestyle=':', linewidth=0.5, alpha=0.5)
+                            
+                            if np.nansum(np.abs(z_ch)) > 0:
                                 ax_diff.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
                             ax_diff.set_title(f"E{elec_id}", fontsize=10, pad=2)
                         else:
@@ -1201,14 +1328,16 @@ def _process_ua_diff_plots(counts_data, centers_ms, edges_ms, view_win, view_bin
                                          alpha=0.3, color='gray')
                     
                     ax_diff.set_xlim(view_win)
-                    ax_diff.set_ylim(DIFF_YLIM)
+                    ax_diff.set_ylim(diff_ylim)
                     ax_diff.tick_params(axis='both', which='major', labelsize=6)
+                    if c == 0:
+                        ax_diff.set_ylabel('Z-score', fontsize=6)
             
             if found_diff:
-                fig_diff_ua.suptitle(f"{meta['overall_title']} | Utah Diff ({title_suffix}) - {reg_target} (Port {recording_port}){meta['stim_chs_str']}", fontsize=20)
+                fig_diff_ua.suptitle(f"{meta['overall_title']} | Utah {title_suffix} - {reg_target} (Port {recording_port}){meta['stim_chs_str']}", fontsize=20)
                 save_diff_dir = FIG_ROOT / dir_name / meta['target_folder']
                 save_diff_dir.mkdir(parents=True, exist_ok=True)
-                fig_name = f"[diff]_Cond{meta['br_idx']:03d}_{meta['cond_type']}_UA_{reg_target}{view_suffix}.png"
+                fig_name = f"[diff_zscore]_Cond{meta['br_idx']:03d}_{meta['cond_type']}_UA_{reg_target}{view_suffix}.png"
                 fig_diff_ua.savefig(save_diff_dir / fig_name, dpi=DPI_OUTPUT, bbox_inches='tight')
             plt.close(fig_diff_ua)
 
@@ -1278,6 +1407,8 @@ def main():
     print(f"  PROCESS_DIFF_PLOTS: {PROCESS_DIFF_PLOTS}")
     print(f"  STANDARD_VIEW:      {GENERATE_STANDARD_VIEW}")
     print(f"  ZOOM_VIEW:          {GENERATE_ZOOM_VIEW}")
+    print(f"  DIFF_STANDARD:      {DIFF_PLOTS_STANDARD}")
+    print(f"  DIFF_ZOOM:          {DIFF_PLOTS_ZOOM}")
     print(f"  N_JOBS:             {N_JOBS}")
     print(f"  DPI:                {DPI_OUTPUT}")
     print(f"  SKIP_EXISTING:      {SKIP_EXISTING}")
@@ -1317,12 +1448,16 @@ def main():
     # Load reference data (controls and at-rest baselines)
     print("Loading reference data...")
     references = load_reference_data(files, metadata_df=metadata_df)
+    
+    if PROCESS_DIFF_PLOTS:
+        print(f"  Control baselines: {list(references['controls'].keys())}")
+        print(f"  At-rest baselines: {list(references['rest'].keys())}")
 
     # Process files in parallel
     print(f"\nProcessing files with {N_JOBS} workers...")
-    Parallel(n_jobs=N_JOBS, backend=PARALLEL_BACKEND)(
+    Parallel(n_jobs=N_JOBS, backend=PARALLEL_BACKEND, verbose=10)(
         delayed(process_file)(f, references, metadata_df) 
-        for f in tqdm(files, desc="Files", disable=not VERBOSE)
+        for f in files
     )
     
     print("\nDone!")

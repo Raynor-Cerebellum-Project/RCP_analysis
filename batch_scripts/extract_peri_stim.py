@@ -66,6 +66,157 @@ NORMALIZE_FIRST_MS = 150.0
 MIN_TRIALS        = 1
 MIN_BIN_COVERAGE_FRAC = 0.9  # require at least x% of trials finite per bin
 
+DIRECTION_CHECK_WINDOWS_MS = (
+    (-400.0, -370.0),  # baseline
+    (-30.0, 0.0),      # pre-event
+    (0.0, 30.0),       # post-event
+)
+KEYPOINT_FOR_DIRECTION_CHECK = "middle"  # Will look for middle_x and middle_y
+MIN_DISTANCE_INCREASE = 0.05
+
+def _find_keypoint_index(kp_names: list[str], pattern: str) -> int | None:
+    """Find index of keypoint matching pattern (case-insensitive)."""
+    pattern_lower = pattern.lower()
+    for i, name in enumerate(kp_names):
+        if pattern_lower in str(name).lower():
+            return i
+    return None
+
+
+def _compute_distance_from_start(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """
+    Compute Euclidean distance from the starting position.
+    
+    Parameters
+    ----------
+    x : (T,) X position over time
+    y : (T,) Y position over time
+    
+    Returns
+    -------
+    distance : (T,) distance from initial position
+    """
+    x = np.asarray(x, float)
+    y = np.asarray(y, float)
+    
+    # Find first valid point as reference
+    valid = np.isfinite(x) & np.isfinite(y)
+    if not valid.any():
+        return np.full_like(x, np.nan)
+    
+    first_valid = np.where(valid)[0][0]
+    x0, y0 = x[first_valid], y[first_valid]
+    
+    return np.sqrt((x - x0)**2 + (y - y0)**2)
+
+
+def _check_trial_position_increasing(
+    pos_x: np.ndarray,
+    pos_y: np.ndarray,
+    rel_t: np.ndarray,
+    windows_ms: tuple[tuple[float, float], ...] = DIRECTION_CHECK_WINDOWS_MS,
+    min_increase: float = MIN_DISTANCE_INCREASE,
+) -> bool:
+    """
+    Check if distance-from-start increases significantly across the specified windows.
+    
+    Parameters
+    ----------
+    pos_x : (T,) X position for one trial
+    pos_y : (T,) Y position for one trial
+    rel_t : (T,) relative time in ms (0 = event time)
+    windows_ms : tuple of (start, end) windows to check, must be in temporal order
+    min_increase : minimum required increase between consecutive windows
+    
+    Returns
+    -------
+    bool : True if average distance increases by at least min_increase between each window
+    """
+    pos_x = np.asarray(pos_x, float).ravel()
+    pos_y = np.asarray(pos_y, float).ravel()
+    rel_t = np.asarray(rel_t, float).ravel()
+    
+    if pos_x.size == 0 or pos_y.size == 0 or rel_t.size == 0:
+        return False
+    
+    # Compute distance from start (same as 2D summary plots)
+    distance = _compute_distance_from_start(pos_x, pos_y)
+    
+    # Get average distance in each window
+    avg_distances = []
+    for w0, w1 in windows_ms:
+        mask = (rel_t >= w0) & (rel_t <= w1)
+        if not mask.any():
+            return False
+        
+        dist_window = distance[mask]
+        valid = np.isfinite(dist_window)
+        if valid.sum() < 2:  # Need at least 2 valid points
+            return False
+        
+        avg_distances.append(np.nanmean(dist_window))
+    
+    # Check that each window increases by at least min_increase over the previous
+    for i in range(1, len(avg_distances)):
+        delta = avg_distances[i] - avg_distances[i - 1]
+        if delta < min_increase:
+            return False
+    
+    return True
+
+
+def _get_position_increasing_mask(
+    cam_segs: np.ndarray,
+    rel_t: np.ndarray,
+    kp_names: list[str],
+    keypoint_base: str = KEYPOINT_FOR_DIRECTION_CHECK,
+    windows_ms: tuple[tuple[float, float], ...] = DIRECTION_CHECK_WINDOWS_MS,
+    min_increase: float = MIN_DISTANCE_INCREASE,
+) -> np.ndarray:
+    """
+    Check all trials and return mask of which show increasing distance-from-start.
+    
+    Parameters
+    ----------
+    cam_segs : (n_trials, n_keypoints, T) position segments
+    rel_t : (T,) relative time in ms
+    kp_names : list of keypoint names
+    keypoint_base : base name (will look for {base}_x and {base}_y)
+    windows_ms : time windows to check for monotonic increase
+    min_increase : minimum required increase between consecutive windows
+    
+    Returns
+    -------
+    mask : (n_trials,) bool, True where trial is valid
+    """
+    if cam_segs is None or cam_segs.size == 0:
+        return np.ones(0, dtype=bool)
+    
+    if cam_segs.ndim == 2:
+        # (n_trials, T) - can't do 2D check without X and Y
+        print("[warn] cam_segs is 2D, skipping position direction check")
+        return np.ones(cam_segs.shape[0], dtype=bool)
+    
+    n_trials, n_kp, T = cam_segs.shape
+    
+    # Find X and Y indices
+    idx_x = _find_keypoint_index(kp_names, f"{keypoint_base}_x")
+    idx_y = _find_keypoint_index(kp_names, f"{keypoint_base}_y")
+    
+    if idx_x is None or idx_y is None:
+        print(f"[warn] Could not find {keypoint_base}_x and {keypoint_base}_y in {kp_names[:6]}...")
+        return np.ones(n_trials, dtype=bool)
+    
+    # Check each trial
+    mask = np.zeros(n_trials, dtype=bool)
+    for i in range(n_trials):
+        x = cam_segs[i, idx_x, :]
+        y = cam_segs[i, idx_y, :]
+        mask[i] = _check_trial_position_increasing(x, y, rel_t, windows_ms, min_increase)
+    
+    return mask
+
+
 def _get_valid_events(event_ms: np.ndarray,
                       rec_time: tuple[float, float],
                       win_ms: tuple[float, float]) -> np.ndarray:
@@ -1239,6 +1390,64 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
             beh_cam0_vel_segs_sub = np.zeros((0, 0, 0), float)
             beh_cam1_vel_segs_sub = np.zeros((0, 0, 0), float)
             n_beh_sub = 0
+
+        # ---- Position direction check: discard trials not moving "up" ----
+        if HAS_KINEMATICS and beh_cam0_segs_sub.size and beh_rel_t_sub.size:
+            pos_mask = _get_position_increasing_mask(
+                cam_segs=beh_cam0_segs_sub,  # (n_trials, n_keypoints, T)
+                rel_t=beh_rel_t_sub,
+                kp_names=beh_cam0_names,
+                keypoint_base=KEYPOINT_FOR_DIRECTION_CHECK,
+                windows_ms=DIRECTION_CHECK_WINDOWS_MS,
+            )
+            
+            n_before = idx.size
+            n_keep = int(pos_mask.sum())
+            
+            if 0 < n_keep < n_before:
+                print(f"[extract] {aligned_path.name}: position check kept {n_keep}/{n_before} trials")
+                
+                # Subset everything by pos_mask
+                idx = idx[pos_mask]
+                event_ms_sub = event_ms_sub[pos_mask]
+                labels_sub = labels_sub[pos_mask]
+                
+                # Re-subset neural data
+                NPRW_rates_hz_sub = NPRW_rates_hz_sub[pos_mask]
+                NPRW_rates_zeroed_sub = NPRW_rates_zeroed_sub[pos_mask]
+                NPRW_counts_sub = NPRW_counts_sub[pos_mask]
+                
+                if HAS_BR:
+                    UA_rates_hz_sub = UA_rates_hz_sub[pos_mask]
+                    UA_rates_zeroed_sub = UA_rates_zeroed_sub[pos_mask]
+                    UA_counts_sub = UA_counts_sub[pos_mask]
+                
+                # Re-subset behavior segments
+                beh_cam0_segs_sub = beh_cam0_segs_sub[pos_mask]
+                beh_cam1_segs_sub = beh_cam1_segs_sub[pos_mask]
+                beh_cam0_vel_segs_sub = beh_cam0_vel_segs_sub[pos_mask]
+                beh_cam1_vel_segs_sub = beh_cam1_vel_segs_sub[pos_mask]
+                
+                # Recompute medians
+                NPRW_med_counts_sub = np.nanmedian(NPRW_counts_sub, axis=0)
+                NPRW_med_sub = np.nanmedian(NPRW_rates_zeroed_sub, axis=0)
+                NPRW_var_sub = np.nanvar(NPRW_rates_zeroed_sub, axis=0)
+                
+                if HAS_BR:
+                    UA_med_counts_sub = np.nanmedian(UA_counts_sub, axis=0)
+                    UA_med_sub = np.nanmedian(UA_rates_zeroed_sub, axis=0)
+                    UA_var_sub = np.nanvar(UA_rates_zeroed_sub, axis=0)
+                
+                beh_cam0_pos_med_sub = np.nanmedian(beh_cam0_segs_sub, axis=0)
+                beh_cam1_pos_med_sub = np.nanmedian(beh_cam1_segs_sub, axis=0)
+                beh_cam0_vel_med_sub = np.nanmedian(beh_cam0_vel_segs_sub, axis=0)
+                beh_cam1_vel_med_sub = np.nanmedian(beh_cam1_vel_segs_sub, axis=0)
+                
+                n_beh_sub = int(pos_mask.sum())
+            
+            elif n_keep == 0:
+                print(f"[warn] {aligned_path.name}: position check rejected ALL {n_before} trials, skipping save")
+                continue  # Skip this subset
             
         if split_targets and target_name is not None:
             current_out_dir = out_dir / f"target_{target_name}"   # .../target_A

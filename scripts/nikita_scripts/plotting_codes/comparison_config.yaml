@@ -5,21 +5,24 @@ data_root: "Y:/Current Project Databases - NHP/2025 Cerebellum prosthesis/Nike"
 
 # Session specifications (no date needed - script finds folders automatically)
 session_specs:
-  # NRR_RW011:
-  #   control: 4
-  #   stim: 6
-  # NRR_RW012:
-  #   control: 3
-  #   stim: 12
+  NRR_RW011:
+    control: 22
+    stim: 24
+  NRR_RW012:
+    control: 3
+    stim: 12
   # NRR_RW016:
   #   control: 16
-  #   stim: 14
+  #   stim: 15
+  # NRR_RW017:
+  #   control: 18
+  #   stim: 20
   NRR_RW022:
     control: 1
-    stim: 9
-  # NRR_RW032:
-    # control: 20
-    # stim: 21
+    stim: 17
+  NRR_RW032:
+    control: 20
+    stim: 22
 
 # Target label ('A' or 'B')
 target: "A"

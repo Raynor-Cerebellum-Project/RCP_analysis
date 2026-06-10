@@ -424,18 +424,34 @@ def build_elec_to_data_idx(ua_ids_1based, nsp_to_elec, ua_port='A'):
     For Port B: data channels 0-127 correspond to NSP 129-256
     """
     elec_to_idx = {}
+    ua_port = str(ua_port).strip().upper()
     
     # Determine NSP offset based on port
     nsp_offset = 0 if ua_port == 'A' else 128
     
-    # For each data channel index (0-127), determine which electrode it maps to
-    n_channels = len(ua_ids_1based) if ua_ids_1based is not None else 128
-    
-    for ch_idx in range(n_channels):
-        nsp_id = ch_idx + 1 + nsp_offset  # Channel 0 -> NSP 1 (Port A) or NSP 129 (Port B)
-        elec_id = nsp_to_elec.get(nsp_id, -1)
-        if elec_id > 0:
-            elec_to_idx[elec_id] = ch_idx
+    # Check if the values in ua_ids_1based are physical Electrode IDs
+    port_elecs = set(nsp_to_elec.values())
+    is_elec_ids = False
+    if ua_ids_1based is not None and len(ua_ids_1based) > 0:
+        valid_elecs_count = sum(1 for x in ua_ids_1based if int(x) in port_elecs)
+        if valid_elecs_count > len(ua_ids_1based) * 0.5:
+            is_elec_ids = True
+            
+    if is_elec_ids:
+        for ch_idx, elec_id_raw in enumerate(ua_ids_1based):
+            try:
+                elec_id = int(elec_id_raw)
+                elec_to_idx[elec_id] = ch_idx
+            except (ValueError, TypeError):
+                continue
+    else:
+        # Fallback: assume sequential mapping
+        n_channels = len(ua_ids_1based) if ua_ids_1based is not None else 128
+        for ch_idx in range(n_channels):
+            nsp_id = ch_idx + 1 + nsp_offset  # Channel 0 -> NSP 1 (Port A) or NSP 129 (Port B)
+            elec_id = nsp_to_elec.get(nsp_id, -1)
+            if elec_id > 0:
+                elec_to_idx[elec_id] = ch_idx
     
     return elec_to_idx
 

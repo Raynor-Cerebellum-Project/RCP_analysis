@@ -442,6 +442,61 @@ def _get_keypoint_names_from_data(data: dict, camera: str = CAMERA_TO_USE) -> li
     
     return []
 
+
+from scipy.signal import savgol_filter
+
+# ---------------------------------------------------------------------
+# VELOCITY SMOOTHING CONFIG
+# ---------------------------------------------------------------------
+VELOCITY_WINDOW_MS = 125.0  # Smoothing window in ms (increase for smoother, decrease for more detail)
+                            # Try: 30 (rugged), 50 (moderate), 75-100 (smooth), 150 (very smooth)
+
+
+def compute_velocity_from_position(position: np.ndarray, dt: float) -> np.ndarray:
+    """
+    Compute smooth velocity from position using Savitzky-Golay filter.
+    
+    Parameters:
+    -----------
+    position : np.ndarray
+        Position array, shape (n_trials, n_kps, T)
+    dt : float
+        Time step in ms
+        
+    Returns:
+    --------
+    velocity : np.ndarray
+        Velocity array, same shape as position
+    """
+    # Smoothing window from config, must be odd
+    window_length = int(VELOCITY_WINDOW_MS / dt)
+    if window_length % 2 == 0:
+        window_length += 1
+    window_length = max(window_length, 7)  # Minimum 7 samples
+    
+    # Higher polyorder = preserves peaks better but less smooth
+    # Lower polyorder = smoother but may flatten peaks
+    polyorder = 3  # Cubic is a good balance
+    
+    # Ensure polyorder < window_length
+    if polyorder >= window_length:
+        polyorder = window_length - 1
+    
+    velocity = np.zeros_like(position)
+    
+    for i in range(position.shape[0]):  # trials
+        for j in range(position.shape[1]):  # keypoints
+            velocity[i, j] = savgol_filter(
+                position[i, j], 
+                window_length, 
+                polyorder=polyorder,
+                deriv=1,      # first derivative = velocity
+                delta=dt
+            )
+    
+    return velocity
+
+
 def calculate_reach_metrics(
     pos_segs: np.ndarray,      # (n_trials, n_kps, T)
     vel_segs: np.ndarray,      # (n_trials, n_kps, T)
@@ -489,15 +544,21 @@ def calculate_reach_metrics(
     else:
         kp_idx = list(range(n_all_kps))
         
-    # Speed profile (average across selected KPs)
-    trial_speeds_all_kps = vel_segs[:, kp_idx, :]
+    # --- COMPUTE VELOCITY FROM POSITION (instead of using file) ---
+    dt = t_axis[1] - t_axis[0] if len(t_axis) > 1 else 10.0
+    if dt < 0.9:  # Convert seconds to ms if needed
+        dt *= 1000.0
+    
+    # Compute velocity from position data
+    vel_computed = compute_velocity_from_position(pos_segs[:, kp_idx, :], dt)
+    
+    # Average across selected keypoints
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
-        trial_speed = np.nanmean(trial_speeds_all_kps, axis=1)  # (n_trials, T)
-    
-    # IMPORTANT: Use absolute value of speed for peak detection
-    # Velocity can be negative depending on reach direction, but we want magnitude
-    trial_speed = np.abs(trial_speed)
+        trial_velocity = np.nanmean(vel_computed, axis=1)  # (n_trials, T) - SIGNED
+
+    # Absolute speed for detection logic
+    trial_speed = np.abs(trial_velocity)
 
     # Position profile
     metrics_list = []
@@ -578,8 +639,7 @@ def calculate_reach_metrics(
         idx_start = idx_start_refined
         t_start = t_trial[idx_start]
 
-        # --- Refine End: Find where velocity stops decreasing and starts increasing ---
-        # Use smoothed derivative to avoid noise sensitivity
+        # --- Find FIRST POSITIVE PEAK in velocity, then endpoint when it goes negative ---
         
         # Default endpoint is max duration unless found
         idx_peak = idx_max_dur
@@ -587,39 +647,54 @@ def calculate_reach_metrics(
         # Calculate dist_trace (abs displacement from start) for compatibility
         dist_trace = np.abs(trace_for_stop - trace_for_stop[idx_start])
         
-        # Search AFTER peak speed for velocity turnaround
-        search_start = idx_peak_speed + 1
-        search_end = idx_max_dur
+        # Get SIGNED velocity for this trial
+        velocity = trial_velocity[i]  # Signed velocity (not absolute)
         
-        if search_start < search_end - 1:
-            search_speed = speed[search_start:search_end]
+        # Step 1: Find the FIRST POSITIVE PEAK in velocity
+        # Search from start to max duration window
+        search_vel = velocity[idx_start:idx_max_dur]
+        
+        # Find all local maxima (peaks) in velocity
+        # Only consider positive peaks (velocity > 0)
+        from scipy.signal import find_peaks
+        
+        # Find peaks with minimum prominence to avoid noise
+        min_prominence = 0.001  # Adjust if needed for your data
+        peaks, properties = find_peaks(search_vel, prominence=min_prominence)
+        
+        # Filter to only positive peaks
+        positive_peaks = [p for p in peaks if search_vel[p] > 0]
+        
+        if positive_peaks:
+            # Take the FIRST positive peak
+            idx_first_pos_peak = idx_start + positive_peaks[0]
             
-            if len(search_speed) > 5:
-                # Smooth the speed trace first to reduce noise
-                from scipy.ndimage import uniform_filter1d
-                smooth_win = max(3, int(30 / dt))  # ~30ms smoothing window
-                smoothed_speed = uniform_filter1d(search_speed, size=smooth_win, mode='nearest')
-                
-                # Calculate derivative of smoothed speed
-                speed_deriv = np.diff(smoothed_speed)
-                
-                # Find first zero-crossing from negative to positive
-                # (where deceleration ends and acceleration begins)
-                for j in range(len(speed_deriv) - 1):
-                    # Check for sign change: negative/zero -> positive
-                    if speed_deriv[j] <= 0 and speed_deriv[j + 1] > 0:
-                        candidate = search_start + j + 1
-                        
-                        # Verify position constraint
-                        if np.abs(trace_for_stop[candidate]) >= END_POS_MIN_THRESH:
-                            idx_peak = candidate
-                            break
-                
-                # Fallback: if no zero-crossing found, find the minimum speed point
-                if idx_peak == idx_max_dur:
-                    idx_min_speed = search_start + np.argmin(smoothed_speed)
-                    if np.abs(trace_for_stop[idx_min_speed]) >= END_POS_MIN_THRESH:
-                        idx_peak = idx_min_speed
+            # Update peak speed index to this first positive peak
+            idx_peak_speed = idx_first_pos_peak
+            peak_v = velocity[idx_peak_speed]
+            
+            # Step 2: Find where velocity crosses from positive to negative AFTER this peak
+            # This is the endpoint (hand stopping/reversing)
+            for j in range(idx_first_pos_peak + 1, idx_max_dur - 1):
+                # Zero-crossing: current > 0 (or ~0) AND next < 0
+                if velocity[j] >= 0 and velocity[j + 1] < 0:
+                    # Optional: Verify position constraint
+                    if np.abs(trace_for_stop[j]) >= END_POS_MIN_THRESH:
+                        idx_peak = j
+                        break
+            
+            # Fallback: if no zero-crossing found, find minimum velocity after peak
+            if idx_peak == idx_max_dur:
+                search_after_peak = velocity[idx_first_pos_peak:idx_max_dur]
+                if len(search_after_peak) > 0:
+                    # Find where velocity is closest to zero (or most negative)
+                    idx_min_vel = idx_first_pos_peak + np.argmin(search_after_peak)
+                    if np.abs(trace_for_stop[idx_min_vel]) >= END_POS_MIN_THRESH:
+                        idx_peak = idx_min_vel
+        else:
+            # No positive peak found - fallback to original max speed logic
+            # idx_peak_speed already set from earlier code
+            pass
                     
         t_peak = t_trial[idx_peak]
         
@@ -657,6 +732,7 @@ def calculate_reach_metrics(
             "pos": trace_for_stop,  # Position trace
             "y": trace_for_stop,    # Legacy key (for plotting)
             "speed": speed,         # Absolute speed (for plotting)
+            "velocity": trial_velocity[i],  
             "idx_start": idx_start,
             "idx_final": idx_peak, 
             "idx_orig": idx_peak_speed,  # Use peak speed as ref
@@ -929,11 +1005,16 @@ def process_single_file(p: Path, target: str, target_code: int) -> Optional[pd.D
                         lns1 = ax_db_pos.plot(t, tr_info['pos'], color=color_pos, alpha=alpha_pos, linestyle=ls_pos, label='Pos (MidX)')
                         ax_db_pos.tick_params(axis='y', labelcolor=color_pos)
                         
-                        # 2. Plot Speed (Right Axis)
+                        # 2. Plot Velocity (Right Axis) - SIGNED
                         ax_db_spd = ax_db_pos.twinx()
                         color_spd = 'tab:orange'
-                        lns2 = ax_db_spd.plot(t, tr_info['speed'], color=color_spd, alpha=0.6, linestyle='-', label='Speed')
+                        # Use 'velocity' if available, otherwise fall back to 'speed'
+                        vel_to_plot = tr_info.get('velocity', tr_info['speed'])
+                        lns2 = ax_db_spd.plot(t, vel_to_plot, color=color_spd, alpha=0.6, linestyle='-', label='Velocity')
                         ax_db_spd.tick_params(axis='y', labelcolor=color_spd)
+
+                        # Add zero line for reference (helpful for signed velocity)
+                        ax_db_spd.axhline(0, color='tab:orange', linestyle=':', alpha=0.3)
                         
                         # Mark Start
                         ax_db_pos.axvline(t[min(limit, idx_start)], color='g', linestyle='--', label='Start')
