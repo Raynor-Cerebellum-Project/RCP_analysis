@@ -81,6 +81,10 @@ DIFF_YLIM_ZOOM = (-4, 6)      # For zoom view
 FIG_SIZE_RW = (48, 24)
 FIG_SIZE_UA = (32, 24)
 
+# Stimulation region shading
+STIM_REGION_COLOR = 'grey'
+STIM_REGION_ALPHA = 0.3
+
 # Output directory
 FIG_ROOT = OUT_BASE / "figures" / "peristim_raster"
 FIG_ROOT.mkdir(parents=True, exist_ok=True)
@@ -479,6 +483,11 @@ def plot_channel_group_fast(ax_raster, ax_psth,
         n_trials = len(events_ms)
 
     has_data = (len(rel_times) > 0) or (binned_counts is not None and np.nansum(binned_counts) > 0)
+    
+    # Add grey shaded region for stimulation period
+    if stim_dur_ms > 0:
+        ax_raster.axvspan(0, stim_dur_ms, color=STIM_REGION_COLOR, alpha=STIM_REGION_ALPHA, zorder=0)
+        ax_psth.axvspan(0, stim_dur_ms, color=STIM_REGION_COLOR, alpha=STIM_REGION_ALPHA, zorder=0)
     
     if has_data:
         ax_raster.axvline(0, color='r', linestyle='--', linewidth=1, alpha=0.8)
@@ -989,6 +998,10 @@ def _process_nprw_diff_plots_zscore(peaks_dict, stim_events_ms, stim_counts, cen
             if r < rows - 1: 
                 ax_diff.set_xticklabels([])
 
+        # Add stim region shading
+        if meta['stim_dur_ms'] > 0:
+            ax_diff.axvspan(0, meta['stim_dur_ms'], color=STIM_REGION_COLOR, alpha=STIM_REGION_ALPHA, zorder=0)
+
         if found_diff:
             fig_diff.suptitle(f"{meta['overall_title']} | NPRW {title_suffix}{meta['stim_chs_str']}", fontsize=20)
             save_diff_dir = FIG_ROOT / dir_name / meta['target_folder']
@@ -1333,6 +1346,10 @@ def _process_ua_diff_plots_zscore(peaks_dict, stim_events_ms, stim_counts, cente
                     if c == 0:
                         ax_diff.set_ylabel('Z-score', fontsize=6)
             
+            # Add stim region shading
+            if meta['stim_dur_ms'] > 0:
+                ax_diff.axvspan(0, meta['stim_dur_ms'], color=STIM_REGION_COLOR, alpha=STIM_REGION_ALPHA, zorder=0)
+
             if found_diff:
                 fig_diff_ua.suptitle(f"{meta['overall_title']} | Utah {title_suffix} - {reg_target} (Port {recording_port}){meta['stim_chs_str']}", fontsize=20)
                 save_diff_dir = FIG_ROOT / dir_name / meta['target_folder']

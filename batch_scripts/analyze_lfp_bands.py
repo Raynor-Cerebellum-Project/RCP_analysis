@@ -167,8 +167,8 @@ LFP_BANDS = {
     "theta": (4, 8),
     "alpha": (8, 12),
     "beta": (12, 25),
-    "low_gamma": (25, 60),
-    "high_gamma": (60, 120)
+    "low_gamma": (25, 58),
+    "high_gamma": (62, 120)
 }
 
 # Filter order for butterworth
@@ -336,124 +336,44 @@ def _find_baseline_groups(df_norm: pd.DataFrame) -> dict:
 # =============================================================================
 # Core Cleaning Functions
 # =============================================================================
-
-# def apply_1f_detrending_chunked(epochs, rel_t_epoch, win_base=(-500, -50), fs=1000.0, chunk_size=32, plot_debug=False, debug_out_dir=None):
-#     """
-#     Applies adaptive 1/f spectral subtraction in the time-domain using a baseline period.
-#     Processes channels in chunks to prevent OOM.
-
-#     Args:
-#         epochs (np.ndarray): (n_trials, n_ch, n_time)
-#         rel_t_epoch (np.ndarray): Time axis in ms
-#         win_base (tuple): Baseline window (start_ms, end_ms) for 1/f fitting
-#         fs (float): Sampling rate (Hz)
-#         chunk_size (int): Channels per chunk
-        
-#     Returns:
-#         np.ndarray: 1/f detrended epochs
-#     """
-#     out = np.empty_like(epochs)
-#     n_trials, n_ch, n_time = epochs.shape
+def blank_notch_epochs(epochs, fs, notch_freqs=[60.0, 120.0], bandwidth=10.0):
+    """
+    Blank (set to NaN) frequency bins around line noise frequencies.
+    This leaves gaps in the spectrum rather than interpolating.
     
-#     # 1. Isolate Baseline Segment
-#     mask_base = (rel_t_epoch >= win_base[0]) & (rel_t_epoch < win_base[1])
-#     n_base = np.sum(mask_base)
+    Args:
+        epochs: np.ndarray of shape (n_trials, n_channels, n_time)
+        fs: Sampling rate (Hz)
+        notch_freqs: Frequencies to blank (default [60, 120] Hz)
+        bandwidth: Hz width to blank (default 10 Hz = 55-65 and 115-125 Hz)
+        
+    Returns:
+        np.ndarray: Cleaned epochs, same shape
+    """
+    n_trials, n_channels, n_time = epochs.shape
     
-#     if n_base < 10:
-#         print("    [1/f Detrend] Warning: Baseline window too short. Skipping 1/f detrending.")
-#         return epochs.copy()
-        
-#     print(f"    [1/f Detrend] Estimating 1/f curve from local baseline: {win_base} ms ({n_base} pts)")
-        
-#     # Frequencies
-#     f_base = np.fft.rfftfreq(n_base, 1/fs)
-#     f_full = np.fft.rfftfreq(n_time, 1/fs)
+    # Work in frequency domain
+    fft_epochs = np.fft.rfft(epochs, axis=2)
+    freqs = np.fft.rfftfreq(n_time, 1.0 / fs)
+    df = freqs[1] - freqs[0]  # Frequency resolution
     
-#     # Valid frequencies > 0 to avoid log(0)
-#     valid_base = f_base > 0
-#     f_valid_base = f_base[valid_base]
-#     f_valid_full = f_full[f_full > 0]
+    for notch_freq in notch_freqs:
+        if notch_freq <= 0 or notch_freq >= fs / 2:
+            continue
+        
+        # Find bins to blank (e.g., 55-65 Hz for 60 Hz with bandwidth=10)
+        half_width = bandwidth / 2
+        blank_mask = (freqs >= notch_freq - half_width) & (freqs <= notch_freq + half_width)
+        
+        # Set these frequency bins to NaN (will propagate to time domain as NaN)
+        # Actually, we can't use NaN in FFT and get back clean signal
+        # Instead, set to zero which effectively removes that frequency content
+        fft_epochs[:, :, blank_mask] = 0
     
-#     # Pre-compute design matrix for log-log linear regression (FOOOF-lite)
-#     x_log = np.log10(f_valid_base)
-#     X_mat = np.vstack([np.ones_like(x_log), x_log]).T  # (F, 2)
-#     X_pinv = np.linalg.pinv(X_mat)                     # (2, F)
+    # Inverse FFT
+    cleaned = np.fft.irfft(fft_epochs, n=n_time, axis=2)
     
-#     # FFT magnitude scales cleanly by sqrt(N) for pink noise 
-#     scale_factor = np.sqrt(n_time / n_base)
-#     f_log_full = np.log10(f_valid_full)[np.newaxis, np.newaxis, :]
-    
-#     for start_ch in range(0, n_ch, chunk_size):
-#         end_ch = min(start_ch + chunk_size, n_ch)
-#         chunk_epochs = epochs[:, start_ch:end_ch, :]
-        
-#         # 2. Extract baseline chunk
-#         chunk_base = chunk_epochs[:, :, mask_base]
-        
-#         # 3. Compute Baseline Magnitude
-#         X_base = np.fft.rfft(chunk_base, axis=2)
-#         M_base = np.abs(X_base)[:, :, valid_base]
-        
-#         # Avoid log(0) in magnitudes
-#         M_base = np.maximum(M_base, 1e-10)
-#         y_log = np.log10(M_base)
-        
-#         # 4. Fit 1/f coefficients per trial/channel: log(M) = c + alpha * log(f)
-#         n_tr, n_c = y_log.shape[0], y_log.shape[1]
-#         y_reshaped = y_log.reshape(-1, len(f_valid_base)).T  # (F, T*C)
-#         beta = X_pinv @ y_reshaped                           # (2, T*C)
-#         beta = beta.reshape(2, n_tr, n_c)
-        
-#         c = beta[0, :, :, np.newaxis]
-#         alpha = beta[1, :, :, np.newaxis]
-        
-#         # 5. Synthesize 1/f envelope for full time window
-#         # log(M_1f) = c + alpha * log(f_full)
-#         M_1f_log = c + alpha * f_log_full
-        
-#         # Convert out of log space and apply sqrt(N) scaling to match the full FFT window
-#         M_1f_valid = (10 ** M_1f_log) * scale_factor
-        
-#         # Construct full 1/f magnitude (DC = 0 to preserve global mean voltage)
-#         M_1f = np.zeros((n_tr, n_c, len(f_full)))
-#         M_1f[:, :, f_full > 0] = M_1f_valid
-        
-#         # 6. Apply Spectral Subtraction to Full Epoch
-#         X_full = np.fft.rfft(chunk_epochs, axis=2)
-#         M_full = np.abs(X_full)
-#         Phase_full = np.angle(X_full)
-        
-#         # Subtract the theoretical 1/f noise floor, floor at 0 to avoid negative amplitudes
-#         M_clean = np.maximum(M_full - M_1f, 0)
-        
-#         # Reconstruct complex FFT array
-#         X_clean = M_clean * np.exp(1j * Phase_full)
-        
-#         # Inverse FFT back to time domain
-#         chunk_clean = np.fft.irfft(X_clean, n=n_time, axis=2)
-        
-#         if plot_debug and start_ch == 0 and debug_out_dir is not None:
-#             import matplotlib.pyplot as plt
-#             from pathlib import Path
-#             fig, ax = plt.subplots(1, 1, figsize=(10, 4))
-#             ax.plot(rel_t_epoch, chunk_epochs[0, 0, :], label='Original', alpha=0.7)
-#             ax.plot(rel_t_epoch, chunk_clean[0, 0, :], label='1/f Detrended', alpha=0.7)
-#             ax.axvspan(win_base[0], win_base[1], color='gray', alpha=0.2, label='Baseline Window')
-#             ax.set_xlabel("Time (ms)")
-#             ax.set_ylabel("Amplitude")
-#             ax.set_title("1/f Detrending Debug (Trial 0, Ch 0)")
-#             ax.legend(loc="upper right")
-            
-#             out_path = Path(debug_out_dir) / "debug_1f_detrend.png"
-#             out_path.parent.mkdir(parents=True, exist_ok=True)
-#             plt.savefig(out_path, bbox_inches='tight')
-#             plt.close(fig)
-#             print(f"    [1/f Detrend] Saved debug plot to {out_path}")
-            
-#         out[:, start_ch:end_ch, :] = chunk_clean
-        
-#     return out
-
+    return cleaned.astype(epochs.dtype)
 
 def filter_zero_phase(epochs, fs, low, high, order=4, chunk_size=32):
     """
@@ -783,13 +703,14 @@ def build_lfp_preprocessing_pipeline(
         add_reflect_padding=True,
         ignore_low_freq_error=True,
     )
-    
+
     # 2. Resampling (30k -> 1k)
-    # SI resample includes anti-aliasing filter
     print(f"    [SI Pipeline] Resampling to {TARGET_FS} Hz...")
     rec_resampled = spre.resample(rec_filtered, resample_rate=TARGET_FS)
     
     return rec_resampled
+
+
 
 def extract_single_epoch(rec_obj, center_idx, pre_samps, post_samps):
     """
@@ -1024,22 +945,23 @@ def process_baseline_group_utah(
         out_dir.mkdir(parents=True, exist_ok=True)
         
         final_out_npz = out_dir / out_name
-        if final_out_npz.exists():
-            print(f"  [Baseline] Skipping {out_name}, output exists.")
-            continue
+        # if final_out_npz.exists():
+        #     print(f"  [Baseline] Skipping {out_name}, output exists.")
+        #     continue
 
         print(f"\n[Baseline UA] Aggregating Target {label}: {len(all_epochs_by_label[label])} sessions involved.")
         concat_epochs = np.concatenate(all_epochs_by_label[label], axis=0)
         n_time = concat_epochs.shape[2]
         rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
 
-        # print(f"    [Cleaning] 1/f Detrending baseline epochs...")
-        # concat_epochs_clean = apply_1f_detrending_chunked(
-        #     concat_epochs, rel_t_epoch, win_base=(-EPOCH_PRE_MS + 100.0, EPOCH_POST_MS - 100.0), fs=TARGET_FS,
-        #     plot_debug=PLOT_1F_DEBUG, debug_out_dir=UA_LFP_CKPT_ROOT.parent.parent / "figures" / "UA_LFP" / "debug"
-        # )
-
-        concat_epochs_clean = concat_epochs
+        # Spectral interpolation to remove 60 Hz line noise cleanly
+        print(f"    [Cleaning] Spectral interpolation (60, 120 Hz)...")
+        concat_epochs_clean = blank_notch_epochs(
+            concat_epochs, 
+            fs=TARGET_FS, 
+            notch_freqs=[60.0, 120.0],
+            bandwidth=10.0  # 55-65 Hz and 115-125 Hz
+        )
 
         WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
         WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)
@@ -1134,24 +1056,25 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     peristim_files = find_peristim_files(sess_name, br_idx)
     
     # Pre-check: if all potential outputs already exist, skip loading raw data
-    all_outputs_exist = True
-    if not peristim_files:
-        out_name = f"aligned_lfp__{sess_id}_stim_reaches.npz"
-        if not (UA_LFP_CKPT_ROOT / "stim_reaches" / out_name).exists():
-            all_outputs_exist = False
-    else:
-        for cat, target, _ in peristim_files:
-            target_str = f"_target_{target}" if target else ""
-            out_name = f"aligned_lfp__{sess_id}_{cat}{target_str}.npz"
-            target_dir = UA_LFP_CKPT_ROOT / cat
-            if target:
-                target_dir = target_dir / target
-            if not (target_dir / out_name).exists():
-                all_outputs_exist = False
-                break
+    # all_outputs_exist = True
+    # if not peristim_files:
+    #     out_name = f"aligned_lfp__{sess_id}_stim_reaches.npz"
+    #     if not (UA_LFP_CKPT_ROOT / "stim_reaches" / out_name).exists():
+    #         all_outputs_exist = False
+    # else:
+    #     for cat, target, _ in peristim_files:
+    #         target_str = f"_target_{target}" if target else ""
+    #         out_name = f"aligned_lfp__{sess_id}_{cat}{target_str}.npz"
+    #         target_dir = UA_LFP_CKPT_ROOT / cat
+    #         if target:
+    #             target_dir = target_dir / target
+    #         if not (target_dir / out_name).exists():
+    #             all_outputs_exist = False
+    #             break
     
-    if all_outputs_exist:
-        return
+    # if all_outputs_exist:
+    #     print(f"[UA] Skipping {sess_name} (BR={br_idx}), all outputs exist.")
+    #     return
         
     print(f"[UA] Processing {sess_id} (Source: {sess_path.name})")
     
@@ -1285,9 +1208,9 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         target_dir.mkdir(parents=True, exist_ok=True)
         
         final_out_npz = target_dir / out_name
-        if final_out_npz.exists():
-            print(f"  [UA] Skipping {out_name}, output exists.")
-            continue
+        # if final_out_npz.exists():
+        #     print(f"  [UA] Skipping {out_name}, output exists.")
+        #     continue
 
         print(f"  [UA] Segmenting {cat}{target_str} ({len(stim_ms_ua)} events)...")
         
@@ -1323,13 +1246,12 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         n_time = pre_samps + post_samps
         rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
 
-        # print(f"    [Cleaning] 1/f Detrending broadband...")
-        # segs_bb_clean = apply_1f_detrending_chunked(
-        #     segs_bb, rel_t_epoch, win_base=(-EPOCH_PRE_MS + 100.0, EPOCH_POST_MS - 100.0), fs=TARGET_FS,
-        #     plot_debug=PLOT_1F_DEBUG, debug_out_dir=UA_LFP_CKPT_ROOT.parent.parent / "figures" / "UA_LFP" / "debug"
-        # )
-        
-        segs_bb_clean = segs_bb
+        segs_bb_clean = blank_notch_epochs(
+            segs_bb, 
+            fs=TARGET_FS, 
+            notch_freqs=[60.0, 120.0],
+            bandwidth=10.0
+        )
 
         results['broadband_full'], t_full = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_FULL)
         results['broadband_pre'], t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)

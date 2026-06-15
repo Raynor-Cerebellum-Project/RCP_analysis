@@ -15,23 +15,23 @@ BATCH_SCRIPTS = [
     # "compute_br_to_intan_shifts.py",
     # "UA_BR_analysis_mf.py", 
     # "make_aligned_npz_and_mat.py",
-    "extract_peri_stim.py",
+    # "extract_peri_stim.py",
     # "generate_stim_summary.py",
     # "plot_complete_shaded_BT.py",
-    "plot_peri_stim_raster.py",
-    # "analyze_lfp_bands.py",
+    # "plot_peri_stim_raster.py",
+    "analyze_lfp_bands.py",
     # "quantify_stim_kinematics.py",
-    "quantify_smoothed_position.py",
+    # "quantify_smoothed_position.py",
 ]
 
 # Define the sessions you want to process
 SESSIONS_TO_RUN = [
-    {"location": "Nike/20251203_NRR_RW011", "session": "NRR_RW011"},
-    {"location": "Nike/20260116_NRR_RW012", "session": "NRR_RW012"},
     {"location": "Nike/20260311_NRR_RW022", "session": "NRR_RW022"},
+    {"location": "Nike/20260116_NRR_RW012", "session": "NRR_RW012"},
+    {"location": "Nike/20251203_NRR_RW011", "session": "NRR_RW011"},
     {"location": "Nike/20260416_NRR_RW032", "session": "NRR_RW032"},
     {"location": "Nike/20260324_NRR_RW026", "session": "NRR_RW026"},
-    {"location": "Nike/20260218_NRR_RW017", "session": "NRR_RW017"},
+    # {"location": "Nike/20260218_NRR_RW017", "session": "NRR_RW017"},
 ]
 
 def update_params_yaml(params_path: Path, location: str, session: str):
