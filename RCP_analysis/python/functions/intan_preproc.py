@@ -1,3 +1,4 @@
+from tqdm import tqdm
 from pathlib import Path
 import json
 import numpy as np
@@ -86,10 +87,10 @@ def extract_stim_triggers_and_blocks(
 
     # For each falling edge, find the first subsequent return-to-zero
     rz = []
-    for idx in falling_edge:
+    for idx in tqdm(falling_edge, desc="detecting pulse ends", leave=False):
         end_of_pulse = np.flatnonzero(stim_signal[idx:] == 0)
         if end_of_pulse.size:
-            rz.append(idx + end_of_pulse[0])  # absolute index where it returns to zero
+            rz.append(idx + end_of_pulse[0])
     rz = np.asarray(rz, dtype=np.int32)
 
     beg = falling_edge
