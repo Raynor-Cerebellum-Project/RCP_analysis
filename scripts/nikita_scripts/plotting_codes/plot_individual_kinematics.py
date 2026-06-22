@@ -179,8 +179,9 @@ def process_single_file(peri_stim_npz_loc: Path, condition_type: str, target_lab
     try:
         peri_stim_npz = np.load(peri_stim_npz_loc, allow_pickle=True)
         
-        # Get BR index if available
+        # Get BR index and session if available
         br_idx = int(peri_stim_npz["br_idx"]) if "br_idx" in peri_stim_npz else 0
+        intan_filename = str(peri_stim_npz["sess"]) if "sess" in peri_stim_npz else "UnknownSession"
         
         # Load Data
         beh_rel_t = peri_stim_npz["beh_rel_t"]
@@ -189,6 +190,8 @@ def process_single_file(peri_stim_npz_loc: Path, condition_type: str, target_lab
         cam0_segs = peri_stim_npz["beh_cam0_segs"] if "beh_cam0_segs" in peri_stim_npz else None
         cam1_segs = peri_stim_npz["beh_cam1_segs"] if "beh_cam1_segs" in peri_stim_npz else None
         
+        raw_trial_indices = peri_stim_npz["raw_trial_indices"] if "raw_trial_indices" in peri_stim_npz.files else None
+
         # Names
         raw_c0 = peri_stim_npz["beh_cam0_names"] if "beh_cam0_names" in peri_stim_npz.files else []
         raw_c1 = peri_stim_npz["beh_cam1_names"] if "beh_cam1_names" in peri_stim_npz.files else []
@@ -249,7 +252,8 @@ def process_single_file(peri_stim_npz_loc: Path, condition_type: str, target_lab
                 if i < cam0_segs.shape[0]:
                     segs_trial = cam0_segs[i]
                     segs_filt, names_filt = filter_traces(segs_trial, cam0_names)
-                    plot_single_trial(ax, beh_rel_t, segs_filt, names_filt, title_prefix=f"Cam0 | Trial {i}")
+                    raw_idx_str = f" (Raw: {raw_trial_indices[i]})" if raw_trial_indices is not None and i < len(raw_trial_indices) else ""
+                    plot_single_trial(ax, beh_rel_t, segs_filt, names_filt, title_prefix=f"Cam0 | Trial {i}{raw_idx_str}")
                 else:
                     ax.axis("off")
 
@@ -272,7 +276,8 @@ def process_single_file(peri_stim_npz_loc: Path, condition_type: str, target_lab
                 if i < cam1_segs.shape[0]:
                     segs_trial = cam1_segs[i]
                     segs_filt, names_filt = filter_traces(segs_trial, cam1_names)
-                    plot_single_trial(ax, beh_rel_t, segs_filt, names_filt, title_prefix=f"Cam1 | Trial {i}")
+                    raw_idx_str = f" (Raw: {raw_trial_indices[i]})" if raw_trial_indices is not None and i < len(raw_trial_indices) else ""
+                    plot_single_trial(ax, beh_rel_t, segs_filt, names_filt, title_prefix=f"Cam1 | Trial {i}{raw_idx_str}")
                 else:
                     ax.axis("off")
 
@@ -288,7 +293,7 @@ def process_single_file(peri_stim_npz_loc: Path, condition_type: str, target_lab
         else:
             overall_title = peri_stim_npz_loc.stem
             
-        fig.suptitle(f"{overall_title} - {condition_type}/{target_label} - Individual Trials (n={n_trials})", fontsize=16)
+        fig.suptitle(f"{overall_title}\nSession: {intan_filename} | BR: {br_idx} | {condition_type}/{target_label} | Individual Trials (n={n_trials})", fontsize=14)
 
         # Legends
         handles, labels = [], []

@@ -11,27 +11,39 @@ BATCH_SCRIPTS = [
     # run curation_scripts/OCR_frame_mapping_BT_edit.py on raw videos first -> copy into Video/OCR separate from Video/DLC
     # "align_dlc_two_cams_to_br.py",
     # "align_VOG_to_br.py",
-    # "NPRW_Intan_analysis_mf.py",
-    # "compute_br_to_intan_shifts.py",
-    # "UA_BR_analysis_mf.py", 
-    # "make_aligned_npz_and_mat.py",
-    # "extract_peri_stim.py",
+    "NPRW_Intan_analysis_mf.py",
+    "compute_br_to_intan_shifts.py",
+    "UA_BR_analysis_mf.py", 
+    "make_aligned_npz_and_mat.py",
+    "extract_peri_stim.py",
+    "inspect_kinematics_trajectories.py",
+
+    ### RUN ^ inspect_kinematics_trajectories.py to check for remaining bad traces -> add bad traces to /config/manual_trial_remove.csv
+    ### RERUN extract_peri_stim.py
+
     # "generate_stim_summary.py",
     # "plot_complete_shaded_BT.py",
     # "plot_peri_stim_raster.py",
-    "analyze_lfp_bands.py",
+    # "analyze_lfp_bands.py",
     # "quantify_stim_kinematics.py",
     # "quantify_smoothed_position.py",
 ]
 
 # Define the sessions you want to process
 SESSIONS_TO_RUN = [
-    {"location": "Nike/20260311_NRR_RW022", "session": "NRR_RW022"},
-    {"location": "Nike/20260116_NRR_RW012", "session": "NRR_RW012"},
-    {"location": "Nike/20251203_NRR_RW011", "session": "NRR_RW011"},
-    {"location": "Nike/20260416_NRR_RW032", "session": "NRR_RW032"},
-    {"location": "Nike/20260324_NRR_RW026", "session": "NRR_RW026"},
-    # {"location": "Nike/20260218_NRR_RW017", "session": "NRR_RW017"},
+    # {"location": "Nike/20260311_NRR_RW022", "session": "NRR_RW022"},
+    # {"location": "Nike/20260116_NRR_RW012", "session": "NRR_RW012"},
+    # {"location": "Nike/20251203_NRR_RW011", "session": "NRR_RW011"},
+    # {"location": "Nike/20260416_NRR_RW032", "session": "NRR_RW032"},
+    # {"location": "Nike/20260324_NRR_RW026", "session": "NRR_RW026"},
+    {"location": "Nike/20260129_NRR_RW013", "session": "NRR_RW013"},
+    {"location": "Nike/20260130_NRR_RW014", "session": "NRR_RW014"},
+    {"location": "Nike/20260202_NRR_RW015", "session": "NRR_RW015"},
+    {"location": "Nike/20260206_NRR_RW016", "session": "NRR_RW016"},
+    {"location": "Nike/20260218_NRR_RW017", "session": "NRR_RW017"},
+    {"location": "Nike/20260220_NRR_RW018", "session": "NRR_RW018"},
+    {"location": "Nike/20260226_NRR_RW019", "session": "NRR_RW019"},
+    {"location": "Nike/20260409_NRR_RW029", "session": "NRR_RW029"},
 ]
 
 def update_params_yaml(params_path: Path, location: str, session: str):

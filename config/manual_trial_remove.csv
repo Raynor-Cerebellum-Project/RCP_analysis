@@ -1,0 +1,17 @@
+intan_filename,br_idx,trials_to_drop,reason
+NRR_RW012_26011,3,"7",backwards reach
+NRR_RW012_26011,32,"4, 7",bad tracking
+NRR_RW012_26011,7,"27",opposite reach attempt
+NRR_RW012_26011,8,"6, 27",opposite reach attempt
+NRR_RW012_26011,9,"13, 15",bad tracking
+NRR_RW012_26011,12,"20",bad tracking
+NRR_RW012_26011,18,"0, 3, 9, 30",bad tracking and opposite reach attempt
+NRR_RW012_26011,20,"18",opposite reach attempt
+NRR_RW012_26011,22,"1, 2, 3",opposite reach attempt
+NRR_RW012_26011,23,"0, 1",opposite reach attempt
+NRR_RW012_26011,25,"15",opposite reach attempt
+NRR_RW012_26011,27,"15, 17",opposite reach attempt
+NRR_RW012_26011,28,"8",bad tracking
+NRR_RW012_26011,29,"3, 10, 18",opposite reach attempt
+NRR_RW012_26011,30,"8",opposite reach attempt
+NRR_RW012_26011,31,"1, 5",bad tracking
