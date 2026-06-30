@@ -948,61 +948,59 @@ def bin_counts_around_stim(
     art_before_ms: float,
     art_after_ms: float,
     win_ms: tuple[float, float] = [-600, 600],
+    step_ms: float | None = None,
 ):
     """
     Bin spike counts around each stimulation event.
+
+    If step_ms is None, behaves exactly as before: contiguous, non-overlapping
+    bins of width bin_ms. If step_ms < bin_ms, windows of width bin_ms slide
+    by step_ms and overlap (sliding window). If step_ms > bin_ms, windows are
+    spaced out with gaps (rarely useful, but supported for completeness).
     """
     window_start_ms, window_end_ms = float(win_ms[0]), float(win_ms[1])
+    if step_ms is None:
+        step_ms = bin_ms
+    half = bin_ms / 2.0
 
     if peaks_ms is None:
         peaks_ms = {}
 
     stim_times_ms = np.asarray(stim_times_ms, float).ravel()
 
-    # Left/right edges & centers
-    left_window_edges_ms: list[float] = []
-    edge_value = -art_before_ms
-    while edge_value >= window_start_ms:
-        left_window_edges_ms.append(edge_value)
-        edge_value -= bin_ms
-    left_window_edges_ms = np.array(left_window_edges_ms[::-1])
+    # Build window centers on each side of the artifact gap, stepping by step_ms.
+    # Left side: centers walk backward from just outside -art_before_ms.
+    left_centers_ms: list[float] = []
+    c = -art_before_ms - half
+    while c - half >= window_start_ms:
+        left_centers_ms.append(c)
+        c -= step_ms
+    left_centers_ms = np.array(left_centers_ms[::-1])
 
-    right_window_edges_ms: list[float] = []
-    edge_value = art_after_ms
-    while edge_value <= window_end_ms:
-        right_window_edges_ms.append(edge_value)
-        edge_value += bin_ms
-    right_window_edges_ms = np.array(right_window_edges_ms)
+    # Right side: centers walk forward from just outside art_after_ms.
+    right_centers_ms: list[float] = []
+    c = art_after_ms + half
+    while c + half <= window_end_ms:
+        right_centers_ms.append(c)
+        c += step_ms
+    right_centers_ms = np.array(right_centers_ms)
 
-    # Bin centers on each side
-    left_bin_centers_ms  = (
-        left_window_edges_ms[:-1] + 0.5 * bin_ms
-        if left_window_edges_ms.size > 1 else np.array([], float)
-    )
-    right_bin_centers_ms = (
-        right_window_edges_ms[:-1] + 0.5 * bin_ms
-        if right_window_edges_ms.size > 1 else np.array([], float)
-    )
+    bin_centers_ms = np.concatenate([left_centers_ms, right_centers_ms])
+    bin_widths_ms  = np.full(bin_centers_ms.size, bin_ms, dtype=float)
+    n_bins = bin_centers_ms.size
+    n_left_bins = left_centers_ms.size
 
-    if left_window_edges_ms.size > 0 and right_window_edges_ms.size > 0 and np.isclose(left_window_edges_ms[-1], right_window_edges_ms[0], atol=1e-6):
-        bin_edges_ms = np.concatenate([left_window_edges_ms[:-1], right_window_edges_ms])
-    else:
-        bin_edges_ms = np.concatenate([left_window_edges_ms, right_window_edges_ms])
-        
-    bin_centers_ms = np.concatenate([left_bin_centers_ms, right_bin_centers_ms])
-    n_bins         = bin_centers_ms.size
+    # Precompute window [start, end] per bin
+    win_starts_ms = bin_centers_ms - half
+    win_ends_ms   = bin_centers_ms + half
 
-    # Number of bins on the left side (used to offset right-side indices)
-    n_left_bins = max(left_window_edges_ms.size - 1, 0)
-
-    n_trials    = len(stim_times_ms)
+    n_trials = len(stim_times_ms)
     ch_keys = sorted(peaks_ms.keys())
     n_channels = len(ch_keys)
 
     # counts[trial_index, channel_index, bin_index]
     counts = np.zeros((n_trials, n_channels, n_bins), float)
 
-    # Binning
     for trial_index, stim_time_ms in enumerate(stim_times_ms):
         trial_window_start_ms = stim_time_ms + window_start_ms
         trial_window_end_ms   = stim_time_ms + window_end_ms
@@ -1011,7 +1009,6 @@ def bin_counts_around_stim(
             if spike_times_ms.size == 0:
                 continue
 
-            # Spikes within the overall peri-stim window (absolute)
             in_window_mask = (
                 (spike_times_ms >= trial_window_start_ms) &
                 (spike_times_ms <= trial_window_end_ms)
@@ -1019,89 +1016,57 @@ def bin_counts_around_stim(
             if not in_window_mask.any():
                 continue
 
-            # Relative spike times in ms, centered at the stim
             spike_times_rel_ms = spike_times_ms[in_window_mask] - stim_time_ms
 
-            # Exclude spikes in the artifact gap [-art_before_ms, +art_after_ms]
-            left_side_mask  = (
-                (spike_times_rel_ms >= window_start_ms) &
-                (spike_times_rel_ms < -art_before_ms)
+            # For each bin, count spikes that fall in [win_start, win_end).
+            # Sliding windows can overlap, so this is an explicit per-bin
+            # search rather than a single searchsorted pass.
+            if n_bins == 0:
+                continue
+
+            # Vectorized: for each spike, find which bins contain it.
+            # (spike >= win_starts) & (spike < win_ends), broadcast over bins.
+            in_bin = (
+                (spike_times_rel_ms[:, None] >= win_starts_ms[None, :]) &
+                (spike_times_rel_ms[:, None] < win_ends_ms[None, :])
             )
-            right_side_mask = (
-                (spike_times_rel_ms > art_after_ms) &
-                (spike_times_rel_ms <= window_end_ms)
-            )
+            counts[trial_index, ch_i] += in_bin.sum(axis=0).astype(float)
 
-            # ---- LEFT side binning ----
-            if left_window_edges_ms.size > 1 and left_side_mask.any():
-                spike_times_left_ms = spike_times_rel_ms[left_side_mask]
-                # Find bin index j such that edges[j] <= t < edges[j+1]
-                left_bin_indices = np.searchsorted(
-                    left_window_edges_ms, spike_times_left_ms, side="right"
-                ) - 1
-                valid_left_bins = (
-                    (left_bin_indices >= 0) &
-                    (left_bin_indices < left_window_edges_ms.size - 1)
-                )
-                if valid_left_bins.any():
-                    np.add.at(counts[trial_index, ch_i], left_bin_indices[valid_left_bins], 1.0)
+    return counts, bin_centers_ms, bin_widths_ms, n_left_bins
 
-            # ---- RIGHT side binning ----
-            if right_window_edges_ms.size > 1 and right_side_mask.any():
-                spike_times_right_ms = spike_times_rel_ms[right_side_mask]
-                right_bin_indices_local = np.searchsorted(
-                    right_window_edges_ms, spike_times_right_ms, side="right"
-                ) - 1
-                valid_right_bins = (
-                    (right_bin_indices_local >= 0) &
-                    (right_bin_indices_local < right_window_edges_ms.size - 1)
-                )
-                if valid_right_bins.any():
-                    # Map right-side bins into global bin indices
-                    right_bin_indices_global = (
-                        right_bin_indices_local[valid_right_bins] + n_left_bins
-                    )
-                    np.add.at(counts[trial_index, ch_i], right_bin_indices_global, 1.0)
-    return counts, bin_centers_ms, bin_edges_ms, n_left_bins
 
-def _smooth_segment(seg_counts, seg_edges, seg_centers, sigma_ms):
-        """
-        """
-        L = seg_centers.size
-        if L == 0 or sigma_ms <= 0:
-            return seg_counts.copy()
+def _smooth_segment(seg_counts, seg_widths_ms, seg_centers, sigma_ms):
+    L = seg_centers.size
+    if L == 0 or sigma_ms <= 0:
+        return seg_counts.copy()
 
-        # bin widths
-        dt_ms = np.diff(seg_edges)
-        dt_sec = np.clip(dt_ms / 1000.0, 1e-12, None)
+    dt_sec = np.clip(seg_widths_ms / 1000.0, 1e-12, None)
 
-        # convert counts → rates
-        rates = seg_counts / dt_sec[None, None, :]   # broadcast dt
+    # convert counts -> rates
+    rates = seg_counts / dt_sec[None, None, :]
 
-        # Gaussian weights
-        diff = seg_centers[:, None] - seg_centers[None, :]
-        W = np.exp(-(diff**2) / (2.0 * sigma_ms**2))   # (L, L)
+    diff = seg_centers[:, None] - seg_centers[None, :]
+    W = np.exp(-(diff**2) / (2.0 * sigma_ms**2))
 
-        # output
-        out = np.full_like(rates, np.nan)
+    out = np.full_like(rates, np.nan)
 
-        for tr in range(rates.shape[0]):
-            for ch in range(rates.shape[1]):
-                r = rates[tr, ch]
-                valid = np.isfinite(r)
-                if not valid.any():
-                    continue
+    for tr in range(rates.shape[0]):
+        for ch in range(rates.shape[1]):
+            r = rates[tr, ch]
+            valid = np.isfinite(r)
+            if not valid.any():
+                continue
+            r_valid = np.where(valid, r, 0.0)
+            num = r_valid @ W.T
+            den = (valid.astype(float) @ W.T).clip(1e-12, None)
+            out[tr, ch] = num / den
 
-                r_valid = np.where(valid, r, 0.0)
-                num = r_valid @ W.T
-                den = (valid.astype(float) @ W.T).clip(1e-12, None)
-                out[tr, ch] = num / den
+    return out
 
-        return out
 
 def smooth_counts_gauss(
     counts: np.ndarray,
-    edges: np.ndarray,
+    bin_widths_ms: np.ndarray,
     bin_centers_ms: np.ndarray,
     sigma_ms: float,
     left_bins: int,
@@ -1114,24 +1079,17 @@ def smooth_counts_gauss(
         return np.asarray(counts, float)
 
     gap_bin = int(left_bins)
-    gap_bin = max(0, min(gap_bin, counts.shape[-1]))  # clamp
+    gap_bin = max(0, min(gap_bin, counts.shape[-1]))
 
     left_counts   = counts[:, :, :gap_bin]
     right_counts  = counts[:, :, gap_bin:]
     left_centers  = bin_centers_ms[:gap_bin]
     right_centers = bin_centers_ms[gap_bin:]
+    left_widths   = bin_widths_ms[:gap_bin]
+    right_widths  = bin_widths_ms[gap_bin:]
 
-    if edges.size == counts.shape[-1] + 1:
-        # Edge array was safely deduplicated (T+1 edges for continuous T)
-        left_edges  = edges[:gap_bin + 1]
-        right_edges = edges[gap_bin:]
-    else:
-        # edges is length (T+2): left edges (L+1) + right edges (R+1)
-        left_edges  = edges[:gap_bin + 1]
-        right_edges = edges[gap_bin + 1:]
-
-    left_sm  = _smooth_segment(left_counts,  left_edges,  left_centers,  sigma_ms)
-    right_sm = _smooth_segment(right_counts, right_edges, right_centers, sigma_ms)
+    left_sm  = _smooth_segment(left_counts,  left_widths,  left_centers,  sigma_ms)
+    right_sm = _smooth_segment(right_counts, right_widths, right_centers, sigma_ms)
 
     out = np.full_like(counts, np.nan, dtype=float)
     out[:, :, :gap_bin] = left_sm

@@ -55,6 +55,7 @@ CONTINUOUS_STIM_PERI_ROOT.mkdir(parents=True, exist_ok=True)
 NPRW_RATES = PARAMS.NPRW_rate_est
 NPRW_BIN_MS     = NPRW_RATES.get("bin_ms")
 NPRW_SIGMA_MS   = NPRW_RATES.get("sigma_ms")
+NPRW_STEP_MS    = NPRW_RATES.get("step_ms", NPRW_BIN_MS) # Default is same as bin size
 NPRW_MS_BEFORE = float(NPRW_RATES.get("remove_ms_before", 20.0))
 NPRW_TAIL_MS   = float(NPRW_RATES.get("remove_tail_ms_after", 20.0))
 NPRW_DEDUP_MS = float(NPRW_RATES.get("dedup_ms", 0.5))
@@ -62,8 +63,9 @@ NPRW_DEDUP_MS = float(NPRW_RATES.get("dedup_ms", 0.5))
 UA_RATES = PARAMS.UA_rate_est
 UA_BIN_MS     = UA_RATES.get("bin_ms")
 UA_SIGMA_MS   = UA_RATES.get("sigma_ms")
-UA_MS_BEFORE = 0.0 # float(UA_RATES.get("remove_ms_before", 5.0))
-UA_TAIL_MS   = 0.0 # float(UA_RATES.get("remove_tail_ms_after", 5.0))
+UA_STEP_MS    = UA_RATES.get("step_ms", UA_BIN_MS)
+UA_MS_BEFORE = 0.0
+UA_TAIL_MS   = 0.0
 UA_DEDUP_MS = float(UA_RATES.get("dedup_ms", 0.2))
 MAX_CLUSTER_MS = 0.5
 
@@ -1085,7 +1087,6 @@ def _save_peristim(
     nprw_meta: dict,
     ua_meta: dict | None,
 
-    # events + labels (must match lengths)
     event_ms_sub: np.ndarray,
     labels_sub: np.ndarray,
     labels_all: np.ndarray,
@@ -1098,7 +1099,7 @@ def _save_peristim(
     NPRW_rates_hz_sub: np.ndarray,
     NPRW_rates_zeroed_sub: np.ndarray,
     NPRW_counts_sub: np.ndarray,
-    NPRW_edges_ms: np.ndarray,
+    NPRW_width_ms: np.ndarray,
     NPRW_rel_t: np.ndarray,
     NPRW_peak_ms_dedup: dict[int, np.ndarray],
     NPRW_amps_ms_dedup: dict[int, np.ndarray],
@@ -1111,7 +1112,7 @@ def _save_peristim(
     UA_rates_hz_sub: np.ndarray | None = None,
     UA_rates_zeroed_sub: np.ndarray | None = None,
     UA_counts_sub: np.ndarray | None = None,
-    UA_edges_ms: np.ndarray | None = None,
+    UA_width_ms: np.ndarray | None = None,
     UA_rel_t: np.ndarray | None = None,
     UA_peak_ms_dedup: dict[int, np.ndarray] | None = None,
     UA_amps_ms_dedup: dict[int, np.ndarray] | None = None,
@@ -1122,11 +1123,9 @@ def _save_peristim(
     ua_nsp=None,
     ua_idx_rows=None,
     
-    # optional signals
     hr_sig: np.ndarray,
     vog_sig: np.ndarray,
 
-    # ts_state (already subsetted to A/B if you want, but can be empty)
     ts_state_rel_t: np.ndarray,
     ts_state_segs_sub: np.ndarray,
     ts_state_char_segs_sub: np.ndarray,
@@ -1134,7 +1133,6 @@ def _save_peristim(
     ts_state_num_full: np.ndarray,
     n_ts_state_trials_sub: int,
     
-    # behavior
     n_beh_sub: int,
     beh_rel_t_sub: np.ndarray,
     beh_cam0_pos_med_sub: np.ndarray,
@@ -1219,7 +1217,7 @@ def _save_peristim(
         NPRW_rates_hz=np.asarray(NPRW_rates_hz_sub, float),
         NPRW_rates_zeroed=np.asarray(NPRW_rates_zeroed_sub, float),
         NPRW_counts=np.asarray(NPRW_counts_sub, float),
-        NPRW_edges_ms=np.asarray(NPRW_edges_ms, float),
+        NPRW_width_ms=np.asarray(NPRW_width_ms, float),
         NPRW_rel_t=np.asarray(NPRW_rel_t, float),
         NPRW_peak_ms_dedup=NPRW_peak_ms_dedup,
         NPRW_amps_ms_dedup=NPRW_amps_ms_dedup,
@@ -1232,7 +1230,7 @@ def _save_peristim(
         UA_rates_hz=np.asarray(UA_rates_hz_sub, float) if (HAS_BR and UA_rates_hz_sub is not None) else np.zeros((0, 0, 0), float),
         UA_rates_zeroed=np.asarray(UA_rates_zeroed_sub, float) if (HAS_BR and UA_rates_zeroed_sub is not None) else np.zeros((0, 0, 0), float),
         UA_counts=np.asarray(UA_counts_sub, float) if (HAS_BR and UA_counts_sub is not None) else np.zeros((0, 0, 0), float),
-        UA_edges_ms=np.asarray(UA_edges_ms, float) if (HAS_BR and UA_edges_ms is not None) else np.zeros(0, float),
+        UA_width_ms=np.asarray(UA_width_ms, float) if (HAS_BR and UA_width_ms is not None) else np.zeros(0, float),
         UA_rel_t=np.asarray(UA_rel_t, float) if (HAS_BR and UA_rel_t is not None) else np.zeros(0, float),
         UA_peak_ms_dedup=UA_peak_ms_dedup if (HAS_BR and UA_peak_ms_dedup is not None) else {},
         UA_amps_ms_dedup=UA_amps_ms_dedup if (HAS_BR and UA_amps_ms_dedup is not None) else {},
@@ -1289,7 +1287,7 @@ def _save_peristim(
             "NPRW_rates_hz": np.asarray(NPRW_rates_hz_sub, float),
             "NPRW_rates_zeroed": np.asarray(NPRW_rates_zeroed_sub, float),
             "NPRW_counts": np.asarray(NPRW_counts_sub, float),
-            "NPRW_edges_ms": np.asarray(NPRW_edges_ms, float),
+            "NPRW_width_ms": np.asarray(NPRW_width_ms, float),
             "NPRW_rel_t": np.asarray(NPRW_rel_t, float),
 
             "HAS_BR": bool(HAS_BR),
@@ -1299,7 +1297,7 @@ def _save_peristim(
             "UA_rates_hz": np.asarray(UA_rates_hz_sub, float) if (HAS_BR and UA_rates_hz_sub is not None) else np.zeros((0, 0, 0), float),
             "UA_rates_zeroed": np.asarray(UA_rates_zeroed_sub, float) if (HAS_BR and UA_rates_zeroed_sub is not None) else np.zeros((0, 0, 0), float),
             "UA_counts": np.asarray(UA_counts_sub, float) if (HAS_BR and UA_counts_sub is not None) else np.zeros((0, 0, 0), float),
-            "UA_edges_ms": np.asarray(UA_edges_ms, float) if (HAS_BR and UA_edges_ms is not None) else np.zeros(0, float),
+            "UA_width_ms": np.asarray(UA_width_ms, float) if (HAS_BR and UA_width_ms is not None) else np.zeros(0, float),
             "UA_rel_t": np.asarray(UA_rel_t, float) if (HAS_BR and UA_rel_t is not None) else np.zeros(0, float),
             "ua_ids_1based": np.asarray(ua_ids_1based, int) if (HAS_BR and ua_ids_1based is not None) else np.array([], int),
 
@@ -1639,11 +1637,12 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         ua_tail_ms   = 0.0 if is_control else UA_TAIL_MS
 
         # bin ONLY on valid stims per stream
-        ua_counts, ua_rel_t, ua_edges_ms, ua_left_bins = rcp.bin_counts_around_stim(
+        ua_counts, ua_rel_t, ua_widths_ms, ua_left_bins = rcp.bin_counts_around_stim(
             ua_peak_ms_dedup, UA_BIN_MS, event_ms,
-            ua_ms_before, ua_tail_ms, WIN_MS
+            ua_ms_before, ua_tail_ms, WIN_MS,
+            step_ms=UA_STEP_MS,
         )
-        ua_rates_hz = rcp.smooth_counts_gauss(ua_counts, ua_edges_ms, ua_rel_t, UA_SIGMA_MS, ua_left_bins)
+        ua_rates_hz = rcp.smooth_counts_gauss(ua_counts, ua_widths_ms, ua_rel_t, UA_SIGMA_MS, ua_left_bins)
         ua_rates_hz_baselined = rcp.baseline_zero_each_trial(ua_rates_hz, ua_rel_t, normalize_first_ms=NORMALIZE_FIRST_MS)
 
     # dedup peaks
@@ -1654,11 +1653,12 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
     nprw_tail_ms   = 0.0 if is_control else NPRW_TAIL_MS
 
     # bin ONLY on valid stims per stream
-    nprw_counts, nprw_rel_t, nprw_edges_ms, nprw_left_bins = rcp.bin_counts_around_stim(
+    nprw_counts, nprw_rel_t, nprw_widths_ms, nprw_left_bins = rcp.bin_counts_around_stim(
         nprw_peak_ms_dedup, NPRW_BIN_MS, event_ms,
-        nprw_ms_before, (stim_dur + nprw_tail_ms), WIN_MS
+        nprw_ms_before, (stim_dur + nprw_tail_ms), WIN_MS,
+        step_ms=NPRW_STEP_MS,
     )
-    nprw_rates_hz = rcp.smooth_counts_gauss(nprw_counts, nprw_edges_ms, nprw_rel_t, NPRW_SIGMA_MS, nprw_left_bins)
+    nprw_rates_hz = rcp.smooth_counts_gauss(nprw_counts, nprw_widths_ms, nprw_rel_t, NPRW_SIGMA_MS, nprw_left_bins)
     nprw_rates_hz_baselined = rcp.baseline_zero_each_trial(nprw_rates_hz, nprw_rel_t, normalize_first_ms=NORMALIZE_FIRST_MS)
 
     # 2) Define subsets: A/B or all-events
@@ -1955,7 +1955,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
             NPRW_rates_hz_sub=NPRW_rates_hz_sub,
             NPRW_rates_zeroed_sub=NPRW_rates_zeroed_sub,
             NPRW_counts_sub=NPRW_counts_sub,
-            NPRW_edges_ms=nprw_edges_ms,
+            NPRW_width_ms=nprw_widths_ms,
             NPRW_rel_t=nprw_rel_t,
             NPRW_peak_ms_dedup=nprw_peak_ms_dedup,
             NPRW_amps_ms_dedup=nprw_amps_ms_dedup,
@@ -1967,7 +1967,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
             UA_rates_hz_sub=UA_rates_hz_sub,
             UA_rates_zeroed_sub=UA_rates_zeroed_sub,
             UA_counts_sub=UA_counts_sub,
-            UA_edges_ms=ua_edges_ms if HAS_BR else None,
+            UA_width_ms=ua_widths_ms if HAS_BR else None,
             UA_rel_t=ua_rel_t if HAS_BR else None,
             UA_peak_ms_dedup=ua_peak_ms_dedup if HAS_BR else None,
             UA_amps_ms_dedup=ua_amps_ms_dedup if HAS_BR else None,
