@@ -30,7 +30,6 @@ paths:
   # session: "NRR_RW034"
 
   geom_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
-
 kinematics:
   keypoints: [index, middle, hand, wrist, start, TA, TB]
   num_camera: 2
@@ -87,6 +86,7 @@ chunk: "4s"
 # ---- Intan firing rate (threshold MUA) ----
 NPRW_rate_est:
   bin_ms: 20.0          # bin width for counts
+  step_ms: 5.0           # step_ms sliding window step, set equal to bin_ms for old non-overlapping behavior
   sigma_ms: 20.0       # Gaussian kernel std
   detect_threshold: 4
   peak_sign: "neg"
@@ -97,6 +97,7 @@ NPRW_rate_est:
 # ---- BR firing rate (threshold MUA) ----
 UA_rate_est:
   bin_ms: 20.0          # bin width for counts
+  step_ms: 5.0           # step_ms sliding window step, set equal to bin_ms for old non-overlapping behavior
   sigma_ms: 20.0       # Gaussian kernel std
   detect_threshold: 3
   peak_sign: "neg"
