@@ -160,8 +160,9 @@ TRIANGLE_SYNC_CH = int(UA_CFG.get("triangle_sync_ch", 138))
 TOUCHSCREEN_CH = int(UA_CFG.get("touchscreen_ch", 139))
 
 
-TOUCHSCREEN_THRES_A = 1.0e6
-TOUCHSCREEN_THRES_B = 3.0e6
+TOUCHSCREEN_THRES_A = 2.0e6
+TOUCHSCREEN_THRES_B = 3.3e6
+TOUCHSCREEN_MIN_VALID = 1.5e6
 
 UA_CKPT_OUT = UA_CKPT_ROOT
 
@@ -852,7 +853,7 @@ def main():
                                 axes[-1, c].set_xlabel("Time rel. stim onset (ms)")
                             fig.suptitle(f"IPCA Debug | Ch {el_out} | BR sess {br_idx:03d}")
                             fig.tight_layout()
-                            out_fig = UA_CKPT_OUT.parent.parent / "figures" / f"debug_MACRO_UA_br{br_idx:03d}_ch{el_out}.png"
+                            out_fig = UA_CKPT_OUT.parent.parent / "figures" / "IPCA_debug"/ f"debug_MACRO_UA_br{br_idx:03d}_ch{el_out}.png"
                             out_fig.parent.mkdir(parents=True, exist_ok=True)
                             fig.savefig(out_fig, dpi=150)
                             plt.close(fig)
@@ -965,35 +966,34 @@ def main():
             peak_amplitudes = None
             peak_snr = None
         
+        
         # Threshold to get touchscreen state
         ts_state_num = np.zeros(0, dtype=np.int8)
         ts_state_char = np.full(0, "N", dtype="U1")
 
         if touchscreen_sig is not None:
+            import pandas as pd
+            import matplotlib.pyplot as plt
+            
             touchscreen_sig = np.asarray(touchscreen_sig, float)
             ts_state_num = np.zeros_like(touchscreen_sig, dtype=np.int8)
             ts_state_char = np.full(touchscreen_sig.shape, "N", dtype="U1")
 
-            ts_state_num[touchscreen_sig >= TOUCHSCREEN_THRES_A] = 1
-            ts_state_num[touchscreen_sig >= TOUCHSCREEN_THRES_B] = 2
+            touchscreen_max = np.max(touchscreen_sig)
+            auto_use_dlc = touchscreen_max < TOUCHSCREEN_MIN_VALID
 
-            ts_state_char[ts_state_num == 1] = "A"
-            ts_state_char[ts_state_num == 2] = "B"
-            
-            # --- Fallback to DLC kinematics if touchscreen signal is bad / unresponsive ---
-            if np.max(ts_state_num) == 0:
-                print(f"[touchscreen] Signal max voltage ({np.max(touchscreen_sig):.1f}) below threshold, falling back to DLC kinematics.")
-                import pandas as pd
+            if auto_use_dlc:
+                print(f"  [AUTO-DLC] Touchscreen max ({touchscreen_max:.2e}) < {TOUCHSCREEN_MIN_VALID:.2e}")
+                print(f"             Falling back to DLC kinematics for touch state")
                 
-                # Base session name without date (e.g., NRR_RW022_001) if date is present
+                # Load DLC data
                 sess_parts = sess.name.split("_", 1)
                 short_name = sess_parts[1] if len(sess_parts) > 1 and sess_parts[0].isdigit() else sess.name
-                
                 csv_files = list(BEHV_CKPT_ROOT.rglob(f"*{short_name}*aligned.csv"))
                 
                 if csv_files:
                     csv_path = csv_files[0]
-                    print(f"  > Reading DLC CSV: {csv_path.name}")
+                    print(f"  [AUTO-DLC] Reading DLC CSV: {csv_path.name}")
                     try:
                         df = pd.read_csv(csv_path, header=[0, 1, 2])
                         flat_headers = ["_".join([str(c) for c in col if "Unnamed" not in str(c)]).strip() for col in df.columns]
@@ -1001,58 +1001,227 @@ def main():
                     except:
                         df = pd.read_csv(csv_path, header=0)
                     
-                    # Try to extract the middle finger columns for Cam 0
-                    cam_idx = 0
+                    # Find middle finger y column for Cam 0
                     col_y = None
                     for i, h in enumerate(df.columns):
-                         h_str = str(h).lower()
-                         if "middle_y" in h_str and (f"cam-{cam_idx}" in h_str or f"cam{cam_idx}" in h_str or f"camera {cam_idx}" in h_str):
-                             col_y = i
-                             break
-                    if col_y is None: # fallback
-                         for i, h in enumerate(df.columns):
-                              h_str = str(h).lower()
-                              if "middle_y" in h_str and "cam" not in h_str:
-                                  col_y = i
-                                  break
+                        h_str = str(h).lower()
+                        if "middle_y" in h_str and ("cam-0" in h_str or "cam0" in h_str or "camera 0" in h_str):
+                            col_y = i
+                            break
+                    if col_y is None:
+                        for i, h in enumerate(df.columns):
+                            h_str = str(h).lower()
+                            if "middle_y" in h_str and "cam" not in h_str:
+                                col_y = i
+                                break
                     
                     if col_y is not None:
-                        ser_y = pd.to_numeric(df.iloc[:, col_y], errors="coerce")
-                        dlc_fps = 100.0  # standard behavioral framing rate
+                        ser_y_raw = pd.to_numeric(df.iloc[:, col_y], errors="coerce").values
                         
-                        # Apply thresholds: Below 190 -> Target B, Above 240 -> Target A
-                        dlc_state_num = np.zeros(len(ser_y), dtype=np.int8)
-                        dlc_state_num[ser_y > 240.0] = 1 # A
-                        dlc_state_num[ser_y < 190.0] = 2 # B
-                        
-                        # We often have erratic movement or noise. Optional: filter jumps (jump > 10.0). 
-                        # However, given we just need the binary state map (and events are debounced down the pipeline), 
-                        # we can rely on just thresholding the raw position, or replicate the basic jump logic.
-                        diff = ser_y.diff().abs()
-                        valid_mask = (diff <= 10.0) & (ser_y.diff(-1).abs() <= 10.0)
-                        dlc_state_num[~valid_mask] = 0
-                        
-                        # Map 100Hz kinematics back to Blackrock fs_ts sampling rate
-                        t_dlc = np.arange(len(ser_y)) / dlc_fps
+                        # Map DLC to touchscreen sampling rate using ns5_sample column if available
                         t_ts = np.arange(len(touchscreen_sig)) / fs_ts
                         
-                        idx_map = (t_ts * dlc_fps).astype(int)
-                        # Clip indices to prevent out of bounds
-                        idx_map = np.clip(idx_map, 0, len(dlc_state_num) - 1)
+                        # Look for ns5_sample column for proper time alignment
+                        ns5_col = None
+                        for i, h in enumerate(df.columns):
+                            h_str = str(h).lower()
+                            if 'ns5_sample' in h_str or h_str == 'ns5_sample':
+                                ns5_col = i
+                                break
                         
-                        ts_state_num = dlc_state_num[idx_map]
+                        if ns5_col is not None:
+                            # Use ground-truth timing from camera sync alignment
+                            ns5_samples = pd.to_numeric(df.iloc[:, ns5_col], errors="coerce").values
+                            ns5_fs = 30000.0  # NS5 sampling rate
+                            dlc_time_sec = ns5_samples / ns5_fs
+                            
+                            # Interpolate DLC Y-position to NS2 time axis
+                            from scipy.interpolate import interp1d
+                            valid_mask = ~np.isnan(ser_y_raw) & ~np.isnan(dlc_time_sec)
+                            
+                            if valid_mask.sum() > 10:
+                                interp_func = interp1d(
+                                    dlc_time_sec[valid_mask], 
+                                    ser_y_raw[valid_mask],
+                                    kind='linear', 
+                                    bounds_error=False, 
+                                    fill_value=np.nan
+                                )
+                                ser_y = interp_func(t_ts)
+                                print(f"  [DLC] Aligned via ns5_sample: DLC time range [{dlc_time_sec[valid_mask].min():.3f}, {dlc_time_sec[valid_mask].max():.3f}] s")
+                            else:
+                                print(f"  [DLC WARNING] Not enough valid DLC points ({valid_mask.sum()}), falling back to frame-rate assumption")
+                                dlc_fps = 100.0
+                                idx_map = np.clip((t_ts * dlc_fps).astype(int), 0, len(ser_y_raw) - 1)
+                                ser_y = ser_y_raw[idx_map]
+                        else:
+                            # Fallback: assume DLC frame 0 = time 0 (old behavior)
+                            print(f"  [DLC WARNING] No ns5_sample column found, using frame-rate assumption")
+                            dlc_fps = 100.0
+                            idx_map = np.clip((t_ts * dlc_fps).astype(int), 0, len(ser_y_raw) - 1)
+                            ser_y = ser_y_raw[idx_map]
                         
-                        ts_state_char = np.full(len(ts_state_num), "N", dtype="U1")
+                        # Thresholds - adjust these as needed
+                        DLC_THRESH_A = 250.0
+                        DLC_THRESH_B = 150.0
+                        
+                        # Apply thresholds
+                        ts_state_num[ser_y > DLC_THRESH_A] = 1   # A
+                        ts_state_num[ser_y < DLC_THRESH_B] = 2   # B
                         ts_state_char[ts_state_num == 1] = "A"
                         ts_state_char[ts_state_num == 2] = "B"
                         
-                        print(f"  > Reassigned from DLC. Unique kinematic states: {np.unique(ts_state_num)}")
+                        print(f"  [AUTO-DLC] Assigned states from DLC. Unique: {np.unique(ts_state_num)}")
+                        
+                        # ============ DEBUG PLOT ============
+                        DEBUG_DLC_PLOT = True  # Set to False to disable
+                        
+                        if DEBUG_DLC_PLOT:
+                            fig, axes = plt.subplots(2, 1, figsize=(20, 10), sharex=True,
+                                                    gridspec_kw={'height_ratios': [3, 1]})
+                            
+                            t_sec = t_ts  # Time in seconds (NS2 clock, starting from 0)
+                            
+                            # --- Top plot: Full Y-position trace with thresholds ---
+                            ax1 = axes[0]
+                            ax1.plot(t_sec, ser_y, 'b-', lw=0.5, alpha=0.7, label='Y position')
+                            ax1.axhline(DLC_THRESH_A, color='green', ls='--', lw=2, label=f'A threshold (>{DLC_THRESH_A})')
+                            ax1.axhline(DLC_THRESH_B, color='red', ls='--', lw=2, label=f'B threshold (<{DLC_THRESH_B})')
+                            
+                            # Highlight classified regions
+                            a_mask = ts_state_num == 1
+                            b_mask = ts_state_num == 2
+                            if np.any(a_mask):
+                                ax1.scatter(t_sec[a_mask], ser_y[a_mask], c='green', s=2, alpha=0.3, label='Classified A')
+                            if np.any(b_mask):
+                                ax1.scatter(t_sec[b_mask], ser_y[b_mask], c='red', s=2, alpha=0.3, label='Classified B')
+                            
+                            # --- Mark stimulation windows (-500ms to +500ms around each stim onset) ---
+                            # Convert stim onsets from NS6 samples to seconds, accounting for any offset
+                            stim_onsets_sec = None
+                            
+                            if 'starts_ua' in locals() and starts_ua is not None and len(starts_ua) > 0:
+                                # Get NS6 start time (in seconds) - this is the recording's epoch offset
+                                ns6_start_time = rec_ns6.get_start_time()  # Usually 0, but check
+                                
+                                # Get NS2 start time if available from metadata
+                                # On Blackrock, NS2 and NS6 from same session should share the same start
+                                ns2_start_time = meta_ns2.get('start_time', 0.0) if meta_ns2 else 0.0
+                                
+                                # Calculate offset: if NS6 started at t=5s and NS2 at t=0s, offset = 5s
+                                # We need to subtract this offset from NS6-based times to align with NS2
+                                ns6_to_ns2_offset = ns6_start_time - ns2_start_time
+                                
+                                # Convert starts_ua (NS6 sample indices) to seconds in NS2 time frame
+                                stim_onsets_sec = (starts_ua / fs_ua) - ns6_to_ns2_offset
+                                
+                                print(f"  [DEBUG] NS6 start time: {ns6_start_time:.3f} s")
+                                print(f"  [DEBUG] NS2 start time: {ns2_start_time:.3f} s")
+                                print(f"  [DEBUG] NS6→NS2 offset: {ns6_to_ns2_offset:.3f} s")
+                                print(f"  [DEBUG] Found {len(stim_onsets_sec)} stim onsets")
+                                print(f"  [DEBUG] First stim onset (NS2 time): {stim_onsets_sec[0]:.3f} s")
+                                print(f"  [DEBUG] t_ts range: [{t_sec[0]:.3f}, {t_sec[-1]:.3f}] s")
+                            
+                            # Mark stim windows if we found stim times
+                            if stim_onsets_sec is not None and len(stim_onsets_sec) > 0:
+                                win_pre_sec = 0.5   # 500ms before
+                                win_post_sec = 0.5  # 500ms after
+                                
+                                # Count how many stim onsets fall within the plotted time range
+                                in_range = (stim_onsets_sec >= t_sec[0] - win_pre_sec) & (stim_onsets_sec <= t_sec[-1] + win_post_sec)
+                                n_in_range = np.sum(in_range)
+                                print(f"  [DEBUG] {n_in_range}/{len(stim_onsets_sec)} stim onsets within plot range")
+                                
+                                for i, stim_t in enumerate(stim_onsets_sec):
+                                    # Only draw if within or near the plot range
+                                    if stim_t < t_sec[0] - win_post_sec or stim_t > t_sec[-1] + win_pre_sec:
+                                        continue
+                                        
+                                    # Draw shaded window
+                                    ax1.axvspan(stim_t - win_pre_sec, stim_t + win_post_sec, 
+                                            alpha=0.15, color='purple', zorder=0)
+                                    # Draw vertical line at stim onset
+                                    ax1.axvline(stim_t, color='purple', alpha=0.6, lw=1, zorder=1)
+                                    
+                                    # Also mark on state plot
+                                    axes[1].axvspan(stim_t - win_pre_sec, stim_t + win_post_sec,
+                                                alpha=0.15, color='purple', zorder=0)
+                                    axes[1].axvline(stim_t, color='purple', alpha=0.6, lw=1, zorder=1)
+                                
+                                # Add to legend (just one entry)
+                                ax1.axvspan(0, 0, alpha=0.15, color='purple', label='Stim window (±500ms)')
+                                ax1.axvline(0, color='purple', alpha=0.6, lw=1, label='Stim onset')
+                            else:
+                                print(f"  [DEBUG] No stim onset times found for this session")
+                            
+                            ax1.set_ylabel('Y position (pixels)', fontsize=12)
+                            ax1.legend(loc='upper right', fontsize=9)
+                            ax1.set_title(f'DLC Y-Position Classification Debug | Session: {sess.name}', fontsize=14)
+                            ax1.grid(True, alpha=0.3)
+                            
+                            # --- Bottom plot: State over time ---
+                            ax2 = axes[1]
+                            state_colors = ['gray', 'green', 'red']
+                            state_labels = ['Neither (N)', 'A', 'B']
+                            for state_val, color, label in zip([0, 1, 2], state_colors, state_labels):
+                                mask = ts_state_num == state_val
+                                if np.any(mask):
+                                    ax2.scatter(t_sec[mask], ts_state_num[mask], c=color, s=1, alpha=0.5, label=label)
+                            
+                            ax2.set_ylabel('State', fontsize=12)
+                            ax2.set_xlabel('Time (s)', fontsize=12)
+                            ax2.set_yticks([0, 1, 2])
+                            ax2.set_yticklabels(['Neither (N)', 'A', 'B'])
+                            ax2.set_ylim(-0.5, 2.5)
+                            ax2.grid(True, alpha=0.3)
+                            ax2.legend(loc='upper right', fontsize=9)
+                            
+                            # --- Summary statistics ---
+                            n_A = np.sum(a_mask)
+                            n_B = np.sum(b_mask)
+                            n_N = np.sum(ts_state_num == 0)
+                            total = len(ts_state_num)
+                            
+                            y_valid = ser_y[~np.isnan(ser_y)]
+                            y_at_A = ser_y[a_mask] if np.any(a_mask) else np.array([np.nan])
+                            y_at_B = ser_y[b_mask] if np.any(b_mask) else np.array([np.nan])
+                            
+                            n_stim = len(stim_onsets_sec) if stim_onsets_sec is not None else 0
+                            
+                            stats_text = (
+                                f'Y range: [{np.nanmin(y_valid):.0f} - {np.nanmax(y_valid):.0f}]  |  '
+                                f'A: {n_A} samples ({100*n_A/total:.1f}%), y=[{np.nanmin(y_at_A):.0f}-{np.nanmax(y_at_A):.0f}]  |  '
+                                f'B: {n_B} samples ({100*n_B/total:.1f}%), y=[{np.nanmin(y_at_B):.0f}-{np.nanmax(y_at_B):.0f}]  |  '
+                                f'N: {n_N} samples ({100*n_N/total:.1f}%)  |  '
+                                f'Stim events: {n_stim}'
+                            )
+                            fig.text(0.5, 0.01, stats_text, ha='center', fontsize=11,
+                                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+                            
+                            plt.tight_layout(rect=[0, 0.04, 1, 1])
+                            
+                            # Save figure
+                            debug_fig_dir = UA_CKPT_OUT.parent.parent / "figures/classification/"
+                            debug_fig_dir.mkdir(parents=True, exist_ok=True)
+                            debug_fig_path = debug_fig_dir / f"debug_DLC_classification_{sess.name}.png"
+                            plt.savefig(debug_fig_path, dpi=150, bbox_inches='tight')
+                            print(f"  [DEBUG] Saved DLC classification plot: {debug_fig_path}")
+                            
+                            plt.close(fig)
+                        # ============ END DEBUG PLOT ============
+                        
                     else:
-                        print("  [WARN] Could not find Camera 0 middle_y column in CSV.")
+                        print(f"  [WARNING] Could not find middle_y column in DLC CSV")
                 else:
-                     print(f"  [WARN] DLC CSV not found for session footprint: *{short_name}*aligned.csv")
+                    print(f"  [WARNING] No DLC CSV found for {short_name}")
+            else:
+                print(f"  [TOUCHSCREEN] Using touchscreen signal (max: {touchscreen_max:.2e})")
+                ts_state_num[touchscreen_sig >= TOUCHSCREEN_THRES_A] = 1
+                ts_state_num[touchscreen_sig >= TOUCHSCREEN_THRES_B] = 2
+                ts_state_char[ts_state_num == 1] = "A"
+                ts_state_char[ts_state_num == 2] = "B"
 
-            print("Unique touchscreen states:", np.unique(ts_state_num))
+            print(f"  [TOUCHSCREEN] Final unique states: {np.unique(ts_state_num)}")
         else:
             print("[touchscreen] No touchscreen signal; leaving ts_state_* empty.")
 

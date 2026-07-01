@@ -252,8 +252,7 @@ def process_single_file(peri_stim_npz_loc: Path, condition_type: str, target_lab
                 if i < cam0_segs.shape[0]:
                     segs_trial = cam0_segs[i]
                     segs_filt, names_filt = filter_traces(segs_trial, cam0_names)
-                    raw_idx_str = f" (Raw: {raw_trial_indices[i]})" if raw_trial_indices is not None and i < len(raw_trial_indices) else ""
-                    plot_single_trial(ax, beh_rel_t, segs_filt, names_filt, title_prefix=f"Cam0 | Trial {i}{raw_idx_str}")
+                    plot_single_trial(ax, beh_rel_t, segs_filt, names_filt, title_prefix=f"Cam0 | Trial {i}")
                 else:
                     ax.axis("off")
 
@@ -276,8 +275,7 @@ def process_single_file(peri_stim_npz_loc: Path, condition_type: str, target_lab
                 if i < cam1_segs.shape[0]:
                     segs_trial = cam1_segs[i]
                     segs_filt, names_filt = filter_traces(segs_trial, cam1_names)
-                    raw_idx_str = f" (Raw: {raw_trial_indices[i]})" if raw_trial_indices is not None and i < len(raw_trial_indices) else ""
-                    plot_single_trial(ax, beh_rel_t, segs_filt, names_filt, title_prefix=f"Cam1 | Trial {i}{raw_idx_str}")
+                    plot_single_trial(ax, beh_rel_t, segs_filt, names_filt, title_prefix=f"Cam1 | Trial {i}")
                 else:
                     ax.axis("off")
 
@@ -293,7 +291,7 @@ def process_single_file(peri_stim_npz_loc: Path, condition_type: str, target_lab
         else:
             overall_title = peri_stim_npz_loc.stem
             
-        fig.suptitle(f"{overall_title}\nSession: {intan_filename} | BR: {br_idx} | {condition_type}/{target_label} | Individual Trials (n={n_trials})", fontsize=14)
+        fig.suptitle(f"{overall_title}\nSession: {intan_filename} | BR: {br_idx} | {condition_type}/{target_label} | Individual Trials (n={n_trials})\n(use Trial # for manual_trial_remove.csv)", fontsize=13)
 
         # Legends
         handles, labels = [], []

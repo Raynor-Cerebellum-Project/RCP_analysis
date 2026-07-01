@@ -14,6 +14,7 @@ BATCH_SCRIPTS = [
     "UA_BR_analysis_mf.py",
     "make_aligned_npz_and_mat.py",
     "extract_peri_stim.py",
+    "inspect_kinematics_trajectories.py",
     # "generate_stim_summary.py",
     # "plot_complete_shaded_BT.py",
     # "quantify_stim_kinematics.py",

@@ -4,9 +4,10 @@ Quick X-Y Trajectory Viewer for Trial Inspection
 Simplified viewer showing only middle finger X-Y trajectories.
 Used for identifying trials to manually remove.
 
-Each subplot shows one trial with:
-  - X-Y trajectory (time-colored)
-  - Title: intan_filename | BR idx | Raw #
+Each subplot title shows:
+  - "Trial:i (Raw:R)" where:
+    - i = position in this plot (for reference)
+    - R = stable raw stim-pulse index -> THIS is what goes in manual_trial_remove.csv
 """
 
 import math
@@ -189,9 +190,10 @@ def process_single_file(npz_path: Path, condition_type: str, target_label: str):
             x = segs[i, idx_x, :]
             y = segs[i, idx_y, :]
             
-            # Build title
-            raw_str = f"Raw:{raw_trial_indices[i]}" if raw_trial_indices is not None else f"Trial:{i}"
-            title = f"{intan_filename[:15]}\nBR:{br_idx} | {raw_str}"
+            # Build title.
+            # Raw index = stable absolute stim-pulse number -> use this in manual_trial_remove.csv
+            raw_idx = int(raw_trial_indices[i]) if raw_trial_indices is not None else i
+            title = f"{intan_filename[:15]}\nBR:{br_idx} | Trial:{i} (Raw:{raw_idx})"
             
             plot_xy_trajectory(ax, x, y, t, title)
         
@@ -207,8 +209,9 @@ def process_single_file(npz_path: Path, condition_type: str, target_label: str):
             overall_title = npz_path.stem
         
         fig.suptitle(
-            f"{overall_title}\n{KEYPOINT.title()} Finger X-Y | {condition_type}/{target_label} | n={n_trials}",
-            fontsize=11
+            f"{overall_title}\n{KEYPOINT.title()} Finger X-Y | {condition_type}/{target_label} | n={n_trials}\n"
+            f"Session: {intan_filename} | BR: {br_idx}  —  put Raw:# in manual_trial_remove.csv",
+            fontsize=10
         )
         
         # Add colorbar for time

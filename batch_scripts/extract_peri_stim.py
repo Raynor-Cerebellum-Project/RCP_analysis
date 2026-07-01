@@ -1361,36 +1361,39 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         
     raw_trial_indices = np.arange(event_ms.size)
 
-    # --- MANUAL REMOVAL LOGIC ---
+    # --- MANUAL REMOVAL: applied immediately using stable absolute stim-pulse indices ---
+    # The indices in manual_trial_remove.csv always refer to the absolute position
+    # of the stim pulse in this recording (0 = first stim pulse, 1 = second, etc.),
+    # regardless of how many other trials get removed by automated filters.
     if not MANUAL_REMOVE_DF.empty:
-        manual_mask = np.ones(event_ms.size, dtype=bool)
-        
-        # Robust matching by forcing types
-        match = MANUAL_REMOVE_DF[
-            (MANUAL_REMOVE_DF['intan_filename'].astype(str).str.strip() == str(intan_filename).strip()) & 
-            (pd.to_numeric(MANUAL_REMOVE_DF['br_idx'], errors='coerce').fillna(-1).astype(int) == int(br_idx))
-        ]
-        
+        csv_filenames = MANUAL_REMOVE_DF['intan_filename'].astype(str).str.strip()
+        actual_filename = str(intan_filename).strip()
+        filename_match = csv_filenames.apply(
+            lambda x: len(x) > 3 and (actual_filename.startswith(x) or x in actual_filename)
+        )
+        br_idx_match = (
+            pd.to_numeric(MANUAL_REMOVE_DF['br_idx'], errors='coerce').fillna(-1).astype(int) == int(br_idx)
+        )
+        match = MANUAL_REMOVE_DF[filename_match & br_idx_match]
+
         if not match.empty:
             print(f"[extract] Found {len(match)} manual removal rule(s) for {intan_filename} BR {br_idx}")
-            
-        for _, row in match.iterrows():
-            if pd.notna(row['trials_to_drop']):
-                try:
-                    drop_indices = [int(idx.strip()) for idx in str(row['trials_to_drop']).split(',')]
-                    for drop_idx in drop_indices:
-                        if 0 <= drop_idx < event_ms.size:
-                            manual_mask[drop_idx] = False
-                except ValueError:
-                    print(f"[warn] Failed to parse manual drop indices: {row['trials_to_drop']}")
-                        
-        n_manual_dropped = (~manual_mask).sum()
-        if n_manual_dropped > 0:
-            print(f"[extract] {aligned_path.name}: manually dropping {n_manual_dropped} trials.")
-            event_ms = event_ms[manual_mask]
-            raw_trial_indices = raw_trial_indices[manual_mask]
-    # ----------------------------
-    
+            drop_set = set()
+            for _, row in match.iterrows():
+                if pd.notna(row['trials_to_drop']):
+                    try:
+                        drop_set.update(int(x.strip()) for x in str(row['trials_to_drop']).split(','))
+                    except ValueError:
+                        print(f"  [warn] Failed to parse trials_to_drop: {row['trials_to_drop']}")
+
+            if drop_set:
+                manual_mask = np.array([i not in drop_set for i in raw_trial_indices])
+                n_dropped = (~manual_mask).sum()
+                print(f"[extract] {aligned_path.name}: manually dropping {n_dropped} trials (raw indices: {sorted(drop_set)}).")
+                event_ms = event_ms[manual_mask]
+                raw_trial_indices = raw_trial_indices[manual_mask]
+    # ---------------------------------------------------------------------------------
+
     # ---- metadata for titles ----
     try:
         overall_title, _ = build_title_from_csv( METADATA_CSV, br_file=meta.get("br_idx"))
@@ -1556,11 +1559,21 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                 t_ms=ns2_t_ms,
                 ts_char=ts_state_char_arr,
                 ts_num=ts_state_num_full,
-                win_ms=(-500.0, 0.0),
+                win_ms=(0.0, 1000.0),
                 num_to_label={1: "A", 2: "B"},
             )
+
+            print(f"\n[DEBUG] Trial-by-trial label breakdown for {aligned_path.name}:")
+            print(f"{'Trial':>6} {'Raw_Idx':>8} {'Label':>6} {'Stim_ms':>12}")
+            print("-" * 40)
+            for i, (lbl, stim_t) in enumerate(zip(trial_labels, event_ms)):
+                raw_idx = raw_trial_indices[i] if i < len(raw_trial_indices) else -1
+                print(f"{i:>6} {raw_idx:>8} {lbl:>6} {stim_t:>12.1f}")
+            print("-" * 40)
+            vals, cnts = np.unique(trial_labels, return_counts=True)
+            print(f"Summary: {dict(zip(vals, cnts))}\n")
         else:
-            trial_labels = np.full(event_ms.shape, "N", dtype="U1")
+            trial_labels = np.full(event_ms.shape, "N", dtype="U1") 
 
         vals, cnts = np.unique(trial_labels, return_counts=True)
         print(dict(zip(vals, cnts)))
@@ -1890,6 +1903,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                     idx = idx[pos_mask]
                     event_ms_sub = event_ms_sub[pos_mask]
                     labels_sub = labels_sub[pos_mask]
+                    raw_trial_indices_sub = raw_trial_indices_sub[pos_mask]
 
                     # Re-subset neural data
                     NPRW_rates_hz_sub = NPRW_rates_hz_sub[pos_mask]
@@ -1906,6 +1920,11 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                     beh_cam1_segs_sub = beh_cam1_segs_sub[pos_mask]
                     beh_cam0_vel_segs_sub = beh_cam0_vel_segs_sub[pos_mask]
                     beh_cam1_vel_segs_sub = beh_cam1_vel_segs_sub[pos_mask]
+                    
+                    if ts_state_segs_sub.size:
+                        ts_state_segs_sub = ts_state_segs_sub[pos_mask]
+                        ts_state_char_segs_sub = ts_state_char_segs_sub[pos_mask]
+                        n_ts_state_trials_sub = ts_state_segs_sub.shape[0]
 
                     # Recompute medians
                     NPRW_med_counts_sub = _safe_nanmedian(NPRW_counts_sub, axis=0)
@@ -1935,7 +1954,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
             current_out_dir = out_dir / f"target_{target_name}"   # .../target_A
         else:
             current_out_dir = out_dir
-            
+
         # save NPZ + MAT
         _save_peristim(
             out_dir=current_out_dir,
