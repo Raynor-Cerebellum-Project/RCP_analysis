@@ -1,6 +1,4 @@
-# Paths and session info
 paths:
-<<<<<<< HEAD
   data_root: "Y:/Current Project Databases - NHP/2025 Cerebellum prosthesis"
   # location: "Nike/20251203_NRR_RW011"
   # session: "NRR_RW011"
@@ -31,17 +29,11 @@ paths:
   # location: "Nike/20260430_NRR_RW034"
   # session: "NRR_RW034"
 
-=======
-  data_root: "/home/bryan/mnt/cullen_data/Current Project Databases - NHP/2025 Cerebellum prosthesis"
-  location: "Bert/BL_RW_003_Session_1"
-  session: "BL_RW_003_Session_1"
->>>>>>> 6d202f25f1c0170bdb298279211764f7a02d6cef
   geom_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
 kinematics:
   keypoints: [index, middle, hand, wrist, start, TA, TB]
   num_camera: 2
 
-# Preprocessing options
 preprocessing:
   has_BR: True
   has_kinematics: True
@@ -49,13 +41,12 @@ preprocessing:
   has_HR: False
   output_aligned_mat: True
   process_only: [] #[2, 3, 4, 5, 6, 7, 8, 9, 10, 11] # Input as BR indexes, e.g. [1, 2] to only process BR_001 and BR_002, if process all just leave as []
-  z_score_firing_rate: True
+  z_score_firing_rate: true  # If true, z-score firing rates per-trial before averaging for heatmap plots
 
-# Spike preprocessing
+# ---- Spike preprocessing ----
 highpass_hz: 300.0
 lowpass_hz: 10000.0
 
-# Probes
 probes:
   UA: 
     n_channels: 256
@@ -87,37 +78,34 @@ probes:
     aux_stream: "USB board ADC input channel"
     ir_stream: "USB board digital input channel"
 
-# Computing params (chunking / parallel)
+# ---- chunking / parallel ----
 parallel_jobs: -1
 threads_per_worker: 1
 chunk: "4s"
 
-# Intan firing rate estimation params
+# ---- Intan firing rate (threshold MUA) ----
 NPRW_rate_est:
   bin_ms: 20.0          # bin width for counts
   step_ms: 5.0          # step_ms sliding window step, set equal to bin_ms for old non-overlapping behavior
-  sigma_ms: 20.0        # Gaussian kernel std
+  sigma_ms: 20.0       # Gaussian kernel std
   detect_threshold: 4
   peak_sign: "neg"
   remove_ms_before: 20.0
   remove_tail_ms_after: 20.0
   dedup_ms: 0.25
 
-# BR firing rate estimation params
+# ---- BR firing rate (threshold MUA) ----
 UA_rate_est:
-  bin_ms: 20.0
-  step_ms: 5.0
-  sigma_ms: 20.0
+  bin_ms: 20.0          # bin width for counts
+  step_ms: 5.0           # step_ms sliding window step, set equal to bin_ms for old non-overlapping behavior
+  sigma_ms: 20.0       # Gaussian kernel std
   detect_threshold: 3
   peak_sign: "neg"
   remove_ms_before: 0
   remove_tail_ms_after: 0
   dedup_ms: 0.25
 
-<<<<<<< HEAD
 # ---- per-session overrides
 sessions:
   BL_RW_003_Session_1:
     probe: "NPRW" # Placeholder
-=======
->>>>>>> 6d202f25f1c0170bdb298279211764f7a02d6cef
