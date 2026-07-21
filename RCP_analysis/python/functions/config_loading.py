@@ -1,29 +1,13 @@
-import sys
 from pathlib import Path
-import numpy as np
-import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 # Import internal modules relatively to avoid circular dependency with the package export
 from .params_loading import load_experiment_params
 
-# ---------------------------------------------------------------------
-# PATH CALCULATION
-# ---------------------------------------------------------------------
-# This file is: RCP_analysis/RCP_analysis/python/functions/config_loading.py
-# We want REPO_ROOT: RCP_analysis (the git root)
-# .parents[0] -> functions
-# .parents[1] -> python
-# .parents[2] -> RCP_analysis (package)
-# .parents[3] -> RCP_analysis (git root)
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# ---------------------------------------------------------------------
-# LOAD PARAMS
-# ---------------------------------------------------------------------
+# Load params
 PARAMS_PATH = REPO_ROOT / "config" / "params.yaml"
 if not PARAMS_PATH.exists():
     # Fallback or error
@@ -36,9 +20,7 @@ else:
         print(f"[config_loading] Error loading params: {e}")
         PARAMS = None
 
-# ---------------------------------------------------------------------
-# DERIVED PATHS
-# ---------------------------------------------------------------------
+# Paths
 if PARAMS is not None:
     try:
         SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
@@ -77,14 +59,12 @@ if PARAMS is not None:
         ALIGNED_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
         VOG_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
         
-        # PERI_ROOT creation might depend on usage, but safe to create if it's a checkpoint dir
         PERI_ROOT.mkdir(parents=True, exist_ok=True)
-
         
         # Metadata file
         METADATA_CSV   = METADATA_ROOT / f"{PARAMS.session}_metadata.csv"
 
-        # Probe config (Common usage)
+        # Probe config
         UA_CFG = PARAMS.probes.get("UA", {})
         CAMERA_SYNC_CH = int(UA_CFG.get("camera_sync_ch", 134))
 
@@ -96,7 +76,7 @@ if PARAMS is not None:
 
     except Exception as e:
         print(f"[config_loading] Error deriving paths from PARAMS: {e}")
-        # Initialize variables to None or partial
+        # Initialize variables to None
         SESSION_LOC = None
         OUT_BASE = None
 else:

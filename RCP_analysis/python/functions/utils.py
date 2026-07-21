@@ -5,7 +5,7 @@ import spikeinterface as si
 import spikeinterface.extractors as se
 from scipy.signal import butter, filtfilt
 
-# --- Building OCR and DLC dictionary for mapping ---
+# Building OCR and DLC dictionary for mapping
 def _parse_condition_cam(path: Path):
     """
     Take in names such as:
