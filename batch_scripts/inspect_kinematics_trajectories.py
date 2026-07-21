@@ -31,7 +31,7 @@ KEYPOINT = "middle"  # Which keypoint (middle finger)
 # ---------------------------------------------------------------------
 # OUTPUT
 # ---------------------------------------------------------------------
-FIG_ROOT = OUT_BASE / "figures" / "individual_trials_xy"
+FIG_ROOT = OUT_BASE / "figures" / "kinematics_trajectories"
 FIG_ROOT.mkdir(parents=True, exist_ok=True)
 
 

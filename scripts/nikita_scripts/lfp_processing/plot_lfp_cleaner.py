@@ -31,6 +31,8 @@ import imageio
 import io
 import pandas as pd
 import re
+import warnings
+warnings.filterwarnings('ignore', message='.*tight_layout.*')
 
 # =============================================================================
 # SESSION SELECTION - EDIT THESE TO FILTER WHICH SESSIONS TO PROCESS
@@ -47,31 +49,40 @@ SESSION_ID_PATTERN = None      # None = all, or regex like r'.*control.*'
 FIGURE_CONFIG = {
     # Core visualizations
     'generate_session_summary': True,       # PSD overview (1-120 Hz)
-    'generate_waveform_raster': True,       # Raw LFP traces across trials
-    'generate_band_dynamics': False,         # Band power over time with proper CI
-    'generate_trial_heatmaps': True,        # Per-trial band power heatmaps
+    'generate_waveform_raster': False,       # Raw LFP traces across trials
+    'generate_trial_heatmaps': False,        # Per-trial band power heatmaps
 
     'generate_per_ua_spectrograms': True,   # 8x8 grid of spectrograms per array
     'per_ua_default_trial': 3, 
     'generate_all_trial_spectrograms': False,  # If True, generate for each trial (can be many files!)
-
-    'generate_traveling_waves': True,
+    'generate_per_ua_trial_average': True,
     
     # Inter-regional analyses
     'generate_coherence_matrix': False,      # Coherence between all array pairs
     'generate_granger_causality': False,    # Optional: directional connectivity
     
     # Condition comparisons
-    'generate_stim_vs_control': True,       # Compare stim to control trials
-    'generate_dose_response': True,         # Effect vs number of pulses
+    'generate_stim_vs_control': False,       # Compare stim to control trials
+    'generate_dose_response': False,         # Effect vs number of pulses
     
     # Spatial visualizations
     'generate_spatial_heatmaps': False,      # Static spatial maps at key timepoints
     'generate_spatial_gif': False,           # Animated GIF of spatial activity
+}
+
+TIME_WINDOWS = {
+    # Pre-stim window for PSD comparison (ms relative to stim onset)
+    'pre_start': -950,
+    'pre_end': -5,
     
-    # Legacy (kept for compatibility)
-    'generate_spectrograms': False,         # Per-channel ERSP
-    'generate_band_overlays': False,        # Per-channel trial overlays
+    # Post-stim window for PSD comparison (ms relative to stim onset)
+    'post_start': 5,
+    'post_end': 950,
+    
+    # Display limits for plots
+    'display_pre': (-500, -5),
+    'display_post': (5, 500),
+    'display_full': (-500, 500),
 }
 
 ANALYSIS_CONFIG = {
@@ -121,12 +132,9 @@ PLOT_CONFIG = {
     },
     
     # Heatmap settings
-    'heatmap_cmap': 'RdBu_r',
+    'heatmap_cmap': 'jet', # or RdBu_r
     'heatmap_vmin': -6.0,                   # dB
     'heatmap_vmax': 6.0,                    # dB
-    
-    # Band dynamics y-axis (adjusted as you noted traces were below -8 dB)
-    'band_dynamics_ylim': (-15, 15),        # Expanded from (-8, 8)
     
     # Trace opacity
     'trace_alpha': 0.3,
@@ -142,48 +150,35 @@ PLOT_CONFIG = {
     'spectrogram': {
         # Wavelet parameters (using Morlet wavelets - no external packages needed)
         'use_wavelet': True,
-        'wavelet_cycles': 7,                # Number of cycles (higher = better freq resolution)
+        'wavelet_cycles': 5,                # Number of cycles (higher = better freq resolution)
         
         # Frequency settings
         'freq_min': 1,
         'freq_max': 120,
         'freq_step': 1,                     # Hz resolution
         
-        # Fallback STFT settings
-        'stft_nperseg': 256,
-        'stft_overlap_frac': 0.9,
+        # # Fallback STFT settings
+        # 'stft_nperseg': 256,
+        # 'stft_overlap_frac': 0.9,
         
         # Display settings
-        'cmap': 'viridis',
-        'power_unit': 'uV2',                # 'uV2' for absolute, 'dB' for relative
+        'cmap': 'jet', #viridis
+        'normalize': 'zscore',              # NEW: 'zscore', 'dB', or 'raw'
+        'vmin_zscore': -3,                  # NEW: z-score limits
+        'vmax_zscore': 3,                   # NEW: z-score limits
         'vmin_uV2': 0,                      # For absolute power
         'vmax_uV2': None,                   # None = auto-scale to 95th percentile
         'vmin_db': -6,                      # For dB (if using relative)
         'vmax_db': 6,
-    },
-
-    'traveling_wave': {
-        'freq_bands': {
-            'Theta': (6, 9),
-            'Beta': (15, 35),
-            'Gamma': (45, 80),
-        },
-        'min_pgd': 0.5,                     # Minimum phase gradient directionality
-        'min_duration_ms': 5,               # Minimum wave duration
-        'electrode_spacing_um': 400,        # Spacing between electrodes
     },
     
     # Spatial heatmap timepoints
     'spatial_timepoints_ms': [-200, -50, 0, 50, 100, 200, 300, 500],
     
     # Selected band for spatial analysis
-    'selected_band': 'Beta',
+    'selected_band': 'Alpha',
 }
 
-
-# =============================================================================
-# UTILITY FUNCTIONS
-# =============================================================================
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -216,7 +211,6 @@ def get_foi_with_notch_gaps(freq_min=1, freq_max=120, freq_step=1, notch_regions
         keep_mask[notch_mask] = False
     
     return foi_full[keep_mask]
-
 
 def should_process_session(session_id, data=None):
     """
@@ -306,7 +300,6 @@ def compute_confidence_interval(data, axis=0, confidence=0.95):
     
     return mean, mean - ci, mean + ci
 
-
 def get_region_color(region_name):
     """Get color for a region, with fallback."""
     colors = PLOT_CONFIG['region_colors']
@@ -315,7 +308,6 @@ def get_region_color(region_name):
         if key.lower() in region_name.lower():
             return colors[key]
     return 'gray'
-
 
 def add_band_shading(ax, bands=None, alpha=0.08, skip_notch=True):
     """Add subtle background shading for frequency bands, skipping notch regions."""
@@ -345,13 +337,136 @@ def add_stim_marker(ax, stim_duration_ms=100):
     ax.axvspan(0, stim_duration_ms, color='red', alpha=0.1, label='Stim')
     ax.axvline(0, color='red', ls='--', lw=1, alpha=0.7)
 
+def zscore_normalize_spectrogram(Sxx, baseline_mask=None):
+    """
+    Z-score normalize a spectrogram.
+    
+    Args:
+        Sxx: Power matrix (n_freq, n_time) or (n_trials, n_freq, n_time)
+        baseline_mask: Boolean mask for baseline time points (optional)
+                      If None, uses all time points for normalization
+    
+    Returns:
+        Sxx_z: Z-scored spectrogram (same shape as input)
+    """
+    if Sxx is None:
+        return None
+    
+    Sxx = Sxx.astype(np.float64)
+    
+    if Sxx.ndim == 2:
+        # Single spectrogram (n_freq, n_time)
+        if baseline_mask is not None and baseline_mask.any():
+            # Use baseline period for mean/std
+            baseline_data = Sxx[:, baseline_mask]
+            mean_val = np.nanmean(baseline_data, axis=1, keepdims=True)
+            std_val = np.nanstd(baseline_data, axis=1, keepdims=True)
+        else:
+            # Use full spectrogram
+            mean_val = np.nanmean(Sxx, axis=1, keepdims=True)
+            std_val = np.nanstd(Sxx, axis=1, keepdims=True)
+        
+        # Avoid division by zero
+        std_val[std_val < 1e-10] = 1e-10
+        
+        Sxx_z = (Sxx - mean_val) / std_val
+        
+    elif Sxx.ndim == 3:
+        # Multiple spectrograms (n_trials, n_freq, n_time)
+        if baseline_mask is not None and baseline_mask.any():
+            baseline_data = Sxx[:, :, baseline_mask]
+            mean_val = np.nanmean(baseline_data, axis=(0, 2), keepdims=True)
+            std_val = np.nanstd(baseline_data, axis=(0, 2), keepdims=True)
+        else:
+            mean_val = np.nanmean(Sxx, axis=(0, 2), keepdims=True)
+            std_val = np.nanstd(Sxx, axis=(0, 2), keepdims=True)
+        
+        std_val[std_val < 1e-10] = 1e-10
+        Sxx_z = (Sxx - mean_val) / std_val
+    else:
+        raise ValueError(f"Unexpected Sxx shape: {Sxx.shape}")
+    
+    return Sxx_z
+
+def get_time_axis(data):
+    """Extract time axis in ms from data dict."""
+    for key in ['t_full_ms', 't_ms', 'rel_time_full']:
+        if key in data:
+            return np.array(data[key])
+    
+    # If no full time axis found, try to construct from pre+post
+    if 'rel_time_pre' in data and 'rel_time_post' in data:
+        t_pre = np.array(data['rel_time_pre'])
+        t_post = np.array(data['rel_time_post'])
+        return np.concatenate([t_pre, t_post])
+    
+    raise KeyError("No time axis found in data (tried: t_full_ms, t_ms, rel_time_full, rel_time_pre+rel_time_post)")
+
+def get_broadband_full(data):
+    """
+    Get full broadband data array and corresponding time axis.
+    
+    Prefers 'broadband_full' if available, otherwise constructs from pre+post.
+    
+    Returns:
+        (broadband_full, t_ms): Arrays of shape (n_trials, n_channels, n_times) and (n_times,)
+    """
+    if 'broadband_full' in data:
+        t_ms = get_time_axis(data)
+        return np.array(data['broadband_full']), t_ms
+    
+    # Construct from pre + post (legacy format)
+    if 'broadband_pre' not in data or 'broadband_post' not in data:
+        raise KeyError("Data must contain either 'broadband_full' or both 'broadband_pre' and 'broadband_post'")
+    
+    pre = np.array(data['broadband_pre'])
+    post = np.array(data['broadband_post'])
+    
+    # Get time axes - check multiple possible key names
+    t_pre = None
+    t_post = None
+    
+    for key in ['rel_time_pre', 't_pre_ms']:
+        if key in data:
+            t_pre = np.array(data[key])
+            break
+    
+    for key in ['rel_time_post', 't_post_ms']:
+        if key in data:
+            t_post = np.array(data[key])
+            break
+    
+    if t_pre is None or t_post is None:
+        raise KeyError("Missing time axes for reconstruction (tried: rel_time_pre/t_pre_ms and rel_time_post/t_post_ms)")
+    
+    # Concatenate
+    broadband_full = np.concatenate([pre, post], axis=-1)
+    t_ms = np.concatenate([t_pre, t_post])
+    
+    return broadband_full, t_ms
+
+def slice_time_window(data_3d, t_ms, t_start, t_end):
+    """
+    Slice 3D data array to a specific time window.
+    
+    Args:
+        data_3d: Array of shape (n_trials, n_channels, n_times)
+        t_ms: Time axis in ms
+        t_start: Start time in ms (inclusive)
+        t_end: End time in ms (inclusive)
+    
+    Returns:
+        (sliced_data, sliced_t_ms): Sliced arrays
+    """
+    mask = (t_ms >= t_start) & (t_ms <= t_end)
+    return data_3d[..., mask], t_ms[mask]
 
 # =============================================================================
 # MORLET WAVELET SPECTROGRAM (replaces superlet)
 # =============================================================================
 
 def compute_wavelet_spectrogram(trace, fs, foi=None, baseline_window=None,
-                                 t_ms=None, n_cycles=7):
+                                 t_ms=None, n_cycles=7, normalize=False):
     """
     Compute time-frequency representation using Morlet wavelets.
     
@@ -359,12 +474,13 @@ def compute_wavelet_spectrogram(trace, fs, foi=None, baseline_window=None,
         trace: 1D signal
         fs: Sampling rate
         foi: Frequencies of interest (should already exclude notch regions)
-        baseline_window: (start_ms, end_ms) for baseline normalization
+        baseline_window: (start_ms, end_ms) - stored for later normalization
         t_ms: Time axis in ms
         n_cycles: Number of cycles in wavelet
+        normalize: If True, apply dB normalization (legacy behavior)
     
     Returns:
-        Sxx: Power matrix (n_freq, n_time) in µV²
+        Sxx: Power matrix (n_freq, n_time) in µV² (raw power, not normalized)
         foi: Frequencies
         t_sec: Time in seconds
     """
@@ -424,8 +540,8 @@ def compute_wavelet_spectrogram(trace, fs, foi=None, baseline_window=None,
     # Time axis
     t_sec = np.arange(n_time) / fs
     
-    # Baseline normalization if requested
-    if baseline_window is not None and t_ms is not None:
+    # Legacy dB normalization (only if explicitly requested)
+    if normalize and baseline_window is not None and t_ms is not None:
         t_spec_ms = t_sec * 1000 + t_ms[0]
         bl_mask = (t_spec_ms >= baseline_window[0]) & (t_spec_ms <= baseline_window[1])
         if bl_mask.sum() > 0:
@@ -499,12 +615,21 @@ def generate_session_summary(data, session_id, fig_dir, groups, fs=1000):
     """
     Generate comprehensive session summary with PSD from 1-120 Hz.
     """
-    bb_post = data.get('broadband_post')
-    bb_pre = data.get('broadband_pre')
-    
-    if bb_post is None:
-        print("    [Skip] No broadband_post for session summary")
+    try:
+        bb_full, t_ms = get_broadband_full(data)
+    except KeyError as e:
+        print(f"    [Skip] No broadband data for session summary: {e}")
         return None
+    
+    # Slice to analysis windows
+    bb_pre, t_pre = slice_time_window(
+        bb_full, t_ms,
+        TIME_WINDOWS['pre_start'], TIME_WINDOWS['pre_end']
+    )
+    bb_post, t_post = slice_time_window(
+        bb_full, t_ms,
+        TIME_WINDOWS['post_start'], TIME_WINDOWS['post_end']
+    )
     
     n_trials, n_ch, n_time = bb_post.shape
     n_regions = len(groups)
@@ -561,31 +686,32 @@ def generate_session_summary(data, session_id, fig_dir, groups, fs=1000):
         # Add pre-stim if available
         if bb_pre is not None:
             pre_data = bb_pre[:, grp_idxs, :]
-            f_pre, Pxx_pre = signal.welch(pre_data, fs=fs, nperseg=min(pre_data.shape[2], 512), axis=2)
-            Pxx_pre_ch_mean = np.nanmean(Pxx_pre, axis=1)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                Pxx_pre_dB = 10 * np.log10(Pxx_pre_ch_mean + 1e-20)
-            
-            # Compute mean and 95% CI for pre
-            psd_pre_mean, psd_pre_ci_lo, psd_pre_ci_hi = compute_confidence_interval(Pxx_pre_dB, axis=0)
-            
-            # === MASK NOTCH REGIONS FOR PRE ===
-            psd_pre_mean = mask_notch_regions(f_pre, psd_pre_mean, notch_regions)
-            psd_pre_ci_lo = mask_notch_regions(f_pre, psd_pre_ci_lo, notch_regions)
-            psd_pre_ci_hi = mask_notch_regions(f_pre, psd_pre_ci_hi, notch_regions)
-            
-            f_pre_mask = (f_pre >= freq_range[0]) & (f_pre <= freq_range[1])
-            
-            # Plot pre mean line
-            ax.plot(f_pre[f_pre_mask], psd_pre_mean[f_pre_mask], 
-                color=color, lw=1.5, ls='--', alpha=0.7, label='Pre')
-            
-            # Add CI shading for pre (lighter/more transparent than post)
-            ax.fill_between(f_pre[f_pre_mask],
-                            psd_pre_ci_lo[f_pre_mask],
-                            psd_pre_ci_hi[f_pre_mask],
-                            color=color, alpha=0.1)
+            if pre_data.shape[2] > 0:
+                f_pre, Pxx_pre = signal.welch(pre_data, fs=fs, nperseg=min(pre_data.shape[2], 512), axis=2)
+                Pxx_pre_ch_mean = np.nanmean(Pxx_pre, axis=1)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    Pxx_pre_dB = 10 * np.log10(Pxx_pre_ch_mean + 1e-20)
+                
+                # Compute mean and 95% CI for pre
+                psd_pre_mean, psd_pre_ci_lo, psd_pre_ci_hi = compute_confidence_interval(Pxx_pre_dB, axis=0)
+                
+                # === MASK NOTCH REGIONS FOR PRE ===
+                psd_pre_mean = mask_notch_regions(f_pre, psd_pre_mean, notch_regions)
+                psd_pre_ci_lo = mask_notch_regions(f_pre, psd_pre_ci_lo, notch_regions)
+                psd_pre_ci_hi = mask_notch_regions(f_pre, psd_pre_ci_hi, notch_regions)
+                
+                f_pre_mask = (f_pre >= freq_range[0]) & (f_pre <= freq_range[1])
+                
+                # Plot pre mean line
+                ax.plot(f_pre[f_pre_mask], psd_pre_mean[f_pre_mask], 
+                    color=color, lw=1.5, ls='--', alpha=0.7, label='Pre')
+                
+                # Add CI shading for pre (lighter/more transparent than post)
+                ax.fill_between(f_pre[f_pre_mask],
+                                psd_pre_ci_lo[f_pre_mask],
+                                psd_pre_ci_hi[f_pre_mask],
+                                color=color, alpha=0.1)
         
         add_band_shading(ax)
         
@@ -625,29 +751,14 @@ def generate_waveform_raster(data, session_id, fig_dir, groups, fs=1000,
     """
     Plot raw LFP waveforms for representative channels across trials.
     """
-    bb_full = data.get('broadband_full')
-    if bb_full is None:
-        bb_pre = data.get('broadband_pre')
-        bb_post = data.get('broadband_post')
-        if bb_pre is not None and bb_post is not None:
-            bb_full = np.concatenate([bb_pre, bb_post], axis=2)
-        elif bb_post is not None:
-            bb_full = bb_post
-        else:
-            print("    [Skip] No broadband data for waveform raster")
-            return None
+    try:
+        bb_full, t_ms = get_broadband_full(data)
+    except KeyError as e:
+        print(f"    [Skip] No broadband data for waveform raster: {e}")
+        return None
     
     n_trials, n_ch, n_time = bb_full.shape
     n_trials_plot = min(n_trials_show, n_trials)
-    
-    # Time axis
-    t_pre = data.get('rel_time_pre')
-    t_post = data.get('rel_time_post')
-    if t_pre is not None and t_post is not None:
-        t_ms = np.linspace(t_pre[0], t_post[-1], n_time)
-    else:
-        t_ms = np.linspace(-1000, 1000, n_time)
-    
     n_regions = len(groups)
     
     # Create figure
@@ -710,123 +821,6 @@ def generate_waveform_raster(data, session_id, fig_dir, groups, fs=1000,
 
 
 # =============================================================================
-# FIGURE 3: BAND DYNAMICS (Fixed CI)
-# =============================================================================
-
-def generate_band_dynamics(data, session_id, fig_dir, groups, fs=1000):
-    """
-    Plot band power dynamics over time with proper 95% CI (SEM × 1.96).
-    """
-    bb_full = data.get('broadband_full')
-    if bb_full is None:
-        bb_pre = data.get('broadband_pre')
-        bb_post = data.get('broadband_post')
-        if bb_pre is not None and bb_post is not None:
-            bb_full = np.concatenate([bb_pre, bb_post], axis=2)
-        elif bb_post is not None:
-            bb_full = bb_post
-        else:
-            print("    [Skip] No broadband data for band dynamics")
-            return None
-    
-    n_trials, n_ch, n_time = bb_full.shape
-    
-    # Time axis
-    t_pre = data.get('rel_time_pre')
-    t_post = data.get('rel_time_post')
-    if t_pre is not None and t_post is not None:
-        t_ms = np.linspace(t_pre[0], t_post[-1], n_time)
-    else:
-        t_ms = np.linspace(-1000, 1000, n_time)
-    
-    bands = ANALYSIS_CONFIG['bands']
-    baseline_win = ANALYSIS_CONFIG['baseline_window']
-    n_bands = len(bands)
-    
-    # Create figure
-    fig, axes = plt.subplots(n_bands, 1, figsize=(14, 2.5 * n_bands), sharex=True)
-    if n_bands == 1:
-        axes = [axes]
-    
-    fig.suptitle(f'Band Power Dynamics: {session_id}\n'
-                 f'(95% CI shown, baseline: {baseline_win[0]} to {baseline_win[1]} ms)',
-                 fontsize=12, fontweight='bold')
-    
-    # Baseline mask
-    bl_mask = (t_ms >= baseline_win[0]) & (t_ms <= baseline_win[1])
-    
-    for band_idx, (band_name, (f_lo, f_hi)) in enumerate(bands.items()):
-        ax = axes[band_idx]
-        
-        # Filter to band
-        nyq = fs / 2
-        if f_hi >= nyq:
-            f_hi = nyq - 1
-        
-        try:
-            b, a = signal.butter(4, [f_lo/nyq, f_hi/nyq], btype='band')
-        except:
-            ax.text(0.5, 0.5, f'Filter error for {band_name}', 
-                   ha='center', va='center', transform=ax.transAxes)
-            continue
-        
-        for grp_idxs, grp_name in groups:
-            short_name = grp_name.split(' (')[0]
-            color = get_region_color(short_name)
-            
-            # Average across channels in region
-            region_data = np.nanmean(bb_full[:, grp_idxs, :], axis=1)  # (trials, time)
-            
-            # Filter and compute envelope
-            filtered = signal.filtfilt(b, a, region_data, axis=1)
-            envelope = np.abs(signal.hilbert(filtered, axis=1))
-            
-            # Convert to dB relative to baseline
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                baseline_power = np.nanmean(envelope[:, bl_mask], axis=1, keepdims=True)
-                baseline_power[baseline_power < 1e-10] = 1e-10
-                envelope_dB = 10 * np.log10(envelope / baseline_power)
-            
-            # Compute mean and 95% CI across trials
-            mean, ci_lo, ci_hi = compute_confidence_interval(envelope_dB, axis=0)
-            
-            # Smooth for display
-            smooth_win = max(1, int(fs * 0.02))  # 20 ms smoothing
-            mean_smooth = gaussian_filter1d(mean, smooth_win)
-            ci_lo_smooth = gaussian_filter1d(ci_lo, smooth_win)
-            ci_hi_smooth = gaussian_filter1d(ci_hi, smooth_win)
-            
-            ax.plot(t_ms, mean_smooth, color=color, lw=2, label=short_name)
-            ax.fill_between(t_ms, ci_lo_smooth, ci_hi_smooth, color=color, alpha=0.2)
-        
-        ax.axhline(0, color='gray', ls='--', alpha=0.5)
-        add_stim_marker(ax)
-        
-        ax.set_ylabel(f'{band_name}\n({f_lo}-{f_hi} Hz)\ndB', fontsize=9)
-        ax.set_ylim(PLOT_CONFIG['band_dynamics_ylim'])
-        ax.grid(True, alpha=0.3)
-        
-        if band_idx == 0:
-            ax.legend(loc='upper right', ncol=len(groups), fontsize='small')
-    
-    axes[-1].set_xlabel('Time (ms)', fontsize=11)
-    axes[-1].set_xlim(PLOT_CONFIG['x_limits']['full'])
-    
-    plt.tight_layout()
-    
-    # Save
-    out_dir = fig_dir / "Band_Dynamics"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"band_dynamics_{session_id}.png"
-    plt.savefig(out_path, dpi=150, bbox_inches='tight')
-    plt.close(fig)
-    print(f"    Saved band dynamics -> {out_path.name}")
-    
-    return out_path
-
-
-# =============================================================================
 # FIGURE 4: INTER-REGIONAL COHERENCE
 # =============================================================================
 
@@ -834,13 +828,11 @@ def generate_coherence_matrix(data, session_id, fig_dir, groups, fs=1000):
     """
     Compute and plot coherence between all pairs of regions.
     """
-    bb_full = data.get('broadband_full')
-    if bb_full is None:
-        bb_post = data.get('broadband_post')
-        if bb_post is None:
-            print("    [Skip] No data for coherence analysis")
-            return None
-        bb_full = bb_post
+    try:
+        bb_full, t_ms = get_broadband_full(data)
+    except KeyError as e:
+        print(f"    [Skip] No data for coherence analysis: {e}")
+        return None
     
     n_trials, n_ch, n_time = bb_full.shape
     n_regions = len(groups)
@@ -959,16 +951,22 @@ def generate_stim_vs_control(data_stim, data_control, session_id, fig_dir,
     """
     Compare stimulation and control conditions.
     """
-    bb_stim = data_stim.get('broadband_post') if data_stim else None
-    bb_ctrl = data_control.get('broadband_post') if data_control else None
-    
-    if bb_stim is None:
-        print("    [Skip] No stim data for comparison")
+    try:
+        stim_full, t_stim = get_broadband_full(data_stim)
+        ctrl_full, t_ctrl = get_broadband_full(data_control)
+    except (KeyError, TypeError) as e:
+        print(f"    [Skip] Missing data for stim vs control: {e}")
         return None
     
-    if bb_ctrl is None:
-        print("    [Skip] No control data for comparison")
-        return None
+    # Slice to post-stim window for comparison
+    bb_stim, _ = slice_time_window(
+        stim_full, t_stim,
+        TIME_WINDOWS['post_start'], TIME_WINDOWS['post_end']
+    )
+    bb_ctrl, _ = slice_time_window(
+        ctrl_full, t_ctrl,
+        TIME_WINDOWS['post_start'], TIME_WINDOWS['post_end']
+    )
     
     n_regions = len(groups)
     bands = ANALYSIS_CONFIG['bands']
@@ -1146,9 +1144,14 @@ def generate_dose_response(session_data_dict, base_session_id, fig_dir, groups, 
             
             for n_pulses in pulse_counts:
                 data = session_data_dict[n_pulses]
-                bb_post = data.get('broadband_post')
                 
-                if bb_post is None:
+                try:
+                    bb_full, t_ms = get_broadband_full(data)
+                    bb_post, _ = slice_time_window(
+                        bb_full, t_ms,
+                        TIME_WINDOWS['post_start'], TIME_WINDOWS['post_end']
+                    )
+                except KeyError:
                     continue
                 
                 valid_idx = [i for i in grp_idxs if i < bb_post.shape[1]]
@@ -1260,10 +1263,10 @@ def render_spatial_grid(ax, mean_band_dB, t_bin_idx, grid_elec, elec_to_idx,
                         if neighbors:
                             filled_grid[r, c] = np.nanmean(np.asarray(neighbors))
         
-        im = ax.imshow(filled_grid, cmap='RdBu_r', vmin=vmin, vmax=vmax,
+        im = ax.imshow(filled_grid, cmap='jet', vmin=vmin, vmax=vmax,
                        origin='upper', aspect='equal', interpolation='bicubic')
     else:
-        im = ax.imshow(grid, cmap='RdBu_r', vmin=vmin, vmax=vmax,
+        im = ax.imshow(grid, cmap='jet', vmin=vmin, vmax=vmax,
                        origin='upper', aspect='equal')
     
     return im
@@ -1423,27 +1426,13 @@ def generate_trial_heatmaps(data, session_id, fig_dir, groups, fs=1000):
     """
     Generate per-trial band power heatmaps for each region.
     """
-    bb_full = data.get('broadband_full')
-    if bb_full is None:
-        bb_pre = data.get('broadband_pre')
-        bb_post = data.get('broadband_post')
-        if bb_pre is not None and bb_post is not None:
-            bb_full = np.concatenate([bb_pre, bb_post], axis=2)
-        elif bb_post is not None:
-            bb_full = bb_post
-        else:
-            print("    [Skip] No data for trial heatmaps")
-            return None
+    try:
+        bb_full, t_ms = get_broadband_full(data)
+    except KeyError as e:
+        print(f"    [Skip] No data for trial heatmaps: {e}")
+        return None
     
     n_trials, n_ch, n_time = bb_full.shape
-    
-    # Time axis
-    t_pre = data.get('rel_time_pre')
-    t_post = data.get('rel_time_post')
-    if t_pre is not None and t_post is not None:
-        t_ms = np.linspace(t_pre[0], t_post[-1], n_time)
-    else:
-        t_ms = np.linspace(-1000, 1000, n_time)
     
     band_name = PLOT_CONFIG.get('selected_band', 'Beta')
     bands = ANALYSIS_CONFIG['bands']
@@ -1505,7 +1494,7 @@ def generate_trial_heatmaps(data, session_id, fig_dir, groups, fs=1000):
         envelope_sorted = envelope_dB[sort_idx, :]
         
         # Plot
-        im = ax.imshow(envelope_sorted, aspect='auto', cmap='RdBu_r',
+        im = ax.imshow(envelope_sorted, aspect='auto', cmap='jet',
                       vmin=vmin, vmax=vmax,
                       extent=[t_ms[0], t_ms[-1], n_trials, 0])
         
@@ -1539,64 +1528,46 @@ def generate_trial_heatmaps(data, session_id, fig_dir, groups, fs=1000):
 def generate_per_ua_spectrograms(data, session_id, fig_dir, groups, fs=1000,
                                   ua_ids_1based=None, nsp_to_elec=None, 
                                   region_grids=None, elec_to_idx=None,
-                                  trial_index=0, generate_all_trials=False):
+                                  trial_index=0, generate_all_trials=False,
+                                  generate_trial_average=False):
     """
     Generate 8x8 spectrogram grids for each Utah Array region.
     Frequencies in notch regions are skipped entirely (broken y-axis).
+    
+    NOW USES:
+    - Z-score normalization per channel
+    - Median averaging across trials (instead of mean)
     """
-    bb_full = data.get('broadband_full')
-    if bb_full is None:
-        bb_pre = data.get('broadband_pre')
-        bb_post = data.get('broadband_post')
-        if bb_pre is not None and bb_post is not None:
-            bb_full = np.concatenate([bb_pre, bb_post], axis=2)
-        elif bb_post is not None:
-            bb_full = bb_post
-        else:
-            print("    [Skip] No broadband data for per-UA spectrograms")
-            return None
+    try:
+        bb_full, t_ms = get_broadband_full(data)
+    except KeyError as e:
+        print(f"    [Skip] No broadband data for per-UA spectrograms: {e}")
+        return None
     
     if region_grids is None or elec_to_idx is None:
         print("    [Skip] Need electrode mapping for per-UA spectrograms")
         return None
     
     n_trials, n_ch, n_time = bb_full.shape
-    
-    # Time axis
-    t_pre = data.get('rel_time_pre')
-    t_post = data.get('rel_time_post')
-    if t_pre is not None and t_post is not None:
-        t_ms = np.linspace(t_pre[0], t_post[-1], n_time)
-    else:
-        t_ms = np.linspace(-1000, 1000, n_time)
-    
+
     # Spectrogram settings
     spec_cfg = PLOT_CONFIG.get('spectrogram', {})
     freq_min = spec_cfg.get('freq_min', 1)
     freq_max = spec_cfg.get('freq_max', 120)
     freq_step = spec_cfg.get('freq_step', 1)
     
-    # === KEY CHANGE: Get frequencies with notch gaps ===
+    # Get frequencies with notch gaps
     foi = get_foi_with_notch_gaps(freq_min, freq_max, freq_step)
     
     cmap = spec_cfg.get('cmap', 'viridis')
-    power_unit = spec_cfg.get('power_unit', 'uV2')
-    n_cycles = spec_cfg.get('wavelet_cycles', 7)
+    normalize_method = spec_cfg.get('normalize', 'zscore')  # NEW: default to zscore
+    n_cycles = spec_cfg.get('wavelet_cycles', 5)
     
-    # Baseline for dB normalization (only if power_unit == 'dB')
-    baseline_win = ANALYSIS_CONFIG['baseline_window'] if power_unit == 'dB' else None
+    # Baseline window for z-score normalization
+    baseline_win = ANALYSIS_CONFIG['baseline_window']
     
     # Output directory
     out_dir = fig_dir / "per_UA_activity"
-    
-    # Determine which trials to process
-    if generate_all_trials:
-        trial_indices = list(range(n_trials))
-    else:
-        if trial_index >= n_trials:
-            print(f"    [Warn] Requested trial {trial_index} but only {n_trials} trials exist. Using trial 0.")
-            trial_index = 0
-        trial_indices = [trial_index]
     
     # Extract condition name
     br_match = re.search(r'_(\d{3})(?:_|$|\.)', session_id)
@@ -1615,6 +1586,26 @@ def generate_per_ua_spectrograms(data, session_id, fig_dir, groups, fs=1000,
     condition_dir = out_dir / condition_name
     condition_dir.mkdir(parents=True, exist_ok=True)
     
+    # Determine which trials to process
+    trials_to_process = []
+    
+    if generate_trial_average:
+        trials_to_process.append(('average', None))  # Special marker for averaging
+    
+    if generate_all_trials:
+        trials_to_process.extend([('single', t) for t in range(n_trials)])
+    elif not generate_trial_average:  # Only add default trial if not doing average-only
+        if trial_index >= n_trials:
+            print(f"    [Warn] Requested trial {trial_index} but only {n_trials} trials exist. Using trial 0.")
+            trial_index = 0
+        trials_to_process.append(('single', trial_index))
+    
+    # If both average and single trials requested, add default trial
+    if generate_trial_average and not generate_all_trials:
+        if trial_index >= n_trials:
+            trial_index = 0
+        trials_to_process.append(('single', trial_index))
+    
     for grp_idxs, grp_name in groups:
         region_name = grp_name.split(' (')[0]
         grid_elec = region_grids.get(region_name)
@@ -1625,172 +1616,284 @@ def generate_per_ua_spectrograms(data, session_id, fig_dir, groups, fs=1000,
         
         safe_region = region_name.replace(' ', '_')
         
-        for trial_idx in trial_indices:
-            trial_data = bb_full[trial_idx, :, :]
+        for trial_type, trial_idx in trials_to_process:
             
-            # First pass: compute all spectrograms
-            all_spectrograms = {}
-            
-            for row in range(8):
-                for col in range(8):
-                    elec_id = int(grid_elec[row, col])
-                    data_idx = elec_to_idx.get(elec_id, None)
-                    
-                    if data_idx is None or data_idx >= n_ch:
-                        continue
-                    
-                    trace = trial_data[data_idx, :]
-                    
-                    if np.all(np.isnan(trace)) or np.std(trace) < 1e-10:
-                        continue
-                    
-                    # Compute spectrogram (foi already has gaps)
-                    Sxx, f_out, t_out = compute_wavelet_spectrogram(
-                        trace, fs, foi=foi,
-                        baseline_window=baseline_win, t_ms=t_ms,
-                        n_cycles=n_cycles
-                    )
-                    
-                    if Sxx is not None:
-                        t_spec_ms = t_out * 1000 + t_ms[0]
-                        all_spectrograms[(row, col)] = {
-                            'Sxx': Sxx,
-                            'f': f_out,
-                            't_ms': t_spec_ms,
-                            'elec_id': elec_id
-                        }
-            
-            if not all_spectrograms:
-                print(f"    [Skip] No valid spectrograms for {region_name} trial {trial_idx}")
-                continue
-            
-            # Determine color scale
-            if power_unit == 'uV2':
-                all_power = np.concatenate([s['Sxx'].flatten() for s in all_spectrograms.values()])
-                vmin = spec_cfg.get('vmin_uV2', 0)
-                vmax = spec_cfg.get('vmax_uV2', None)
-                if vmax is None:
-                    vmax = np.nanpercentile(all_power, 95)
-                cbar_label = 'Power (µV²)'
-            else:
-                vmin = spec_cfg.get('vmin_db', -6)
-                vmax = spec_cfg.get('vmax_db', 6)
-                cbar_label = 'Power (dB re: baseline)'
-            
-            # Create 8x8 figure
-            fig, axes = plt.subplots(8, 8, figsize=(24, 24))
-            
-            # === Build subtitle showing frequency gaps ===
-            notch_regions = ANALYSIS_CONFIG.get('notch_regions', [(55, 65), (115, 125)])
-            notch_str = ', '.join([f'{lo}-{hi} Hz' for lo, hi in notch_regions])
-            
-            fig.suptitle(f'{session_id} — {region_name}\n'
-                        f'Time-Frequency Power (Trial {trial_idx}) | Morlet Wavelets | {power_unit}\n'
-                        f'(Notch regions skipped: {notch_str})',
-                        fontsize=16, fontweight='bold')
-            
-            im_for_cbar = None
-            
-            for row in range(8):
-                for col in range(8):
-                    ax = axes[row, col]
-                    elec_id = int(grid_elec[row, col])
-                    
-                    if (row, col) in all_spectrograms:
-                        spec_data = all_spectrograms[(row, col)]
-                        Sxx = spec_data['Sxx']
-                        f_spec = spec_data['f']
-                        t_spec_ms = spec_data['t_ms']
-                        
-                        # === Plot with broken y-axis (frequencies already have gaps) ===
-                        # Use imshow with proper extent, letting gaps show naturally
-                        # Or use pcolormesh with the actual frequency values
-                        
-                        im = ax.pcolormesh(t_spec_ms, np.arange(len(f_spec)), Sxx,
-                                          cmap=cmap, vmin=vmin, vmax=vmax,
-                                          shading='auto', rasterized=True)
-                        
-                        # Set y-ticks to show actual frequencies
-                        # Show ticks at key points, respecting gaps
-                        tick_freqs = [1, 10, 20, 30, 40, 55, 65, 80, 100, 115]
-                        tick_positions = []
-                        tick_labels = []
-                        for tf in tick_freqs:
-                            # Find closest frequency in foi
-                            if tf in f_spec:
-                                idx = np.where(f_spec == tf)[0][0]
-                                tick_positions.append(idx)
-                                tick_labels.append(str(tf))
-                            elif any(abs(f_spec - tf) < freq_step):
-                                idx = np.argmin(abs(f_spec - tf))
-                                tick_positions.append(idx)
-                                tick_labels.append(str(int(f_spec[idx])))
-                        
-                        ax.set_yticks(tick_positions)
-                        ax.set_yticklabels(tick_labels)
-                        
-                        # Mark stim onset
-                        ax.axvline(0, color='white', ls='--', lw=0.8, alpha=0.8)
-                        
-                        # === Mark where notch gaps are with lines ===
-                        for notch_lo, notch_hi in notch_regions:
-                            # Find the index just below and just above the notch
-                            below_idx = np.where(f_spec < notch_lo)[0]
-                            above_idx = np.where(f_spec > notch_hi)[0]
-                            if len(below_idx) > 0 and len(above_idx) > 0:
-                                gap_y = below_idx[-1] + 0.5
-                                ax.axhline(gap_y, color='white', ls='-', lw=1.5, alpha=0.8)
-                        
-                        im_for_cbar = im
-                        ax.set_title(f'E{elec_id}', fontsize=8, pad=2)
-                        
-                    else:
-                        ax.set_facecolor('#e0e0e0')
+            if trial_type == 'average':
+                # === TRIAL-AVERAGED SPECTROGRAM (using MEDIAN) ===
+                print(f"      Computing trial-averaged (median) spectrogram for {region_name}...")
+                
+                # First pass: compute spectrograms for all trials, then MEDIAN average
+                all_spectrograms = {}
+                
+                for row in range(8):
+                    for col in range(8):
+                        elec_id = int(grid_elec[row, col])
                         data_idx = elec_to_idx.get(elec_id, None)
-                        if data_idx is None:
-                            label = 'N/A'
-                            color = 'gray'
-                        else:
-                            label = 'Bad'
-                            color = 'red'
-                        ax.text(0.5, 0.5, f'E{elec_id}\n{label}', 
-                               ha='center', va='center', fontsize=8,
-                               transform=ax.transAxes, color=color)
-                        ax.set_xticks([])
-                        ax.set_yticks([])
-                        continue
-                    
-                    # Axis labels only on edges
-                    if row == 7:
-                        ax.set_xlabel('Time (ms)', fontsize=7)
-                    else:
-                        ax.set_xticklabels([])
-                    
-                    if col == 0:
-                        ax.set_ylabel('Freq (Hz)', fontsize=7)
-                    else:
-                        ax.set_yticklabels([])
-                    
-                    ax.tick_params(axis='both', labelsize=6)
-            
-            # Add colorbar
-            if im_for_cbar is not None:
-                fig.subplots_adjust(right=0.92)
-                cbar_ax = fig.add_axes([0.94, 0.15, 0.015, 0.7])
-                cbar = fig.colorbar(im_for_cbar, cax=cbar_ax)
-                cbar.set_label(cbar_label, fontsize=12)
-                cbar.ax.tick_params(labelsize=10)
-            
-            plt.tight_layout(rect=[0, 0, 0.92, 0.94])
-            
-            # Save
-            out_path = condition_dir / f"{safe_region}_trial_{trial_idx}.png"
-            plt.savefig(out_path, dpi=150, bbox_inches='tight')
-            plt.close(fig)
-            
-            print(f"    Saved -> {out_path.relative_to(fig_dir)}")
+                        
+                        if data_idx is None or data_idx >= n_ch:
+                            continue
+                        
+                        # Collect spectrograms across all trials for this electrode
+                        trial_spectrograms = []
+                        t_spec_ms_saved = None
+                        f_out_saved = None
+                        
+                        for t_idx in range(n_trials):
+                            trace = bb_full[t_idx, data_idx, :]
+                            
+                            if np.all(np.isnan(trace)) or np.std(trace) < 1e-10:
+                                continue
+                            
+                            # Compute spectrogram (raw power, no normalization yet)
+                            Sxx, f_out, t_out = compute_wavelet_spectrogram(
+                                trace, fs, foi=foi,
+                                baseline_window=None,  # Don't normalize yet
+                                t_ms=t_ms,
+                                n_cycles=n_cycles,
+                                normalize=False
+                            )
+                            
+                            if Sxx is not None:
+                                trial_spectrograms.append(Sxx)
+                                if t_spec_ms_saved is None:
+                                    t_spec_ms_saved = t_out * 1000 + t_ms[0]
+                                    f_out_saved = f_out
+                        
+                        # MEDIAN across trials (instead of mean)
+                        if trial_spectrograms:
+                            stacked = np.stack(trial_spectrograms, axis=0)  # (n_trials, n_freq, n_time)
+                            
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore")
+                                Sxx_median = np.nanmedian(stacked, axis=0)  # CHANGED: median
+                            
+                            # Z-score normalize the median spectrogram
+                            bl_mask = (t_spec_ms_saved >= baseline_win[0]) & (t_spec_ms_saved <= baseline_win[1])
+                            Sxx_normalized = zscore_normalize_spectrogram(Sxx_median, baseline_mask=bl_mask)
+                            
+                            all_spectrograms[(row, col)] = {
+                                'Sxx': Sxx_normalized,
+                                'f': f_out_saved,
+                                't_ms': t_spec_ms_saved,
+                                'elec_id': elec_id,
+                                'n_trials_averaged': len(trial_spectrograms),
+                            }
+                
+                if not all_spectrograms:
+                    print(f"    [Skip] No valid spectrograms for {region_name} (trial average)")
+                    continue
+                
+                # Create figure for trial average
+                _plot_spectrogram_grid(
+                    all_spectrograms, grid_elec, elec_to_idx, n_ch,
+                    session_id, region_name, safe_region, condition_dir, fig_dir,
+                    spec_cfg, normalize_method, n_trials,
+                    trial_label=f"Trial Median (n={n_trials})",
+                    filename_suffix="trial_median"
+                )
+                
+            else:
+                # === SINGLE TRIAL SPECTROGRAM ===
+                trial_data = bb_full[trial_idx, :, :]
+                
+                # First pass: compute all spectrograms
+                all_spectrograms = {}
+                
+                for row in range(8):
+                    for col in range(8):
+                        elec_id = int(grid_elec[row, col])
+                        data_idx = elec_to_idx.get(elec_id, None)
+                        
+                        if data_idx is None or data_idx >= n_ch:
+                            continue
+                        
+                        trace = trial_data[data_idx, :]
+                        
+                        if np.all(np.isnan(trace)) or np.std(trace) < 1e-10:
+                            continue
+                        
+                        # Compute spectrogram (raw power)
+                        Sxx, f_out, t_out = compute_wavelet_spectrogram(
+                            trace, fs, foi=foi,
+                            baseline_window=None,
+                            t_ms=t_ms,
+                            n_cycles=n_cycles,
+                            normalize=False
+                        )
+                        
+                        if Sxx is not None:
+                            t_spec_ms = t_out * 1000 + t_ms[0]
+                            
+                            # Z-score normalize single trial
+                            bl_mask = (t_spec_ms >= baseline_win[0]) & (t_spec_ms <= baseline_win[1])
+                            Sxx_normalized = zscore_normalize_spectrogram(Sxx, baseline_mask=bl_mask)
+                            
+                            all_spectrograms[(row, col)] = {
+                                'Sxx': Sxx_normalized,
+                                'f': f_out,
+                                't_ms': t_spec_ms,
+                                'elec_id': elec_id
+                            }
+                
+                if not all_spectrograms:
+                    print(f"    [Skip] No valid spectrograms for {region_name} trial {trial_idx}")
+                    continue
+                
+                # Create figure for single trial
+                _plot_spectrogram_grid(
+                    all_spectrograms, grid_elec, elec_to_idx, n_ch,
+                    session_id, region_name, safe_region, condition_dir, fig_dir,
+                    spec_cfg, normalize_method, n_trials,
+                    trial_label=f"Trial {trial_idx}",
+                    filename_suffix=f"trial_{trial_idx}"
+                )
     
     return out_dir
+    
+def _plot_spectrogram_grid(all_spectrograms, grid_elec, elec_to_idx, n_ch,
+                           session_id, region_name, safe_region, condition_dir, fig_dir,
+                           spec_cfg, normalize_method, n_trials,
+                           trial_label="", filename_suffix=""):
+    """
+    Helper function to plot 8x8 spectrogram grid.
+    
+    Updated to handle z-score normalized data with appropriate color scaling.
+    """
+    cmap = spec_cfg.get('cmap', 'viridis')
+    
+    # Determine color scale based on normalization method
+    if normalize_method == 'zscore':
+        vmin = spec_cfg.get('vmin_zscore', -3)
+        vmax = spec_cfg.get('vmax_zscore', 3)
+        cbar_label = 'Normalized Power (a.u.)'  # CHANGED
+        cmap = 'jet'  # Diverging colormap better for z-scores
+    elif normalize_method == 'dB':
+        vmin = spec_cfg.get('vmin_db', -6)
+        vmax = spec_cfg.get('vmax_db', 6)
+        cbar_label = 'Power (dB re: baseline)'
+        cmap = 'jet'
+    else:  # raw
+        all_power = np.concatenate([s['Sxx'].flatten() for s in all_spectrograms.values()])
+        vmin = spec_cfg.get('vmin_uV2', 0)
+        vmax = spec_cfg.get('vmax_uV2', None)
+        if vmax is None:
+            vmax = np.nanpercentile(all_power, 95)
+        cbar_label = 'Power (µV²)'
+    
+    # Create 8x8 figure
+    fig, axes = plt.subplots(8, 8, figsize=(24, 24))
+    
+    # Build subtitle showing frequency gaps
+    notch_regions = ANALYSIS_CONFIG.get('notch_regions', [(55, 65), (115, 125)])
+    notch_str = ', '.join([f'{lo}-{hi} Hz' for lo, hi in notch_regions])
+    
+    # Update title to reflect normalization method
+    norm_str = "Z-scored" if normalize_method == 'zscore' else normalize_method.upper()
+    
+    fig.suptitle(f'{session_id} — {region_name}\n'
+                f'Time-Frequency Power ({trial_label}) | Morlet Wavelets | {norm_str}\n'
+                f'(Notch regions skipped: {notch_str})',
+                fontsize=16, fontweight='bold')
+    
+    im_for_cbar = None
+    
+    for row in range(8):
+        for col in range(8):
+            ax = axes[row, col]
+            elec_id = int(grid_elec[row, col])
+            
+            if (row, col) in all_spectrograms:
+                spec_data = all_spectrograms[(row, col)]
+                Sxx = spec_data['Sxx']
+                f_spec = spec_data['f']
+                t_spec_ms = spec_data['t_ms']
+                
+                im = ax.pcolormesh(t_spec_ms, np.arange(len(f_spec)), Sxx,
+                                  cmap=cmap, vmin=vmin, vmax=vmax,
+                                  shading='auto', rasterized=True)
+                
+                # Set y-ticks to show actual frequencies
+                freq_step = spec_cfg.get('freq_step', 1)
+                tick_freqs = [1, 10, 20, 30, 40, 55, 65, 80, 100, 115]
+                tick_positions = []
+                tick_labels = []
+                for tf in tick_freqs:
+                    if tf in f_spec:
+                        idx = np.where(f_spec == tf)[0][0]
+                        tick_positions.append(idx)
+                        tick_labels.append(str(tf))
+                    elif any(abs(f_spec - tf) < freq_step):
+                        idx = np.argmin(abs(f_spec - tf))
+                        tick_positions.append(idx)
+                        tick_labels.append(str(int(f_spec[idx])))
+                
+                ax.set_yticks(tick_positions)
+                ax.set_yticklabels(tick_labels)
+                
+                # Mark stim onset
+                ax.axvline(0, color='white', ls='--', lw=0.8, alpha=0.8)
+                
+                # Mark where notch gaps are with lines
+                for notch_lo, notch_hi in notch_regions:
+                    below_idx = np.where(f_spec < notch_lo)[0]
+                    above_idx = np.where(f_spec > notch_hi)[0]
+                    if len(below_idx) > 0 and len(above_idx) > 0:
+                        gap_y = below_idx[-1] + 0.5
+                        ax.axhline(gap_y, color='white', ls='-', lw=1.5, alpha=0.8)
+                
+                im_for_cbar = im
+                
+                # Title with trial count if averaged
+                title_str = f'E{elec_id}'
+                if 'n_trials_averaged' in spec_data:
+                    title_str += f' (n={spec_data["n_trials_averaged"]})'
+                ax.set_title(title_str, fontsize=8, pad=2)
+                
+            else:
+                ax.set_facecolor('#e0e0e0')
+                data_idx = elec_to_idx.get(elec_id, None)
+                if data_idx is None:
+                    label = 'N/A'
+                    color = 'gray'
+                else:
+                    label = 'Bad'
+                    color = 'red'
+                ax.text(0.5, 0.5, f'E{elec_id}\n{label}', 
+                       ha='center', va='center', fontsize=8,
+                       transform=ax.transAxes, color=color)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                continue
+            
+            # Axis labels only on edges
+            if row == 7:
+                ax.set_xlabel('Time (ms)', fontsize=7)
+            else:
+                ax.set_xticklabels([])
+            
+            if col == 0:
+                ax.set_ylabel('Freq (Hz)', fontsize=7)
+            else:
+                ax.set_yticklabels([])
+            
+            ax.tick_params(axis='both', labelsize=6)
+    
+    # Add colorbar
+    if im_for_cbar is not None:
+        fig.subplots_adjust(right=0.92)
+        cbar_ax = fig.add_axes([0.94, 0.15, 0.015, 0.7])
+        cbar = fig.colorbar(im_for_cbar, cax=cbar_ax)
+        cbar.set_label(cbar_label, fontsize=12)  # Now shows "Normalized Power (a.u.)"
+        cbar.ax.tick_params(labelsize=10)
+    
+    plt.tight_layout(rect=[0, 0, 0.92, 0.94])
+    
+    # Save
+    out_path = condition_dir / f"{safe_region}_{filename_suffix}.png"
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    
+    print(f"    Saved -> {out_path.relative_to(fig_dir)}")
 
 # =============================================================================
 # TRAVELING WAVE ANALYSIS
@@ -1865,303 +1968,6 @@ def fit_phase_plane(phase_grid, electrode_spacing_mm=0.4):
         
     except:
         return np.nan, np.nan, np.nan, np.nan, np.nan
-
-
-def detect_traveling_waves(lfp_data, fs, region_grid, elec_to_idx, 
-                           freq_band, t_ms, 
-                           min_pgd=0.5, min_duration_ms=5,
-                           electrode_spacing_um=400):
-    """
-    Detect traveling waves across an 8x8 electrode grid.
-    """
-    n_ch, n_time = lfp_data.shape
-    electrode_spacing_mm = electrode_spacing_um / 1000
-    
-    freq_center = np.mean(freq_band)
-    freq_bandwidth = (freq_band[1] - freq_band[0]) / 2
-    
-    # Build phase grid for each time point
-    phase_matrix = np.full((8, 8, n_time), np.nan)
-    
-    for row in range(8):
-        for col in range(8):
-            elec_id = int(region_grid[row, col])
-            data_idx = elec_to_idx.get(elec_id, None)
-            
-            if data_idx is not None and data_idx < n_ch:
-                trace = lfp_data[data_idx, :]
-                if not np.all(np.isnan(trace)):
-                    phase = compute_instantaneous_phase(
-                        trace, fs, freq_center, freq_bandwidth
-                    )
-                    phase_matrix[row, col, :] = phase
-    
-    # Detect waves at each time point
-    wave_detected = np.zeros(n_time, dtype=bool)
-    pgd_values = np.full(n_time, np.nan)
-    directions = np.full(n_time, np.nan)
-    gradient_mags = np.full(n_time, np.nan)
-    speeds = np.full(n_time, np.nan)
-    
-    for t in range(n_time):
-        phase_snapshot = phase_matrix[:, :, t]
-        
-        bx, by, pgd, direction, gradient_mag = fit_phase_plane(
-            phase_snapshot, electrode_spacing_mm
-        )
-        
-        pgd_values[t] = pgd
-        directions[t] = direction
-        gradient_mags[t] = gradient_mag
-        
-        if pgd >= min_pgd and gradient_mag > 0:
-            wave_detected[t] = True
-            # Estimate speed: v = ω / |k|
-            omega = 2 * np.pi * freq_center
-            speed_mm_s = omega / gradient_mag  # mm/s
-            speeds[t] = speed_mm_s / 1000  # m/s
-    
-    # Find contiguous wave epochs
-    labeled, num_epochs = label(wave_detected)
-    
-    wave_epochs = []
-    min_duration_samples = int(min_duration_ms * fs / 1000)
-    
-    for epoch_id in range(1, num_epochs + 1):
-        epoch_mask = labeled == epoch_id
-        epoch_duration = epoch_mask.sum()
-        
-        if epoch_duration >= min_duration_samples:
-            epoch_times = np.where(epoch_mask)[0]
-            start_idx = epoch_times[0]
-            end_idx = epoch_times[-1]
-            
-            wave_epochs.append({
-                'start_ms': t_ms[start_idx],
-                'end_ms': t_ms[end_idx],
-                'duration_ms': (end_idx - start_idx) / fs * 1000,
-                'mean_pgd': np.nanmean(pgd_values[epoch_mask]),
-                'mean_direction_rad': np.nanmean(directions[epoch_mask]),
-                'mean_direction_deg': np.rad2deg(np.nanmean(directions[epoch_mask])),
-                'mean_speed_m_s': np.nanmean(speeds[epoch_mask]),
-                'start_idx': start_idx,
-                'end_idx': end_idx,
-            })
-    
-    return {
-        'wave_detected': wave_detected,
-        'pgd': pgd_values,
-        'direction_rad': directions,
-        'direction_deg': np.rad2deg(directions),
-        'speed_m_s': speeds,
-        'gradient_mag': gradient_mags,
-        'wave_epochs': wave_epochs,
-        'n_waves': len(wave_epochs),
-        't_ms': t_ms,
-        'freq_band': freq_band,
-        'phase_matrix': phase_matrix,
-    }
-
-
-def generate_traveling_wave_analysis(data, session_id, fig_dir, groups, fs=1000,
-                                      region_grids=None, elec_to_idx=None):
-    """
-    Generate traveling wave analysis figures for each region.
-    """
-    bb_full = data.get('broadband_full')
-    if bb_full is None:
-        bb_pre = data.get('broadband_pre')
-        bb_post = data.get('broadband_post')
-        if bb_pre is not None and bb_post is not None:
-            bb_full = np.concatenate([bb_pre, bb_post], axis=2)
-        elif bb_post is not None:
-            bb_full = bb_post
-        else:
-            print("    [Skip] No broadband data for traveling wave analysis")
-            return None
-    
-    if region_grids is None or elec_to_idx is None:
-        print("    [Skip] Need electrode mapping for traveling wave analysis")
-        return None
-    
-    n_trials, n_ch, n_time = bb_full.shape
-    
-    # Time axis
-    t_pre = data.get('rel_time_pre')
-    t_post = data.get('rel_time_post')
-    if t_pre is not None and t_post is not None:
-        t_ms = np.linspace(t_pre[0], t_post[-1], n_time)
-    else:
-        t_ms = np.linspace(-1000, 1000, n_time)
-    
-    # Settings
-    tw_cfg = PLOT_CONFIG.get('traveling_wave', {})
-    freq_bands = tw_cfg.get('freq_bands', {'Theta': (6, 9), 'Beta': (15, 35)})
-    min_pgd = tw_cfg.get('min_pgd', 0.5)
-    min_duration = tw_cfg.get('min_duration_ms', 5)
-    elec_spacing = tw_cfg.get('electrode_spacing_um', 400)
-    
-    # Output directory
-    out_dir = fig_dir / "Traveling_Waves"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Extract condition
-    br_match = re.search(r'_(\d{3})(?:_|$|\.)', session_id)
-    if br_match:
-        br_idx = int(br_match.group(1))
-        condition_name = f"condition_{br_idx:02d}"
-    else:
-        condition_name = session_id
-    
-    condition_dir = out_dir / condition_name
-    condition_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Average across trials for wave detection
-    mean_lfp = np.nanmean(bb_full, axis=0)  # (n_ch, n_time)
-    
-    for grp_idxs, grp_name in groups:
-        region_name = grp_name.split(' (')[0]
-        grid_elec = region_grids.get(region_name)
-        
-        if grid_elec is None:
-            continue
-        
-        safe_region = region_name.replace(' ', '_')
-        
-        # Analyze each frequency band
-        for band_name, freq_band in freq_bands.items():
-            print(f"    Analyzing {region_name} {band_name} band...")
-            
-            results = detect_traveling_waves(
-                mean_lfp, fs, grid_elec, elec_to_idx,
-                freq_band, t_ms,
-                min_pgd=min_pgd,
-                min_duration_ms=min_duration,
-                electrode_spacing_um=elec_spacing
-            )
-            
-            # Create figure
-            fig = plt.figure(figsize=(16, 12))
-            gs = GridSpec(3, 3, figure=fig, height_ratios=[1, 1, 1.2])
-            
-            fig.suptitle(f'{session_id} — {region_name}\n'
-                        f'Traveling Wave Analysis: {band_name} ({freq_band[0]}-{freq_band[1]} Hz)',
-                        fontsize=14, fontweight='bold')
-            
-            # Row 1: Time series - PGD over time
-            ax1 = fig.add_subplot(gs[0, :2])
-            ax1.plot(t_ms, results['pgd'], 'b-', lw=1, alpha=0.8)
-            ax1.axhline(min_pgd, color='red', ls='--', lw=1, label=f'Threshold ({min_pgd})')
-            ax1.fill_between(t_ms, 0, 1, where=results['wave_detected'], 
-                            alpha=0.3, color='green', label='Wave detected')
-            ax1.axvline(0, color='black', ls=':', lw=1)
-            ax1.set_ylabel('Phase Gradient\nDirectionality (PGD)')
-            ax1.set_xlim([t_ms[0], t_ms[-1]])
-            ax1.set_ylim([0, 1])
-            ax1.legend(loc='upper right', fontsize=8)
-            ax1.set_title('Wave Detection', fontsize=11)
-            
-            # Direction over time
-            ax2 = fig.add_subplot(gs[1, :2], sharex=ax1)
-            valid_dir = results['direction_deg'].copy()
-            valid_dir[~results['wave_detected']] = np.nan
-            ax2.scatter(t_ms, valid_dir, c='blue', s=2, alpha=0.5)
-            ax2.axvline(0, color='black', ls=':', lw=1)
-            ax2.set_ylabel('Direction (°)')
-            ax2.set_ylim([-180, 180])
-            ax2.set_yticks([-180, -90, 0, 90, 180])
-            ax2.set_title('Wave Direction', fontsize=11)
-            
-            # Speed over time
-            ax3 = fig.add_subplot(gs[2, :2], sharex=ax1)
-            valid_speed = results['speed_m_s'].copy()
-            valid_speed[~results['wave_detected']] = np.nan
-            ax3.scatter(t_ms, valid_speed, c='purple', s=2, alpha=0.5)
-            ax3.axvline(0, color='black', ls=':', lw=1)
-            ax3.set_xlabel('Time (ms)')
-            ax3.set_ylabel('Speed (m/s)')
-            ax3.set_title('Wave Speed', fontsize=11)
-            
-            # Polar histogram of directions
-            ax_polar = fig.add_subplot(gs[0, 2], projection='polar')
-            valid_directions = results['direction_rad'][results['wave_detected']]
-            if len(valid_directions) > 0:
-                bins = np.linspace(-np.pi, np.pi, 37)
-                hist, bin_edges = np.histogram(valid_directions, bins=bins)
-                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-                ax_polar.bar(bin_centers, hist, width=np.diff(bin_edges)[0], 
-                            alpha=0.7, color='blue', edgecolor='black')
-                ax_polar.set_title(f'Direction Distribution\n(n={len(valid_directions)})', fontsize=10)
-            else:
-                ax_polar.text(0, 0.5, 'No waves\ndetected', ha='center', va='center',
-                             transform=ax_polar.transAxes)
-            
-            # Speed histogram
-            ax_speed_hist = fig.add_subplot(gs[1, 2])
-            valid_speeds = results['speed_m_s'][results['wave_detected']]
-            valid_speeds = valid_speeds[np.isfinite(valid_speeds)]
-            if len(valid_speeds) > 0:
-                ax_speed_hist.hist(valid_speeds, bins=30, color='purple', 
-                                  alpha=0.7, edgecolor='black')
-                ax_speed_hist.axvline(np.median(valid_speeds), color='red', ls='--',
-                                     label=f'Median: {np.median(valid_speeds):.2f} m/s')
-                ax_speed_hist.set_xlabel('Speed (m/s)')
-                ax_speed_hist.set_ylabel('Count')
-                ax_speed_hist.set_title('Speed Distribution', fontsize=10)
-                ax_speed_hist.legend(fontsize=8)
-            
-            # Summary statistics
-            ax_summary = fig.add_subplot(gs[2, 2])
-            ax_summary.axis('off')
-            
-            n_waves = results['n_waves']
-            if n_waves > 0:
-                total_wave_time = results['wave_detected'].sum() / fs * 1000  # ms
-                total_time = len(t_ms) / fs * 1000  # ms
-                wave_fraction = total_wave_time / total_time * 100
-                
-                mean_speed = np.nanmean(valid_speeds) if len(valid_speeds) > 0 else np.nan
-                std_speed = np.nanstd(valid_speeds) if len(valid_speeds) > 0 else np.nan
-                
-                summary_text = (
-                    f"Summary Statistics\n"
-                    f"{'─' * 30}\n"
-                    f"Number of wave epochs: {n_waves}\n"
-                    f"Total wave time: {total_wave_time:.1f} ms ({wave_fraction:.1f}%)\n"
-                    f"Mean PGD during waves: {np.nanmean(results['pgd'][results['wave_detected']]):.3f}\n"
-                    f"Mean speed: {mean_speed:.2f} ± {std_speed:.2f} m/s\n"
-                )
-                
-                # Add epoch details
-                if n_waves <= 5:
-                    summary_text += f"\n{'─' * 30}\nWave Epochs:\n"
-                    for i, epoch in enumerate(results['wave_epochs']):
-                        summary_text += (f"  {i+1}. {epoch['start_ms']:.0f}-{epoch['end_ms']:.0f} ms, "
-                                        f"PGD={epoch['mean_pgd']:.2f}, "
-                                        f"dir={epoch['mean_direction_deg']:.0f}°\n")
-            else:
-                summary_text = "No traveling waves detected\n(PGD never exceeded threshold)"
-            
-            ax_summary.text(0.1, 0.9, summary_text, transform=ax_summary.transAxes,
-                           fontsize=10, verticalalignment='top', fontfamily='monospace',
-                           bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-            
-            plt.tight_layout(rect=[0, 0, 1, 0.95])
-            
-            # Save
-            out_path = condition_dir / f"{safe_region}_{band_name}_traveling_waves.png"
-            plt.savefig(out_path, dpi=150, bbox_inches='tight')
-            plt.close(fig)
-            
-            print(f"      Saved -> {out_path.relative_to(fig_dir)}")
-            
-            # Also save phase snapshots during detected waves
-            if results['n_waves'] > 0:
-                _save_phase_snapshots(results, grid_elec, elec_to_idx, 
-                                     session_id, region_name, band_name,
-                                     condition_dir, fig_dir)
-    
-    return out_dir
 
 
 def _save_phase_snapshots(results, grid_elec, elec_to_idx, session_id, 
@@ -2270,13 +2076,6 @@ def process_session(data, session_id, fig_dir, groups, fs=1000,
         if path:
             figure_paths.append(path)
     
-    # 3. Band Dynamics (with proper CI)
-    if FIGURE_CONFIG.get('generate_band_dynamics', True):
-        print("  Generating band dynamics...")
-        path = generate_band_dynamics(data, session_id, fig_dir, groups, fs)
-        if path:
-            figure_paths.append(path)
-    
     # 4. Trial Heatmaps
     if FIGURE_CONFIG.get('generate_trial_heatmaps', True):
         print("  Generating trial heatmaps...")
@@ -2290,6 +2089,7 @@ def process_session(data, session_id, fig_dir, groups, fs=1000,
             print("  Generating per-UA spectrogram grids (Morlet wavelets)...")
             default_trial = FIGURE_CONFIG.get('per_ua_default_trial', 0)
             generate_all = FIGURE_CONFIG.get('generate_all_trial_spectrograms', False)
+            generate_avg = FIGURE_CONFIG.get('generate_per_ua_trial_average', False)  # <-- ADD THIS
             path = generate_per_ua_spectrograms(
                 data, session_id, fig_dir, groups, fs,
                 ua_ids_1based=ua_ids_1based,
@@ -2297,26 +2097,14 @@ def process_session(data, session_id, fig_dir, groups, fs=1000,
                 region_grids=region_grids,
                 elec_to_idx=elec_to_idx,
                 trial_index=default_trial,
-                generate_all_trials=generate_all
+                generate_all_trials=generate_all,
+                generate_trial_average=generate_avg,  # <-- ADD THIS
             )
             if path:
                 figure_paths.append(path)
         else:
             print("  [Skip] Per-UA spectrograms require electrode mapping")
     
-    # 4c. Traveling Wave Analysis
-    if FIGURE_CONFIG.get('generate_traveling_waves', True):
-        if elec_to_idx is not None and region_grids is not None:
-            print("  Generating traveling wave analysis...")
-            path = generate_traveling_wave_analysis(
-                data, session_id, fig_dir, groups, fs,
-                region_grids=region_grids,
-                elec_to_idx=elec_to_idx
-            )
-            if path:
-                figure_paths.append(path)
-        else:
-            print("  [Skip] Traveling wave analysis requires electrode mapping")
     
     # 5. Coherence Matrix
     if FIGURE_CONFIG.get('generate_coherence_matrix', True):
@@ -2345,24 +2133,13 @@ def process_session(data, session_id, fig_dir, groups, fs=1000,
         
         if elec_to_idx is not None and region_grids is not None:
             # Need to compute band power first
-            bb_full = data.get('broadband_full')
-            if bb_full is None:
-                bb_pre = data.get('broadband_pre')
-                bb_post = data.get('broadband_post')
-                if bb_pre is not None and bb_post is not None:
-                    bb_full = np.concatenate([bb_pre, bb_post], axis=2)
-                elif bb_post is not None:
-                    bb_full = bb_post
+            try:
+                bb_full, t_ms = get_broadband_full(data)
+            except KeyError as e:
+                print(f"    [Skip] No data for spatial visualizations: {e}")
+                bb_full = None
             
-            if bb_full is not None:
-                # Time axis
-                t_pre = data.get('rel_time_pre')
-                t_post = data.get('rel_time_post')
-                if t_pre is not None and t_post is not None:
-                    t_ms = np.linspace(t_pre[0], t_post[-1], bb_full.shape[2])
-                else:
-                    t_ms = np.linspace(-1000, 1000, bb_full.shape[2])
-                
+            if bb_full is not None:          
                 # Compute band power
                 band_name = PLOT_CONFIG.get('selected_band', 'Beta')
                 bands = ANALYSIS_CONFIG['bands']
@@ -2444,7 +2221,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
     print("\n--- Pass 1: Loading and organizing sessions ---")
     
     all_sessions = {}
-    control_data_cache = {}  # base_id -> loaded data dict
+    control_data_by_target = {}  # target -> loaded data dict (e.g., 'A' -> data)
     dose_response_cache = {}  # base_id -> {n_pulses: data}
     
     for npz_path in files:
@@ -2470,11 +2247,15 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             print(f"    [Error] Failed to load: {e}")
             continue
         
-        if 'broadband_post' not in data:
-            print(f"    [Skip] No broadband_post data")
+        if 'broadband_full' not in data:
+            print(f"    [Skip] No broadband_full data")
             continue
         
-        # Determine if control and pulse count
+        # === EXTRACT TARGET (A or B) ===
+        target_match = re.search(r'target_([AB])$', session_id, re.IGNORECASE)
+        target = target_match.group(1).upper() if target_match else None
+        
+        # === DETERMINE IF CONTROL AND PULSE COUNT ===
         n_pulses = None
         is_control = False
         
@@ -2486,8 +2267,11 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
         
         # Parse from filename if not in metadata
         if n_pulses is None:
-            # Look for control indicators
-            if 'control' in session_id.lower() or '_0p_' in session_id or '_0pulse' in session_id:
+            # Look for control/baseline indicators
+            if ('control' in session_id.lower() or 
+                'baseline' in session_id.lower() or
+                '_0p_' in session_id or 
+                '_0pulse' in session_id):
                 n_pulses = 0
                 is_control = True
             else:
@@ -2497,15 +2281,15 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                     n_pulses = int(pulse_match.group(1))
                     is_control = (n_pulses == 0)
         
-        # Extract base session ID (for matching control to stim)
-        # Remove pulse count and control suffixes
+        # Extract base session ID (for dose-response grouping)
         base_id = re.sub(r'_\d+p(?:ulse)?s?(?:_|$)', '_', session_id, flags=re.IGNORECASE)
         base_id = re.sub(r'_control(?:_|$)', '_', base_id, flags=re.IGNORECASE)
+        base_id = re.sub(r'_baseline(?:_|$)', '_', base_id, flags=re.IGNORECASE)
         base_id = base_id.rstrip('_')
         
         # Get sampling rate and channel info
         fs = int(data.get('fs_lfp', 1000))
-        n_ch = data['broadband_post'].shape[1]
+        n_ch = data['broadband_full'].shape[1]
         
         # Build groups
         groups, nsp_to_elec, elec_to_idx, region_grids, ua_ids = _build_groups(data, n_ch)
@@ -2514,6 +2298,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             'npz_path': npz_path,
             'session_id': session_id,
             'base_id': base_id,
+            'target': target,  # NEW: store target
             'data': data,
             'fs': fs,
             'groups': groups,
@@ -2527,38 +2312,55 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
         
         all_sessions[session_id] = session_info
         
-        # Cache control data
+        # === CACHE CONTROL DATA BY TARGET ===
         if is_control or n_pulses == 0:
-            control_data_cache[base_id] = data
-            print(f"    -> Control session (base: {base_id})")
+            if target is not None:
+                control_data_by_target[target] = data
+                print(f"    -> Control/Baseline for target {target}")
+            else:
+                # No target found - use as fallback for all
+                control_data_by_target['_default'] = data
+                print(f"    -> Control/Baseline (no target specified)")
         else:
-            print(f"    -> Stim session: {n_pulses} pulses (base: {base_id})")
+            print(f"    -> Stim session: {n_pulses if n_pulses else '?'} pulses, target {target}")
         
-        # Build dose-response dict
-        if base_id not in dose_response_cache:
-            dose_response_cache[base_id] = {}
+        # Build dose-response dict (group by target if available)
+        dose_key = f"{base_id}_{target}" if target else base_id
+        if dose_key not in dose_response_cache:
+            dose_response_cache[dose_key] = {}
         if n_pulses is not None:
-            dose_response_cache[base_id][n_pulses] = data
+            dose_response_cache[dose_key][n_pulses] = data
     
     # =========================================================================
     # PASS 2: Process sessions (controls already loaded)
     # =========================================================================
     print(f"\n--- Pass 2: Generating figures for {len(all_sessions)} sessions ---")
     
+    # Show what controls we found
+    print(f"  Controls found by target: {list(control_data_by_target.keys())}")
+    
     processed_count = 0
     
     for session_id, info in all_sessions.items():
-        base_id = info['base_id']
+        target = info['target']
         
-        # Get control data for this session (if not itself a control)
+        # === GET CONTROL DATA FOR THIS SESSION'S TARGET ===
         data_control = None
-        if not info['is_control'] and base_id in control_data_cache:
-            data_control = control_data_cache[base_id]
+        if not info['is_control']:
+            # Try to get control for this target
+            if target and target in control_data_by_target:
+                data_control = control_data_by_target[target]
+            elif '_default' in control_data_by_target:
+                data_control = control_data_by_target['_default']
+            
+            if data_control is not None:
+                print(f"  Matched control for {session_id} (target {target})")
         
         # Get dose-response dict (only if multiple conditions exist)
+        dose_key = f"{info['base_id']}_{target}" if target else info['base_id']
         session_data_dict = None
-        if base_id in dose_response_cache and len(dose_response_cache[base_id]) > 1:
-            session_data_dict = dose_response_cache[base_id]
+        if dose_key in dose_response_cache and len(dose_response_cache[dose_key]) > 1:
+            session_data_dict = dose_response_cache[dose_key]
         
         # Process this session
         process_session(

@@ -17,6 +17,7 @@ BATCH_SCRIPTS = [
     # "make_aligned_npz_and_mat.py",
     "extract_peri_stim.py",
     "inspect_kinematics_trajectories.py",
+    "plot_plateau_analysis.py",
 
     ### RUN ^ inspect_kinematics_trajectories.py to check for remaining bad traces -> add bad traces to /config/manual_trial_remove.csv
     ### RERUN extract_peri_stim.py
@@ -31,7 +32,7 @@ BATCH_SCRIPTS = [
 
 # Define the sessions you want to process
 SESSIONS_TO_RUN = [
-    {"location": "Nike/20260311_NRR_RW022", "session": "NRR_RW022"},
+    # {"location": "Nike/20260311_NRR_RW022", "session": "NRR_RW022"},
     {"location": "Nike/20260116_NRR_RW012", "session": "NRR_RW012"},
     {"location": "Nike/20251203_NRR_RW011", "session": "NRR_RW011"},
     {"location": "Nike/20260416_NRR_RW032", "session": "NRR_RW032"},

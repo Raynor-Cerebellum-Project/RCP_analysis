@@ -968,13 +968,11 @@ def process_baseline_group_utah(
         WIN_FULL = (-EPOCH_PRE_MS, EPOCH_POST_MS)
         
         bb_full, t_full = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_FULL)
-        bb_pre, t_pre = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_PRE)
-        bb_post, t_post = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_POST)
+        _, t_pre = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_PRE)
+        _, t_post = slice_epoch(concat_epochs_clean, rel_t_epoch, WIN_POST)
         
         results = {
             "broadband_full": bb_full,
-            "broadband_pre": bb_pre,
-            "broadband_post": bb_post,
         }
         
         for band_name, (low, high) in LFP_BANDS.items():
@@ -996,6 +994,7 @@ def process_baseline_group_utah(
             "n_trials": concat_epochs_clean.shape[0],
             "rel_time_pre": t_pre,
             "rel_time_post": t_post,
+            "t_full_ms": t_full,
             "ua_ids_1based": ua_ids_global,
             **results
         }
@@ -1254,8 +1253,8 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         )
 
         results['broadband_full'], t_full = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_FULL)
-        results['broadband_pre'], t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
-        results['broadband_post'], t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
+        _, t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
+        _, t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
         
         # Band Analysis
         for band_name, rec_filtered in filtered_recs.items():
@@ -1281,6 +1280,7 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
             "stim_ms": np.array(valid_stim_ms),
             "rel_time_pre": t_pre,
             "rel_time_post": t_post,
+            "t_full_ms": t_full,
             **results
         }
         
