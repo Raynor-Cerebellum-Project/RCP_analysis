@@ -35,6 +35,9 @@ class experimentParams:
     # additional preprocessing params
     preprocessing: dict[str, Any] = field(default_factory=dict)
 
+    # RSA params
+    rsa_params: dict[str, Any] = field(default_factory=dict)
+
 def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams:
     cfg = yaml.safe_load(yaml_path.read_text())
 
@@ -88,6 +91,7 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
         UA_rate_est=cfg.get("UA_rate_est", {}) or {},
         kinematics=kin_cfg,
         preprocessing=pre_cfg,
+        rsa_params=cfg.get("rsa_params", {}) or {},
     )
     return params
 

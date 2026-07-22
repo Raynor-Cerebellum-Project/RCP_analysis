@@ -1,15 +1,17 @@
 import RCP_analysis as rcp
+from RCP_analysis.python.functions.config_loading import PARAMS
 
 # Config
 def main():
-    # Load in params (poststim window, move_alpha, stim_alpha)
-    poststim_win_ms=(0.0, 50.0)
-    channel_criterion=["movement", "stim", "union", "intersection"]
-    cond_label_extras={"at_rest": "At rest", "Baseline": "Baseline"}
-    move_alpha=0.05
-    stim_alpha=0.05
-    targets = ["target_A", "target_B"]
-    probes = ['NPRW', 'UA']
+    rsa_cfg = PARAMS.rsa_params
+
+    poststim_win_ms = tuple(rsa_cfg.get("poststim_win_ms"))
+    channel_criterion = rsa_cfg.get("channel_criterion")
+    cond_label_extras = {"at_rest": "At rest", "Baseline": "Baseline"}
+    move_alpha = rsa_cfg.get("move_alpha")
+    stim_alpha = rsa_cfg.get("stim_alpha")
+    targets = rsa_cfg.get("targets")
+    probes = rsa_cfg.get("probes")
     
     # Loop over NPRW and UA, Target A and Target B
     for probe in probes:
