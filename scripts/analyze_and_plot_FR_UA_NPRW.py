@@ -18,6 +18,7 @@ BATCH_SCRIPTS = [
     # "generate_stim_summary.py",
     # "plot_complete_shaded_BT.py",
     # "quantify_stim_kinematics.py",
+    "RSA_calculation.py",
 ]
 
 def run_scripts(base_dir: Path):

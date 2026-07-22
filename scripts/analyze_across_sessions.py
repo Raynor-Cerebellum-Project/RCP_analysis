@@ -18,6 +18,7 @@ BATCH_SCRIPTS = [
     "extract_peri_stim.py",
     "inspect_kinematics_trajectories.py",
     "plot_plateau_analysis.py",
+    "RSA_calculation.py",
 
     ### RUN ^ inspect_kinematics_trajectories.py to check for remaining bad traces -> add bad traces to /config/manual_trial_remove.csv
     ### RERUN extract_peri_stim.py
