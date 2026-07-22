@@ -4,6 +4,7 @@ from .python.functions.params_loading import (
     resolve_probe_geom_path,
 )
 from .python.functions import config_loading
+
 # utils
 from .python.functions.utils import (
     find_per_cond_inputs,
@@ -25,7 +26,6 @@ from .python.functions.utils import (
     build_session_index_map,
     find_ns5_by_br_index, 
     find_ns2_by_br_index, 
-    
     
     median_across_trials,
     variance_across_trials,
@@ -63,6 +63,11 @@ from .python.functions.br_preproc import (
     apply_ua_mapping_with_regions,
     extract_br_aux_streams_npz,
 )
+# RSA
+from .python.functions.rsa_utils import (
+    run_rsa,
+)
+
 # impedance
 from .python.functions.impedance_utils import (
     get_session_impedances,
@@ -144,4 +149,7 @@ __all__ = [
     
     # plotting    
     "stacked_heatmaps_plus_behv",
+    
+    # RSA
+    "run_rsa",
 ]
