@@ -4,6 +4,15 @@ from typing import Iterable, Optional
 import numpy as np
 from scipy import stats
 import matplotlib.pyplot as plt
+import os
+import logging
+
+logger = logging.getLogger("rsa")
+logger.setLevel(logging.INFO)  # set to logging.DEBUG for per-file detail
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
 
 from RCP_analysis.python.functions.config_loading import *
 
@@ -38,6 +47,16 @@ class Block:
         return self.X.shape[0]
 
 # NPZ helpers
+def _short_npz_name(path: Path) -> str:
+    """
+    Shorten a peristim NPZ filename for logging: drop the leading
+    'peristim__<session>__' prefix, keep from 'BR_' onward (e.g.
+    'peristim__NRR_RW022_260311_135426__BR_001_target_A.npz' -> 'BR_001_target_A.npz').
+    Falls back to the full filename if no 'BR_' segment is found.
+    """
+    parts = path.name.split("__")
+    return next((p for p in parts if "BR_" in p), path.name)
+    
 def _load_rates(path: Path, source: str):
     """Return (rates [n_trials, n_ch, T], rel_t [T]) or (None, None)"""
     # Get fields by source
@@ -141,11 +160,11 @@ def _trial_features_from_peristim_npz(
     w1 = float(poststim_win_ms[1]) + stim_dur
     mask_t = (rel_t >= w0) & (rel_t <= w1)
     if not np.any(mask_t):
-        print(
-            f"[rsa][warn] poststim window {poststim_win_ms} ms "
-            f"(abs {w0:.1f}-{w1:.1f} ms, stim_dur={stim_dur:.1f} ms) has no samples; "
-            f"skipping file {npz_path.name}"
-        )
+        logger.debug(
+                    f"[run][warn] poststim window {poststim_win_ms} ms "
+                    f"(abs {w0:.1f}-{w1:.1f} ms, stim_dur={stim_dur:.1f} ms) has no samples; "
+                    f"skipping file {npz_path.name}"
+                )
         return np.zeros((0, 0), float), [], {"cond": cond_label, "n_trials": 0, "n_ch": 0}
 
     if rate_key not in peristim_npz.files:
@@ -311,18 +330,17 @@ def compute_movement_mask(
             n_ch = n_ch_file
             ever_passes = np.zeros(n_ch, dtype=bool)
         if n_ch_file != n_ch:
-            print(f"[chan-sel][move] ch mismatch in {path.name}; skipping")
+            logger.debug(f"[move] ch mismatch in {_short_npz_name(path)}; skipping")
             continue
 
         pvals = _movement_pvalues(rates, baseline_mask, response_mask)
         ever_passes |= _fdr_pass_mask(pvals, alpha)
 
     if ever_passes is None:
-        print("[chan-sel][move] no usable baseline files")
+        logger.warning("[move] no usable baseline files")
         return None
-    print(f"[chan-sel][move] {ever_passes.sum()}/{n_ch} channels pass movement criterion (Wilcoxon signed-rank, FDR alpha={alpha})")
+    logger.info(f"[move] {ever_passes.sum()}/{n_ch} channels pass movement criterion")
     return ever_passes
-
 
 def _build_ctrl_pool(
     baseline_paths: list[Path],
@@ -348,7 +366,7 @@ def _build_ctrl_pool(
     if not chunks:
         return None
     pool = np.concatenate(chunks, axis=1)  # (n_ch, N_ctrl_trials)
-    print(f"[chan-sel][stim] ctrl pool: {pool.shape[1]} control trials")
+    logger.info(f"[stim] ctrl pool: {pool.shape[1]} control trials")
     return pool
 
 # Stim mask
@@ -374,7 +392,7 @@ def compute_stim_mask(
         return None
     n_ch = rates.shape[1]
     if ctrl_pool.shape[0] != n_ch:
-        print(f"[chan-sel][stim] ch mismatch for {stim_path.name}; skipping stim mask")
+        logger.debug(f"[stim] ch mismatch for {_short_npz_name(stim_path)}; skipping stim mask")
         return None
 
     stim_trial_mean = np.nanmean(rates[:, :, stim_mask], axis=2)  # (n_trials, n_ch)
@@ -393,7 +411,7 @@ def compute_stim_mask(
         pvals[ch] = p
 
     passes = _fdr_pass_mask(pvals, alpha)
-    print(f"[chan-sel][stim] {passes.sum()}/{n_ch} pass (Mann-Whitney U, FDR alpha={alpha}) for {stim_path.name}")
+    logger.debug(f"[stim] {passes.sum()}/{n_ch} pass for {_short_npz_name(stim_path)}")
     return passes
 
 # Channel-mask for UA files
@@ -478,9 +496,7 @@ def plot_movement_mask_debug(
                 region_arr=region_arr, region_names=region_names, ch_subset=ch_subset,
                 vlines=vlines,
             )
-
-        br_tag = next((p for p in path.stem.split("__") if "BR_" in p), path.stem)
-        plt.suptitle(f"Movement mask  Wilcoxon signed-rank, FDR alpha={alpha}  {br_tag}", fontsize=10)
+        plt.suptitle(f"Movement mask  Wilcoxon signed-rank, FDR alpha={alpha}  {_short_npz_name(path).removesuffix('.npz')}", fontsize=10)
         plt.tight_layout()
         
         out_svg = (
@@ -491,7 +507,7 @@ def plot_movement_mask_debug(
                 )
 
         fig.savefig(out_svg, dpi=300)
-        print(f"[rsa] wrote movement-mask RSA {out_svg}")
+        logger.info(f"[move][debug-plot] wrote {os.path.relpath(out_svg, OUT_BASE)}")
         plt.close(fig)
 
 def plot_stim_mask_debug(
@@ -541,9 +557,8 @@ def plot_stim_mask_debug(
             region_arr=region_arr, region_names=region_names, ch_subset=ch_subset,
             vlines=vlines, vspans=vspans,
         )
-
-    br_tag = next((p for p in stim_path.stem.split("__") if "BR_" in p), stim_path.stem)
-    plt.suptitle(f"Stim mask  Mann-Whitney U, FDR alpha={alpha}  {br_tag}", fontsize=10)
+    
+    plt.suptitle(f"Stim mask  Mann-Whitney U, FDR alpha={alpha}  {_short_npz_name(stim_path).removesuffix('.npz')}", fontsize=10)
     plt.tight_layout()
     
     out_svg = (
@@ -553,7 +568,7 @@ def plot_stim_mask_debug(
             )
 
     fig.savefig(out_svg, dpi=300)
-    print(f"[rsa] wrote stim-mask RSA {out_svg}")
+    logger.info(f"[stim][debug-plot] saved {os.path.relpath(out_svg, OUT_BASE)}")
     plt.close(fig)
 
 # RSM construction
@@ -661,8 +676,12 @@ def _plot_rdm_with_block_ticks(
         fig.tight_layout()
         if out_svg is not None:
             fig.savefig(out_svg, dpi=300)
-            print(f"[rsa] wrote {out_svg}")
-        plt.close(fig)
+            out_svg_rel = os.path.relpath(out_svg, OUT_BASE)
+            plt.close(fig)
+            return out_svg_rel
+        else:
+            plt.close(fig)
+            return None
 
 # Single entry point (one reach target per call)
 def run_rsa(
@@ -744,9 +763,11 @@ def run_rsa(
     needs_movement = any(c in ("movement", "union", "intersection") for c in criteria)
     needs_stim = any(c in ("stim", "union", "intersection") for c in criteria)
 
-    print(
-        f"[rsa] probe={source!r} target={target!r} criteria={criteria!r}  "
-        f"poststim_win={poststim_win_ms[0]}-{poststim_win_ms[1]} ms"
+    logger.info(
+        f"\n{'='*70}\n"
+        f"[run] probe={source}  target={target}  "
+        f"poststim={poststim_win_ms[0]}-{poststim_win_ms[1]}ms\n"
+        f"{'='*70}"
     )
 
     # 1. Gather NPZ files: stim + control + at_rest given a target
@@ -764,11 +785,11 @@ def run_rsa(
     if not stim_files:
         raise SystemExit(f"[rsa] no PeriStim NPZs found in {stim_dir}")
     if baseline_paths:
-        print(f"[rsa] baseline: {[p.name for p in baseline_paths]}")
+        logger.info(f"[run] baseline: {[_short_npz_name(p) for p in baseline_paths]}")
     else:
-        print(f"[rsa][warn] no control_reaches NPZs found in {baseline_dir}")
+        logger.warning(f"[run][warn] no control_reaches NPZs found in {baseline_dir}")
     if at_rest_files:
-        print(f"[rsa] at_rest: {[p.name for p in at_rest_files]}")
+        logger.info(f"[run] at_rest: {[_short_npz_name(p) for p in at_rest_files]}")
 
     # Collect conditions -- done once regardless of how many criteria are requested
     blocks, skipped = _collect_condition_blocks(
@@ -785,7 +806,7 @@ def run_rsa(
     if skipped.get("missing_or_empty"):
         parts.append("other_skips=" + str(len(skipped["missing_or_empty"])))
     if parts:
-        print(f"[rsa][skip-summary] " + " | ".join(parts))
+        logger.info("[run][skip] " + " | ".join(parts))
 
     if not blocks:
         raise SystemExit("[rsa] no conditions with enough trials")
@@ -795,8 +816,8 @@ def run_rsa(
     # file would still silently contribute to the movement/stim null distribution
     baseline_paths_kept = [block.path for block in blocks if block.is_baseline]
     if len(baseline_paths_kept) != len(baseline_paths):
-        dropped = sorted(set(p.name for p in baseline_paths) - set(p.name for p in baseline_paths_kept))
-        print(f"[rsa] baseline (after skip_conds): {[p.name for p in baseline_paths_kept]}  (dropped: {dropped})")
+        dropped = sorted(set(_short_npz_name(p) for p in baseline_paths) - set(_short_npz_name(p) for p in baseline_paths_kept))
+        logger.info(f"[run] baseline (after skip_conds): {[_short_npz_name(p) for p in baseline_paths_kept]}  (dropped: {dropped})")
 
     # Channel masks: computed from the raw baseline NPZs and build flags for the blocks
     move_mask = None
@@ -809,7 +830,7 @@ def run_rsa(
     if needs_stim:
         ctrl_pool = _build_ctrl_pool(baseline_paths_kept, source)
         if ctrl_pool is None:
-            print("[rsa][warn] no ctrl files for stim criterion; stim mask disabled")
+            logger.warning("[run][warn] no ctrl files for stim criterion; stim mask disabled")
 
     if ctrl_pool is not None:
         bl_rates, bl_rel_t = _load_rates(baseline_paths_kept[0], source)
@@ -817,12 +838,6 @@ def run_rsa(
             if block.is_baseline:
                 continue
             block.stim_mask = compute_stim_mask(block.path, ctrl_pool, source, alpha=stim_alpha)
-            if debug_masks and block.stim_mask is not None:
-                plot_stim_mask_debug(
-                    block.path, block.stim_mask, source, target,
-                    baseline_rates=bl_rates, baseline_rel_t=bl_rel_t,
-                    alpha=stim_alpha,
-                )
 
     # Reorder blocks to match given condition order
     if cond_order is not None:
@@ -838,7 +853,7 @@ def run_rsa(
     condition_ch_ct = [block.X.shape[1] for block in blocks]
     if len(set(condition_ch_ct)) > 1:
         min_dim = min(condition_ch_ct)
-        print(f"[rsa][warn] feature dimension mismatch {set(condition_ch_ct)} -> cropping all to {min_dim}") #TODO this cropping is a bit of a hack
+        logger.warning(f"[run][warn] feature dimension mismatch {set(condition_ch_ct)} -> cropping all to {min_dim}")
         for block in blocks:
             block.X = block.X[:, :min_dim]
             if block.stim_mask is not None:
@@ -858,7 +873,7 @@ def run_rsa(
     # drop any trials that are still NaNs post normalization (e.g. constant channels)
     valid_rows = np.isfinite(X_all).all(axis=1)
     if not valid_rows.all():
-        print(f"[rsa][note] dropping {int((~valid_rows).sum())} trials post-normalization")
+        logger.info(f"[run][note] dropping {int((~valid_rows).sum())} trials post-normalization")
         block_edge = 0
         
         # Remove NaN trials from each block and update block sizes
@@ -902,16 +917,28 @@ def run_rsa(
             stim_mask_union = np.zeros_like(per_block_stim_masks[0])
             for m in per_block_stim_masks:
                 stim_mask_union |= m
-            print(
-                f"[chan-sel][stim-union] {stim_mask_union.sum()}/{stim_mask_union.size} "
-                f"channels pass stim criterion in >=1 condition"
+            logger.info(
+                f"[stim][union] {stim_mask_union.sum()}/{stim_mask_union.size} "
+                f"channels passing stim criterion"
             )
         else:
-            print("[chan-sel][stim-union] no per-block stim masks available; falling back to all channels")
+            logger.info("[stim][union] no per-block stim masks available; falling back to all channels")
 
+    if debug_masks and stim_mask_union is not None:
+        stim_block = next(
+            (b for b in blocks if not b.is_baseline and b.target != "at_rest"),
+            None,
+        )
+        if stim_block is not None:
+            plot_stim_mask_debug(
+                stim_block.path, stim_mask_union, source, target,
+                baseline_rates=bl_rates, baseline_rel_t=bl_rel_t,
+                alpha=stim_alpha,
+            )
+        
     # Build and plot one RSM per criterion
     for criterion in criteria:
-        # Resolve the effective channel mask per block for this criterion
+        # Determine channel mask for each criterion
         for block in blocks:
             n_ch = block.X_z.shape[1]
             all_ch = np.ones(n_ch, bool)
@@ -943,9 +970,18 @@ def run_rsa(
             if SAVE_SVG else None
         )
 
-        _plot_rdm_with_block_ticks(
+        out_svg_rel = _plot_rdm_with_block_ticks(
             RSM, sizes_t, block_labels_t, title,
             out_svg=out_svg, vmin=vmin, vmax=vmax,
         )
-
-        print(f"[rsa] final (criterion={criterion!r}): total trials={sum(block.n_trials for block in blocks)}  channels={condition_ch_ct[0] if condition_ch_ct else 0}")
+        crit_label = criterion or "all-ch"
+        tag = f"[rsa-{crit_label}]"
+        if out_svg_rel is not None:
+            logger.info(
+                f"{tag:<18} figure saved  "
+                f"n={sum(block.n_trials for block in blocks):<4} "
+                f"channels={condition_ch_ct[0] if condition_ch_ct else 0:<4} "
+                f"{out_svg_rel}"
+            )
+        else:
+            logger.info(f"{tag:<18} figure not generated")
