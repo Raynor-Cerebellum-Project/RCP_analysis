@@ -1392,10 +1392,6 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
             trial_labels = np.full(event_ms.shape, "N", dtype="U1") 
 
         vals, cnts = np.unique(trial_labels, return_counts=True)
-<<<<<<< HEAD
-        # print(dict(zip(vals, cnts)))
-=======
->>>>>>> 9736c405b9df9b2605defdf1e402541044da3442
 
         # extract ts_state peristim segments
         if ts_state_num_full is not None and ns2_t_ms.size and event_ms.size:
