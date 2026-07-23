@@ -7,6 +7,7 @@ from .python.functions import config_loading
 
 # utils
 from .python.functions.utils import (
+    update_status_cell,
     find_per_cond_inputs,
     get_metadata_mapping,
     detect_IR_crossings,
@@ -15,6 +16,7 @@ from .python.functions.utils import (
     align_dlc_to_corrected,
     frame2sample_br_ns5_sync,
     frame2sample_br_ns2_sync,
+    short_npz_name,
     
     list_intan_sessions,
     load_stim_detection, 
@@ -86,6 +88,8 @@ __all__ = [
     "config_loading",
 
     # utils
+    "update_status_cell",
+    "short_npz_name",
     "find_per_cond_inputs", 
     "get_metadata_mapping",
     "detect_IR_crossings",
@@ -103,11 +107,9 @@ __all__ = [
     "load_br_intan_sync_ns5", 
     "load_behavior_npz",
     
-    
     "median_across_trials",
     "variance_across_trials",
     "extract_peristim_segments",
-    
     
     "detect_stim_channels_from_npz",
     "baseline_zero_each_trial",

@@ -61,7 +61,7 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
 
     kin_cfg = dict(cfg.get("kinematics", {}) or {})
     kin_cfg["num_camera"] = kin_cfg.get("num_camera")
-    kin_cfg["keypoints"] = tuple(map(str.strip, (kin_cfg["keypoints"])))
+    kin_cfg["keypoints"] = tuple(map(str.strip, kin_cfg.get("keypoints", [])))
 
     pre_cfg = dict(cfg.get("preprocessing", {}) or {})
 
