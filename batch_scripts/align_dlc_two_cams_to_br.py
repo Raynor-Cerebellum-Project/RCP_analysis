@@ -115,6 +115,14 @@ def main():
         both_csv = BEHV_CKPT_ROOT / f"{cond}_both_cams_aligned.csv"
         both_samps_aligned.to_csv(both_csv, index_label="CORRECTED_framenum")
         print(f"[write] {both_csv}")
+        # rcp.update_status_cell(csv_path, row_id, column, "Completed", id_column) #TODO
+        
+            # update_status_cell( #TODO
+            #     Path(".../config/data_status_reaching.csv"),
+            #     row_id="NRR_RW011",
+            #     column="Figures made",
+            #     value="Completed",
+            # )
 
 if __name__ == "__main__":
     main()

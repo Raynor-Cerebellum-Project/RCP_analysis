@@ -13,8 +13,8 @@ BATCH_SCRIPTS = [
     # "align_VOG_to_br.py",
     # "NPRW_Intan_analysis_mf.py",
     # "compute_br_to_intan_shifts.py",
-    # "UA_BR_analysis_mf.py", 
-    # "make_aligned_npz_and_mat.py",
+    "UA_BR_analysis_mf.py", 
+    "make_aligned_npz_and_mat.py",
     "extract_peri_stim.py",
     "inspect_kinematics_trajectories.py",
     "plot_plateau_analysis.py",
@@ -45,7 +45,7 @@ SESSIONS_TO_RUN = [
     # {"location": "Nike/20260218_NRR_RW017", "session": "NRR_RW017"},
     # {"location": "Nike/20260220_NRR_RW018", "session": "NRR_RW018"},
     # {"location": "Nike/20260226_NRR_RW019", "session": "NRR_RW019"},
-    # {"location": "Nike/20260409_NRR_RW029", "session": "NRR_RW029"},
+    {"location": "Nike/20260409_NRR_RW029", "session": "NRR_RW029"},
 ]
 
 def update_params_yaml(params_path: Path, location: str, session: str):

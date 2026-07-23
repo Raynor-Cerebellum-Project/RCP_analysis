@@ -1,5 +1,6 @@
 import re, json
 import pandas as pd
+import numpy as np
 from scipy.io import savemat
 import RCP_analysis as rcp
 from pathlib import Path
@@ -20,7 +21,6 @@ try:
         MANUAL_REMOVE_DF = pd.DataFrame(columns=['intan_filename', 'br_idx', 'trials_to_drop', 'reason'])
 except pd.errors.EmptyDataError:
     MANUAL_REMOVE_DF = pd.DataFrame(columns=['intan_filename', 'br_idx', 'trials_to_drop', 'reason'])
-
 
 DIAGNOSTIC_FIG_DIR  = OUT_BASE / "figures" / "extract_peri_stim_diagnostics"
 DIAGNOSTIC_FIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -81,9 +81,7 @@ PROCESS_ONLY = PARAMS.preprocessing.get("process_only")  # list of BR indices to
 
 KEYPOINTS_ORDER = tuple(PARAMS.kinematics.get("keypoints", []))
 
-# ============================================================================
 # Plotting config
-# ============================================================================
 WIN_MS            = (-800.0, 600.0)
 NORMALIZE_FIRST_MS = 150.0
 MIN_TRIALS        = 1
@@ -1394,7 +1392,10 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
             trial_labels = np.full(event_ms.shape, "N", dtype="U1") 
 
         vals, cnts = np.unique(trial_labels, return_counts=True)
+<<<<<<< HEAD
         # print(dict(zip(vals, cnts)))
+=======
+>>>>>>> 9736c405b9df9b2605defdf1e402541044da3442
 
         # extract ts_state peristim segments
         if ts_state_num_full is not None and ns2_t_ms.size and event_ms.size:

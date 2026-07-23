@@ -4,6 +4,7 @@ from typing import Iterable, Optional
 import numpy as np
 from scipy import stats
 import matplotlib.pyplot as plt
+import RCP_analysis as rcp
 import os
 import logging
 
@@ -23,7 +24,6 @@ MIN_TRIALS_PER_COND = 4          # drop conditions (NPZ files) with fewer trials
 MIN_VALID_FEATURES = 2           # trial must have at least this many channels
 
 # Paths
-SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
 FIG_DIR = OUT_BASE / "figures" / "rsa_from_peristim"
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 (FIG_DIR / "target_A").mkdir(parents=True, exist_ok=True)
@@ -46,17 +46,7 @@ class Block:
     def n_trials(self) -> int:
         return self.X.shape[0]
 
-# NPZ helpers
-def _short_npz_name(path: Path) -> str:
-    """
-    Shorten a peristim NPZ filename for logging: drop the leading
-    'peristim__<session>__' prefix, keep from 'BR_' onward (e.g.
-    'peristim__NRR_RW022_260311_135426__BR_001_target_A.npz' -> 'BR_001_target_A.npz').
-    Falls back to the full filename if no 'BR_' segment is found.
-    """
-    parts = path.name.split("__")
-    return next((p for p in parts if "BR_" in p), path.name)
-    
+# NPZ helpers    
 def _load_rates(path: Path, source: str):
     """Return (rates [n_trials, n_ch, T], rel_t [T]) or (None, None)"""
     # Get fields by source
@@ -330,7 +320,7 @@ def compute_movement_mask(
             n_ch = n_ch_file
             ever_passes = np.zeros(n_ch, dtype=bool)
         if n_ch_file != n_ch:
-            logger.debug(f"[move] ch mismatch in {_short_npz_name(path)}; skipping")
+            logger.debug(f"[move] ch mismatch in {rcp.short_npz_name(path)}; skipping")
             continue
 
         pvals = _movement_pvalues(rates, baseline_mask, response_mask)
@@ -392,7 +382,7 @@ def compute_stim_mask(
         return None
     n_ch = rates.shape[1]
     if ctrl_pool.shape[0] != n_ch:
-        logger.debug(f"[stim] ch mismatch for {_short_npz_name(stim_path)}; skipping stim mask")
+        logger.debug(f"[stim] ch mismatch for {rcp.short_npz_name(stim_path)}; skipping stim mask")
         return None
 
     stim_trial_mean = np.nanmean(rates[:, :, stim_mask], axis=2)  # (n_trials, n_ch)
@@ -411,7 +401,7 @@ def compute_stim_mask(
         pvals[ch] = p
 
     passes = _fdr_pass_mask(pvals, alpha)
-    logger.debug(f"[stim] {passes.sum()}/{n_ch} pass for {_short_npz_name(stim_path)}")
+    logger.info(f"[stim] {passes.sum()}/{n_ch} pass for {rcp.short_npz_name(stim_path)}")
     return passes
 
 # Channel-mask for UA files
@@ -496,13 +486,13 @@ def plot_movement_mask_debug(
                 region_arr=region_arr, region_names=region_names, ch_subset=ch_subset,
                 vlines=vlines,
             )
-        plt.suptitle(f"Movement mask  Wilcoxon signed-rank, FDR alpha={alpha}  {_short_npz_name(path).removesuffix('.npz')}", fontsize=10)
+        plt.suptitle(f"Movement mask  Wilcoxon signed-rank, FDR alpha={alpha}  {rcp.short_npz_name(path).removesuffix('.npz')}", fontsize=10)
         plt.tight_layout()
         
         out_svg = (
-                    FIG_DIR / target /f"RSA_{source}_movement_criterion_"
+                    FIG_DIR / target /f"debug_{source}_movement_criterion_"
                               f"baseline{int(base_win[0])}-{int(base_win[1])}"
-                              f"movement{int(resp_win[0])}-{int(resp_win[1])}.svg"
+                              f"movement{int(resp_win[0])}-{int(resp_win[1])}.png"
                     if SAVE_SVG else None
                 )
 
@@ -558,12 +548,12 @@ def plot_stim_mask_debug(
             vlines=vlines, vspans=vspans,
         )
     
-    plt.suptitle(f"Stim mask  Mann-Whitney U, FDR alpha={alpha}  {_short_npz_name(stim_path).removesuffix('.npz')}", fontsize=10)
+    plt.suptitle(f"Stim mask  Mann-Whitney U, FDR alpha={alpha}  {rcp.short_npz_name(stim_path).removesuffix('.npz')}", fontsize=10)
     plt.tight_layout()
     
     out_svg = (
-                FIG_DIR / target /f"RSA_{source}_stim_criterion_"
-                            f"poststim{int(stim_win[0])}-{int(stim_win[1])}.svg"
+                FIG_DIR / target /f"debug_{source}_stim_criterion_"
+                            f"poststim{int(stim_win[0])}-{int(stim_win[1])}.png"
                 if SAVE_SVG else None
             )
 
@@ -785,11 +775,11 @@ def run_rsa(
     if not stim_files:
         raise SystemExit(f"[rsa] no PeriStim NPZs found in {stim_dir}")
     if baseline_paths:
-        logger.info(f"[run] baseline: {[_short_npz_name(p) for p in baseline_paths]}")
+        logger.info(f"[run] baseline: {[rcp.short_npz_name(p) for p in baseline_paths]}")
     else:
         logger.warning(f"[run][warn] no control_reaches NPZs found in {baseline_dir}")
     if at_rest_files:
-        logger.info(f"[run] at_rest: {[_short_npz_name(p) for p in at_rest_files]}")
+        logger.info(f"[run] at_rest: {[rcp.short_npz_name(p) for p in at_rest_files]}")
 
     # Collect conditions -- done once regardless of how many criteria are requested
     blocks, skipped = _collect_condition_blocks(
@@ -816,8 +806,8 @@ def run_rsa(
     # file would still silently contribute to the movement/stim null distribution
     baseline_paths_kept = [block.path for block in blocks if block.is_baseline]
     if len(baseline_paths_kept) != len(baseline_paths):
-        dropped = sorted(set(_short_npz_name(p) for p in baseline_paths) - set(_short_npz_name(p) for p in baseline_paths_kept))
-        logger.info(f"[run] baseline (after skip_conds): {[_short_npz_name(p) for p in baseline_paths_kept]}  (dropped: {dropped})")
+        dropped = sorted(set(rcp.short_npz_name(p) for p in baseline_paths) - set(rcp.short_npz_name(p) for p in baseline_paths_kept))
+        logger.info(f"[run] baseline (after skip_conds): {[rcp.short_npz_name(p) for p in baseline_paths_kept]}  (dropped: {dropped})")
 
     # Channel masks: computed from the raw baseline NPZs and build flags for the blocks
     move_mask = None
@@ -949,24 +939,26 @@ def run_rsa(
                 block.move_mask = stim_mask_union if stim_mask_union is not None else all_ch
             elif criterion == "union":
                 move_mask_checked = move_mask if move_mask is not None else all_ch
-                block.move_mask = (move_mask_checked | block.stim_mask) if (not block.is_baseline and block.stim_mask is not None) else move_mask_checked
+                block.move_mask = (move_mask_checked | stim_mask_union) if stim_mask_union is not None else move_mask_checked
             elif criterion == "intersection":
                 move_mask_checked = move_mask if move_mask is not None else all_ch
-                block.move_mask = (move_mask_checked & block.stim_mask) if (not block.is_baseline and block.stim_mask is not None) else move_mask_checked
+                block.move_mask = (move_mask_checked & stim_mask_union) if stim_mask_union is not None else move_mask_checked
             else:
                 block.move_mask = all_ch
 
         RSM, sizes_t = _build_rsm_pairwise(blocks)
 
+        kept_ch = blocks[0].move_mask.sum() if blocks else 0
+
         title = (
             f"{target_disp} ({source}, criterion={criterion or 'all-ch'})\n"
             f"({int(poststim_win_ms[0])} to {int(poststim_win_ms[1])} ms post-stim)\n"
-            f"n={RSM.shape[0]}, {len(blocks)} conditions"
+            f"n={RSM.shape[0]}, {len(blocks)} conditions, {kept_ch} channels"
         )
 
         out_svg = (
             FIG_DIR / target /f"RSA_{source}_{criterion or 'all-ch'}_criterion_"
-                      f"poststim{int(poststim_win_ms[0])}-{int(poststim_win_ms[1])}.svg"
+                      f"poststim{int(poststim_win_ms[0])}-{int(poststim_win_ms[1])}.png"
             if SAVE_SVG else None
         )
 
@@ -980,7 +972,7 @@ def run_rsa(
             logger.info(
                 f"{tag:<18} figure saved  "
                 f"n={sum(block.n_trials for block in blocks):<4} "
-                f"channels={condition_ch_ct[0] if condition_ch_ct else 0:<4} "
+                f"channels={kept_ch:<4} "
                 f"{out_svg_rel}"
             )
         else:

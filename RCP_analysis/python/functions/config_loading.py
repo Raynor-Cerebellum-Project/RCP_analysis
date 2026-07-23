@@ -1,6 +1,4 @@
 from pathlib import Path
-import matplotlib
-matplotlib.use("Agg")
 
 # Import internal modules relatively to avoid circular dependency with the package export
 from .params_loading import load_experiment_params

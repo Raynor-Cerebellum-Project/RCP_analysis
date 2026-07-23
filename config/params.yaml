@@ -86,7 +86,7 @@ chunk: "4s"
 # Intan firing rate estimation
 NPRW_rate_est:
   bin_ms: 20.0          # bin width for counts
-  step_ms: 5.0          # step_ms sliding window step, set equal to bin_ms for old non-overlapping behavior
+  step_ms: 20.0          # step_ms sliding window step, set equal to bin_ms for old non-overlapping behavior
   sigma_ms: 20.0       # Gaussian kernel std
   detect_threshold: 4
   peak_sign: "neg"

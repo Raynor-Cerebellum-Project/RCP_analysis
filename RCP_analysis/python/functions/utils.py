@@ -5,6 +5,64 @@ import spikeinterface as si
 import spikeinterface.extractors as se
 from scipy.signal import butter, filtfilt
 
+def short_npz_name(path: Path) -> str:
+    """
+    Shorten a peristim NPZ filename for logging: drop the leading
+    'peristim__<session>__' prefix, keep from 'BR_' onward (e.g.
+    'peristim__NRR_RW022_260311_135426__BR_001_target_A.npz' -> 'BR_001_target_A.npz').
+    Falls back to the full filename if no 'BR_' segment is found.
+    """
+    parts = path.name.split("__")
+    return next((p for p in parts if "BR_" in p), path.name)
+
+def update_status_cell(
+    csv_path: Path,
+    row_id: str,
+    column: str,
+    value: str,
+    id_column: str,
+) -> None:
+    """
+    data_status.csv, set the cell at (row where id_column == row_id,
+    `column`) to `value`, and write the file back in place.
+
+    row_id:  value in the ID column identifying the row, e.g. "NRR_RW011"
+    column:  header name of the cell to update, e.g. "Peristim traces extracted"
+    value:   new cell contents, e.g. "Completed"
+
+    Raises KeyError if `column` isn't a header, LookupError if no row matches row_id.
+    """
+    csv_path = Path(csv_path)
+
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+
+    if fieldnames is None:
+        raise ValueError(f"{csv_path} has no header row")
+    if column not in fieldnames:
+        raise KeyError(
+            f"column {column!r} not found; available columns: {fieldnames}"
+        )
+    if id_column not in fieldnames:
+        raise KeyError(f"id column {id_column!r} not found in {csv_path}")
+
+    matched = [r for r in rows if r[id_column] == row_id]
+    if not matched:
+        raise LookupError(f"no row with {id_column}={row_id!r} in {csv_path}")
+    if len(matched) > 1:
+        raise LookupError(
+            f"{len(matched)} rows match {id_column}={row_id!r}; expected exactly one"
+        )
+
+    matched[0][column] = value
+
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+        
 # Building OCR and DLC dictionary for mapping
 def _parse_condition_cam(path: Path):
     """
