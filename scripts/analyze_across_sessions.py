@@ -56,8 +56,7 @@ def update_params_yaml(params_path: Path, location: str, session: str):
     with open(params_path, 'r') as f:
         content = f.read()
     
-    # Step 1: Comment out any currently active (uncommented) location line
-    # Matches lines like: '  location: "Nike/..."' (not starting with #)
+    # comment out any currently active (uncommented) location line
     content = re.sub(
         r'^(\s*)location: "(.+)"',
         r'\1# location: "\2"',
@@ -65,7 +64,7 @@ def update_params_yaml(params_path: Path, location: str, session: str):
         flags=re.MULTILINE
     )
     
-    # Step 2: Comment out any currently active (uncommented) session line
+    # comment out any currently active (uncommented) session line
     content = re.sub(
         r'^(\s*)session: "(.+)"',
         r'\1# session: "\2"',
@@ -73,7 +72,7 @@ def update_params_yaml(params_path: Path, location: str, session: str):
         flags=re.MULTILINE
     )
     
-    # Step 3: Uncomment the target location line
+    # uncomment the target location line
     content = re.sub(
         rf'^(\s*)# location: "{re.escape(location)}"',
         rf'\1location: "{location}"',
@@ -81,7 +80,7 @@ def update_params_yaml(params_path: Path, location: str, session: str):
         flags=re.MULTILINE
     )
     
-    # Step 4: Uncomment the target session line
+    # uncomment the target session line
     content = re.sub(
         rf'^(\s*)# session: "{re.escape(session)}"',
         rf'\1session: "{session}"',
@@ -92,17 +91,21 @@ def update_params_yaml(params_path: Path, location: str, session: str):
     with open(params_path, 'w') as f:
         f.write(content)
     
-    print(f"[INFO] Updated params.yaml: location={location}, session={session}")
+    print(f"[ANALYZE ACROSS SESSIONS] Updated params.yaml: location={location}, session={session}")
 
 def run_scripts(base_dir: Path, batch_scripts_folder: Path):
     params_path = base_dir / "config/params.yaml"
+
+    print(f"\n{'='*60}")
+    print("Running ANALYZE ACROSS SESSIONS = AAS")
+    print(f"{'='*60}")
     
     for session_info in SESSIONS_TO_RUN:
         location = session_info["location"]
         session = session_info["session"]
         
         print(f"\n{'='*60}")
-        print(f"[INFO] Processing session: {session}")
+        print(f"[AAS] Processing session: {session}")
         print(f"{'='*60}")
         
         # Update params.yaml for this session
@@ -111,21 +114,21 @@ def run_scripts(base_dir: Path, batch_scripts_folder: Path):
         # Run all scripts for this session
         for batch_script in BATCH_SCRIPTS:
             script_path = batch_scripts_folder / batch_script
-            print(f"\n[INFO] Running {script_path} for {session}...\n")
+            print(f"\n[AAS] Running {script_path} for {session}...\n")
             try:
                 subprocess.run(
                     ["python", str(script_path)],
                     check=True
                 )
             except subprocess.CalledProcessError as e:
-                print(f"[ERROR] Script {batch_script} failed for {session} with exit code {e.returncode}")
-                print(f"[INFO] Skipping to next session...")
+                print(f"[AAS: ERROR] Script {batch_script} failed for {session} with exit code {e.returncode}")
+                print(f"[AAS] Skipping to next session...")
                 break
         else:
-            print(f"\n[SUCCESS] Completed all scripts for {session}")
+            print(f"\n[AAS: SUCCESS] Completed all scripts for {session}")
     
     print(f"\n{'='*60}")
-    print("[INFO] All sessions completed!")
+    print("[AAS] All sessions completed!")
     print(f"{'='*60}")
 
 def main():

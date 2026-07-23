@@ -1,9 +1,6 @@
 """
-Quick X-Y Trajectory Viewer for Trial Inspection
+Plot Kinematics Trajectories for Trial Inpection And Manual Removal
 ================================================
-Simplified viewer showing only middle finger X-Y trajectories.
-Used for identifying trials to manually remove.
-
 Each subplot title shows:
   - "Trial:i (Raw:R)" where:
     - i = position in this plot (for reference)
@@ -115,21 +112,19 @@ def find_all_peristim_files() -> list:
         for f in sorted(continuous_dir.glob("*.npz")):
             files.append((f, 'continuous_stim', 'continuous_stim'))
     
-    # Legacy structure
-    for target in ['Target_A', 'Target_B']:
-        target_dir = PERI_ROOT / target
-        if target_dir.exists():
-            for f in sorted(target_dir.glob("*.npz")):
-                cond_type = 'control' if 'baseline' in f.name.lower() else 'stim'
-                files.append((f, cond_type, target.lower()))
+    # # Legacy structure
+    # for target in ['Target_A', 'Target_B']:
+    #     target_dir = PERI_ROOT / target
+    #     if target_dir.exists():
+    #         for f in sorted(target_dir.glob("*.npz")):
+    #             cond_type = 'control' if 'baseline' in f.name.lower() else 'stim'
+    #             files.append((f, cond_type, target.lower()))
     
     return files
 
 
 def process_single_file(npz_path: Path, condition_type: str, target_label: str):
     """Process one file and generate X-Y trajectory grid."""
-    
-    print(f"Processing {npz_path.name}...")
     
     try:
         data = np.load(npz_path, allow_pickle=True)
@@ -138,6 +133,8 @@ def process_single_file(npz_path: Path, condition_type: str, target_label: str):
         br_idx = int(data["br_idx"]) if "br_idx" in data else 0
         intan_filename = str(data["sess"]) if "sess" in data else "Unknown"
         raw_trial_indices = data["raw_trial_indices"] if "raw_trial_indices" in data.files else None
+
+        print(f"[IKT] Processing BR {br_idx}, {intan_filename}, {condition_type}, {target_label}:")
         
         # Get time axis
         t = data["beh_rel_t"]
@@ -147,14 +144,14 @@ def process_single_file(npz_path: Path, condition_type: str, target_label: str):
         names_key = f"beh_{CAMERA}_names"
         
         if cam_key not in data:
-            print(f"  No {CAMERA} data found, skipping")
+            print(f"[IKT] No {CAMERA} data found, skipping")
             return
         
         segs = data[cam_key]  # (n_trials, n_features, n_time)
         names = data[names_key].tolist() if names_key in data else []
         
         if segs.ndim != 3 or segs.shape[0] == 0:
-            print(f"  No valid trials, skipping")
+            print(f"[IKT] No valid trials, skipping")
             return
         
         n_trials = segs.shape[0]
@@ -163,8 +160,8 @@ def process_single_file(npz_path: Path, condition_type: str, target_label: str):
         idx_x, idx_y = find_xy_indices(names, KEYPOINT)
         
         if idx_x is None or idx_y is None:
-            print(f"  Could not find {KEYPOINT} X/Y, skipping")
-            print(f"  Available: {names}")
+            print(f"[IKT] Could not find {KEYPOINT} X/Y, skipping")
+            print(f"[IKT] Available: {names}")
             return
         
         # Create figure
@@ -190,10 +187,9 @@ def process_single_file(npz_path: Path, condition_type: str, target_label: str):
             x = segs[i, idx_x, :]
             y = segs[i, idx_y, :]
             
-            # Build title.
             # Raw index = stable absolute stim-pulse number -> use this in manual_trial_remove.csv
             raw_idx = int(raw_trial_indices[i]) if raw_trial_indices is not None else i
-            title = f"{intan_filename[:15]}\nBR:{br_idx} | Trial:{i} (Raw:{raw_idx})"
+            title = f"{intan_filename[:15]}\nBR:{br_idx} | Trial:{i+1} (Raw:{raw_idx})"
             
             plot_xy_trajectory(ax, x, y, t, title)
         
@@ -209,7 +205,7 @@ def process_single_file(npz_path: Path, condition_type: str, target_label: str):
             overall_title = npz_path.stem
         
         fig.suptitle(
-            f"{overall_title}\n{KEYPOINT.title()} Finger X-Y | {condition_type}/{target_label} | n={n_trials}\n"
+            f"{overall_title}\n{KEYPOINT.title()} Finger X-Y | {condition_type} / {target_label} | n={n_trials}\n"
             f"Session: {intan_filename} | BR: {br_idx}  —  put Raw:# in manual_trial_remove.csv",
             fontsize=10
         )
@@ -229,31 +225,28 @@ def process_single_file(npz_path: Path, condition_type: str, target_label: str):
         
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
-        print(f"  Saved: {out_path}")
         
     except Exception as e:
-        print(f"  Error: {e}")
+        print(f"[IKT] Error: {e}")
         import traceback
         traceback.print_exc()
 
 
 def main():
-    print(f"Session: {PARAMS.session}")
-    print(f"Camera: {CAMERA}, Keypoint: {KEYPOINT}")
-    print(f"Output: {FIG_ROOT}\n")
+    print(f"\n[IKT] Session: {PARAMS.session}, Camera: {CAMERA}, Keypoint: {KEYPOINT}")
     
     all_files = find_all_peristim_files()
     
     if not all_files:
-        print(f"No .npz files found in {PERI_ROOT}")
+        print(f"[IKT] No .npz files found in {PERI_ROOT}")
         return
     
-    print(f"Found {len(all_files)} files\n")
+    print(f"\n[IKT] Found {len(all_files)} files\n")
     
     for npz_path, condition_type, target_label in all_files:
         process_single_file(npz_path, condition_type, target_label)
     
-    print(f"\nDone! Results in {FIG_ROOT}")
+    print(f"\n[IKT] Done!")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,9 @@ from scipy.io import savemat
 import RCP_analysis as rcp
 from pathlib import Path
 import matplotlib.pyplot as plt
+import sys
+import numpy as np
+import warnings
 
 from RCP_analysis.python.functions.config_loading import *
 
@@ -117,14 +120,8 @@ RETURN_CHECK_BIN_MS = 20.0
 MAX_RETURN_TO_BASELINE = 0.50
 
 
-def plot_filtering_diagnostic(
-    segs: np.ndarray,
-    valid_mask: np.ndarray,
-    rejection_reasons: dict[str, np.ndarray],
-    rel_t_ms: np.ndarray,
-    save_path: Path,
-    title_prefix: str = "",
-) -> None:
+def plot_filtering_diagnostic(segs: np.ndarray, valid_mask: np.ndarray, rejection_reasons: dict[str, np.ndarray], 
+                                rel_t_ms: np.ndarray, save_path: Path, title_prefix: str = "") -> None:
     """
     Create 4-panel diagnostic figure showing kept vs rejected trials.
     """
@@ -172,11 +169,10 @@ def plot_filtering_diagnostic(
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
-    print(f"    Saved filtering diagnostic to {save_path}")
+    print(f"[extract] saved filtering diagnostic")
 
 
 def _find_keypoint_index(kp_names: list[str], pattern: str) -> int | None:
-    """Find index of keypoint matching pattern (case-insensitive)."""
     pattern_lower = pattern.lower()
     for i, name in enumerate(kp_names):
         if pattern_lower in str(name).lower():
@@ -191,212 +187,56 @@ def _compute_distance_from_start(
     ref_time_ms: float = DISTANCE_REFERENCE_TIME_MS,
 ) -> np.ndarray:
     """
-    Compute Euclidean distance from a reference position.
-
-    If rel_t is provided, the reference position is taken near ref_time_ms.
-    Otherwise, the first valid point is used.
+    Compute Euclidean distance from a reference position for 1D (T,) or 2D (n_trials, T) inputs.
     """
     x = np.asarray(x, float)
     y = np.asarray(y, float)
+    is_1d = (x.ndim == 1)
+    if is_1d:
+        x, y = x[None, :], y[None, :]
 
     valid = np.isfinite(x) & np.isfinite(y)
     if not valid.any():
-        return np.full_like(x, np.nan)
+        res = np.full_like(x, np.nan)
+        return res[0] if is_1d else res
 
     if rel_t is not None:
-        rel_t = np.asarray(rel_t, float)
-
-        ref_mask = (
-            (rel_t >= ref_time_ms - 10.0)
-            & (rel_t <= ref_time_ms + 10.0)
-            & valid
-        )
-
-        if ref_mask.any():
-            x0 = np.nanmean(x[ref_mask])
-            y0 = np.nanmean(y[ref_mask])
+        rel_t = np.asarray(rel_t, float).ravel()
+        ref_mask = (rel_t >= ref_time_ms - 10.0) & (rel_t <= ref_time_ms + 10.0)
+        if ref_mask.any() and ref_mask.size == x.shape[1]:
+            # Check if there's any finite data in the reference window
+            ref_data_x = x[:, ref_mask]
+            ref_data_y = y[:, ref_mask]
+            
+            # Handle x0
+            if ref_data_x.size == 0 or not np.any(np.isfinite(ref_data_x)):
+                x0 = np.full((x.shape[0], 1), np.nan)
+            else:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    x0 = np.nanmean(ref_data_x, axis=1, keepdims=True)
+            
+            # Handle y0
+            if ref_data_y.size == 0 or not np.any(np.isfinite(ref_data_y)):
+                y0 = np.full((y.shape[0], 1), np.nan)
+            else:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    y0 = np.nanmean(ref_data_y, axis=1, keepdims=True)
         else:
-            valid_idx = np.where(valid)[0]
-            if valid_idx.size == 0:
-                return np.full_like(x, np.nan)
+            x0 = np.full((x.shape[0], 1), np.nan)
+            y0 = np.full((y.shape[0], 1), np.nan)
+            for i in range(x.shape[0]):
+                v_idx = np.where(valid[i])[0]
+                if v_idx.size > 0:
+                    x0[i, 0] = np.interp(ref_time_ms, rel_t[v_idx], x[i, v_idx])
+                    y0[i, 0] = np.interp(ref_time_ms, rel_t[v_idx], y[i, v_idx])
 
-            x0 = np.interp(ref_time_ms, rel_t[valid_idx], x[valid_idx])
-            y0 = np.interp(ref_time_ms, rel_t[valid_idx], y[valid_idx])
-    else:
-        first_valid = np.where(valid)[0][0]
-        x0, y0 = x[first_valid], y[first_valid]
-
-    return np.sqrt((x - x0) ** 2 + (y - y0) ** 2)
-
-
-def _check_return_to_baseline(
-    distance: np.ndarray,
-    rel_t: np.ndarray,
-    baseline_mean: float,
-    return_window_ms: tuple[float, float] = RETURN_CHECK_WINDOW_MS,
-    bin_ms: float = RETURN_CHECK_BIN_MS,
-    max_return: float = MAX_RETURN_TO_BASELINE,
-) -> tuple[bool, float]:
-    """
-    Reject trials where the animal returns too close to baseline during the
-    post-event reach window.
-
-    Returns
-    -------
-    passed : bool
-        True if the trial does not return to baseline.
-    min_bin_distance : float
-        Minimum rolling/binned distance found in the return-check window.
-    """
-    distance = np.asarray(distance, float)
-    rel_t = np.asarray(rel_t, float)
-
-    win_start, win_end = return_window_ms
-    win_mask = (rel_t >= win_start) & (rel_t <= win_end)
-
-    if win_mask.sum() < 3:
-        return True, np.nan
-
-    dist_win = distance[win_mask]
-
-    dt = np.nanmedian(np.diff(rel_t)) if rel_t.size > 1 else 1.0
-    bin_samples = max(1, int(bin_ms / dt))
-
-    min_bin_distance = np.inf
-
-    for i in range(len(dist_win) - bin_samples + 1):
-        bin_vals = dist_win[i:i + bin_samples]
-        valid = np.isfinite(bin_vals)
-
-        if valid.sum() >= bin_samples // 2:
-            bin_mean = np.nanmean(bin_vals)
-            min_bin_distance = min(min_bin_distance, bin_mean)
-
-    if not np.isfinite(min_bin_distance):
-        return True, np.nan
-
-    threshold = baseline_mean + max_return
-    passed = min_bin_distance > threshold
-
-    return passed, min_bin_distance
+    dist = np.sqrt((x - x0) ** 2 + (y - y0) ** 2)
+    return dist[0] if is_1d else dist
 
 
-def _check_trial_valid_comprehensive(
-    pos_x: np.ndarray,
-    pos_y: np.ndarray,
-    rel_t: np.ndarray,
-    baseline_stability_window_ms: tuple[float, float] = BASELINE_STABILITY_WINDOW_MS,
-    max_baseline_deviation: float = MAX_BASELINE_DEVIATION,
-    direction_windows_ms: tuple[tuple[float, float], ...] = DIRECTION_CHECK_WINDOWS_MS,
-    min_increase: float = MIN_DISTANCE_INCREASE,
-    return_window_ms: tuple[float, float] = RETURN_CHECK_WINDOW_MS,
-    return_bin_ms: float = RETURN_CHECK_BIN_MS,
-    max_return_to_baseline: float = MAX_RETURN_TO_BASELINE,
-) -> tuple[bool, str, dict]:
-    """
-    Comprehensive trial validation combining:
-
-    1. Baseline stability check
-    2. Direction / reach-pattern check
-    3. Return-to-baseline / aborted-reach check
-
-    Returns
-    -------
-    is_valid : bool
-    reason : str
-    metrics : dict
-    """
-    pos_x = np.asarray(pos_x, float).ravel()
-    pos_y = np.asarray(pos_y, float).ravel()
-    rel_t = np.asarray(rel_t, float).ravel()
-
-    metrics = {
-        "max_baseline_dev": np.nan,
-        "min_post_distance": np.nan,
-        "baseline_mean_distance": np.nan,
-    }
-
-    if pos_x.size == 0 or pos_y.size == 0 or rel_t.size == 0:
-        return False, "empty_data", metrics
-
-    distance = _compute_distance_from_start(
-        pos_x,
-        pos_y,
-        rel_t=rel_t,
-        ref_time_ms=DISTANCE_REFERENCE_TIME_MS,
-    )
-
-    # ------------------------------------------------------------------
-    # CHECK 1: Baseline stability
-    # ------------------------------------------------------------------
-    bl_start, bl_end = baseline_stability_window_ms
-    bl_mask = (rel_t >= bl_start) & (rel_t <= bl_end)
-
-    if bl_mask.sum() < 5:
-        return False, "insufficient_baseline", metrics
-
-    dist_bl = distance[bl_mask]
-    valid_bl = np.isfinite(dist_bl)
-
-    if valid_bl.sum() < 3:
-        return False, "insufficient_valid_baseline", metrics
-
-    baseline_mean = np.nanmean(dist_bl[valid_bl])
-    metrics["baseline_mean_distance"] = baseline_mean
-
-    max_dev = np.nanmax(np.abs(dist_bl[valid_bl] - baseline_mean))
-    metrics["max_baseline_dev"] = max_dev
-
-    if max_dev > max_baseline_deviation:
-        return False, "unstable_baseline", metrics
-
-    # ------------------------------------------------------------------
-    # CHECK 2: Direction / reach pattern
-    # ------------------------------------------------------------------
-    avg_distances = []
-
-    for w0, w1 in direction_windows_ms:
-        mask = (rel_t >= w0) & (rel_t <= w1)
-
-        if not mask.any():
-            return False, f"missing_window_{w0}_{w1}", metrics
-
-        dist_window = distance[mask]
-        valid_w = np.isfinite(dist_window)
-
-        if valid_w.sum() < 2:
-            return False, f"insufficient_data_window_{w0}_{w1}", metrics
-
-        avg_distances.append(np.nanmean(dist_window))
-
-    # print(f"number of windows: {len(avg_distances)}")
-    for i in range(1, len(avg_distances)):
-        delta = avg_distances[i] - avg_distances[i - 1]
-        # print(f"delta: {delta}, {avg_distances[i]}, {avg_distances[i - 1]}, {min_increase}")
-        if delta < min_increase:
-            return False, f"no_increase_window_{i}", metrics
-
-    # ------------------------------------------------------------------
-    # CHECK 3: Return-to-baseline / aborted reach
-    # ------------------------------------------------------------------
-    return_passed, min_post_dist = _check_return_to_baseline(
-        distance=distance,
-        rel_t=rel_t,
-        baseline_mean=baseline_mean,
-        return_window_ms=return_window_ms,
-        bin_ms=return_bin_ms,
-        max_return=max_return_to_baseline,
-    )
-
-    metrics["min_post_distance"] = min_post_dist
-
-    if not return_passed:
-        return False, "return_to_baseline", metrics
-
-    return True, "valid", metrics
-
-
-def _get_position_valid_mask_comprehensive_with_reasons_wrapper(
+def validate_kinematic_trials(
     cam_segs: np.ndarray,
     rel_t: np.ndarray,
     kp_names: list[str],
@@ -409,64 +249,100 @@ def _get_position_valid_mask_comprehensive_with_reasons_wrapper(
     return_bin_ms: float = RETURN_CHECK_BIN_MS,
     max_return_to_baseline: float = MAX_RETURN_TO_BASELINE,
     verbose: bool = False,
-) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray | None]:
     """
-    Wrapper that returns both the mask AND per-trial rejection reasons.
+    Validate kinematic trials combining baseline stability, reach direction, and return-to-baseline checks.
+    Returns (mask, rejection_reasons, dist_segs).
     """
-    if cam_segs is None or cam_segs.size == 0:
-        return np.ones(0, dtype=bool), {'direction_fail': np.zeros(0, dtype=bool),
-                                         'stability_fail': np.zeros(0, dtype=bool),
-                                         'return_fail': np.zeros(0, dtype=bool)}
-
-    if cam_segs.ndim == 2:
-        n_trials = cam_segs.shape[0]
-        return np.ones(n_trials, dtype=bool), {'direction_fail': np.zeros(n_trials, dtype=bool),
-                                                'stability_fail': np.zeros(n_trials, dtype=bool),
-                                                'return_fail': np.zeros(n_trials, dtype=bool)}
+    if cam_segs is None or cam_segs.size == 0 or cam_segs.ndim < 3:
+        n_tr = cam_segs.shape[0] if (cam_segs is not None and cam_segs.ndim >= 1) else 0
+        empty_mask = np.ones(n_tr, dtype=bool)
+        empty_reasons = {'direction_fail': np.zeros(n_tr, dtype=bool),
+                         'stability_fail': np.zeros(n_tr, dtype=bool),
+                         'return_fail': np.zeros(n_tr, dtype=bool)}
+        return empty_mask, empty_reasons, None
 
     n_trials, n_kp, T = cam_segs.shape
-
     idx_x = _find_keypoint_index(kp_names, f"{keypoint_base}_x")
     idx_y = _find_keypoint_index(kp_names, f"{keypoint_base}_y")
 
     if idx_x is None or idx_y is None:
-        return np.ones(n_trials, dtype=bool), {'direction_fail': np.zeros(n_trials, dtype=bool),
-                                                'stability_fail': np.zeros(n_trials, dtype=bool),
-                                                'return_fail': np.zeros(n_trials, dtype=bool)}
+        empty_mask = np.ones(n_trials, dtype=bool)
+        empty_reasons = {'direction_fail': np.zeros(n_trials, dtype=bool),
+                         'stability_fail': np.zeros(n_trials, dtype=bool),
+                         'return_fail': np.zeros(n_trials, dtype=bool)}
+        return empty_mask, empty_reasons, None
+
+    dist_segs = _compute_distance_from_start(cam_segs[:, idx_x, :], cam_segs[:, idx_y, :], rel_t=rel_t)
 
     mask = np.zeros(n_trials, dtype=bool)
     direction_fail = np.zeros(n_trials, dtype=bool)
     stability_fail = np.zeros(n_trials, dtype=bool)
     return_fail = np.zeros(n_trials, dtype=bool)
 
+    bl_start, bl_end = baseline_stability_window_ms
+    bl_mask = (rel_t >= bl_start) & (rel_t <= bl_end)
+
+    ret_start, ret_end = return_window_ms
+    ret_mask = (rel_t >= ret_start) & (rel_t <= ret_end)
+    dt = _safe_nanmedian(np.diff(rel_t)) if rel_t.size > 1 else 1.0
+    bin_samples = max(1, int(return_bin_ms / dt))
+
     for i in range(n_trials):
-        x = cam_segs[i, idx_x, :]
-        y = cam_segs[i, idx_y, :]
+        distance = dist_segs[i]
 
-        is_valid, reason, metrics = _check_trial_valid_comprehensive(
-            x, y, rel_t,
-            baseline_stability_window_ms=baseline_stability_window_ms,
-            max_baseline_deviation=max_baseline_deviation,
-            direction_windows_ms=direction_windows_ms,
-            min_increase=min_increase,
-            return_window_ms=return_window_ms,
-            return_bin_ms=return_bin_ms,
-            max_return_to_baseline=max_return_to_baseline,
-        )
+        # 1. Baseline stability check
+        dist_bl = distance[bl_mask]
+        valid_bl = np.isfinite(dist_bl)
+        if valid_bl.sum() < 3:
+            stability_fail[i] = True
+            continue
 
-        mask[i] = is_valid
-        
-        # Categorize rejection reason
-        if not is_valid:
-            if "increase" in reason or "window" in reason:
-                direction_fail[i] = True
-            elif "baseline" in reason or "stability" in reason:
-                stability_fail[i] = True
-            elif "return" in reason:
+        baseline_mean = np.nanmean(dist_bl[valid_bl])
+        if np.nanmax(np.abs(dist_bl[valid_bl] - baseline_mean)) > max_baseline_deviation:
+            stability_fail[i] = True
+            continue
+
+        # 2. Direction check
+        avg_distances = []
+        dir_ok = True
+        for w0, w1 in direction_windows_ms:
+            w_mask = (rel_t >= w0) & (rel_t <= w1)
+            dist_w = distance[w_mask]
+            valid_w = np.isfinite(dist_w)
+            if valid_w.sum() < 2:
+                dir_ok = False
+                break
+            avg_distances.append(np.nanmean(dist_w[valid_w]))
+
+        if not dir_ok:
+            direction_fail[i] = True
+            continue
+
+        for k in range(1, len(avg_distances)):
+            if (avg_distances[k] - avg_distances[k - 1]) < min_increase:
+                dir_ok = False
+                break
+
+        if not dir_ok:
+            direction_fail[i] = True
+            continue
+
+        # 3. Return-to-baseline check
+        if ret_mask.sum() >= 3:
+            dist_win = distance[ret_mask]
+            min_bin_dist = np.inf
+            for b in range(len(dist_win) - bin_samples + 1):
+                bin_vals = dist_win[b:b + bin_samples]
+                v = np.isfinite(bin_vals)
+                if v.sum() >= bin_samples // 2:
+                    min_bin_dist = min(min_bin_dist, np.nanmean(bin_vals))
+
+            if np.isfinite(min_bin_dist) and min_bin_dist <= (baseline_mean + max_return_to_baseline):
                 return_fail[i] = True
-            else:
-                # Default to direction fail for other reasons
-                direction_fail[i] = True
+                continue
+
+        mask[i] = True
 
     if verbose:
         print(
@@ -481,8 +357,7 @@ def _get_position_valid_mask_comprehensive_with_reasons_wrapper(
         'stability_fail': stability_fail,
         'return_fail': return_fail,
     }
-
-    return mask, rejection_reasons
+    return mask, rejection_reasons, dist_segs
 
 def _get_valid_events(event_ms: np.ndarray,
                       rec_time: tuple[float, float],
@@ -509,62 +384,6 @@ def _as_list(x):
 def _last(x):
     x = np.asarray(x)
     return float(x.reshape(-1)[-1]) if x.size else float("nan")
-
-def _median_behavior_line(series_on_common: np.ndarray,
-                          t_common_ms: np.ndarray,
-                          event_ms: np.ndarray,
-                          win_ms: tuple[float, float],
-                          baseline_ms: float,
-                          min_trials: int
-                          ) -> tuple[np.ndarray, np.ndarray, int, np.ndarray]:
-    """
-    Return:
-      line : (T,) median peri-stim trace across kept trials
-      rel_t: (T,) relative time axis
-      n_kept: int, number of kept trials
-      segs: (n_kept, T) baseline-zeroed single-trial segments
-    """
-    s = np.asarray(series_on_common, float)
-
-    try:
-        rate_segs, _, rel_t, _ = rcp.extract_peristim_segments(
-            rate_hz=s[None, :],
-            counts=None,
-            t_ms=t_common_ms,
-            stim_ms=event_ms,
-            win_ms=win_ms,
-            min_trials=min_trials,
-        )
-    except RuntimeError as e:
-        if "Only 0 peri-stim segments" in str(e):
-            dt = np.nanmedian(np.diff(t_common_ms)) if t_common_ms.size > 1 else 1.0
-            rel_t = np.arange(win_ms[0], win_ms[1] + 1e-9, dt, dtype=float)
-            return np.full(rel_t.size, np.nan, float), rel_t, 0, np.zeros((0, rel_t.size), float)
-        else:
-            raise
-
-    if rate_segs.size == 0:
-        dt = np.nanmedian(np.diff(t_common_ms)) if t_common_ms.size > 1 else 1.0
-        rel_t = np.arange(win_ms[0], win_ms[1] + 1e-9, dt, dtype=float)
-        return np.full(rel_t.size, np.nan, float), rel_t, 0, np.zeros((0, rel_t.size), float)
-
-    rate_segs = rate_segs[:, 0, :]  # (n_trials, T)
-
-    bl_mask = (rel_t >= rel_t[0]) & (rel_t <= baseline_ms)
-    if not bl_mask.any():
-        step = max(1, int(round(baseline_ms / (np.nanmedian(np.diff(rel_t)) if rel_t.size > 1 else 1.0))))
-        bl_mask = np.zeros_like(rel_t, bool)
-        bl_mask[:step] = True
-
-    keep = np.isfinite(rate_segs[:, bl_mask]).any(axis=1)
-    n_kept = int(np.count_nonzero(keep))
-    if n_kept == 0:
-        return np.full(rate_segs.shape[1], np.nan, float), rel_t, 0, np.zeros((0, rate_segs.shape[1]), float)
-
-    rate_segs = rate_segs[keep]
-    rate_segs = rate_segs - np.nanmedian(rate_segs[:, bl_mask], axis=1, keepdims=True)
-    line = np.nanmedian(rate_segs, axis=0)
-    return line, rel_t, n_kept, rate_segs
 
 def _median_lines_for_columns(
     behv_t,
@@ -728,26 +547,6 @@ def _z_per_column(M: np.ndarray) -> np.ndarray:
             out[:, j] = np.full_like(col, np.nan)
     return out
 
-# delay parse
-def _parse_delay_ms(val) -> int:
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return 0
-    s = str(val).strip()
-    if not s or s.casefold() == "random":
-        return 0
-    try:
-        return int(float(s))
-    except Exception:
-        return 0
-
-def _fmt_num(x) -> str:
-    if pd.isna(x):
-        return "n/a"
-    try:
-        v = float(x); return f"{int(v)}" if v.is_integer() else f"{v:g}"
-    except Exception:
-        s = str(x).strip(); return s if s else "n/a"
-
 def _interp_nans_1d_gentle(x: np.ndarray, max_gap: int = 4) -> np.ndarray:
     """Fill only interior NaN runs up to max_gap by linear interp. 
     Leading/trailing NaNs stay NaN; large gaps stay NaN."""
@@ -800,114 +599,161 @@ def _read_csv_robust(path: Path) -> pd.DataFrame:
     except Exception:
         raise last_err or RuntimeError(f"Could not read CSV: {path}")
 
-def build_title_from_csv(csv_path: Path, *,  sess: str | None = None, br_file: int | None = None) -> tuple[str, int | None]:
-    df_raw = _read_csv_robust(csv_path)
+def build_title_from_csv(csv_path: Path, *, sess: str | None = None, br_file: int | None = None) -> tuple[str, int | None]:
 
-    # normalize column names: lower, strip, spaces->underscores
-    df = df_raw.copy()
-    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
-    # drop the first row if it's a header-like row (your original iloc[1:])
-    df_data = df.iloc[1:].reset_index(drop=True) if len(df) > 1 else df.copy()
-    if df_data.empty:
-        return "Condition: n/a, n/a Hz, n/a µA, n/a mm, n/a ms, Delay: 0 ms", None
+    csv_path = Path(csv_path)
+    df = _read_csv_robust(csv_path)
 
-    def col(name: str) -> str | None:
-        n = name.lower()
-        return n if n in df_data.columns else None
+    if df.empty:
+        raise RuntimeError(f"Metadata CSV read but dataframe is empty: {csv_path}")
 
-    # columns we might use
-    c_session   = col("session")
-    c_brfile    = col("br_file")
-    c_uaport    = col("ua_port")
-    c_trigger   = col("movement_trigger")
-    c_freq      = col("stim_frequency_hz")
-    c_current   = col("current_ua")
-    c_depth     = col("depth_mm")
-    c_duration  = col("stim_duration_ms")
-    c_delay     = col("delay")
+    # normalize dataframe column names
+    def _norm_col(c):
+        return str(c).strip().lower().replace(" ", "_")
+    df = df.copy()
+    df.columns = [_norm_col(c) for c in df.columns]
 
-    # ---- build masks stepwise (recording each stage) ----
+    # drop first row if it looks like a duplicated header row accidentally read as data
+    if len(df) > 0:
+        first = df.iloc[0].astype(str).str.strip().str.lower()
+        header_like_count = 0
+
+        for col in df.columns:
+            if col in first.values:
+                header_like_count += 1
+
+        if header_like_count >= max(2, len(df.columns) // 2):
+            df_data = df.iloc[1:].reset_index(drop=True)
+        else:
+            df_data = df.reset_index(drop=True)
+    else:
+        df_data = df.copy()
+
+
+    def _find_col(df, *names):
+        norm_map = {_norm_col(c): c for c in df.columns}
+        for name in names:
+            key = _norm_col(name)
+            if key in norm_map:
+                return norm_map[key]
+        return None
+
+    session_col = _find_col(df_data, "session", "sess", "intan_session", "intan_filename")
+    br_col = _find_col(df_data, "br_file", "br", "br_idx")
+    video_col = _find_col(df_data, "video_file", "video", "video_idx")
+
+    freq_col = _find_col(df_data, "stim_frequency_hz", "frequency_hz", "freq_hz", "freq")
+    current_col = _find_col(df_data, "current_ua", "current", "current_microamps")
+    depth_col = _find_col(df_data, "depth_mm", "depth")
+    duration_col = _find_col(df_data, "stim_duration_ms", "duration_ms", "stim_duration", "duration")
+    ua_col = _find_col(df_data, "ua_port", "port")
+    delay_col = _find_col(df_data, "delay", "delay_ms")
+    movement_col = _find_col(df_data, "movement_trigger", "trigger")
+
     mask = pd.Series(True, index=df_data.index)
 
-    # prefer matching BR_File exactly (if provided and column exists)
-    if br_file is not None and c_brfile:
-        mask_br = (pd.to_numeric(df_data[c_brfile], errors="coerce") == int(br_file))
-        if mask_br.any():
-            mask &= mask_br
 
-    # then try session (substring match)
-    if c_session and sess:
-        m_sess = df_data[c_session].astype(str).str.contains(str(sess), regex=False, na=False)
-        if (mask & m_sess).any():
-            mask &= m_sess
+    if br_file is not None and br_col is not None:
+        br_numeric = pd.to_numeric(df_data[br_col], errors="coerce")
+        br_mask = br_numeric.eq(int(br_file))
 
-    # prefer UA_port == 'A' if it doesn’t eliminate all rows
-    if c_uaport:
-        m_portA = df_data[c_uaport].astype(str).str.upper().str.strip().eq("A")
-        if (mask & m_portA).any():
-            mask &= m_portA
+        if br_mask.any():
+            mask &= br_mask
 
-    # avoid Movement_Trigger == 'velocity' when possible
-    if c_trigger:
-        m_not_vel = ~df_data[c_trigger].astype(str).str.strip().str.casefold().eq("velocity")
-        if (mask & m_not_vel).any():
-            mask &= m_not_vel
+    if sess is not None and session_col is not None:
+        sess_mask = df_data[session_col].astype(str).str.strip().eq(str(sess).strip())
 
-    # if still empty, relax progressively (order: remove trigger, then port, then session, then BR)
+        if sess_mask.any():
+            mask &= sess_mask
+
+    if movement_col is not None:
+        non_velocity_mask = ~df_data[movement_col].astype(str).str.lower().str.contains("velocity", na=False)
+
+        if (mask & non_velocity_mask).any():
+            mask &= non_velocity_mask
+
     if not mask.any():
-        mask = pd.Series(True, index=df_data.index)
-        if br_file is not None and c_brfile:
-            mask_br = (pd.to_numeric(df_data[c_brfile], errors="coerce") == int(br_file))
-            mask &= mask_br if mask_br.any() else True
-        if c_session and sess:
-            m_sess = df_data[c_session].astype(str).str.contains(str(sess), regex=False, na=False)
-            mask &= m_sess if m_sess.any() else True
-        if c_uaport:
-            m_portA = df_data[c_uaport].astype(str).str.upper().str.strip().eq("A")
-            mask &= m_portA if m_portA.any() else True
-        if c_trigger:
-            m_not_vel = ~df_data[c_trigger].astype(str).str.strip().str.casefold().eq("velocity")
-            mask &= m_not_vel if m_not_vel.any() else True
-        if not mask.any():
-            mask = pd.Series(True, index=df_data.index)  # final fallback: any row
+        raise RuntimeError(f"No matching metadata row found in {csv_path} for sess={sess!r}, br_file={br_file!r}")
 
     row = df_data.loc[mask].iloc[0]
 
-    delay_ms = _parse_delay_ms(row.get(c_delay, None) if c_delay else None)
+    # Extract metadata fields
+    freq = row[freq_col] if freq_col is not None else pd.NA
+    current = row[current_col] if current_col is not None else pd.NA
+    depth = row[depth_col] if depth_col is not None else pd.NA
+    duration = row[duration_col] if duration_col is not None else pd.NA
+    ua_port = row[ua_col] if ua_col is not None else pd.NA
+    delay = row[delay_col] if delay_col is not None else pd.NA
 
-    parts = []
-    if br_file is not None:
-        parts.append(f"Condition: {_fmt_num(br_file)}")
-    parts.extend([
-        f"Freq: {_fmt_num(row.get(c_freq))} Hz"      if c_freq else "Freq: n/a Hz",
-        f"Current: {_fmt_num(row.get(c_current))} µA" if c_current else "Current: n/a µA",
-        f"Depth: {_fmt_num(row.get(c_depth))} mm"     if c_depth else "Depth: n/a mm",
-        f"Duration: {_fmt_num(row.get(c_duration))} ms" if c_duration else "Duration: n/a ms",
-        f"Delay: {delay_ms} ms",
-    ])
-    if c_uaport:
-        parts.append(f"UA Port: {_fmt_num(row.get(c_uaport))}")
+    def _parse_delay_ms(x):
+        if pd.isna(x):
+            return 0
 
-    # ---- robust video_file extraction ----
-    # try multiple candidate columns and parse the first integer
-    video_cols = [c for c in ("video_file", "video", "video_index", "video#", "vid", "videoid") if c in df_data.columns]
-    video_file: int | None = None
-    for c in video_cols:
-        val = row.get(c)
-        if pd.isna(val):
-            continue
-        # numeric first
-        num = pd.to_numeric(pd.Series([val]), errors="coerce").iloc[0]
-        if pd.notna(num):
-            video_file = int(num)
-            break
-        # otherwise, pull the first integer in the string
-        m = re.search(r"\d+", str(val))
+        s = str(x).strip()
+        if s == "":
+            return 0
+
+        # numeric delay already in ms
+        try:
+            return int(float(s))
+        except Exception:
+            pass
+
+        s_low = s.lower()
+
+        # examples: "20 ms", "20ms"
+        m = re.search(r"([-+]?\d*\.?\d+)\s*ms", s_low)
         if m:
-            video_file = int(m.group(0))
-            break
+            return int(float(m.group(1)))
 
-    return ", ".join(parts), video_file
+        # examples: "0.2 s", "0.2s"
+        m = re.search(r"([-+]?\d*\.?\d+)\s*s", s_low)
+        if m:
+            return int(float(m.group(1)) * 1000)
+
+        return 0
+    delay_ms = _parse_delay_ms(delay)
+
+    # Condition: use BR file if present, otherwise video_file, otherwise n/a
+    video_file = None
+
+    if video_col is not None and not pd.isna(row[video_col]):
+        try:
+            video_file = int(float(row[video_col]))
+        except Exception:
+            video_file = None
+
+    if br_file is not None:
+        condition = str(br_file)
+    elif video_file is not None:
+        condition = str(video_file)
+    else:
+        condition = "n/a"
+
+    def _fmt_num(x):
+        if pd.isna(x):
+            return "n/a"
+        try:
+            xf = float(x)
+            if xf.is_integer():
+                return str(int(xf))
+            return str(xf)
+        except Exception:
+            return str(x)
+
+    overall_title = (
+        f"Condition: {condition}, "
+        f"{_fmt_num(freq)} Hz, "
+        f"{_fmt_num(current)} µA, "
+        f"{_fmt_num(depth)} mm, "
+        f"{_fmt_num(duration)} ms, "
+        f"Delay: {delay_ms} ms"
+    )
+
+    if ua_col is not None and not pd.isna(ua_port):
+        overall_title += f", UA Port: {ua_port}"
+
+    return overall_title, video_file
 
 def _compute_trial_labels(
     event_ms: np.ndarray,
@@ -958,39 +804,6 @@ def _compute_trial_labels(
                 labels[i] = vals[np.argmax(cnts)]
 
     return labels
-
-def _behavior_medians_for_label(
-    cam_z: np.ndarray,
-    behv_t: np.ndarray,
-    event_ms: np.ndarray,
-    labels: np.ndarray,
-    target_label: str,
-) -> tuple[np.ndarray, np.ndarray, int, np.ndarray]:
-    """
-    Recompute behavior medians using only stims with labels==target_label.
-    """
-    if cam_z is None or cam_z.size == 0 or event_ms.size == 0:
-        return (np.zeros((0, 0), float),
-                np.zeros(0, float),
-                0,
-                np.zeros((0, 0, 0), float))
-    mask = (labels == target_label)
-    if not mask.any():
-        return (np.zeros((cam_z.shape[1] if cam_z.ndim == 2 else 0, 0), float),
-                np.zeros(0, float),
-                0,
-                np.zeros((0, 0, 0), float))
-
-    stim_label = event_ms[mask]
-    lines, rel_t, n_trials, segs = _median_lines_for_columns(
-        behv_t,
-        cam_z,
-        stim_label,
-        pre_ms=abs(WIN_MS[0]),
-        post_ms=WIN_MS[1],
-        fs_out=1000.0 / np.nanmedian(np.diff(behv_t)),
-    )
-    return lines, rel_t, n_trials, segs
 
 def _behavior_valid_mask_from_cam0(
     cam0_z: np.ndarray,
@@ -1054,7 +867,7 @@ def _behavior_valid_mask_from_cam0(
     if not bl_mask.any():
         step = max(
             1,
-            int(round(baseline_ms / (np.nanmedian(np.diff(rel_t)) if rel_t.size > 1 else 1.0))),
+            int(round(baseline_ms / (_safe_nanmedian(np.diff(rel_t)) if rel_t.size > 1 else 1.0))),
         )
         bl_mask = np.zeros_like(rel_t, bool)
         bl_mask[:step] = True
@@ -1320,7 +1133,8 @@ def _safe_nanmedian(arr: np.ndarray, axis=0) -> np.ndarray:
 
     valid_any = np.isfinite(arr).any(axis=axis)
     
-    with np.errstate(all="ignore"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
         med = np.nanmedian(arr, axis=axis)
 
     med = np.asarray(med, float)
@@ -1333,6 +1147,8 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
     Load aligned .npz, compute peri-stim med/var for NPRW+UA,
     + behavior/VOG/ts_state peri-stim summaries, and save to PERI_ROOT.
     """
+    print()
+
     # Load NPZ
     aligned_npz     = np.load(aligned_path, allow_pickle=True)
     
@@ -1375,7 +1191,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         match = MANUAL_REMOVE_DF[filename_match & br_idx_match]
 
         if not match.empty:
-            print(f"[extract] Found {len(match)} manual removal rule(s) for {intan_filename} BR {br_idx}")
+            # print(f"[extract] Found {len(match)} manual removal rule(s) for {intan_filename} BR {br_idx}")
             drop_set = set()
             for _, row in match.iterrows():
                 if pd.notna(row['trials_to_drop']):
@@ -1393,8 +1209,11 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
     # ---------------------------------------------------------------------------------
 
     # ---- metadata for titles ----
+    behv_t = np.arange(0.0)
+    behavior_gate_z = np.zeros((0, 0), float)
+
     try:
-        overall_title, _ = build_title_from_csv( METADATA_CSV, br_file=meta.get("br_idx"))
+        overall_title, _ = build_title_from_csv(METADATA_CSV, sess=intan_filename, br_file=br_idx)
     except Exception as e:
         print(f"[warn] metadata parse failed for BR {br_idx}: {e}")
         overall_title = "Condition: n/a, n/a Hz, n/a µA, n/a mm, n/a ms, Delay: 0 ms"
@@ -1484,12 +1303,13 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
     nprw_dur = float(nprw_rec_dur) if ("nprw_rec_dur" in locals() and nprw_rec_dur is not None) else float("nan")
     ua_dur   = float(ua_rec_dur)   if ("ua_rec_dur"   in locals() and ua_rec_dur   is not None) else float("nan")
 
-    print(
-        f"[debug] {aligned_path.name}: "
-        f"Behavioral rec duration={behv_dur:.3f} ms, "
-        f"NPRW rec duration={nprw_dur:.3f} ms, "
-        f"UA rec duration={ua_dur:.3f} ms"
-    )
+    print(f"[extract] processing {aligned_path.name}")
+    # print(
+    #     f"[debug] {aligned_path.name}: "
+    #     f"Behavioral rec duration={behv_dur:.3f} ms, "
+    #     f"NPRW rec duration={nprw_dur:.3f} ms, "
+    #     f"UA rec duration={ua_dur:.3f} ms"
+    # )
         
     # VOG
     # if HAS_VOG:
@@ -1561,20 +1381,20 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                 num_to_label={1: "A", 2: "B"},
             )
 
-            print(f"\n[DEBUG] Trial-by-trial label breakdown for {aligned_path.name}:")
-            print(f"{'Trial':>6} {'Raw_Idx':>8} {'Label':>6} {'Stim_ms':>12}")
-            print("-" * 40)
+            # print(f"\n[DEBUG] Trial-by-trial label breakdown for {aligned_path.name}:")
+            # print(f"{'Trial':>6} {'Raw_Idx':>8} {'Label':>6} {'Stim_ms':>12}")
+            # print("-" * 40)
             for i, (lbl, stim_t) in enumerate(zip(trial_labels, event_ms)):
                 raw_idx = raw_trial_indices[i] if i < len(raw_trial_indices) else -1
-                print(f"{i:>6} {raw_idx:>8} {lbl:>6} {stim_t:>12.1f}")
-            print("-" * 40)
+                # print(f"{i:>6} {raw_idx:>8} {lbl:>6} {stim_t:>12.1f}")
+            # print("-" * 40)
             vals, cnts = np.unique(trial_labels, return_counts=True)
-            print(f"Summary: {dict(zip(vals, cnts))}\n")
+            # print(f"Summary: {dict(zip(vals, cnts))}\n")
         else:
             trial_labels = np.full(event_ms.shape, "N", dtype="U1") 
 
         vals, cnts = np.unique(trial_labels, return_counts=True)
-        print(dict(zip(vals, cnts)))
+        # print(dict(zip(vals, cnts)))
 
         # extract ts_state peristim segments
         if ts_state_num_full is not None and ns2_t_ms.size and event_ms.size:
@@ -1748,7 +1568,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                 event_ms_sub,
                 pre_ms=abs(WIN_MS[0]),
                 post_ms=WIN_MS[1],
-                fs_out=1000.0 / np.nanmedian(np.diff(behv_t)),
+                fs_out=1000.0 / _safe_nanmedian(np.diff(behv_t)),
             )
 
             beh_cam1_pos_med_sub, _, _, beh_cam1_segs_sub = _median_lines_for_columns(
@@ -1757,7 +1577,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                 event_ms_sub,
                 pre_ms=abs(WIN_MS[0]),
                 post_ms=WIN_MS[1],
-                fs_out=1000.0 / np.nanmedian(np.diff(behv_t)),
+                fs_out=1000.0 / _safe_nanmedian(np.diff(behv_t)),
             )
 
             beh_cam0_vel_med_sub, _, _, beh_cam0_vel_segs_sub = _median_lines_for_columns(
@@ -1766,7 +1586,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                 event_ms_sub,
                 pre_ms=abs(WIN_MS[0]),
                 post_ms=WIN_MS[1],
-                fs_out=1000.0 / np.nanmedian(np.diff(behv_t)),
+                fs_out=1000.0 / _safe_nanmedian(np.diff(behv_t)),
             )
 
             beh_cam1_vel_med_sub, _, _, beh_cam1_vel_segs_sub = _median_lines_for_columns(
@@ -1775,7 +1595,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                 event_ms_sub,
                 pre_ms=abs(WIN_MS[0]),
                 post_ms=WIN_MS[1],
-                fs_out=1000.0 / np.nanmedian(np.diff(behv_t)),
+                fs_out=1000.0 / _safe_nanmedian(np.diff(behv_t)),
             )
         else:
             beh_rel_t_sub = np.zeros(0, float)
@@ -1793,12 +1613,8 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         if HAS_KINEMATICS and beh_rel_t_sub.size:
 
             # Choose which camera to use for the kinematic position filter
-            if CAMERA_FOR_POSITION_FILTER == "cam1":
-                filter_segs = beh_cam1_segs_sub
-                filter_names = beh_cam1_names
-            else:
-                filter_segs = beh_cam0_segs_sub
-                filter_names = beh_cam0_names
+            filter_segs = beh_cam1_segs_sub if CAMERA_FOR_POSITION_FILTER == "cam1" else beh_cam0_segs_sub
+            filter_names = beh_cam1_names if CAMERA_FOR_POSITION_FILTER == "cam1" else beh_cam0_names
 
             if filter_segs.size:
 
@@ -1807,10 +1623,8 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                     beh_cam0_segs_sub.shape[0],
                     beh_cam1_segs_sub.shape[0],
                     NPRW_rates_hz_sub.shape[0],
+                    UA_rates_hz_sub.shape[0] if HAS_BR else float("inf"),
                 )
-
-                if HAS_BR:
-                    n_common = min(n_common, UA_rates_hz_sub.shape[0])
 
                 beh_cam0_segs_sub = beh_cam0_segs_sub[:n_common]
                 beh_cam1_segs_sub = beh_cam1_segs_sub[:n_common]
@@ -1819,6 +1633,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
 
                 event_ms_sub = event_ms_sub[:n_common]
                 labels_sub = labels_sub[:n_common]
+                raw_trial_indices_sub = raw_trial_indices_sub[:n_common]
 
                 NPRW_rates_hz_sub = NPRW_rates_hz_sub[:n_common]
                 NPRW_rates_zeroed_sub = NPRW_rates_zeroed_sub[:n_common]
@@ -1829,16 +1644,10 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                     UA_rates_zeroed_sub = UA_rates_zeroed_sub[:n_common]
                     UA_counts_sub = UA_counts_sub[:n_common]
 
-                # Reassign filter_segs after truncation
-                if CAMERA_FOR_POSITION_FILTER == "cam1":
-                    filter_segs = beh_cam1_segs_sub
-                    filter_names = beh_cam1_names
-                else:
-                    filter_segs = beh_cam0_segs_sub
-                    filter_names = beh_cam0_names
+                filter_segs = beh_cam1_segs_sub if CAMERA_FOR_POSITION_FILTER == "cam1" else beh_cam0_segs_sub
 
                 # Get mask AND rejection reasons for diagnostic
-                pos_mask, rejection_reasons = _get_position_valid_mask_comprehensive_with_reasons_wrapper(
+                pos_mask, rejection_reasons, dist_segs = validate_kinematic_trials(
                     cam_segs=filter_segs,
                     rel_t=beh_rel_t_sub,
                     kp_names=filter_names,
@@ -1857,41 +1666,24 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                 n_keep = int(pos_mask.sum())
 
                 # Generate diagnostic figure BEFORE applying mask
-                if n_before > 0:
+                if n_before > 0 and dist_segs is not None:
                     suffix = f"_target_{target_name}" if target_name else ""
                     diag_path = (
                         DIAGNOSTIC_FIG_DIR
                         / f"{intan_filename}_BR_{br_idx:03d}{suffix}_{CAMERA_FOR_POSITION_FILTER}_filtering_diagnostic.png"
                     )
 
-                    # Extract the keypoint used for filtering to plot
-                    idx_x = _find_keypoint_index(filter_names, f"{KEYPOINT_FOR_DIRECTION_CHECK}_x")
-                    idx_y = _find_keypoint_index(filter_names, f"{KEYPOINT_FOR_DIRECTION_CHECK}_y")
-
-                    if idx_x is not None and idx_y is not None and filter_segs.ndim == 3:
-                        # Compute distance from start for plotting
-                        n_trials, n_kp, T = filter_segs.shape
-                        dist_segs = np.zeros((n_trials, T), float)
-
-                        for i in range(n_trials):
-                            dist_segs[i] = _compute_distance_from_start(
-                                filter_segs[i, idx_x, :],
-                                filter_segs[i, idx_y, :],
-                                rel_t=beh_rel_t_sub,
-                                ref_time_ms=DISTANCE_REFERENCE_TIME_MS,
-                            )
-
-                        plot_filtering_diagnostic(
-                            segs=dist_segs,
-                            valid_mask=pos_mask,
-                            rejection_reasons=rejection_reasons,
-                            rel_t_ms=beh_rel_t_sub,
-                            save_path=diag_path,
-                            title_prefix=(
-                                f"{intan_filename} BR_{br_idx:03d}{suffix} "
-                                f"filter={CAMERA_FOR_POSITION_FILTER}"
-                            ),
-                        )
+                    plot_filtering_diagnostic(
+                        segs=dist_segs,
+                        valid_mask=pos_mask,
+                        rejection_reasons=rejection_reasons,
+                        rel_t_ms=beh_rel_t_sub,
+                        save_path=diag_path,
+                        title_prefix=(
+                            f"{intan_filename} BR_{br_idx:03d}{suffix} "
+                            f"filter={CAMERA_FOR_POSITION_FILTER}"
+                        ),
+                    )
 
                 if 0 < n_keep < n_before:
                     print(

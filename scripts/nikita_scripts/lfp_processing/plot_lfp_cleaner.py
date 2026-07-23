@@ -1571,18 +1571,21 @@ def generate_per_ua_spectrograms(data, session_id, fig_dir, groups, fs=1000,
     
     # Extract condition name
     br_match = re.search(r'_(\d{3})(?:_|$|\.)', session_id)
+    target_match = re.search(r'target_([AB])$', session_id, re.IGNORECASE)
+    target_suffix = f"_target_{target_match.group(1).upper()}" if target_match else ""
+
     if br_match:
         br_idx = int(br_match.group(1))
-        condition_name = f"condition_{br_idx:02d}"
+        condition_name = f"condition_{br_idx:02d}{target_suffix}"
     else:
         br_idx = data.get('br_idx', None)
         if br_idx is not None:
             if isinstance(br_idx, np.ndarray):
                 br_idx = int(br_idx.item())
-            condition_name = f"condition_{br_idx:02d}"
+            condition_name = f"condition_{br_idx:02d}{target_suffix}"
         else:
             condition_name = session_id
-    
+
     condition_dir = out_dir / condition_name
     condition_dir.mkdir(parents=True, exist_ok=True)
     
