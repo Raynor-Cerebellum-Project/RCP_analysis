@@ -24,13 +24,13 @@ matplotlib.rcParams["svg.fonttype"] = "none"
 # ──────────────────────────────────────────────────
 # USER SETTINGS
 # ──────────────────────────────────────────────────
-CONDITION   = 12             # BR index  (= condition number)
+CONDITION   = 17             # BR index  (= condition number)
 # 'stim' = use stim_ms (stimulation times)
 # 'movement' = use event_ms / IR crossing times (for control conditions)
 EVENT_TYPE = "stim"  # Change to "stim" for stimulation conditions
 PROBE       = "UA"           # Exclusively analyzing Utah Array channels
 CHANNELS    = list(range(1, 256))   # Electrode IDs to plot (1–256)
-WINDOW_MS   = (-500.0, 500.0)      # (start, end) relative to stim onset
+WINDOW_MS   = (-300.0, 300.0)      # (start, end) relative to stim onset
 Y_LIM       = (-60, 60)         # µV range; set to None for auto-scale
 TRIALS_TO_PLOT = [5] #[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26]                  # which trials to plot: e.g. [0, 1] or 'all'
 PLOT_WAVEFORM = True          # If True, plot spike waveforms on the right
@@ -620,6 +620,7 @@ def collect_region_spikes(
 def main():
     # ── Load aligned file for this condition ──
     aligned_path = find_aligned_file(ALIGNED_CKPT, CONDITION)
+    print(f'{aligned_path}')
     z = np.load(aligned_path, allow_pickle=True)
     print(f"[info] Aligned file: {aligned_path.name}")
 

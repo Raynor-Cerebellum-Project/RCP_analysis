@@ -3,7 +3,7 @@ from typing import Any
 from pathlib import Path
 import yaml
 
-# ---------------- Params model ----------------
+# Params model
 @dataclass
 class experimentParams:
     # required-ish (via YAML `paths`)
@@ -52,7 +52,7 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
 
     cfg = expand_placeholders(cfg)
 
-    # ---- paths block ----
+    # paths block
     paths = cfg.get("paths", {}) or {}
     data_root = paths.get("data_root", str(repo_root / "data"))
     location  = paths.get("location")

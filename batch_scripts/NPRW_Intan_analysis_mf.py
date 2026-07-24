@@ -1,4 +1,5 @@
 import gc
+import numpy as np
 from scipy.io import loadmat
 
 # SpikeInterface
@@ -20,7 +21,7 @@ from RCP_analysis.python.functions.config_loading import *
         Checkpoint after thresholding and calculating MUA peak locations and firing rate
 """
 
-# ---------- Config ----------
+# Config
 # Base paths from config_loading
 GEOM_PATH = rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT, session_key=None)
 
