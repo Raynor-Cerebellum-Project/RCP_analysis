@@ -1,9 +1,8 @@
 paths:
-  data_root: "/media/bryan/Expansion"  #"/home/bryan/mnt/cullen_data/Current Project Databases - NHP/2025 Cerebellum prosthesis"
+  data_root: "/home/bryan/mnt/cullen_data/Current Project Databases - NHP/2025 Cerebellum prosthesis"
   location: "Nike/20251203_NRR_RW011"
   session: "NRR_RW011"
   geom_mat_rel: "config/ImecPrimateStimRec128_BT_corrected_091525.mat"
-
 kinematics:
   keypoints: [index, middle, hand, wrist, start, TA, TB]
   num_camera: 2
@@ -17,7 +16,7 @@ preprocessing:
   process_only: [] #[2, 3, 4, 5, 6, 7, 8, 9, 10, 11] # Input as BR indexes, e.g. [1, 2] to only process BR_001 and BR_002, if process all just leave as []
   z_score_firing_rate: true  # If true, z-score firing rates per-trial before averaging for heatmap plots
 
-# ---- Spike preprocessing ----
+# Spike preprocessing
 highpass_hz: 300.0
 lowpass_hz: 10000.0
 
@@ -52,14 +51,15 @@ probes:
     aux_stream: "USB board ADC input channel"
     ir_stream: "USB board digital input channel"
 
-# ---- chunking / parallel ----
+# Spikeinterface params (chunking / parallel)
 parallel_jobs: -1
 threads_per_worker: 1
 chunk: "4s"
 
-# ---- Intan firing rate (threshold MUA) ----
+# Intan firing rate estimation
 NPRW_rate_est:
   bin_ms: 20.0          # bin width for counts
+  step_ms: 20.0          # step_ms sliding window step, set equal to bin_ms for old non-overlapping behavior
   sigma_ms: 20.0       # Gaussian kernel std
   detect_threshold: 4
   peak_sign: "neg"
@@ -67,15 +67,25 @@ NPRW_rate_est:
   remove_tail_ms_after: 20.0
   dedup_ms: 0.25
 
-# ---- BR firing rate (threshold MUA) ----
+# BR firing rate estimation
 UA_rate_est:
-  bin_ms: 20.0          # bin width for counts
-  sigma_ms: 20.0       # Gaussian kernel std
-  detect_threshold: 4
+  bin_ms: 20.0
+  step_ms: 5.0
+  sigma_ms: 20.0
+  detect_threshold: 3
   peak_sign: "neg"
   remove_ms_before: 0
   remove_tail_ms_after: 0
   dedup_ms: 0.25
+
+# RSA params
+rsa_params:
+  poststim_win_ms: [0.0, 50.0]
+  channel_criterion: ["movement", "stim", "union", "intersection"]
+  move_alpha: 0.05
+  stim_alpha: 0.05
+  targets: ["target_A", "target_B"]
+  probes: ["NPRW", "UA"]
 
 # ---- per-session overrides
 sessions:

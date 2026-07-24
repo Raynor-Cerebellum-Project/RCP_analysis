@@ -100,7 +100,7 @@ def main():
             sess_folders = filtered
 
     # TODO Set it to be automatically detecting template
-    template_dir = Path(REPO_ROOT / 'config' / "median_extremum_templates_norm.npy")
+    template_dir = Path(REPO_ROOT / 'config' / 'waveform_templates' / "median_extremum_templates_norm_NPRW.npy")
     control_template = np.load(template_dir)
     nbefore = np.argmin(control_template)
     

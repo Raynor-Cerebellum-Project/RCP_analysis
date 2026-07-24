@@ -290,7 +290,7 @@ def _movement_pvalues(rates: np.ndarray, mb: np.ndarray, mr: np.ndarray) -> np.n
         pvals[ch] = p
     return pvals
 
-def compute_movement_mask(
+def _compute_movement_mask(
     baseline_paths: list[Path],
     source: str,
     base_win: tuple[float, float] = (-800.0, -500.0),
@@ -360,7 +360,7 @@ def _build_ctrl_pool(
     return pool
 
 # Stim mask
-def compute_stim_mask(
+def _compute_stim_mask(
     stim_path: Path,
     ctrl_pool: np.ndarray,
     source: str,
@@ -444,7 +444,8 @@ def _draw_channel_heatmap(
     plt.colorbar(im, ax=ax, label="firing rate (baselined)")
     return im
 
-def plot_movement_mask_debug(
+# Debug plots
+def _plot_movement_mask_debug(
     baseline_paths: list[Path],
     source: str,
     target: str,
@@ -500,7 +501,7 @@ def plot_movement_mask_debug(
         logger.info(f"[move][debug-plot] wrote {os.path.relpath(out_svg, OUT_BASE)}")
         plt.close(fig)
 
-def plot_stim_mask_debug(
+def _plot_stim_mask_debug(
     stim_path: Path,
     passes: np.ndarray,
     source: str,
@@ -673,7 +674,7 @@ def _plot_rdm_with_block_ticks(
             plt.close(fig)
             return None
 
-# Single entry point (one reach target per call)
+# Do RSA
 def run_rsa(
     source: str = "NPRW",
     target: str = "target_A",
@@ -812,9 +813,9 @@ def run_rsa(
     # Channel masks: computed from the raw baseline NPZs and build flags for the blocks
     move_mask = None
     if needs_movement:
-        move_mask = compute_movement_mask(baseline_paths_kept, source, alpha=move_alpha)
+        move_mask = _compute_movement_mask(baseline_paths_kept, source, alpha=move_alpha)
         if debug_masks:
-            plot_movement_mask_debug(baseline_paths_kept, source, target, alpha=move_alpha)
+            _plot_movement_mask_debug(baseline_paths_kept, source, target, alpha=move_alpha)
 
     ctrl_pool = None
     if needs_stim:
@@ -827,7 +828,7 @@ def run_rsa(
         for block in blocks:
             if block.is_baseline:
                 continue
-            block.stim_mask = compute_stim_mask(block.path, ctrl_pool, source, alpha=stim_alpha)
+            block.stim_mask = _compute_stim_mask(block.path, ctrl_pool, source, alpha=stim_alpha)
 
     # Reorder blocks to match given condition order
     if cond_order is not None:
@@ -920,7 +921,7 @@ def run_rsa(
             None,
         )
         if stim_block is not None:
-            plot_stim_mask_debug(
+            _plot_stim_mask_debug(
                 stim_block.path, stim_mask_union, source, target,
                 baseline_rates=bl_rates, baseline_rel_t=bl_rel_t,
                 alpha=stim_alpha,

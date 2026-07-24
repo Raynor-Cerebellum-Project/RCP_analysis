@@ -1,7 +1,7 @@
 from pathlib import Path
 import csv
 
-def get_bad_channels_utah(file_path, high_threshold=800, exclude_low_imp=True):
+def _get_bad_channels_utah(file_path, high_threshold=800, exclude_low_imp=True):
     """
     Parses a Utah Array impedance file and returns a set of excluded channel IDs.
     
@@ -78,7 +78,7 @@ def get_bad_channels_utah(file_path, high_threshold=800, exclude_low_imp=True):
                 continue
     return bad_channels
 
-def get_bad_channels_intan(file_path, high_threshold=4.5e6):
+def _get_bad_channels_intan(file_path, high_threshold=4.5e6):
     """
     Parses an Intan impedance CSV and returns a set of excluded channel IDs.
     
@@ -154,12 +154,12 @@ def get_session_impedances(session_loc,
     intan_imp_file = imp_dir / "Intan_imp_start.csv"
     
     if utah_imp_file.exists():
-        bad_map['utah'] = get_bad_channels_utah(utah_imp_file, 
+        bad_map['utah'] = _get_bad_channels_utah(utah_imp_file, 
                                                 high_threshold=utah_high_thresh, 
                                                 exclude_low_imp=utah_exclude_low)
         
     if intan_imp_file.exists():
-        bad_map['nprw'] = get_bad_channels_intan(intan_imp_file, 
+        bad_map['nprw'] = _get_bad_channels_intan(intan_imp_file, 
                                                  high_threshold=intan_high_thresh)
         
     return bad_map

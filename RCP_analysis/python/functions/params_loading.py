@@ -1,17 +1,15 @@
 from dataclasses import dataclass, field
 from typing import Any
 from pathlib import Path
+import socket
 import yaml
 
 # Params model
 @dataclass
 class experimentParams:
-    # required-ish (via YAML `paths`)
     data_root: str
     location: str | None
     session: str | None
-
-    # file locations (must be RELATIVE, if present)
     geom_mat_rel: str | None
 
     # processing + per-probe/session config
@@ -25,20 +23,38 @@ class experimentParams:
     threads_per_worker: int = 1
     chunk: str = "1s"
 
+    preprocessing: dict[str, Any] = field(default_factory=dict)
     # rate estimation
     NPRW_rate_est: dict[str, Any] = field(default_factory=dict)
     UA_rate_est: dict[str, Any] = field(default_factory=dict)
-
-    # kinematics
-    kinematics: dict[str, Any] = field(default_factory=dict)
     
-    # additional preprocessing params
-    preprocessing: dict[str, Any] = field(default_factory=dict)
-
-    # RSA params
+    kinematics: dict[str, Any] = field(default_factory=dict)
     rsa_params: dict[str, Any] = field(default_factory=dict)
 
-def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams:
+
+def resolve_data_root(machines_yaml_path: Path, relative_data_root: str) -> str:
+    # Prepend machine's own data mount based on hostname, needs entry in machines.yaml
+    if not machines_yaml_path.exists():
+        raise FileNotFoundError(
+            f"machines.yaml not found at {machines_yaml_path}. "
+            "Add an entry for this machine's hostname."
+        )
+    machines_cfg = yaml.safe_load(machines_yaml_path.read_text()) or {}
+    hostname = socket.gethostname()
+    machines = machines_cfg.get("machines", {}) or {}
+    entry = machines.get(hostname)
+    prefix = entry.get("data_root_prefix")
+
+    prefix = prefix.rstrip("/\\")
+    relative_data_root = relative_data_root.lstrip("/\\")
+    return f"{prefix}/{relative_data_root}"
+
+
+def load_experiment_params(
+    yaml_path: Path,
+    repo_root: Path,
+    machines_yaml_path: Path | None = None,
+) -> experimentParams:
     cfg = yaml.safe_load(yaml_path.read_text())
 
     def expand_placeholders(obj): # Expand placeholders such as {REPO_ROOT}
@@ -54,15 +70,20 @@ def load_experiment_params(yaml_path: Path, repo_root: Path) -> experimentParams
 
     # paths block
     paths = cfg.get("paths", {}) or {}
-    data_root = paths.get("data_root", str(repo_root / "data"))
+    relative_data_root = paths.get("data_root", "")
     location  = paths.get("location")
     session   = paths.get("session")
     geom_mat_rel = paths.get("geom_mat_rel")
 
+    # resolve machine-specific prefix and combine with the lab-relative data_root
+    if machines_yaml_path is None:
+        machines_yaml_path = repo_root / "config" / "machines.yaml"
+    data_root = resolve_data_root(machines_yaml_path, relative_data_root)
+
     kin_cfg = dict(cfg.get("kinematics", {}) or {})
     kin_cfg["num_camera"] = kin_cfg.get("num_camera")
     kin_cfg["keypoints"] = tuple(map(str.strip, kin_cfg.get("keypoints", [])))
-
+    
     pre_cfg = dict(cfg.get("preprocessing", {}) or {})
 
     # ensure process_only is a list[int]
