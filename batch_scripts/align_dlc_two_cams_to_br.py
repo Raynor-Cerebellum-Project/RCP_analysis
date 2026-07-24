@@ -1,6 +1,7 @@
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 import numpy as np
+import pandas as pd
 
 """ 
     This script aligns two camera perspectives to the Blackrock recording. It scans through all paired cam-0 and cam-1 .csv files and outputs aligned timing based on frame mappings identified from OCR_frame_mapping_BT_edit.py script.

@@ -2,6 +2,7 @@ import json, csv
 from scipy.io import savemat
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
+import numpy as np
 
 # CONFIG
 # Base paths loaded from config_loading

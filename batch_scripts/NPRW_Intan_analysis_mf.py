@@ -1,5 +1,6 @@
 import gc
 from scipy.io import loadmat
+import numpy as np
 
 # SpikeInterface
 from probeinterface import Probe

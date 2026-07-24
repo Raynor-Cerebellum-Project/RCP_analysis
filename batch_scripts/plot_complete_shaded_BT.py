@@ -1,4 +1,7 @@
 from types import SimpleNamespace
+import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
 
 from scipy.io import loadmat
 from probeinterface import Probe
