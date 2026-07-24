@@ -1,4 +1,5 @@
 import gc
+import numpy as np
 from scipy.io import loadmat
 import numpy as np
 
@@ -21,7 +22,7 @@ from RCP_analysis.python.functions.config_loading import *
         Checkpoint after thresholding and calculating MUA peak locations and firing rate
 """
 
-# ---------- Config ----------
+# Config
 # Base paths from config_loading
 GEOM_PATH = rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT, session_key=None)
 
@@ -100,7 +101,7 @@ def main():
             sess_folders = filtered
 
     # TODO Set it to be automatically detecting template
-    template_dir = Path(REPO_ROOT / 'config' / "median_extremum_templates_norm.npy")
+    template_dir = Path(REPO_ROOT / 'config' / 'waveform_templates' / "median_extremum_templates_norm_NPRW.npy")
     control_template = np.load(template_dir)
     nbefore = np.argmin(control_template)
     

@@ -20,21 +20,20 @@ BATCH_SCRIPTS = [
     # "quantify_stim_kinematics.py",
     # "RSA_calculation.py",
 ]
-        
+
 def run_scripts(base_dir: Path):
     for batch_script in BATCH_SCRIPTS:
         script_path = base_dir / batch_script
         print(f"\n[INFO] Running {script_path} ...\n")
+        # Run each script
         try:
-            subprocess.run(
-                ["python", str(script_path)],
-                check=True
-            )
+            subprocess.run(["python", str(script_path)], check=True)
         except subprocess.CalledProcessError as e:
             print(f"[ERROR] Script {batch_script} failed with exit code {e.returncode}")
             break
 
 def main():
+    # Get folder where batch scripts are at
     BASE = Path(__file__).resolve().parents[1]
     BATCH_SCRIPTS_FOLDER = BASE / "batch_scripts"
     run_scripts(BATCH_SCRIPTS_FOLDER)

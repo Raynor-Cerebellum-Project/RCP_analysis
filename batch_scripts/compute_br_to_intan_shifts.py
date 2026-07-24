@@ -170,6 +170,7 @@ def main():
         br_idx = int(br_str)
         br_ns5_file_name = f"{PARAMS.session}_{br_idx:03d}"
         
+        print(intan_idx, br_idx)
         # Flags
         note_val   = str(notes_col.get(intan_idx, ""))
         note_norm = note_val.strip().lower()

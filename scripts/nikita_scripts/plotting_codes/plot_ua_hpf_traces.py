@@ -620,6 +620,7 @@ def collect_region_spikes(
 def main():
     # ── Load aligned file for this condition ──
     aligned_path = find_aligned_file(ALIGNED_CKPT, CONDITION)
+    print(f'{aligned_path}')
     z = np.load(aligned_path, allow_pickle=True)
     print(f"[info] Aligned file: {aligned_path.name}")
 

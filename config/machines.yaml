@@ -1,0 +1,5 @@
+machines:
+  raynor-pc: # Bryan
+    data_root_prefix: "/home/bryan/mnt/cullen_data/"
+  NikitaTower: # Nikita
+    data_root_prefix: "Y:/"

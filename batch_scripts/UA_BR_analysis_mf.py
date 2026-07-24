@@ -372,13 +372,13 @@ def main():
 
     # --- Matched Filter Template Configuration ---
     # Using a single unified template for all Utah Array channels
-    template_path = REPO_ROOT / 'config' / "median_extremum_templates_norm_UA_PortB.npy"
+    template_path = REPO_ROOT / 'config' / 'waveform_templates' / "median_extremum_templates_norm_UA_PortB.npy"
     
     if template_path.exists():
         ua_template = np.load(template_path)
     else:
         # Fallback to general UA template if PortB specific is missing
-        single_template_path = REPO_ROOT / 'config' / "median_extremum_templates_norm.npy"
+        single_template_path = REPO_ROOT / 'config' / 'waveform_templates' / "median_extremum_templates_norm.npy"
         if single_template_path.exists():
             ua_template = np.load(single_template_path)
         else:
