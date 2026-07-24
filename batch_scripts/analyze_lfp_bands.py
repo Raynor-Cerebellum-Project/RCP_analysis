@@ -156,9 +156,10 @@ PAD_MS = 1000.0 # Padding for zero-phase filtering
 # PLOT_1F_DEBUG = False # Optional flag to save figure comparing 1/f correction
 
 # --- IPCA Artifact Correction Settings ---
-USE_IPCA_CORRECTION  = True
-IPCA_RANK            = 10
-IPCA_PULSE_WINDOW_MS = (-0.4, 0.3)
+IPCA_PARAMS = PARAMS.IPCA_Params
+USE_IPCA_CORRECTION  = IPCA_PARAMS.get("use_ipca", True)
+IPCA_RANK            = IPCA_PARAMS.get("rank", 10)
+IPCA_PULSE_WINDOW_MS = IPCA_PARAMS.get("pulse_window_ms", (-0.4, 0.3))
 
 # ---------- CONFIG ----------
 # Bands of interest

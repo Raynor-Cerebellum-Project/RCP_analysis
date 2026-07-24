@@ -1,121 +1,3 @@
-import gc, csv
-import numpy as np
-import warnings
-import spikeinterface as si
-import spikeinterface.preprocessing as spre
-import spikeinterface.extractors as se
-from sklearn.decomposition import IncrementalPCA
-import RCP_analysis as rcp
-from spikeinterface.sortingcomponents.peak_detection import detect_peaks  # kept for fallback only
-from RCP_analysis.python.functions.subspace_detector import (
-    build_subspace_basis, subspace_detect_cfar, filter_peaks_by_local_sigma
-)
-from RCP_analysis.python.functions.config_loading import *
-from RCP_analysis.python.functions.artifact_correction import IPCA_Artifact_Correction
-from RCP_analysis.python.functions.config_loading import *
-
-from spikeinterface.core import BaseRecording, BaseRecordingSegment
-
-# FIX FOR WINDOWS MULTIPROCESSING IN SPIKEINTERFACE 0.104.1
-# When child processes try to unpickle dynamically defined classes (IPCACorrectedRecording),
-# SI tries to check the __version__ of the module. Since the module is __mp_main__, it crashes.
-__version__ = "1.0.0"
-
-# Suppress annoying SpikeInterface provenance warning when manually reconstructing memory arrays
-warnings.filterwarnings("ignore", message="The extractor is not serializable to file. The provenance will not be saved.")
-
-class PerChannelIPCACorrectedRecordingSegment(BaseRecordingSegment):
-    def __init__(self, parent_recording_segment, micro_map_per_channel, micro_corrected):
-        BaseRecordingSegment.__init__(self, **parent_recording_segment.get_times_kwargs())
-        self.parent_recording_segment = parent_recording_segment
-        self.micro_map_per_channel = micro_map_per_channel  # {ch_idx: [(start, end), ...]}
-        self.micro_corrected = micro_corrected
-        
-        # Build lookup structures per channel for fast searching
-        self.channel_starts = {}
-        self.channel_ends = {}
-        
-        for ch_idx, map_list in micro_map_per_channel.items():
-            if map_list:
-                starts = np.array([s for s, e in map_list])
-                ends = np.array([e for s, e in map_list])
-                order = np.argsort(starts)
-                self.channel_starts[ch_idx] = starts[order]
-                self.channel_ends[ch_idx] = ends[order]
-            else:
-                self.channel_starts[ch_idx] = np.array([], dtype=np.int64)
-                self.channel_ends[ch_idx] = np.array([], dtype=np.int64)
-
-    def get_num_samples(self):
-        return self.parent_recording_segment.get_num_samples()
-
-    def get_traces(self, start_frame, end_frame, channel_indices):
-        traces = self.parent_recording_segment.get_traces(start_frame, end_frame, channel_indices)
-        traces = traces.copy()
-        
-        # Handle different channel_indices types
-        if channel_indices is None:
-            channel_indices = np.arange(len(self.micro_map_per_channel))
-        elif isinstance(channel_indices, slice):
-            # Convert slice to array
-            start = channel_indices.start if channel_indices.start is not None else 0
-            stop = channel_indices.stop if channel_indices.stop is not None else len(self.micro_map_per_channel)
-            step = channel_indices.step if channel_indices.step is not None else 1
-            channel_indices = np.arange(start, stop, step)
-        else:
-            channel_indices = np.asarray(channel_indices)
-        
-        # Process each channel independently
-        for local_idx, global_ch_idx in enumerate(channel_indices):
-            if global_ch_idx not in self.channel_starts:
-                continue
-            
-            starts = self.channel_starts[global_ch_idx]
-            ends = self.channel_ends[global_ch_idx]
-            
-            if len(starts) == 0:
-                continue
-            
-            # Find pulses that overlap this request
-            lo = np.searchsorted(ends, start_frame, side='right')
-            hi = np.searchsorted(starts, end_frame, side='left')
-            
-            for pulse_idx in range(lo, hi):
-                p_start = starts[pulse_idx]
-                p_end = ends[pulse_idx]
-                
-                overlap_start = max(start_frame, p_start)
-                overlap_end = min(end_frame, p_end)
-                
-                if overlap_start < overlap_end:
-                    chunk_idx_start = overlap_start - start_frame
-                    chunk_idx_end = overlap_end - start_frame
-                    patch_idx_start = overlap_start - p_start
-                    patch_idx_end = overlap_end - p_start
-                    
-                    # Extract this channel's corrected patch
-                    patch = self.micro_corrected[pulse_idx, patch_idx_start:patch_idx_end, global_ch_idx]
-                    
-                    # Place it in the output
-                    traces[chunk_idx_start:chunk_idx_end, local_idx] = patch
-        
-        return traces
-
-class PerChannelIPCACorrectedRecording(BaseRecording):
-    def __init__(self, parent_recording, micro_map_per_channel, micro_corrected):
-        BaseRecording.__init__(self, 
-                               parent_recording.get_sampling_frequency(), 
-                               parent_recording.channel_ids, 
-                               parent_recording.get_dtype())
-        self.parent_recording = parent_recording
-        parent_recording.copy_metadata(self)
-        
-        for segment_index in range(parent_recording.get_num_segments()):
-            parent_segment = parent_recording._recording_segments[segment_index]
-            self.add_recording_segment(
-                PerChannelIPCACorrectedRecordingSegment(parent_segment, micro_map_per_channel, micro_corrected)
-            )
-
 """ 
     This script preprocesses the Blackrock data.
     Input:
@@ -124,6 +6,43 @@ class PerChannelIPCACorrectedRecording(BaseRecording):
         Checkpoint after preprocessing
         Checkpoint after matched-filtering and calculating MUA peak locations and firing rate
 """
+import logging
+logging.getLogger("spikeinterface").setLevel(logging.WARNING)
+logging.getLogger("spikeinterface.core").setLevel(logging.WARNING)
+logging.getLogger("spikeinterface.core.job_tools").setLevel(logging.WARNING)
+import warnings
+warnings.filterwarnings("ignore", message="The extractor is not serializable to file. The provenance will not be saved.")
+
+import gc, csv
+import numpy as np
+import spikeinterface as si
+import spikeinterface.preprocessing as spre
+import spikeinterface.extractors as se
+from sklearn.decomposition import IncrementalPCA
+import RCP_analysis as rcp
+from spikeinterface.sortingcomponents.peak_detection import detect_peaks  # kept for fallback only
+from RCP_analysis.python.functions.config_loading import *
+
+import sys
+import os
+from contextlib import contextmanager
+
+@contextmanager
+def suppress_stdout():
+    """Temporarily suppress stdout."""
+    with open(os.devnull, 'w') as devnull:
+        old_stdout = sys.stdout
+        sys.stdout = devnull
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
+
+# FIX FOR WINDOWS MULTIPROCESSING IN SPIKEINTERFACE 0.104.1
+# When child processes try to unpickle dynamically defined classes (IPCACorrectedRecording),
+# SI tries to check the __version__ of the module. Since the module is __mp_main__, it crashes.
+__version__ = "1.0.0"
+
 
 # ---------- Config ----------
 # Base paths from config_loading
@@ -143,16 +62,18 @@ ARTRMV_TAIL_MS   = float(RATES.get("remove_tail_ms_after", 5.0))
 
 
 # --- IPCA Artifact Correction Settings ---
-USE_IPCA_CORRECTION  = True
-IPCA_RANK            = 10
-IPCA_PULSE_WINDOW_MS = (-0.4, 0.3)
+IPCA_PARAMS = PARAMS.IPCA_Params
+USE_IPCA_CORRECTION  = IPCA_PARAMS.get("use_ipca", True)
+IPCA_RANK            = IPCA_PARAMS.get("rank", 10)
+IPCA_PULSE_WINDOW_MS = IPCA_PARAMS.get("pulse_window_ms", (-0.4, 0.3))
 # ----------------------------------------
 
 # --- Subspace Detector Settings ---
-CFAR_ALPHA       = 1e-4    # CFAR false-alarm rate; lower = stricter
-LOCAL_SIGMA_GATE = True    # Enable local-σ amplitude pre-gate (suppresses burst artifacts)
-AMP_GATE_K       = 3.5     # k multiplier for local-σ gate
-AMP_GATE_W_MS    = 100.0   # Rolling MAD window (ms) for local-σ gate
+SUBSPCE_PARAMS = PARAMS.Subspace_Params
+CFAR_ALPHA       = SUBSPCE_PARAMS.get("cfar_alpha", 1e-4)
+LOCAL_SIGMA_GATE = SUBSPCE_PARAMS.get("local_sigma_gate", True)
+AMP_GATE_K       = SUBSPCE_PARAMS.get("amp_gate_k", 3.5)
+AMP_GATE_W_MS    = SUBSPCE_PARAMS.get("amp_gate_w_ms", 100.0)
 # -----------------------------------
 
 
@@ -182,15 +103,13 @@ si.set_global_job_kwargs(**global_job_kwargs)
 
 # ══════════════════════════════════════════════════════════════════════
 # AMPLITUDE FILTERING OPTIONS
-# You can use any combination of these:
 # ══════════════════════════════════════════════════════════════════════
 
 # Absolute thresholds (µV) - same for all channels
 MIN_AMPLITUDE_UV = None
 MAX_AMPLITUDE_UV = 500.0
 
-MIN_SNR = 2.5                # Minimum signal-to-noise ratio (amplitude / noise_level)
-                             # Typical values: 2.0 (permissive) to 5.0 (strict)
+MIN_SNR = 2.5   # Minimum signal-to-noise ratio (amplitude / noise_level) - 2.0 is the absolute minimum
 
 
 def filter_peaks_by_amplitude_fast(peaks, recording, noise_levels, 
@@ -387,14 +306,15 @@ def main():
         REPO_ROOT / 'config' / "median_extremum_basis_norm_UA_PortA_r3.npy",
     ]
     _template_candidates = [
-        REPO_ROOT / 'config' / "median_extremum_templates_norm_UA_PortB.npy",
+        REPO_ROOT / 'config' / "waveform_templates" / "median_extremum_templates_norm_UA_PortB.npy",
+        REPO_ROOT / 'config' / 'waveform_templates' / "median_extremum_templates_norm_NPRW.npy", # just in case
     ]
 
     ua_basis = None
     for _bp in _basis_candidates:
         if _bp.exists():
             ua_basis = np.load(_bp)
-            print(f"[Subspace] Loaded pre-built basis: {_bp.name}, shape={ua_basis.shape}")
+            # print(f"[Subspace] Loaded pre-built basis: {_bp.name}, shape={ua_basis.shape}")
             break
 
     if ua_basis is None:
@@ -402,8 +322,8 @@ def main():
         for _tp in _template_candidates:
             if _tp.exists():
                 _tpl = np.load(_tp)
-                ua_basis = build_subspace_basis(_tpl[np.newaxis, :], rank=3)
-                print(f"[Subspace] Built basis (rank=3) from template: {_tp.name}")
+                ua_basis = rcp.build_subspace_basis(_tpl[np.newaxis, :], rank=3)
+                # print(f"[Subspace] Built basis (rank=3) from template: {_tp.name}")
                 break
 
     if ua_basis is None:
@@ -414,7 +334,7 @@ def main():
 
 
     for sess in sess_folders:
-        print(f"=== Session: {sess.name} ===")
+        print(f"\n=== Session: {sess.name} ===")
         
         # Check if outputs already exist
         out_dir = UA_CKPT_OUT / f"pp__{sess.name}__NS6"
@@ -458,7 +378,7 @@ def main():
             if not stim_npz_path or not stim_npz_path.exists():
                 print(f"[WARN] stim_stream.npz not found for BR {br_idx:03d} (looked at {stim_npz_path}).")
             else:
-                print(f"[map] BR {br_idx:03d} -> Intan session '{intan_session_name}'")
+                print(f"[MAP] BR {br_idx:03d} -> Intan session '{intan_session_name}'")
 
                 stim = rcp.load_stim_detection(stim_npz_path)
                 block_bounds = stim.get("block_bounds_samples", [])
@@ -494,13 +414,13 @@ def main():
 
             if starts_ua.size:
                 if USE_IPCA_CORRECTION:
-                    print(f"[IPCA] Starting Incremental PCA artifact correction on {starts_ua.size} blocks...")
+                    # print(f"[IPCA] Starting Incremental PCA artifact correction on {starts_ua.size} blocks...")
                     
                     # Setup constants
                     stim_freq_meta = float(rcp.get_metadata_mapping(METADATA_CSV, 'BR_File', 'Stim_Frequency_Hz').get(br_idx, 400.0))
                     if np.isnan(stim_freq_meta): stim_freq_meta = 400.0
                     pulse_interval_ms = 1000.0 / stim_freq_meta
-                    print(f"[IPCA] Using stim frequency {stim_freq_meta} Hz (interval: {pulse_interval_ms:.2f} ms)")
+                    # print(f"[IPCA] Using stim frequency {stim_freq_meta} Hz (interval: {pulse_interval_ms:.2f} ms)")
                     
                     mw_start = int(IPCA_PULSE_WINDOW_MS[0] / 1000.0 * fs_ua)
                     mw_end   = int(IPCA_PULSE_WINDOW_MS[1] / 1000.0 * fs_ua)
@@ -543,13 +463,13 @@ def main():
                                 if elec_id is not None and elec_id > 0:
                                     channel_lags_by_electrode[elec_id] = lag_samp
                         
-                        print(f"[IPCA] Loaded lags for {len(channel_lags_by_name)} channels from {lag_csv.name}")
+                        # print(f"[IPCA] Loaded lags for {len(channel_lags_by_name)} channels from {lag_csv.name}")
                         
                         # Debug: show lag range
-                        if channel_lags_by_name:
-                            lag_values = list(channel_lags_by_name.values())
-                            print(f"[IPCA] Lag range: {min(lag_values)} to {max(lag_values)} samples "
-                                f"({min(lag_values)/fs_ua*1000:.3f} to {max(lag_values)/fs_ua*1000:.3f} ms)")
+                        # if channel_lags_by_name:
+                        #     lag_values = list(channel_lags_by_name.values())
+                            # print(f"[IPCA] Lag range: {min(lag_values)} to {max(lag_values)} samples "
+                            #     f"({min(lag_values)/fs_ua*1000:.3f} to {max(lag_values)/fs_ua*1000:.3f} ms)")
                         
                         # ══════════════════════════════════════════════════════════════════════
                         # STEP 1: GENERATE PULSE TIMES IN UA COORDINATES
@@ -557,11 +477,6 @@ def main():
                         # then generate subsequent pulses using UA timing directly.
                         # This avoids cumulative drift if the stimulator doesn't run on Intan's clock.
                         # ══════════════════════════════════════════════════════════════════════
-                        PPM_CORRECTION = -13.951
-                        scale_corrected = (fs_ua / fs_intan) * (1.0 + PPM_CORRECTION / 1e6)
-
-                        # Pulse interval in UA samples (nominal, from metadata)
-                        interval_ua_samples_nominal = pulse_interval_ms / 1000.0 * fs_ua
 
                         # ══════════════════════════════════════════════════════════════════════
                         # CALCULATE ACTUAL PULSE INTERVAL (CLOCK DRIFT CORRECTED)
@@ -573,23 +488,23 @@ def main():
                         nominal_interval_samples = pulse_interval_ms / 1000.0 * fs_ua
                         interval_ua_samples = nominal_interval_samples * CLOCK_DRIFT_FACTOR
 
-                        actual_freq = fs_ua / interval_ua_samples
-                        print(f"[IPCA] Stim timing correction applied:")
-                        print(f"[IPCA]   Nominal: {stim_freq_meta:.1f} Hz ({nominal_interval_samples:.2f} samples)")
-                        print(f"[IPCA]   Actual:  {actual_freq:.1f} Hz ({interval_ua_samples:.2f} samples)")
-                        print(f"[IPCA]   Correction: +{interval_ua_samples - nominal_interval_samples:.2f} samples/pulse")
+                        # actual_freq = fs_ua / interval_ua_samples
+                        # print(f"[IPCA] Stim timing correction applied:")
+                        # print(f"[IPCA]   Nominal: {stim_freq_meta:.1f} Hz ({nominal_interval_samples:.2f} samples)")
+                        # print(f"[IPCA]   Actual:  {actual_freq:.1f} Hz ({interval_ua_samples:.2f} samples)")
+                        # print(f"[IPCA]   Correction: +{interval_ua_samples - nominal_interval_samples:.2f} samples/pulse")
 
                         
 
                         # Quick sanity check on stimulation frequency
-                        print(f"[DEBUG] Metadata stim frequency: {stim_freq_meta} Hz")
-                        print(f"[DEBUG] Pulse interval: {pulse_interval_ms} ms = {interval_ua_samples:.4f} UA samples")
-                        print(f"[DEBUG] fs_ua: {fs_ua} Hz")
-                        print(f"[DEBUG] fs_intan: {fs_intan} Hz")
-                        print(f"[DEBUG] scale_corrected: {scale_corrected}")
-                        print(f"[DEBUG] shift_samp_intan: {shift_samp_intan}")
-                        print(f"[DEBUG] First block: Intan [{starts_intan[0]} - {ends_intan[0]}]")
-                        print(f"[DEBUG] First block: UA [{starts_ua[0]} - {ends_ua[0]}]")
+                        # print(f"[DEBUG] Metadata stim frequency: {stim_freq_meta} Hz")
+                        # print(f"[DEBUG] Pulse interval: {pulse_interval_ms} ms = {interval_ua_samples:.4f} UA samples")
+                        # print(f"[DEBUG] fs_ua: {fs_ua} Hz")
+                        # print(f"[DEBUG] fs_intan: {fs_intan} Hz")
+                        # print(f"[DEBUG] scale_corrected: {scale_corrected}")
+                        # print(f"[DEBUG] shift_samp_intan: {shift_samp_intan}")
+                        # print(f"[DEBUG] First block: Intan [{starts_intan[0]} - {ends_intan[0]}]")
+                        # print(f"[DEBUG] First block: UA [{starts_ua[0]} - {ends_ua[0]}]")
 
                         all_ua_pulse_times = []
 
@@ -610,8 +525,8 @@ def main():
                         # Convert to integer array
                         intan_pulses_base_ua = np.round(all_ua_pulse_times).astype(np.int64)
 
-                        print(f"[IPCA] Generated {len(intan_pulses_base_ua)} base pulse times in UA coordinates")
-                        print(f"[IPCA] Using interval of {interval_ua_samples:.4f} UA samples ({pulse_interval_ms:.4f} ms)")
+                        # print(f"[IPCA] Generated {len(intan_pulses_base_ua)} base pulse times in UA coordinates")
+                        # print(f"[IPCA] Using interval of {interval_ua_samples:.4f} UA samples ({pulse_interval_ms:.4f} ms)")
 
                         # ══════════════════════════════════════════════════════════════════════
                         # STEP 2: APPLY PER-CHANNEL LAGS
@@ -623,7 +538,7 @@ def main():
                         # Calculate fallback lag (median of all known lags)
                         available_lags = list(channel_lags_by_name.values())
                         fallback_lag = int(np.median(available_lags)) if available_lags else 17
-                        print(f"[IPCA] Fallback lag (median): {fallback_lag} samples")
+                        # print(f"[IPCA] Fallback lag (median): {fallback_lag} samples")
                         
                         intan_pulses_per_channel = {}
                         lag_stats = {'by_name': 0, 'by_electrode': 0, 'fallback': 0}
@@ -655,15 +570,15 @@ def main():
                             intan_pulses_per_channel[ch_idx] = channel_pulse_times[valid]
                             
                             # Debug first 3 channels
-                            if ch_idx < 3:
-                                print(f"[DEBUG] Ch {ch_name}: lag={lag} samp [{lookup_method}], "
-                                      f"{len(intan_pulses_per_channel[ch_idx])} pulses")
+                            # if ch_idx < 3:
+                                # print(f"[DEBUG] Ch {ch_name}: lag={lag} samp [{lookup_method}], "
+                                #       f"{len(intan_pulses_per_channel[ch_idx])} pulses")
                         
-                        print(f"[IPCA] Lag lookup stats: {lag_stats['by_name']} by_name, "
-                              f"{lag_stats['by_electrode']} by_electrode, {lag_stats['fallback']} fallback")
+                        # print(f"[IPCA] Lag lookup stats: {lag_stats['by_name']} by_name, "
+                        #       f"{lag_stats['by_electrode']} by_electrode, {lag_stats['fallback']} fallback")
                         
                         n_pulses = max(len(times) for times in intan_pulses_per_channel.values())
-                        print(f"[IPCA] Maximum {n_pulses} pulses across all channels")
+                        # print(f"[IPCA] Maximum {n_pulses} pulses across all channels")
                         
                         # ══════════════════════════════════════════════════════════════════════
                         # STEP 3: EXTRACT WINDOWS WITH LAG-CORRECTED CENTERS
@@ -698,7 +613,7 @@ def main():
                             micro_signal_list.append(pulse_data)
                         
                         micro_signal_array = np.stack(micro_signal_list)
-                        print(f"[IPCA] Extracted {len(micro_signal_array)} artifacts. Shape: {micro_signal_array.shape}")
+                        # print(f"[IPCA] Extracted {len(micro_signal_array)} artifacts. Shape: {micro_signal_array.shape}")
 
                         # ══════════════════════════════════════════════════════════════════════
                         # DIAGNOSTIC: Quick artifact alignment check
@@ -744,7 +659,7 @@ def main():
                         ax.set_xlim(time_ms[0], time_ms[-1])
 
                         # Status indicator
-                        status = "✓ ALIGNED" if alignment_ok else "✗ MISALIGNED"
+                        status = "ALIGNED" if alignment_ok else "MISALIGNED"
                         status_color = "green" if alignment_ok else "red"
 
                         ax.set_title(
@@ -763,15 +678,14 @@ def main():
                         plt.close()
 
                         # Console summary
-                        print(f"[DIAG] Artifact alignment: {status}")
-                        print(f"[DIAG]   Peak jitter: {drift_std:.2f} samples (range: {drift_range})")
-                        print(f"[DIAG]   Saved: {diag_path.name}")
+                        # print(f"[DIAG] Artifact alignment: {status}")
+                        # print(f"[DIAG]   Peak jitter: {drift_std:.2f} samples (range: {drift_range})")
+                        # print(f"[DIAG]   Saved: {diag_path.name}")
                         
                         # ══════════════════════════════════════════════════════════════════════
                         # STEP 4: REGION-WISE IPCA CORRECTION
                         # ══════════════════════════════════════════════════════════════════════
-                        from RCP_analysis.python.functions.artifact_correction import Template
-                        corrector = IPCA_Artifact_Correction(rank=IPCA_RANK)
+                        corrector = rcp.IPCA_Artifact_Correction(rank=IPCA_RANK)
                         
                         micro_corrected = micro_signal_array.copy()
                         
@@ -785,7 +699,7 @@ def main():
                         
                         n_stim, n_time, _ = micro_signal_array.shape
                         
-                        print("Cross-channel IPCA by region:")
+                        # print("Cross-channel IPCA by region:")
                         for reg, idxs in region_to_idxs.items():
                             if not idxs:
                                 continue
@@ -793,10 +707,10 @@ def main():
                             reg_signal = micro_signal_array[:, :, idxs]
                             pooled_signal = np.transpose(reg_signal, (0, 2, 1)).reshape(-1, n_time)
                             
-                            reg_template = Template()
+                            reg_template = rcp.Template()
                             _, reg_template = corrector.ipca_template_per_channel(pooled_signal, reg_template)
                             
-                            print(f"  [{reg}] Shared subspace learned from {len(idxs)} channels.")
+                            # print(f"  [{reg}] Shared subspace learned from {len(idxs)} channels.")
                             
                             for ch_idx in idxs:
                                 signal_ch = micro_signal_array[:, :, ch_idx].copy()
@@ -806,11 +720,11 @@ def main():
                         # ══════════════════════════════════════════════════════════════════════
                         # STEP 5: BUILD CORRECTED RECORDING WITH PER-CHANNEL PLACEMENT
                         # ══════════════════════════════════════════════════════════════════════
-                        print("[IPCA] Building per-channel IPCACorrectedRecording...")
+                        # print("[IPCA] Building per-channel IPCACorrectedRecording...")
                         
-                        rec_corr_mem = PerChannelIPCACorrectedRecording(rec_ns6, micro_map_per_channel, micro_corrected)
+                        rec_corr_mem = rcp.PerChannelIPCACorrectedRecording(rec_ns6, micro_map_per_channel, micro_corrected)
                         
-                        print("[IPCA] Highpass filtering after correction...")
+                        # print("[IPCA] Highpass filtering after correction...")
                         rec_hp = spre.highpass_filter(rec_corr_mem, freq_min=float(PARAMS.highpass_hz))
                         rec_artif_removed = rec_hp
                         
@@ -879,7 +793,7 @@ def main():
                             out_fig.parent.mkdir(parents=True, exist_ok=True)
                             fig.savefig(out_fig, dpi=150)
                             plt.close(fig)
-                            print(f"!!! SAVED MACRO DEBUG FIG FOR CH {el_out}: {out_fig}")
+                            print(f"[IPCA] RAN --> SAVED DEBUG FIG FOR CH {el_out} in /figures/IPCA_debug/")
 
                 else:
                     # Legacy 0-blanking method
@@ -911,11 +825,11 @@ def main():
         
         # Custom IPCA Nodes are not easily fork-serializable. Force sequential write.
         skip_multiproc = USE_IPCA_CORRECTION and block_bounds.size > 0
-        if skip_multiproc:
-            print("[IPCA] Saving sequentially (n_jobs=1) because custom nodes cannot be pickled...")
-            rec_artif_removed = rec_artif_removed.save(folder=out_dir, overwrite=True, n_jobs=1)
-        else:
-            rec_artif_removed = rec_artif_removed.save(folder=out_dir, overwrite=True)
+        with suppress_stdout():
+            if skip_multiproc:
+                rec_artif_removed = rec_artif_removed.save(folder=out_dir, overwrite=True, n_jobs=1, progress_bar=False)
+            else:
+                rec_artif_removed = rec_artif_removed.save(folder=out_dir, overwrite=True, progress_bar=False)
             
         print(f"[{sess.name}] (ns6) saved preprocessed -> {out_dir}")
         
@@ -930,7 +844,7 @@ def main():
         except Exception:
             noise_levels = si.get_noise_levels(rec_artif_removed, method="mad", return_in_uV=False)
         
-        print(f"[INFO] Segments of recording: {n_seg}, Average noise level: {np.nanmean(noise_levels)}")
+        # print(f"[INFO] Segments of recording: {n_seg}, Average noise level: {np.nanmean(noise_levels)}")
         
         
         # Set channel locations (required by some SI utilities; kept for compatibility)
@@ -943,18 +857,18 @@ def main():
         rec_artif_removed.set_channel_locations(locs)
         
         # ── Subspace-CFAR detection ────────────────────────────────────────────
-        print(f"[Subspace] Running subspace-CFAR detector (α={CFAR_ALPHA})...")
-        peaks = subspace_detect_cfar(
+        # print(f"[Subspace] Running subspace-CFAR detector (α={CFAR_ALPHA})...")
+        peaks = rcp.subspace_detect_cfar(
             rec_artif_removed, ua_basis,
             cfar_alpha=CFAR_ALPHA,
             peak_sign=PEAK_SIGN,
         )
-        print(f"[Subspace] Detected {len(peaks):,} raw peaks")
+        # print(f"[Subspace] Detected {len(peaks):,} raw peaks")
 
         # ── Optional local-σ amplitude gate ───────────────────────────────────
         # Raises the amplitude bar during high-noise bursts (e.g. chewing/movement).
         if LOCAL_SIGMA_GATE and len(peaks):
-            peaks = filter_peaks_by_local_sigma(
+            peaks = rcp.filter_peaks_by_local_sigma(
                 peaks, rec_artif_removed,
                 k_amp=AMP_GATE_K,
                 w_ms=AMP_GATE_W_MS,
@@ -964,12 +878,12 @@ def main():
         # ── Optional hard amplitude / SNR post-filter ─────────────────────────
         if any([MIN_AMPLITUDE_UV, MAX_AMPLITUDE_UV, MIN_SNR]):
             print(f"[Filter] Applying amplitude/SNR filtering:")
-            if MIN_AMPLITUDE_UV:
-                print(f"  - Min amplitude: {MIN_AMPLITUDE_UV} µV")
-            if MAX_AMPLITUDE_UV:
-                print(f"  - Max amplitude: {MAX_AMPLITUDE_UV} µV")
-            if MIN_SNR:
-                print(f"  - Min SNR: {MIN_SNR}")
+            # if MIN_AMPLITUDE_UV:
+            #     print(f"  - Min amplitude: {MIN_AMPLITUDE_UV} µV")
+            # if MAX_AMPLITUDE_UV:
+            #     print(f"  - Max amplitude: {MAX_AMPLITUDE_UV} µV")
+            # if MIN_SNR:
+            #     print(f"  - Min SNR: {MIN_SNR}")
 
             peaks, peak_amplitudes, peak_snr = filter_peaks_by_amplitude_fast(
                 peaks,
@@ -1001,8 +915,8 @@ def main():
             auto_use_dlc = touchscreen_max < TOUCHSCREEN_MIN_VALID
 
             if auto_use_dlc:
-                print(f"  [AUTO-DLC] Touchscreen max ({touchscreen_max:.2e}) < {TOUCHSCREEN_MIN_VALID:.2e}")
-                print(f"             Falling back to DLC kinematics for touch state")
+                # print(f"  [TOUCH] Touchscreen max ({touchscreen_max:.2e}) < {TOUCHSCREEN_MIN_VALID:.2e}")
+                print(f"[TOUCH] Falling back to DLC kinematics for touch state")
                 
                 # Load DLC data
                 sess_parts = sess.name.split("_", 1)
@@ -1011,7 +925,6 @@ def main():
                 
                 if csv_files:
                     csv_path = csv_files[0]
-                    print(f"  [AUTO-DLC] Reading DLC CSV: {csv_path.name}")
                     try:
                         df = pd.read_csv(csv_path, header=[0, 1, 2])
                         flat_headers = ["_".join([str(c) for c in col if "Unnamed" not in str(c)]).strip() for col in df.columns]
@@ -1066,7 +979,7 @@ def main():
                                     fill_value=np.nan
                                 )
                                 ser_y = interp_func(t_ts)
-                                print(f"  [DLC] Aligned via ns5_sample: DLC time range [{dlc_time_sec[valid_mask].min():.3f}, {dlc_time_sec[valid_mask].max():.3f}] s")
+                                # print(f"  [DLC] Aligned via ns5_sample: DLC time range [{dlc_time_sec[valid_mask].min():.3f}, {dlc_time_sec[valid_mask].max():.3f}] s")
                             else:
                                 print(f"  [DLC WARNING] Not enough valid DLC points ({valid_mask.sum()}), falling back to frame-rate assumption")
                                 dlc_fps = 100.0
@@ -1089,7 +1002,7 @@ def main():
                         ts_state_char[ts_state_num == 1] = "A"
                         ts_state_char[ts_state_num == 2] = "B"
                         
-                        print(f"  [AUTO-DLC] Assigned states from DLC. Unique: {np.unique(ts_state_num)}")
+                        # print(f"  [TOUCH] Assigned states from DLC. Unique: {np.unique(ts_state_num)}")
                         
                         # ============ DEBUG PLOT ============
                         DEBUG_DLC_PLOT = True  # Set to False to disable
@@ -1133,12 +1046,12 @@ def main():
                                 # Convert starts_ua (NS6 sample indices) to seconds in NS2 time frame
                                 stim_onsets_sec = (starts_ua / fs_ua) - ns6_to_ns2_offset
                                 
-                                print(f"  [DEBUG] NS6 start time: {ns6_start_time:.3f} s")
-                                print(f"  [DEBUG] NS2 start time: {ns2_start_time:.3f} s")
-                                print(f"  [DEBUG] NS6→NS2 offset: {ns6_to_ns2_offset:.3f} s")
-                                print(f"  [DEBUG] Found {len(stim_onsets_sec)} stim onsets")
-                                print(f"  [DEBUG] First stim onset (NS2 time): {stim_onsets_sec[0]:.3f} s")
-                                print(f"  [DEBUG] t_ts range: [{t_sec[0]:.3f}, {t_sec[-1]:.3f}] s")
+                                # print(f"  [DEBUG] NS6 start time: {ns6_start_time:.3f} s")
+                                # print(f"  [DEBUG] NS2 start time: {ns2_start_time:.3f} s")
+                                # print(f"  [DEBUG] NS6→NS2 offset: {ns6_to_ns2_offset:.3f} s")
+                                # print(f"  [DEBUG] Found {len(stim_onsets_sec)} stim onsets")
+                                # print(f"  [DEBUG] First stim onset (NS2 time): {stim_onsets_sec[0]:.3f} s")
+                                # print(f"  [DEBUG] t_ts range: [{t_sec[0]:.3f}, {t_sec[-1]:.3f}] s")
                             
                             # Mark stim windows if we found stim times
                             if stim_onsets_sec is not None and len(stim_onsets_sec) > 0:
@@ -1148,7 +1061,7 @@ def main():
                                 # Count how many stim onsets fall within the plotted time range
                                 in_range = (stim_onsets_sec >= t_sec[0] - win_pre_sec) & (stim_onsets_sec <= t_sec[-1] + win_post_sec)
                                 n_in_range = np.sum(in_range)
-                                print(f"  [DEBUG] {n_in_range}/{len(stim_onsets_sec)} stim onsets within plot range")
+                                # print(f"  [DEBUG] {n_in_range}/{len(stim_onsets_sec)} stim onsets within plot range")
                                 
                                 for i, stim_t in enumerate(stim_onsets_sec):
                                     # Only draw if within or near the plot range
@@ -1223,7 +1136,7 @@ def main():
                             debug_fig_dir.mkdir(parents=True, exist_ok=True)
                             debug_fig_path = debug_fig_dir / f"debug_DLC_classification_{sess.name}.png"
                             plt.savefig(debug_fig_path, dpi=150, bbox_inches='tight')
-                            print(f"  [DEBUG] Saved DLC classification plot: {debug_fig_path}")
+                            print(f"  [TOUCH] Saved DLC classification plot: {debug_fig_path}")
                             
                             plt.close(fig)
                         # ============ END DEBUG PLOT ============
@@ -1233,13 +1146,13 @@ def main():
                 else:
                     print(f"  [WARNING] No DLC CSV found for {short_name}")
             else:
-                print(f"  [TOUCHSCREEN] Using touchscreen signal (max: {touchscreen_max:.2e})")
+                # print(f"  [TOUCHSCREEN] Using touchscreen signal (max: {touchscreen_max:.2e})")
                 ts_state_num[touchscreen_sig >= TOUCHSCREEN_THRES_A] = 1
                 ts_state_num[touchscreen_sig >= TOUCHSCREEN_THRES_B] = 2
                 ts_state_char[ts_state_num == 1] = "A"
                 ts_state_char[ts_state_num == 2] = "B"
 
-            print(f"  [TOUCHSCREEN] Final unique states: {np.unique(ts_state_num)}")
+            # print(f"  [TOUCHSCREEN] Final unique states: {np.unique(ts_state_num)}")
         else:
             print("[touchscreen] No touchscreen signal; leaving ts_state_* empty.")
 

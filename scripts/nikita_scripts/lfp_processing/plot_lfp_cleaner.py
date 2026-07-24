@@ -2406,7 +2406,7 @@ def _build_groups(data, n_ch):
                 build_elec_to_data_idx
             )
             
-            MAPPING_CSV = Path(__file__).parent.parent.parent / "electrode_port_mapping.csv"
+            MAPPING_CSV = Path(__file__).parent.parent.parent.parent / "config" / "electrode_port_mapping.csv"
             nsp_to_elec, UTAH_ELEC_GRIDS, elec_to_region = load_electrode_mapping(MAPPING_CSV)
             
             # Build groups by region

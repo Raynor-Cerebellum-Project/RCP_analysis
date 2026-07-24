@@ -27,6 +27,9 @@ class experimentParams:
     # rate estimation
     NPRW_rate_est: dict[str, Any] = field(default_factory=dict)
     UA_rate_est: dict[str, Any] = field(default_factory=dict)
+
+    Subspace_Params: dict[str, Any] = field(default_factory=dict)
+    IPCA_Params: dict[str, Any] = field(default_factory=dict)
     
     kinematics: dict[str, Any] = field(default_factory=dict)
     rsa_params: dict[str, Any] = field(default_factory=dict)

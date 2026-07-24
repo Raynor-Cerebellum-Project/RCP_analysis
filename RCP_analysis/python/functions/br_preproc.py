@@ -52,8 +52,7 @@ def extract_br_aux_streams_npz(
 ) -> tuple[
     Path | None,
     np.ndarray | None, np.ndarray | None, np.ndarray | None,
-    dict[str, Any], dict[str, Any]
-]:
+    dict[str, Any], dict[str, Any]]:
     """
     Build and save BR aux streams in a unified format into ONE NPZ file:
 
@@ -112,7 +111,7 @@ def extract_br_aux_streams_npz(
                 fs_touchscreen=ns5_fs_hz,
             )
             meta.update(meta_ns5)
-            print(f"[AUX] prepared ns5 aux (channels {labels_ns5})")
+            # print(f"[AUX] prepared ns5 aux (channels {labels_ns5})")
         else:
             print("[WARN] ns5 found but no requested sync channels present; nothing saved for ns5.")
 
@@ -176,8 +175,8 @@ def extract_br_aux_streams_npz(
         meta.update(meta_ns2)
 
         # single summary line
-        print("[AUX] ns2 signals: " + ", ".join([desc_vog, desc_vog_sync, desc_touch, desc_hr]))
-        print(f"[AUX] prepared ns2 digi (n_channels={aux_traces_ns2.shape[0]})")
+        # print("[AUX] ns2 signals: " + ", ".join([desc_vog, desc_vog_sync, desc_touch, desc_hr]))
+        # print(f"[AUX] prepared ns2 digi (n_channels={aux_traces_ns2.shape[0]})")
 
     except FileNotFoundError:
         print("[WARN] ns2 not found; no digital channels.")
@@ -264,7 +263,7 @@ def apply_ua_mapping_with_regions(
     # ---- If Port B, shift local 1..128 -> NSP 129..256 ----
     if ua_port == "B":
         ch_ids = ch_ids + 128
-        print("[MAP] Applying NSP offset for Port B: local 1..128 -> NSP 129..256")
+        # print("[MAP] Applying NSP offset for Port B: local 1..128 -> NSP 129..256")
 
     # ---- NSP id -> row index ----
     id_to_row = {ch: i for i, ch in enumerate(ch_ids)}
@@ -285,8 +284,8 @@ def apply_ua_mapping_with_regions(
     renamed = recording.rename_channels(new_ids)
     mapped = np.count_nonzero((idx_rows >= 0) & (idx_rows < n_channels))
     print(
-        f"[MAP] renamed {mapped}/{n_channels} rows with UA mapping "
-        f"('UAe###_NSP###') using port {ua_port!r}."
+        # f"[MAP] renamed {mapped}/{n_channels} rows with UA mapping "
+        # f"('UAe###_NSP###') using port {ua_port!r}."
     )
 
     renamed.set_annotation("ua_row_index", idx_rows)

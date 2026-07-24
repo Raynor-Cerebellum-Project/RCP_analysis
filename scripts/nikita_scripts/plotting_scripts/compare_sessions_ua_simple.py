@@ -74,7 +74,7 @@ class SessionSpec:
 class ComparisonConfig:
     """Configuration for comparison."""
     data_root: Path = field(default_factory=lambda: Path("."))
-    electrode_mapping_csv: Path = field(default_factory=lambda: Path("E:/NHP_Cerebellum_Project_2025_RCP_Analysis_Git/RCP_analysis/scripts/electrode_port_mapping.csv"))
+    electrode_mapping_csv: Path = field(default_factory=lambda: Path("E:/NHP_Cerebellum_Project_2025_RCP_Analysis_Git/RCP_analysis/config/electrode_port_mapping.csv"))
     session_specs: list[SessionSpec] = field(default_factory=list)
     target: str = 'A'
     time_windows: list[tuple[float, float, str]] = field(default_factory=lambda: DEFAULT_TIME_WINDOWS.copy())

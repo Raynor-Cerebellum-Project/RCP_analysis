@@ -136,7 +136,7 @@ from RCP_analysis.python.functions.br_preproc import (
     build_elec_to_data_idx
 )
 
-MAPPING_CSV = Path(__file__).parent.parent.parent / "electrode_port_mapping.csv"
+MAPPING_CSV = Path(__file__).parent.parent.parent / "config" / "electrode_port_mapping.csv"
 nsp_to_elec_global, UTAH_ELEC_GRIDS, elec_to_region_global = load_electrode_mapping(MAPPING_CSV)
 
 def _region_grid(region_name: str):

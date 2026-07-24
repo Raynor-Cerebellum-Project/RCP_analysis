@@ -1,6 +1,7 @@
 import numpy as np
 from sklearn.decomposition import IncrementalPCA
 import RCP_analysis as rcp
+from spikeinterface.core import BaseRecording, BaseRecordingSegment
 
 
 class Template:
@@ -28,7 +29,6 @@ class Template:
             self.weights = new_weights
         else:
             self.weights = (1 - learning_rate) * self.weights + learning_rate * new_weights
-
 
 class IPCA_Artifact_Correction:
     """
@@ -118,6 +118,98 @@ class IPCA_Artifact_Correction:
         # print(centered[0, :] - X_artifact[0, :], np.mean(centered[0, :] - X_artifact[0, :]) )
         # print(centered[0, :] - X_artifact[0, :] + baseline_mean[0, :], np.mean(centered[0, :] - X_artifact[0, :] + baseline_mean[0, :]) )
         return centered - X_artifact + baseline_mean
+
+class _PerChannelIPCACorrectedRecordingSegment(BaseRecordingSegment):
+    def __init__(self, parent_recording_segment, micro_map_per_channel, micro_corrected):
+        BaseRecordingSegment.__init__(self, **parent_recording_segment.get_times_kwargs())
+        self.parent_recording_segment = parent_recording_segment
+        self.micro_map_per_channel = micro_map_per_channel  # {ch_idx: [(start, end), ...]}
+        self.micro_corrected = micro_corrected
+        
+        # Build lookup structures per channel for fast searching
+        self.channel_starts = {}
+        self.channel_ends = {}
+        
+        for ch_idx, map_list in micro_map_per_channel.items():
+            if map_list:
+                starts = np.array([s for s, e in map_list])
+                ends = np.array([e for s, e in map_list])
+                order = np.argsort(starts)
+                self.channel_starts[ch_idx] = starts[order]
+                self.channel_ends[ch_idx] = ends[order]
+            else:
+                self.channel_starts[ch_idx] = np.array([], dtype=np.int64)
+                self.channel_ends[ch_idx] = np.array([], dtype=np.int64)
+
+    def get_num_samples(self):
+        return self.parent_recording_segment.get_num_samples()
+
+    def get_traces(self, start_frame, end_frame, channel_indices):
+        traces = self.parent_recording_segment.get_traces(start_frame, end_frame, channel_indices)
+        traces = traces.copy()
+        
+        # Handle different channel_indices types
+        if channel_indices is None:
+            channel_indices = np.arange(len(self.micro_map_per_channel))
+        elif isinstance(channel_indices, slice):
+            # Convert slice to array
+            start = channel_indices.start if channel_indices.start is not None else 0
+            stop = channel_indices.stop if channel_indices.stop is not None else len(self.micro_map_per_channel)
+            step = channel_indices.step if channel_indices.step is not None else 1
+            channel_indices = np.arange(start, stop, step)
+        else:
+            channel_indices = np.asarray(channel_indices)
+        
+        # Process each channel independently
+        for local_idx, global_ch_idx in enumerate(channel_indices):
+            if global_ch_idx not in self.channel_starts:
+                continue
+            
+            starts = self.channel_starts[global_ch_idx]
+            ends = self.channel_ends[global_ch_idx]
+            
+            if len(starts) == 0:
+                continue
+            
+            # Find pulses that overlap this request
+            lo = np.searchsorted(ends, start_frame, side='right')
+            hi = np.searchsorted(starts, end_frame, side='left')
+            
+            for pulse_idx in range(lo, hi):
+                p_start = starts[pulse_idx]
+                p_end = ends[pulse_idx]
+                
+                overlap_start = max(start_frame, p_start)
+                overlap_end = min(end_frame, p_end)
+                
+                if overlap_start < overlap_end:
+                    chunk_idx_start = overlap_start - start_frame
+                    chunk_idx_end = overlap_end - start_frame
+                    patch_idx_start = overlap_start - p_start
+                    patch_idx_end = overlap_end - p_start
+                    
+                    # Extract this channel's corrected patch
+                    patch = self.micro_corrected[pulse_idx, patch_idx_start:patch_idx_end, global_ch_idx]
+                    
+                    # Place it in the output
+                    traces[chunk_idx_start:chunk_idx_end, local_idx] = patch
+        
+        return traces
+
+class PerChannelIPCACorrectedRecording(BaseRecording):
+    def __init__(self, parent_recording, micro_map_per_channel, micro_corrected):
+        BaseRecording.__init__(self, 
+                               parent_recording.get_sampling_frequency(), 
+                               parent_recording.channel_ids, 
+                               parent_recording.get_dtype())
+        self.parent_recording = parent_recording
+        parent_recording.copy_metadata(self)
+        
+        for segment_index in range(parent_recording.get_num_segments()):
+            parent_segment = parent_recording._recording_segments[segment_index]
+            self.add_recording_segment(
+                _PerChannelIPCACorrectedRecordingSegment(parent_segment, micro_map_per_channel, micro_corrected)
+            )
 
 
 

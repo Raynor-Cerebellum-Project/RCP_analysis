@@ -24,7 +24,7 @@ matplotlib.rcParams["svg.fonttype"] = "none"
 # ──────────────────────────────────────────────────
 # USER SETTINGS
 # ──────────────────────────────────────────────────
-CONDITION   = 16             # BR index  (= condition number)
+CONDITION   = 17             # BR index  (= condition number)
 # 'stim' = use stim_ms (stimulation times)
 # 'movement' = use event_ms / IR crossing times (for control conditions)
 EVENT_TYPE = "stim"  # Change to "stim" for stimulation conditions
@@ -751,7 +751,7 @@ def main():
     ch_ids = rec.get_channel_ids()
     
     # Path to robust mapping CSV
-    mapping_csv = REPO_ROOT / "scripts" / "electrode_port_mapping.csv"
+    mapping_csv = REPO_ROOT / "config" / "electrode_port_mapping.csv"
     mapping_df = pd.read_csv(mapping_csv) if mapping_csv.exists() else None
     
     for ridx, cid in enumerate(ch_ids):

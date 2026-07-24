@@ -48,6 +48,7 @@ from .python.functions.utils import (
 from .python.functions.artifact_correction import (
     IPCA_Artifact_Correction,
     Template,
+    PerChannelIPCACorrectedRecording,
 )
 # intan
 from .python.functions.intan_preproc import (
@@ -78,6 +79,12 @@ from .python.functions.impedance_utils import (
 # plotting
 from .python.plotting.plotting import (
     stacked_heatmaps_plus_behv,
+)
+
+from .python.functions.subspace_detector import (
+    subspace_detect_cfar,
+    build_subspace_basis,
+    filter_peaks_by_local_sigma,
 )
 
 
@@ -132,6 +139,7 @@ __all__ = [
     # artifact correction
     "IPCA_Artifact_Correction",
     "Template",
+    "PerChannelIPCACorrectedRecording",
     
     # BR/UA
     "list_br_sessions",
@@ -141,6 +149,11 @@ __all__ = [
     "load_UA_mapping_from_excel",
     
     "stim_npz_path_from_br_idx",
+    
+    # subspace detection
+    "subspace_detect_cfar",
+    "build_subspace_basis",
+    "filter_peaks_by_local_sigma",
 
     # Intan
     "extract_stim_npz",

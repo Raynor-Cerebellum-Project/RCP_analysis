@@ -373,7 +373,7 @@ def get_electrodes_for_port(elec_info, region, recording_port):
 
 
 # Load mapping globally 
-MAPPING_CSV = Path(__file__).parent.parent / "scripts" / "electrode_port_mapping.csv"
+MAPPING_CSV = Path(__file__).parent.parent / "config" / "electrode_port_mapping.csv"
 elec_info_global, UTAH_ELEC_GRIDS = load_electrode_mapping(MAPPING_CSV)
 
 
