@@ -3,6 +3,7 @@ from typing import Any
 from pathlib import Path
 import socket
 import yaml
+import csv
 
 # Params model
 @dataclass
@@ -35,7 +36,7 @@ class experimentParams:
     rsa_params: dict[str, Any] = field(default_factory=dict)
 
 
-def resolve_data_root(machines_yaml_path: Path, relative_data_root: str) -> str:
+def _resolve_data_root(machines_yaml_path: Path, relative_data_root: str) -> str:
     # Prepend machine's own data mount based on hostname, needs entry in machines.yaml
     if not machines_yaml_path.exists():
         raise FileNotFoundError(
@@ -53,10 +54,55 @@ def resolve_data_root(machines_yaml_path: Path, relative_data_root: str) -> str:
     return f"{prefix}/{relative_data_root}"
 
 
+def _get_location_session_from_status_csv(data_root: str) -> tuple[str, str]:
+    """
+    Read data_root/data_status_reaching.csv and find the first row where
+    'Process Session?' is 'Yes'. Return that row's Location and Session.
+    """
+    status_csv = Path(data_root) / "data_status_reaching.csv"
+
+    if not status_csv.exists():
+        raise FileNotFoundError(f"data_status_reaching.csv not found: {status_csv}")
+
+    with status_csv.open("r", newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+
+        required_cols = {"Process Session?", "Location", "Session"}
+        missing = required_cols - set(reader.fieldnames or [])
+        if missing:
+            raise KeyError(
+                f"Missing required column(s) in {status_csv}: {sorted(missing)}"
+            )
+
+        for row in reader:
+            process_which = str(row.get("Process Session?", "")).strip().lower()
+
+            if process_which == "yes":
+                location = str(row.get("Location", "")).strip()
+                session = str(row.get("Session", "")).strip()
+
+                if not location:
+                    raise ValueError(
+                        f"Found Process Session? = Yes, but Location is empty in {status_csv}"
+                    )
+                if not session:
+                    raise ValueError(
+                        f"Found Process Session? = Yes, but Session is empty in {status_csv}"
+                    )
+
+                return location, session
+
+
+    print(f"[RAS] No row with 'Process Session?' = 'Yes' found in {status_csv}")
+    
+    return "N/A", "N/A"
+
+
 def load_experiment_params(
     yaml_path: Path,
     repo_root: Path,
     machines_yaml_path: Path | None = None,
+    first_run: bool = False,
 ) -> experimentParams:
     cfg = yaml.safe_load(yaml_path.read_text())
 
@@ -74,14 +120,19 @@ def load_experiment_params(
     # paths block
     paths = cfg.get("paths", {}) or {}
     relative_data_root = paths.get("data_root", "")
-    location  = paths.get("location")
-    session   = paths.get("session")
     geom_mat_rel = paths.get("geom_mat_rel")
 
     # resolve machine-specific prefix and combine with the lab-relative data_root
     if machines_yaml_path is None:
         machines_yaml_path = repo_root / "config" / "machines.yaml"
-    data_root = resolve_data_root(machines_yaml_path, relative_data_root)
+    data_root = _resolve_data_root(machines_yaml_path, relative_data_root)
+
+    if first_run:
+        # For the first run, we don't have a specific session yet -> needed for run_across_sessions
+        location = ""
+        session = ""
+    else:
+        location, session = _get_location_session_from_status_csv(data_root)
 
     kin_cfg = dict(cfg.get("kinematics", {}) or {})
     kin_cfg["num_camera"] = kin_cfg.get("num_camera")
