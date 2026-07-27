@@ -29,7 +29,7 @@ SESSIONS_TO_RUN = [
 ]
 
 BATCH_SCRIPTS = [
-    # run curation_scripts/OCR_frame_mapping_BT_edit.py on raw videos first -> copy into Video/OCR separate from Video/DLC
+    # "OCR_frame_correction.py",
     # "align_dlc_two_cams_to_br.py",
     # "align_VOG_to_br.py",
     "NPRW_Intan_analysis_mf.py",
