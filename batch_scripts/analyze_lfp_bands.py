@@ -204,27 +204,6 @@ STIM_CACHE = {}
 # IPCA Helper Functions (matching UA_BR_analysis_mf.py logic)
 # =============================================================================
 
-
-def _get_electrode_region(elec_id):
-    """
-    Get region name for a Utah Array electrode based on 1-based ID.
-    Standard mapping:
-    - 1-64 = SMA
-    - 65-128 = PMd  
-    - 129-192 = M1i
-    - 193-256 = M1s
-    """
-    if 1 <= elec_id <= 64:
-        return "SMA"
-    elif 65 <= elec_id <= 128:
-        return "PMd"
-    elif 129 <= elec_id <= 192:
-        return "M1i"
-    elif 193 <= elec_id <= 256:
-        return "M1s"
-    return "Unknown"
-
-
 def _get_stim_frequency_from_metadata(br_idx):
     """Get stimulation frequency from metadata CSV."""
     stim_freq = 400.0  # default
@@ -411,7 +390,15 @@ def filter_zero_phase(epochs, fs, low, high, order=4, chunk_size=32):
     return out
 
 
-def apply_ipca_correction(rec_ns6, starts_ua, ends_ua, br_idx=None, fs_intan=30000.0, shift_samp_intan=0.0):
+def apply_ipca_correction(
+    rec_ns6,
+    starts_ua,
+    ends_ua,
+    br_idx=None,
+    fs_intan=30000.0,
+    shift_samp_intan=0.0,
+    ua_region=None,
+    ua_region_names=None,):
     """
     Applies IPCA artifact removal to stimulation windows, using cross-channel templates 
     learned individually per brain region.
@@ -532,10 +519,7 @@ def apply_ipca_correction(rec_ns6, starts_ua, ends_ua, br_idx=None, fs_intan=300
     except (ValueError, TypeError):
         elec_ids = np.arange(1, n_channels + 1)
     
-    if ua_port == "B":
-        elec_ids_for_lookup = elec_ids + 128
-    else:
-        elec_ids_for_lookup = elec_ids
+    elec_ids_for_lookup = elec_ids
     
     # Calculate fallback lag
     available_lags = list(channel_lags_by_name.values())
@@ -637,13 +621,23 @@ def apply_ipca_correction(rec_ns6, starts_ua, ends_ua, br_idx=None, fs_intan=300
     micro_corrected = micro_signal_array.copy()
     
     # Map channels to regions
-    if ua_port == "B":
-        elec_ids_for_region = elec_ids + 128
-    else:
-        elec_ids_for_region = elec_ids
-    
-    target_ch_regions = [_get_electrode_region(int(e)) for e in elec_ids_for_region]
-    
+    ua_region = np.asarray(ua_region)
+    ua_region_names = np.asarray(ua_region_names)
+
+    if ua_region.shape[0] != n_channels:
+        raise ValueError(
+            f"ua_region length mismatch: got {ua_region.shape[0]}, "
+            f"expected {n_channels}"
+        )
+
+    target_ch_regions = []
+    for reg_idx in ua_region:
+        reg_idx = int(reg_idx)
+        if reg_idx < 0:
+            target_ch_regions.append("Unknown")
+        else:
+            target_ch_regions.append(str(ua_region_names[reg_idx]))
+
     region_to_idxs = {}
     for ch_idx, reg_name in enumerate(target_ch_regions):
         region_to_idxs.setdefault(reg_name, []).append(ch_idx)
@@ -758,46 +752,71 @@ def slice_epoch(data, t_axis, target_win):
 # =============================================================================
 
 def _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, metadata_csv):
-    ua_port = "A"
-    if metadata_csv.exists():
-        try:
-            df_meta_raw = pd.read_csv(metadata_csv)
-            df_meta = _normalize_metadata(df_meta_raw)
-            if "br_file" in df_meta.columns:
-                br_col = pd.to_numeric(df_meta["br_file"], errors="coerce")
-                mask = br_col == br_idx
-                if mask.any():
-                    row_meta = df_meta.loc[mask].iloc[0]
-                    port_val = row_meta.get("_ua_port_norm") if "_ua_port_norm" in row_meta else (
-                        str(row_meta.get("ua_port", "UNKNOWN")).upper().strip() or "UNKNOWN"
-                    )
-                    if port_val in ("A", "B"):
-                        ua_port = port_val
-        except Exception as e:
-            print(f"    [WARN] Failed to read UA port: {e}")
-            
-    raw_ch_ids = np.asarray(rec_raw.get_channel_ids(), int)
-    if ua_port == "B":
-        raw_ch_ids += 128
-        
-    id_to_row = {ch: i for i, ch in enumerate(raw_ch_ids)}
-    active_elecs, active_rows = [], []
-    for elec_zero_idx, nsp_id in enumerate(UA_MAP):
-        if nsp_id is not None and not np.isnan(nsp_id) and nsp_id > 0 and int(nsp_id) in id_to_row:
-            active_elecs.append(elec_zero_idx + 1)
-            active_rows.append(id_to_row[int(nsp_id)])
-            
-    if len(active_rows) > 0:
-        rec_mapped = rec_raw.select_channels(
-            channel_ids=[rec_raw.channel_ids[r] for r in active_rows]
-        ).rename_channels(
-            new_channel_ids=[str(e) for e in active_elecs]
-        )
-        ua_ids_1based = np.array(active_elecs, dtype=int)
-        return rec_mapped, ua_ids_1based, ua_port
-    else:
-        return None, None, ua_port
+    """
+    Apply centralized UA mapping from br_preproc.py, then adapt the result
+    for this LFP script.
 
+    Returns
+    -------
+    rec_mapped : SpikeInterface recording
+        Recording restricted to mapped UA channels, with channel IDs renamed
+        to 1-based electrode IDs as strings: "1", "2", ..., "256".
+    ua_ids_1based : np.ndarray
+        1-based UA electrode IDs corresponding to rec_mapped channel order.
+    ua_port : str
+        "A" or "B".
+    ua_region : np.ndarray
+        Region index per mapped channel, using convention:
+          0 = SMA
+          1 = PMd
+          2 = M1i
+          3 = M1s
+    ua_region_names : np.ndarray
+        Region names corresponding to ua_region indices.
+    """
+
+    if UA_MAP is None:
+        print("    [WARN] UA_MAP is None; cannot apply UA mapping.")
+        return None, None, "A", None, None
+
+    (
+        rec_renamed,
+        idx_rows,
+        ua_elec,
+        ua_nsp,
+        ua_region,
+        ua_region_names,
+        ua_port,
+    ) = rcp.apply_ua_mapping_with_regions(
+        rec_raw,
+        UA_MAP,
+        br_idx,
+        metadata_csv,
+        monkey=PARAMS.monkey,
+    )
+
+    # Keep only rows/channels that successfully mapped to a UA electrode.
+    valid_rows = np.where(ua_elec > 0)[0]
+
+    if valid_rows.size == 0:
+        print("    [WARN] No mapped UA channels found after centralized mapping.")
+        return None, None, ua_port, None, None
+
+    # rec_renamed channel IDs are like "UAe001_NSP023".
+    # This script wants channel IDs to be electrode IDs: "1", "2", ...
+    rec_channel_ids = np.asarray(rec_renamed.get_channel_ids())
+    selected_channel_ids = [rec_channel_ids[i] for i in valid_rows]
+
+    ua_ids_1based = ua_elec[valid_rows].astype(int)
+    mapped_region = ua_region[valid_rows].astype(np.int8)
+
+    rec_mapped = rec_renamed.select_channels(
+        channel_ids=selected_channel_ids
+    ).rename_channels(
+        new_channel_ids=[str(e) for e in ua_ids_1based]
+    )
+
+    return rec_mapped, ua_ids_1based, ua_port, mapped_region, ua_region_names
 
 # =============================================================================
 # Grouped Baseline LFP Processing - Utah Array
@@ -864,7 +883,7 @@ def process_baseline_group_utah(
         try:
             print(f"      [Baseline] Loading BR {br_idx:03d} for labels: {labels_to_proc}")
             rec_raw = se.read_blackrock(str(sess_path), stream_name='nsx6', all_annotations=True)
-            rec_mapped, ua_ids_1based, ua_port = _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, METADATA_CSV)
+            rec_mapped, ua_ids_1based, ua_port, ua_region, ua_region_names = _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, METADATA_CSV)
             if rec_mapped is None:
                 continue
             
@@ -1087,7 +1106,7 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         return
 
     # Mapping
-    rec_mapped, ua_ids_1based, ua_port = _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, METADATA_CSV)
+    rec_mapped, ua_ids_1based, ua_port, ua_region, ua_region_names = _apply_native_ua_mapping(rec_raw, UA_MAP, br_idx, METADATA_CSV)
     if rec_mapped is None:
         print("[WARN] No mapped channels found.")
         return
@@ -1132,11 +1151,15 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
             
             if len(starts_ua) > 0:
                 rec_mapped = apply_ipca_correction(
-                    rec_mapped, starts_ua, ends_ua, 
-                    br_idx=br_idx, 
-                    fs_intan=fs_intan, 
-                    shift_samp_intan=shift_sample
-                )
+                                    rec_mapped,
+                                    starts_ua,
+                                    ends_ua,
+                                    br_idx=br_idx,
+                                    fs_intan=fs_intan,
+                                    shift_samp_intan=shift_sample,
+                                    ua_region=ua_region,
+                                    ua_region_names=ua_region_names,
+                                )
     else:
         # We have peristim files. Use the events from them.
         # But we STILL need stim bounds for IPCA correction if this is a stim session.
@@ -1154,11 +1177,15 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
                 valid = (ends_ua > starts_ua) & (starts_ua >= 0) & (ends_ua <= n_total)
                 if valid.any():
                     rec_mapped = apply_ipca_correction(
-                        rec_mapped, starts_ua[valid], ends_ua[valid], 
-                        br_idx=br_idx,
-                        fs_intan=fs_intan,
-                        shift_samp_intan=shift_sample
-                    )
+                                    rec_mapped,
+                                    starts_ua[valid],
+                                    ends_ua[valid],
+                                    br_idx=br_idx,
+                                    fs_intan=fs_intan,
+                                    shift_samp_intan=shift_sample,
+                                    ua_region=ua_region,
+                                    ua_region_names=ua_region_names,
+                                )
 
         stim_ms_ua_list = []
         cat_target_list = []
