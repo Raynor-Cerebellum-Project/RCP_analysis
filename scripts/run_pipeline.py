@@ -75,7 +75,7 @@ def _update_script_status_for_session(
     value: str,
 ) -> None:
 
-    status_csv = Path(data_root) / "Nike" / "data_status_reaching.csv"
+    status_csv = Path(data_root) / "data_status_reaching.csv"
 
     if not status_csv.exists():
         raise FileNotFoundError(f"data_status_reaching.csv not found: {status_csv}")
