@@ -23,6 +23,7 @@ import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
 import yaml
+import RCP_analysis.python.functions.config_loading as cfg
 
 # Try to import spikeinterface for raw trace loading
 try:
@@ -70,11 +71,26 @@ class SessionSpec:
     stim_br: int
 
 
+def get_default_electrode_mapping_csv() -> Path:
+    monkey = str(cfg.PARAMS.monkey)
+
+    if monkey not in ("Nike", "Ada"):
+        raise ValueError(
+            f"Unknown PARAMS.monkey={monkey!r}; expected 'Nike' or 'Ada'"
+        )
+
+    return (
+        Path(__file__).resolve().parents[3]
+        / "config"
+        / f"electrode_port_mapping_{monkey}.csv"
+    )
+
+
 @dataclass
 class ComparisonConfig:
     """Configuration for comparison."""
     data_root: Path = field(default_factory=lambda: Path("."))
-    electrode_mapping_csv: Path = field(default_factory=lambda: Path("E:/NHP_Cerebellum_Project_2025_RCP_Analysis_Git/RCP_analysis/config/electrode_port_mapping.csv"))
+    electrode_mapping_csv: Path = field(default_factory=get_default_electrode_mapping_csv)
     session_specs: list[SessionSpec] = field(default_factory=list)
     target: str = 'A'
     time_windows: list[tuple[float, float, str]] = field(default_factory=lambda: DEFAULT_TIME_WINDOWS.copy())

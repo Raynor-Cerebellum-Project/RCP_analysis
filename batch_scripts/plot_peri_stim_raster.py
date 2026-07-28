@@ -301,7 +301,22 @@ def get_electrodes_for_port(elec_info, region, recording_port):
 
 
 # Load mapping globally 
-MAPPING_CSV = Path(__file__).parent.parent / "config" / "electrode_port_mapping.csv"
+def get_electrode_mapping_csv():
+    monkey = str(PARAMS.monkey)
+
+    if monkey not in ("Nike", "Ada"):
+        raise ValueError(
+            f"Unknown PARAMS.monkey={monkey!r}; expected 'Nike' or 'Ada'"
+        )
+
+    return (
+        Path(__file__).parent.parent
+        / "config"
+        / f"electrode_port_mapping_{monkey}.csv"
+    )
+
+
+MAPPING_CSV = get_electrode_mapping_csv()
 elec_info_global, UTAH_ELEC_GRIDS = load_electrode_mapping(MAPPING_CSV)
 
 

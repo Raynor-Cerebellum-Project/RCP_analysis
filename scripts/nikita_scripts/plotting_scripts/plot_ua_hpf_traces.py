@@ -751,7 +751,14 @@ def main():
     ch_ids = rec.get_channel_ids()
     
     # Path to robust mapping CSV
-    mapping_csv = REPO_ROOT / "config" / "electrode_port_mapping.csv"
+    monkey = str(PARAMS.monkey)
+
+    if monkey not in ("Nike", "Ada"):
+        raise ValueError(
+            f"Unknown PARAMS.monkey={monkey!r}; expected 'Nike' or 'Ada'"
+        )
+
+    mapping_csv = REPO_ROOT / "config" / f"electrode_port_mapping_{monkey}.csv"
     mapping_df = pd.read_csv(mapping_csv) if mapping_csv.exists() else None
     
     for ridx, cid in enumerate(ch_ids):

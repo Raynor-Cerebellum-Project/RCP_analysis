@@ -2406,7 +2406,14 @@ def _build_groups(data, n_ch):
                 build_elec_to_data_idx
             )
             
-            MAPPING_CSV = Path(__file__).parent.parent.parent.parent / "config" / "electrode_port_mapping.csv"
+            import RCP_analysis.python.functions.config_loading as cfg
+
+            monkey = str(cfg.PARAMS.monkey)
+
+            if monkey not in ("Nike", "Ada"):
+                raise ValueError(f"Unknown PARAMS.monkey={monkey!r}; expected 'Nike' or 'Ada'")
+
+            MAPPING_CSV = cfg.REPO_ROOT / "config" / f"electrode_port_mapping_{monkey}.csv"
             nsp_to_elec, UTAH_ELEC_GRIDS, elec_to_region = load_electrode_mapping(MAPPING_CSV)
             
             # Build groups by region
