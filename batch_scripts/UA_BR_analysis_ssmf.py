@@ -357,7 +357,7 @@ def main():
             continue
         br_idx = int(sess.name.split('_')[-1])
         
-        rec_ns6, idx_rows, ua_elec, ua_nsp, ua_region, ua_region_names, ua_port = rcp.apply_ua_mapping_with_regions(rec_ns6, UA_MAP, br_idx, METADATA_CSV)
+        rec_ns6, idx_rows, ua_elec, ua_nsp, ua_region, ua_region_names, ua_port = rcp.apply_ua_mapping_with_regions(rec_ns6, UA_MAP, br_idx, METADATA_CSV, monkey=MONKEY)
         UA_probe = ua_region.copy()
 
         # artifact windows

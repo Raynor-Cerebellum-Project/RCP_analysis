@@ -21,9 +21,10 @@ else:
 # Paths
 if PARAMS is not None:
     try:
-        SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
-        
+        MONKEY         = PARAMS.monkey
+
         # Directories
+        SESSION_LOC = (Path(PARAMS.data_root) / Path(PARAMS.location)).resolve()
         OUT_BASE       = SESSION_LOC / "results"
         BR_ROOT        = SESSION_LOC / "Blackrock"
         VIDEO_ROOT     = SESSION_LOC / "Video"
@@ -77,7 +78,9 @@ if PARAMS is not None:
         # Initialize variables to None
         SESSION_LOC = None
         OUT_BASE = None
+        MONKEY = None
 else:
     SESSION_LOC = None
     OUT_BASE = None
+    MONKEY = None
 

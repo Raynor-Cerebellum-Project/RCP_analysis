@@ -5,14 +5,14 @@ Automatically updates params.yaml for each session (preserves comments).
 
 import subprocess
 from pathlib import Path
-import re
 import csv
+import sys
 from datetime import datetime
 from RCP_analysis.python.functions.params_loading import load_experiment_params 
 
 SESSIONS_TO_RUN = [
     # "NRR_RW035",
-    "NRR_RW034",
+    # "NRR_RW034",
     "NRR_RW032",
     "NRR_RW029",
     "NRR_RW026",
@@ -56,7 +56,7 @@ BATCH_SCRIPTS = [
 
 # Mapping script name to columns in CSV
 SCRIPT_STATUS_COLUMNS = {
-    "OCR_frame_mapping_BT_edit.py": "OCR",
+    "OCR_frame_correction.py": "OCR",
     "align_dlc_two_cams_to_br.py": "DLC",
     "NPRW_Intan_analysis_mf.py": "NPRW_Intan_analysis",
     "compute_br_to_intan_shifts.py": "compute_shifts",
@@ -186,7 +186,7 @@ def run_scripts(base_dir: Path, batch_scripts_folder: Path):
     PARAMS = load_experiment_params(params_path, repo_root=base_dir, first_run=True)
     data_root = PARAMS.data_root
 
-    print("Running Across Sessions = RAS")
+    print("\nRunning Across Sessions = RAS")
     print(f"{'=' * 60}")
 
     for session in SESSIONS_TO_RUN:
@@ -213,7 +213,7 @@ def run_scripts(base_dir: Path, batch_scripts_folder: Path):
 
             try:
                 subprocess.run(
-                    ["python", str(script_path)],
+                    [sys.executable, str(script_path)],
                     check=True,
                     cwd=str(base_dir),
                 )

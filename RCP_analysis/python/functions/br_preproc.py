@@ -196,6 +196,7 @@ def apply_ua_mapping_with_regions(
     mapped_nsp: np.ndarray,
     br_idx: int,
     meta_csv: Path,
+    monkey: str,
     port: str | None = None,
 ):
     """
@@ -298,20 +299,58 @@ def apply_ua_mapping_with_regions(
             ua_elec[row] = elec0 + 1
             ua_nsp[row]  = int(mapped_nsp_int[elec0])
 
-    # region assignment from electrode number
-    def _ua_region_from_elec(e: int) -> int:
-        if e <= 0:    return -1
-        if e <= 64:   return 0  # SMA
-        if e <= 128:  return 1  # Dorsal premotor
-        if e <= 192:  return 2  # M1 inferior
-        return 3                # M1 superior
+    # region assignment from electrode number, subject-specific
+    monkey_norm = str(monkey).strip().lower()
+
+    if monkey_norm == "nike":
+        # Electrodes:
+        #   1-64     SMA
+        #   65-128   PMd
+        #   129-192  M1i
+        #   193-256  M1s
+        ua_region_names = np.array(["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"])
+
+        def _ua_region_from_elec(e: int) -> int:
+            if e <= 0:      return -1
+            if e <= 64:     return 0  # SMA
+            if e <= 128:    return 1  # PMd
+            if e <= 192:    return 2  # M1i
+            if e <= 256:    return 3  # M1s
+            return -1
+
+    elif monkey_norm == "ada":
+        # Electrodes:
+        #   1-64     M1s
+        #   65-128   M1i
+        #   129-192  SMA
+        #   193-256  PMd
+        #
+        # Keep the same region index convention as Nike:
+        #   0 = SMA
+        #   1 = PMd
+        #   2 = M1i
+        #   3 = M1s
+        ua_region_names = np.array(["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"])
+
+        def _ua_region_from_elec(e: int) -> int:
+            if e <= 0:      return -1
+            if e <= 64:     return 3  # M1s
+            if e <= 128:    return 2  # M1i
+            if e <= 192:    return 0  # SMA
+            if e <= 256:    return 1  # PMd
+            return -1
+
+    else:
+        raise ValueError(
+            f"Unknown monkey={monkey!r}. Expected 'Nike' or 'Ada'. "
+            "Check PARAMS.monkey from data_root."
+        )
 
     ua_region = np.fromiter(
         (_ua_region_from_elec(int(e)) for e in ua_elec),
         dtype=np.int8,
         count=n_channels,
     )
-    ua_region_names = np.array(["SMA", "Dorsal premotor", "M1 inferior", "M1 superior"])
 
     return (
         renamed,

@@ -9,6 +9,7 @@ import csv
 @dataclass
 class experimentParams:
     data_root: str
+    monkey: str
     location: str | None
     session: str | None
     geom_mat_rel: str | None
@@ -52,6 +53,25 @@ def _resolve_data_root(machines_yaml_path: Path, relative_data_root: str) -> str
     prefix = prefix.rstrip("/\\")
     relative_data_root = relative_data_root.lstrip("/\\")
     return f"{prefix}/{relative_data_root}"
+
+
+def _get_monkey_from_data_root(data_root: str) -> str:
+    """
+    Identify the monkey from the final part of data_root.
+
+    Example:
+        /some/path/Nike -> Nike
+        /some/path/Ada  -> Ada
+    """
+    monkey = Path(data_root).name.strip()
+
+    if monkey not in {"Nike", "Ada"}:
+        raise ValueError(
+            f"Could not identify monkey from data_root: {data_root}. "
+            f"Expected final folder to be 'Nike' or 'Ada', got '{monkey}'."
+        )
+
+    return monkey
 
 
 def _get_location_session_from_status_csv(data_root: str) -> tuple[str, str]:
@@ -126,6 +146,7 @@ def load_experiment_params(
     if machines_yaml_path is None:
         machines_yaml_path = repo_root / "config" / "machines.yaml"
     data_root = _resolve_data_root(machines_yaml_path, relative_data_root)
+    monkey = _get_monkey_from_data_root(data_root)
 
     if first_run:
         # For the first run, we don't have a specific session yet -> needed for run_across_sessions
@@ -149,6 +170,7 @@ def load_experiment_params(
     # dataclass
     params = experimentParams(
         data_root=str(data_root),
+        monkey=monkey,
         location=location,
         session=session,
         geom_mat_rel=geom_mat_rel,
