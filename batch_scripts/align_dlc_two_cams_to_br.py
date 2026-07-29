@@ -89,6 +89,9 @@ def main():
         ns5_path = None
         if vid_idx is not None and VIDEO_TO_BR:
             br_idx_str = VIDEO_TO_BR.get(vid_idx)
+            if br_idx_str == "-":
+                continue
+            
             if br_idx_str is not None:
                 br_idx = int(br_idx_str)
                 print(f"[pairing] Video_File={vid_idx:03d} → BR_File={br_idx:03d}")

@@ -56,6 +56,7 @@ FIGURE_CONFIG = {
     'per_ua_default_trial': 3, 
     'generate_all_trial_spectrograms': False,  # If True, generate for each trial (can be many files!)
     'generate_per_ua_trial_average': True,
+    'generate_per_ua_array_median': True,  # Median across all trials AND channels per Utah array
     
     # Inter-regional analyses
     'generate_coherence_matrix': False,      # Coherence between all array pairs
@@ -1898,6 +1899,330 @@ def _plot_spectrogram_grid(all_spectrograms, grid_elec, elec_to_idx, n_ch,
     
     print(f"    Saved -> {out_path.relative_to(fig_dir)}")
 
+def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, fs=1000,
+                                             ua_ids_1based=None, nsp_to_elec=None,
+                                             region_grids=None, elec_to_idx=None):
+    """
+    Generate one 4-panel figure per session.
+
+    Each subplot is one Utah array/region.
+    For each region, this computes the median spectrogram across:
+        1. all trials
+        2. all valid channels/electrodes in that region
+
+    Output shape per region:
+        (n_freq, n_time)
+
+    This is different from generate_per_ua_trial_average(), which gives one
+    median-across-trials spectrogram per electrode in an 8x8 grid.
+    """
+
+    try:
+        bb_full, t_ms = get_broadband_full(data)
+    except KeyError as e:
+        print(f"    [Skip] No broadband data for per-UA array median spectrogram: {e}")
+        return None
+
+    if region_grids is None or elec_to_idx is None:
+        print("    [Skip] Need electrode mapping for per-UA array median spectrogram")
+        return None
+
+    n_trials, n_ch, n_time = bb_full.shape
+
+    # Spectrogram settings
+    spec_cfg = PLOT_CONFIG.get('spectrogram', {})
+    freq_min = spec_cfg.get('freq_min', 1)
+    freq_max = spec_cfg.get('freq_max', 120)
+    freq_step = spec_cfg.get('freq_step', 1)
+
+    foi = get_foi_with_notch_gaps(freq_min, freq_max, freq_step)
+
+    normalize_method = spec_cfg.get('normalize', 'zscore')
+    n_cycles = spec_cfg.get('wavelet_cycles', 5)
+    baseline_win = ANALYSIS_CONFIG['baseline_window']
+
+    # Output directory
+    out_dir = fig_dir / "per_UA_activity"
+
+    # Same condition naming logic as generate_per_ua_spectrograms()
+    br_match = re.search(r'_(\d{3})(?:_|$|\.)', session_id)
+    target_match = re.search(r'target_([AB])$', session_id, re.IGNORECASE)
+    target_suffix = f"_target_{target_match.group(1).upper()}" if target_match else ""
+
+    if br_match:
+        br_idx = int(br_match.group(1))
+        condition_name = f"condition_{br_idx:02d}{target_suffix}"
+    else:
+        br_idx = data.get('br_idx', None)
+        if br_idx is not None:
+            if isinstance(br_idx, np.ndarray):
+                br_idx = int(br_idx.item())
+            condition_name = f"condition_{br_idx:02d}{target_suffix}"
+        else:
+            condition_name = session_id
+
+    condition_dir = out_dir / condition_name
+    condition_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine color scale
+    cmap = spec_cfg.get('cmap', 'viridis')
+
+    if normalize_method == 'zscore':
+        vmin = spec_cfg.get('vmin_zscore', -3)
+        vmax = spec_cfg.get('vmax_zscore', 3)
+        cbar_label = 'Normalized Power (a.u.)'
+        cmap = 'jet'
+    elif normalize_method == 'dB':
+        vmin = spec_cfg.get('vmin_db', -6)
+        vmax = spec_cfg.get('vmax_db', 6)
+        cbar_label = 'Power (dB re: baseline)'
+        cmap = 'jet'
+    else:
+        vmin = spec_cfg.get('vmin_uV2', 0)
+        vmax = spec_cfg.get('vmax_uV2', None)
+        cbar_label = 'Power (µV²)'
+
+    # Store median spectrogram for each region
+    region_specs = {}
+
+    print("      Computing array-level median spectrograms across trials and channels...")
+
+    for grp_idxs, grp_name in groups:
+        region_name = grp_name.split(' (')[0]
+        grid_elec = region_grids.get(region_name)
+
+        if grid_elec is None:
+            print(f"      [Skip] No grid for region {region_name}")
+            continue
+
+        all_region_spectrograms = []
+        t_spec_ms_saved = None
+        f_out_saved = None
+        n_valid_channels = 0
+        n_valid_trial_channel_pairs = 0
+
+        # Loop through electrodes in the 8x8 grid for this region
+        for row in range(8):
+            for col in range(8):
+                elec_id = int(grid_elec[row, col])
+                data_idx = elec_to_idx.get(elec_id, None)
+
+                if data_idx is None or data_idx >= n_ch:
+                    continue
+
+                channel_had_valid_trial = False
+
+                # Loop through all trials for this channel/electrode
+                for trial_idx in range(n_trials):
+                    trace = bb_full[trial_idx, data_idx, :]
+
+                    if np.all(np.isnan(trace)) or np.nanstd(trace) < 1e-10:
+                        continue
+
+                    Sxx, f_out, t_out = compute_wavelet_spectrogram(
+                        trace,
+                        fs,
+                        foi=foi,
+                        baseline_window=None,
+                        t_ms=t_ms,
+                        n_cycles=n_cycles,
+                        normalize=False
+                    )
+
+                    if Sxx is None:
+                        continue
+
+                    all_region_spectrograms.append(Sxx)
+                    n_valid_trial_channel_pairs += 1
+                    channel_had_valid_trial = True
+
+                    if t_spec_ms_saved is None:
+                        t_spec_ms_saved = t_out * 1000 + t_ms[0]
+                        f_out_saved = f_out
+
+                if channel_had_valid_trial:
+                    n_valid_channels += 1
+
+        if not all_region_spectrograms:
+            print(f"      [Skip] No valid spectrograms for array-level median: {region_name}")
+            continue
+
+        # Shape: (n_trial_channel_pairs, n_freq, n_time)
+        stacked = np.stack(all_region_spectrograms, axis=0)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            Sxx_region_median = np.nanmedian(stacked, axis=0)
+
+        # Normalize AFTER taking the median
+        if normalize_method == 'zscore':
+            bl_mask = (
+                (t_spec_ms_saved >= baseline_win[0]) &
+                (t_spec_ms_saved <= baseline_win[1])
+            )
+            Sxx_region_median = zscore_normalize_spectrogram(
+                Sxx_region_median,
+                baseline_mask=bl_mask
+            )
+
+        elif normalize_method == 'dB':
+            bl_mask = (
+                (t_spec_ms_saved >= baseline_win[0]) &
+                (t_spec_ms_saved <= baseline_win[1])
+            )
+            if bl_mask.any():
+                baseline_power = np.nanmean(Sxx_region_median[:, bl_mask], axis=1, keepdims=True)
+                baseline_power[baseline_power < 1e-20] = 1e-20
+                Sxx_region_median = 10 * np.log10(Sxx_region_median / baseline_power)
+
+        region_specs[region_name] = {
+            'Sxx': Sxx_region_median,
+            'f': f_out_saved,
+            't_ms': t_spec_ms_saved,
+            'n_valid_channels': n_valid_channels,
+            'n_valid_trial_channel_pairs': n_valid_trial_channel_pairs,
+        }
+
+    if not region_specs:
+        print("    [Skip] No valid array-level median spectrograms were computed")
+        return None
+
+    # If raw mode and vmax is None, compute global 95th percentile
+    if normalize_method == 'raw' and vmax is None:
+        all_power = np.concatenate([
+            spec['Sxx'].ravel()
+            for spec in region_specs.values()
+            if spec['Sxx'] is not None
+        ])
+        vmax = np.nanpercentile(all_power, 95)
+
+    # -------------------------------------------------------------------------
+    # Plot 4-panel figure
+    # -------------------------------------------------------------------------
+    n_regions = len(region_specs)
+
+    # Usually 4 arrays: SMA, PMd, M1i, M1s
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharex=True, sharey=True)
+    axes = axes.flatten()
+
+    notch_regions = ANALYSIS_CONFIG.get('notch_regions', [(55, 65), (115, 125)])
+    notch_str = ', '.join([f'{lo}-{hi} Hz' for lo, hi in notch_regions])
+
+    norm_str = "Z-scored" if normalize_method == 'zscore' else normalize_method.upper()
+
+    fig.suptitle(
+        f'{session_id}\n'
+        f'Array-Level Median Spectrograms | Median Across All Trials and Channels\n'
+        f'Morlet Wavelets | {norm_str} | Notch regions skipped: {notch_str}',
+        fontsize=14,
+        fontweight='bold'
+    )
+
+    im_for_cbar = None
+
+    # Keep plotting order consistent with groups
+    plot_idx = 0
+
+    for grp_idxs, grp_name in groups:
+        region_name = grp_name.split(' (')[0]
+
+        if region_name not in region_specs:
+            continue
+
+        if plot_idx >= len(axes):
+            break
+
+        ax = axes[plot_idx]
+        spec = region_specs[region_name]
+
+        Sxx = spec['Sxx']
+        f_spec = spec['f']
+        t_spec_ms = spec['t_ms']
+
+        im = ax.pcolormesh(
+            t_spec_ms,
+            np.arange(len(f_spec)),
+            Sxx,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            shading='auto',
+            rasterized=True
+        )
+
+        im_for_cbar = im
+
+        # Mark stim onset
+        ax.axvline(0, color='white', ls='--', lw=1.2, alpha=0.9)
+
+        # Optional: mark end of stimulation if you consider 100 ms stimulation
+        ax.axvline(100, color='white', ls=':', lw=1.0, alpha=0.7)
+
+        # Mark notch gaps
+        for notch_lo, notch_hi in notch_regions:
+            below_idx = np.where(f_spec < notch_lo)[0]
+            above_idx = np.where(f_spec > notch_hi)[0]
+
+            if len(below_idx) > 0 and len(above_idx) > 0:
+                gap_y = below_idx[-1] + 0.5
+                ax.axhline(gap_y, color='white', ls='-', lw=1.5, alpha=0.8)
+
+        # Frequency tick labels
+        tick_freqs = [1, 10, 20, 30, 40, 55, 65, 80, 100, 115]
+        tick_positions = []
+        tick_labels = []
+
+        for tf in tick_freqs:
+            if tf in f_spec:
+                idx = np.where(f_spec == tf)[0][0]
+                tick_positions.append(idx)
+                tick_labels.append(str(tf))
+            else:
+                idx = np.argmin(np.abs(f_spec - tf))
+                if np.abs(f_spec[idx] - tf) <= freq_step:
+                    tick_positions.append(idx)
+                    tick_labels.append(str(int(f_spec[idx])))
+
+        ax.set_yticks(tick_positions)
+        ax.set_yticklabels(tick_labels)
+
+        ax.set_title(
+            f'{region_name}\n'
+            f'{spec["n_valid_channels"]} channels, '
+            f'{spec["n_valid_trial_channel_pairs"]} trial-channel spectra',
+            fontsize=11,
+            fontweight='bold'
+        )
+
+        ax.set_xlabel('Time relative to stim onset (ms)')
+        ax.set_ylabel('Frequency (Hz)')
+
+        ax.tick_params(axis='both', labelsize=9)
+
+        plot_idx += 1
+
+    # Hide unused axes if fewer than 4 regions
+    for idx in range(plot_idx, len(axes)):
+        axes[idx].axis('off')
+
+    # Colorbar
+    if im_for_cbar is not None:
+        fig.subplots_adjust(right=0.88)
+        cbar_ax = fig.add_axes([0.90, 0.18, 0.02, 0.65])
+        cbar = fig.colorbar(im_for_cbar, cax=cbar_ax)
+        cbar.set_label(cbar_label, fontsize=12)
+        cbar.ax.tick_params(labelsize=10)
+
+    plt.tight_layout(rect=[0, 0, 0.88, 0.92])
+
+    out_path = condition_dir / "array_median_across_trials_and_channels.png"
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+    print(f"    Saved array-level median spectrogram -> {out_path.relative_to(fig_dir)}")
+
+    return out_path
+
 # =============================================================================
 # TRAVELING WAVE ANALYSIS
 # =============================================================================
@@ -2107,6 +2432,28 @@ def process_session(data, session_id, fig_dir, groups, fs=1000,
                 figure_paths.append(path)
         else:
             print("  [Skip] Per-UA spectrograms require electrode mapping")
+
+
+    # 4c. Per-UA array-level median spectrogram
+    # Median across all trials and all channels/electrodes within each Utah array.
+    if FIGURE_CONFIG.get('generate_per_ua_array_median', False):
+        if elec_to_idx is not None and region_grids is not None:
+            print("  Generating per-UA array-level median spectrograms...")
+            path = generate_per_ua_array_median_spectrogram(
+                data=data,
+                session_id=session_id,
+                fig_dir=fig_dir,
+                groups=groups,
+                fs=fs,
+                ua_ids_1based=ua_ids_1based,
+                nsp_to_elec=nsp_to_elec,
+                region_grids=region_grids,
+                elec_to_idx=elec_to_idx,
+            )
+            if path:
+                figure_paths.append(path)
+        else:
+            print("  [Skip] Per-UA array-level median spectrogram requires electrode mapping")
     
     
     # 5. Coherence Matrix
