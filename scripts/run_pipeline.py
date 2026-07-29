@@ -9,6 +9,7 @@ import csv
 import sys
 from datetime import datetime
 from RCP_analysis.python.functions.params_loading import load_experiment_params 
+import os
 
 SESSIONS_TO_RUN = [
     # "NRR_RW035",
@@ -18,21 +19,21 @@ SESSIONS_TO_RUN = [
     # "NRR_RW026",
     # "NRR_RW022",
     # "NRR_RW019",
-    "NRR_RW018",
+    # "NRR_RW018",
     # "NRR_RW017",
     # "NRR_RW016",
     # "NRR_RW015",
     # "NRR_RW014",
     # "NRR_RW013",
-    # "NRR_RW012",
-    # "NRR_RW011",
+    "NRR_RW012",
+    "NRR_RW011",
 ]
 
 BATCH_SCRIPTS = [
     # "OCR_frame_correction.py",
     "align_dlc_two_cams_to_br.py",
     # "align_VOG_to_br.py",
-    # "NPRW_Intan_analysis_mf.py",
+    "NPRW_Intan_analysis_mf.py",
     "compute_br_to_intan_shifts.py",
     "UA_BR_analysis_mf.py", 
     "make_aligned_npz_and_mat.py",
@@ -68,12 +69,8 @@ SCRIPT_STATUS_COLUMNS = {
     "RSA_calculation.py": "rsa",
 }
 
-def _update_script_status_for_session(
-    data_root: str,
-    session: str,
-    status_column: str,
-    value: str,
-) -> None:
+
+def _update_script_status_for_session(data_root: str, session: str, status_column: str, value: str, ) -> None:
 
     status_csv = Path(data_root) / "data_status_reaching.csv"
 
@@ -176,6 +173,58 @@ def _set_process_which_for_session(data_root: str, session: str) -> None:
         writer.writerows(rows)
 
 
+def _get_location_for_session(data_root: str, session: str) -> str:
+    """
+    Read data_root/data_status_reaching.csv and return the Location for `session`.
+
+    This does NOT modify 'Process Session?'.
+    It only uses the CSV as a lookup table.
+    """
+    status_csv = Path(data_root) / "data_status_reaching.csv"
+
+    if not status_csv.exists():
+        raise FileNotFoundError(f"data_status_reaching.csv not found: {status_csv}")
+
+    with status_csv.open("r", newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+
+        if fieldnames is None:
+            raise ValueError(f"{status_csv} appears to be empty or has no header row.")
+
+        required_cols = {"Location", "Session"}
+        missing = required_cols - set(fieldnames)
+        if missing:
+            raise KeyError(
+                f"Missing required column(s) in {status_csv}: {sorted(missing)}"
+            )
+
+        rows = list(reader)
+
+    target_session = str(session).strip()
+    matches = []
+
+    for row in rows:
+        row_session = str(row.get("Session", "")).strip()
+        if row_session == target_session:
+            matches.append(row)
+
+    if not matches:
+        raise ValueError(f"Session '{target_session}' was not found in {status_csv}")
+
+    if len(matches) > 1:
+        raise ValueError(f"Session '{target_session}' appears multiple times in {status_csv}")
+
+    location = str(matches[0].get("Location", "")).strip()
+
+    if not location:
+        raise ValueError(
+            f"Session '{target_session}' has empty Location in {status_csv}"
+        )
+
+    return location
+
+
 def run_scripts(base_dir: Path, batch_scripts_folder: Path):
     params_path = base_dir / "config" / "params.yaml"
 
@@ -195,9 +244,16 @@ def run_scripts(base_dir: Path, batch_scripts_folder: Path):
         print(f"[RAS] Processing session: {session}")
         print(f"{'=' * 60}")
 
-        # Update data_status_reaching.csv for this session.
-        # This replaces the old update_params_yaml(...) behavior.
-        _set_process_which_for_session(data_root, session)
+        # Look up this session's location without modifying "Process Session?"
+        location = _get_location_for_session(data_root, session)
+
+        # Per-subprocess session context.
+        # This is private to scripts launched by this run_pipeline.py process.
+        env = os.environ.copy()
+        env["RCP_SESSION"] = session
+        env["RCP_LOCATION"] = location
+
+        print(f"[RAS] Session context: RCP_SESSION={session}, RCP_LOCATION={location}")
 
         # Run all scripts for this session
         for batch_script in BATCH_SCRIPTS:
@@ -216,6 +272,7 @@ def run_scripts(base_dir: Path, batch_scripts_folder: Path):
                     [sys.executable, str(script_path)],
                     check=True,
                     cwd=str(base_dir),
+                    env=env,
                 )
 
                 # If this script has a corresponding CSV status column, write finish time

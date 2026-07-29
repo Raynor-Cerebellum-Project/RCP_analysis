@@ -67,7 +67,7 @@ FIGURE_CONFIG = {
     'generate_dose_response': False,         # Effect vs number of pulses
     
     # Spatial visualizations
-    'generate_spatial_heatmaps': False,      # Static spatial maps at key timepoints
+    'generate_spatial_heatmaps': True,      # Static spatial maps at key timepoints
     'generate_spatial_gif': False,           # Animated GIF of spatial activity
 }
 
@@ -119,7 +119,7 @@ ANALYSIS_CONFIG = {
     
     # GIF settings
     'gif_time_range': (-500, 500),
-    'gif_step_ms': 10,
+    'gif_step_ms': 25,
     'gif_fps': 10,
 }
 
@@ -174,7 +174,7 @@ PLOT_CONFIG = {
     },
     
     # Spatial heatmap timepoints
-    'spatial_timepoints_ms': [-200, -50, 0, 50, 100, 200, 300, 500],
+    'spatial_timepoints_ms': [-500, -300, -200, -100, -50, 0, 50, 100, 200, 300, 500],
     
     # Selected band for spatial analysis
     'selected_band': 'Alpha',

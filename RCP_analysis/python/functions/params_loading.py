@@ -4,6 +4,7 @@ from pathlib import Path
 import socket
 import yaml
 import csv
+import os
 
 # Params model
 @dataclass
@@ -149,11 +150,22 @@ def load_experiment_params(
     monkey = _get_monkey_from_data_root(data_root)
 
     if first_run:
-        # For the first run, we don't have a specific session yet -> needed for run_across_sessions
         location = ""
         session = ""
     else:
-        location, session = _get_location_session_from_status_csv(data_root)
+        env_location = os.environ.get("RCP_LOCATION")
+        env_session = os.environ.get("RCP_SESSION")
+
+        if env_location and env_session:
+            location = env_location
+            session = env_session
+        elif env_location or env_session:
+            raise RuntimeError(
+                "Both RCP_LOCATION and RCP_SESSION must be set together, "
+                f"got RCP_LOCATION={env_location!r}, RCP_SESSION={env_session!r}"
+            )
+        else:
+            location, session = _get_location_session_from_status_csv(data_root)
 
     kin_cfg = dict(cfg.get("kinematics", {}) or {})
     kin_cfg["num_camera"] = kin_cfg.get("num_camera")
