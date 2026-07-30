@@ -54,7 +54,8 @@ SCRIPTS = [
     # "batch_scripts/quantify_smoothed_position.py",
 
 
-    "scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py",
+    # "scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py",
+    "scripts/nikita_scripts/plotting_scripts/combine_UA_gifs.py",
 ]
 
 

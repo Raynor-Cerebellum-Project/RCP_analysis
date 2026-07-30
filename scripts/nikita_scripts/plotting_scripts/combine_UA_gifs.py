@@ -10,11 +10,11 @@ import RCP_analysis.python.functions.config_loading as cfg
 # --- Configuration ---
 # Derived from project config to avoid hardcoding
 SEARCH_DIRS = [
-    cfg.OUT_BASE / "figures" / "UA_LFP" / "Spatial_Heatmaps", # LFP Bands
+    cfg.OUT_BASE / "figures" / "UA_LFP" / "Spatial_GIF", # LFP Bands
     cfg.OUT_BASE / "figures" / "peristim_new_npz"             # Firing Rates
 ]
 
-OUTPUT_ROOT = cfg.OUT_BASE / "figures" / "Quad_GIFs"
+OUTPUT_ROOT = cfg.OUT_BASE / "figures" / "UA_LFP" / "Quad_GIFs"
 
 # Canvas setup
 CANVAS_SIZE = (1200, 1200) # (width, height)
@@ -47,7 +47,6 @@ def combine_gifs(session_id, datatype, mode, region_paths):
     """
     Combines 4 array GIFs into an anatomical quad view with consistent scaling.
     """
-    print(f"  [Process] Combining {session_id} | {datatype} | {mode}...")
     
     # Load all 4 GIFs and determine max frame count
     region_frames = {}
@@ -142,14 +141,13 @@ def combine_gifs(session_id, datatype, mode, region_paths):
     final_fps = fps / 1.5
     
     imageio.mimsave(out_path, combined_frames, fps=final_fps, loop=0)
-    print(f"    [Success] Saved: {out_path.name}")
     return out_path
 
 def main():
     all_files = []
     for sdir in SEARCH_DIRS:
         if sdir.exists():
-            all_files.extend(list(sdir.rglob("spatial_heatmap_*.gif")))
+            all_files.extend(list(sdir.rglob("spatial_*.gif")))
         else:
             print(f"Directory not found, skipping: {sdir}")
             
@@ -162,7 +160,7 @@ def main():
         name = f.name
         # Match: spatial_heatmap_{datatype}_{session}_{region}_{mode}.gif
         # datatype could be 'beta', 'alpha', 'FR', etc.
-        m = re.match(r"spatial_heatmap_([^_]+)_(.+?)_(SMA|PMd|M1i|M1s)_(blocky|smoothed)\.gif", name)
+        m = re.match(r"spatial_(?P<datatype>.+?)_(?P<session>.+)_(?P<region>SMA|PMd|M1i|M1s)_(?P<mode>blocky|smoothed)\.gif$", name)
         if m:
             datatype, session, region, mode = m.groups()
             key = (datatype, session, mode)
@@ -181,8 +179,19 @@ def main():
             print(f"  Partial match: {k} -> {list(v.keys())}")
         return
 
-    for (datatype, session, mode), region_paths in tqdm(sorted(complete_sets.items())):
-        combine_gifs(session, datatype, mode, region_paths)
+    items = sorted(complete_sets.items())
+
+    with tqdm(total=len(items), desc="Combining quad GIFs", dynamic_ncols=True) as pbar:
+        for (datatype, session, mode), region_paths in items:
+            pbar.set_postfix({
+                "datatype": datatype,
+                "mode": mode,
+                "session": session[:20]
+            })
+
+            combine_gifs(session, datatype, mode, region_paths)
+
+            pbar.update(1)
 
 if __name__ == "__main__":
     main()

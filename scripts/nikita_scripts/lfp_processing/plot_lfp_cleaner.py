@@ -177,7 +177,7 @@ PLOT_CONFIG = {
     'spatial_timepoints_ms': [-500, -300, -200, -100, -50, 0, 50, 100, 200, 300, 500],
     
     # Selected band for spatial analysis
-    'selected_band': 'Theta',
+    'selected_band': 'Low Gamma',
 }
 
 
