@@ -1140,7 +1140,8 @@ def _safe_nanmedian(arr: np.ndarray, axis=0) -> np.ndarray:
     return med
 
 
-def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False, split_targets: bool = True, is_control: bool = False) -> None:
+def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False, split_targets: bool = True, 
+                                            is_control: bool = False, apply_kinematic_filter: bool = True,) -> None:
     """
     Load aligned .npz, compute peri-stim med/var for NPRW+UA,
     + behavior/VOG/ts_state peri-stim summaries, and save to PERI_ROOT.
@@ -1607,7 +1608,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
             n_beh_sub = 0
 
         # ---- Position direction check: discard trials not moving correctly ----
-        if HAS_KINEMATICS and beh_rel_t_sub.size:
+        if apply_kinematic_filter and HAS_KINEMATICS and beh_rel_t_sub.size:
 
             # Choose which camera to use for the kinematic position filter
             filter_segs = beh_cam1_segs_sub if CAMERA_FOR_POSITION_FILTER == "cam1" else beh_cam0_segs_sub
@@ -1622,6 +1623,8 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                     NPRW_rates_hz_sub.shape[0],
                     UA_rates_hz_sub.shape[0] if HAS_BR else float("inf"),
                 )
+
+                idx = idx[:n_common]
 
                 beh_cam0_segs_sub = beh_cam0_segs_sub[:n_common]
                 beh_cam1_segs_sub = beh_cam1_segs_sub[:n_common]
@@ -1848,10 +1851,10 @@ def main():
 
     # grasp & imu: per-file processing (like at_rest, no A/B)
     for file in grasp_files:
-        extract_one_file(file, out_dir = GRASP_PERI_ROOT, use_ir_ms=False, split_targets=False)
+        extract_one_file(file, out_dir = GRASP_PERI_ROOT, use_ir_ms=False, split_targets=False, apply_kinematic_filter=False,)
         
     for file in imu_files:
-        extract_one_file(file, out_dir = IMU_PERI_ROOT, use_ir_ms=False, split_targets=False)
+        extract_one_file(file, out_dir = IMU_PERI_ROOT, use_ir_ms=False, split_targets=False, apply_kinematic_filter=False,)
 
     # continuous_stim: per-file processing (align to ir_ms, no A/B)
     for file in continuous_stim_files:
@@ -1859,7 +1862,7 @@ def main():
 
     # at_rest: per-file processing (no A/B)
     for file in at_rest_files:
-        extract_one_file(file, out_dir = AT_REST_PERI_ROOT, use_ir_ms=False, split_targets=False)
+        extract_one_file(file, out_dir = AT_REST_PERI_ROOT, use_ir_ms=False, split_targets=False, apply_kinematic_filter=False,)
 
 if __name__ == "__main__":
     main()

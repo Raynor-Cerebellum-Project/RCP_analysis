@@ -807,9 +807,9 @@ def main():
         with suppress_stdout():
             if skip_multiproc:
                 # print("[IPCA] Saving sequentially (n_jobs=1) because custom nodes cannot be pickled...")
-                rec_artif_removed = rec_artif_removed.save(folder=out_dir, overwrite=True, n_jobs=1)
+                rec_artif_removed = rec_artif_removed.save(folder=out_dir, overwrite=True, n_jobs=1, progress_bar=False)
             else:
-                rec_artif_removed = rec_artif_removed.save(folder=out_dir, overwrite=True)
+                rec_artif_removed = rec_artif_removed.save(folder=out_dir, overwrite=True, progress_bar=False)
             
         print(f"[{sess.name}] (ns6) saved preprocessed -> {out_dir}")
         
@@ -939,6 +939,7 @@ def main():
                             print(f"  [DLC WARNING] No valid DLC Y values found, leaving all timestamps unclassified")
                         else:
                             # Align DLC to timestamp grid
+                            ts_sec = np.arange(len(touchscreen_sig), dtype=float) / fs_ts
                             t_ts = ts_sec - ts_sec[0]
 
                             # Try to use ns5_sample column for time alignment

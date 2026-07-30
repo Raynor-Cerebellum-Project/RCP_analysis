@@ -13,24 +13,84 @@ Reference: Kraut & Scharf 1999, CFAR-F subspace detector.
 """
 import numpy as np
 from tqdm import tqdm
+from numba import njit
+
+@njit(cache=True)
+def _subspace_pick_channel(Fc, tc, thr, lag, w_snap, min_sep, a, t0, t1,
+                           seg_len, last_kept, neg):
+    """single channel: CFAR-F region → argmax → snap → commit window → refractory"""
+    Lc = Fc.shape[0]
+    Lt = tc.shape[0]
+
+    buf = np.empty(Lc, np.int64)
+    m = 0
+    i = 0
+
+    while i < Lc:
+        if Fc[i] > thr:
+            j = i
+            best = i
+            bestv = Fc[i]
+
+            while j < Lc and Fc[j] > thr:
+                if Fc[j] > bestv:
+                    bestv = Fc[j]
+                    best = j
+                j += 1
+
+            p = best + lag
+
+            if w_snap <= p < Lt - w_snap:
+                sidx = p - w_snap
+                sval = tc[sidx]
+
+                for k in range(p - w_snap, p + w_snap):
+                    if neg:
+                        if tc[k] < sval:
+                            sval = tc[k]
+                            sidx = k
+                    else:
+                        if tc[k] > sval:
+                            sval = tc[k]
+                            sidx = k
+
+                g = sidx + a
+
+                if t0 <= g < t1 and w_snap <= g < seg_len - w_snap:
+                    buf[m] = g
+                    m += 1
+
+            i = j
+        else:
+            i += 1
+
+    if m == 0:
+        return np.empty(0, np.int64), last_kept
+
+    g_arr = np.sort(buf[:m])
+
+    out = np.empty(m, np.int64)
+    n = 0
+    lk = last_kept
+
+    for idx in range(m):
+        gp = g_arr[idx]
+
+        if gp - lk >= min_sep:
+            out[n] = gp
+            n += 1
+            lk = gp
+
+    return out[:n], lk
 
 
 def build_subspace_basis(waveforms, rank=3):
     """Truncated-SVD signal subspace from aligned spike waveforms / templates.
 
-    Parameters
-    ----------
-    waveforms : (n_wave, N) array
-        Trough-aligned spike snippets or per-unit templates, all length N.
-        Alignment matters: same trough sample across rows.
-    rank : int
-        Number of SVD components to retain.
-
-    Returns
-    -------
-    basis : (N, rank) float32 ndarray
-        Orthonormal columns spanning the spike signal subspace.
-        NOT mean-centered — the first component is the dominant spike shape.
+    waveforms : (n_wave, N) — rows are trough-aligned spike snippets or per-unit
+                templates, all length N. Alignment matters: same trough sample.
+    Returns (N, rank) float32 with orthonormal columns. NOT mean-centered — the
+    first component is the dominant spike shape itself.
     """
     X = np.asarray(waveforms, dtype="float64")            # (n_wave, N)
     _, _, Vt = np.linalg.svd(X, full_matrices=False)      # Vt rows span the N-sample space
@@ -41,153 +101,119 @@ def build_subspace_basis(waveforms, rank=3):
 
 
 def subspace_detect_cfar(recording, basis, *, cfar_alpha=1e-4, peak_sign="neg",
-                         refractory_ms=0.5, snap_ms=0.6, progress_bar=True):
+                         refractory_ms=0.5, snap_ms=0.6, chunk_s=30.0, progress_bar=True):
     """Subspace matched detector with CFAR-F threshold (Kraut-Scharf 1999).
 
-    Slides the r-dim signal subspace `basis` (N×r, orthonormal cols) over each
-    channel. At position t the scale-invariant CFAR-F statistic is:
+    GPU-accelerated via torch conv1d (device-agnostic: CUDA if available, else CPU
+    fallback = no regression). Processes ALL channels per time-chunk in one conv, so
+    the F statistic is compute-negligible and runtime is I/O-bound. Chunked with an
+    overlap margin + per-channel refractory carry so seam spikes are neither missed
+    nor doubled. Output dtype identical to before → downstream unchanged.
 
-        F(t) = s_sig / s_orth,  s_sig = ||Uᵀ x_t||²,  s_orth = ||x_t||² − s_sig
-
-    Detects where F > f.ppf(1-α, r, N-r)·r/(N-r), snaps to trough within ±snap_ms,
-    enforces refractory period. Returns a structured peaks array compatible with
-    SpikeInterface's detect_peaks output format.
-
-    Parameters
-    ----------
-    recording : SpikeInterface recording object
-    basis : (N, rank) float32 ndarray
-        Orthonormal subspace basis, e.g. from build_subspace_basis().
-    cfar_alpha : float
-        CFAR false-alarm rate. Lower = stricter (fewer detections). Default 1e-4.
-    peak_sign : str
-        'neg' or 'pos'. Direction of spike to snap to after detection.
-    refractory_ms : float
-        Minimum inter-peak interval in ms.
-    snap_ms : float
-        Window (±) around each detected F-peak to search for the actual trough.
-    progress_bar : bool
-        Show tqdm progress bar.
-
-    Returns
-    -------
-    peaks : structured ndarray
-        Fields: sample_index (int64), channel_index (int64),
-                segment_index (int64), amplitude (float32).
-        Sorted by (segment_index, sample_index).
-
-    Notes
-    -----
-    RAM: reads each channel's FULL trace at once and FFT-correlates — peak
-    memory ≈ one channel's length × ~4. Processes one channel at a time.
+    basis : (N, r) float, orthonormal columns. chunk_s : seconds/chunk (VRAM knob).
     """
-    from scipy.signal import correlate
+    import torch
     from scipy.stats import f as _f
-
     fs = recording.get_sampling_frequency()
     n_ch = recording.get_num_channels()
     n_seg = recording.get_num_segments()
-    ch_ids = recording.get_channel_ids()
 
-    U = np.asarray(basis, dtype="float32")            # (N, r)
+    U = np.ascontiguousarray(basis, dtype="float32")          # (N, r)
     N, r = U.shape
     thr = float(_f.ppf(1 - cfar_alpha, r, N - r) * r / (N - r))
+    lag = N // 2
     w_snap = int(snap_ms * 1e-3 * fs)
     min_sep = int(refractory_ms * 1e-3 * fs)
-    ones_N = np.ones(N, dtype="float32")
+    neg = peak_sign == "neg"
 
-    records = []
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    w_sig = torch.from_numpy(np.ascontiguousarray(U.T)).unsqueeze(1).to(dev)   # (r,1,N)
+    w_tot = torch.ones(1, 1, N, dtype=torch.float32, device=dev)               # (1,1,N)
+
+    chunk = int(chunk_s * fs)
+    margin = 2 * N + w_snap                                   # 重疊: 接縫 peak 保完整窗 + snap
+
+    samp_parts, chan_parts, seg_parts, amp_parts = [], [], [], []
     for seg_idx in range(n_seg):
         seg_len = recording.get_num_samples(segment_index=seg_idx)
-        desc = f"[subspace CFAR] seg{seg_idx}" if n_seg > 1 else "[subspace CFAR]"
-        ch_iter = tqdm(range(n_ch), desc=desc, unit="ch", disable=not progress_bar)
-        for ci in ch_iter:
-            trace = recording.get_traces(start_frame=0, end_frame=seg_len,
-                                         channel_ids=[ch_ids[ci]], segment_index=seg_idx,
-                                         return_in_uV=True).flatten().astype("float32")
-            s_sig = np.zeros(len(trace), dtype="float32")
-            for j in range(r):
-                s_sig += correlate(trace, U[:, j], mode="same", method="fft") ** 2
-            s_tot = correlate(trace ** 2, ones_N, mode="same", method="fft")
-            F = s_sig / np.maximum(s_tot - s_sig, 1e-9)
-
-            above = F > thr
-            if not above.any():
-                continue
-            edges = np.diff(above.astype(np.int8))
-            starts = np.where(edges == 1)[0] + 1
-            ends = np.where(edges == -1)[0]
-            if above[0]:  starts = np.r_[0, starts]
-            if above[-1]: ends = np.r_[ends, len(F) - 1]
-            pk = np.array([s + int(np.argmax(F[s:e + 1])) for s, e in zip(starts, ends)], int)
-
-            pk = pk[(pk >= w_snap) & (pk < len(trace) - w_snap)]
-            if len(pk):
-                fn = np.argmin if peak_sign == "neg" else np.argmax
-                pk = np.array([p - w_snap + int(fn(trace[p - w_snap:p + w_snap])) for p in pk], int)
-            if len(pk) > 1:
-                pk.sort()
-                keep = [0]
-                for i in range(1, len(pk)):
-                    if pk[i] - pk[keep[-1]] >= min_sep:
-                        keep.append(i)
-                pk = pk[keep]
-            for p in pk:
-                records.append((int(p), int(ci), int(seg_idx), float(trace[p])))
-            ch_iter.set_postfix(peaks=len(records))
+        last_kept = np.full(n_ch, -(10 ** 12), dtype=np.int64)   # refractory 跨塊記憶
+        desc = f"[subspace CFAR/{dev}]" + (f" seg{seg_idx}" if n_seg > 1 else "")
+        for t0 in tqdm(range(0, seg_len, chunk), desc=desc, disable=not progress_bar):
+            t1 = min(t0 + chunk, seg_len)
+            a, b = max(0, t0 - margin), min(seg_len, t1 + margin)
+            blk = recording.get_traces(start_frame=a, end_frame=b, segment_index=seg_idx,
+                                       return_in_uV=True).astype("float32")   # (L, n_ch) 一次讀全 channel
+            blkT = np.ascontiguousarray(blk.T)                                 # (n_ch, L)
+            x = torch.from_numpy(blkT).unsqueeze(1).to(dev)
+            s_sig = (torch.nn.functional.conv1d(x, w_sig) ** 2).sum(1)         # ‖Uᵀx‖²
+            s_tot = torch.nn.functional.conv1d(x ** 2, w_tot).squeeze(1)       # ‖x‖²
+            F = (s_sig / torch.clamp(s_tot - s_sig, min=1e-9)).cpu().numpy()   # (n_ch, L-N+1)
+            for ci in range(n_ch):
+                g, last_kept[ci] = _subspace_pick_channel(
+                    F[ci], blkT[ci], thr, lag, w_snap, min_sep, a, t0, t1, seg_len,
+                    last_kept[ci], neg)
+                if len(g):
+                    samp_parts.append(g)
+                    chan_parts.append(np.full(len(g), ci, np.int64))
+                    seg_parts.append(np.full(len(g), seg_idx, np.int64))
+                    amp_parts.append(blkT[ci][g - a])
 
     dtype = np.dtype([("sample_index", np.int64), ("channel_index", np.int64),
                       ("segment_index", np.int64), ("amplitude", np.float32)])
-    if not records:
+    if not samp_parts:
         return np.zeros(0, dtype=dtype)
-    peaks = np.array(records, dtype=dtype)
+    peaks = np.empty(sum(len(p) for p in samp_parts), dtype=dtype)
+    peaks["sample_index"] = np.concatenate(samp_parts)
+    peaks["channel_index"] = np.concatenate(chan_parts)
+    peaks["segment_index"] = np.concatenate(seg_parts)
+    peaks["amplitude"] = np.concatenate(amp_parts).astype(np.float32)
     return peaks[np.lexsort((peaks["sample_index"], peaks["segment_index"]))]
 
 
-def filter_peaks_by_local_sigma(peaks, recording, *, k_amp=3.5, w_ms=100.0,
-                                peak_sign="neg"):
-    """Local-σ amplitude pre-gate.
-
-    Keeps peaks whose |voltage| exceeds k_amp × σ_local(t), where
-    σ_local = 1.4826 × rolling-MAD over a w_ms window. This raises the bar
-    inside chewing/movement bursts where global noise estimates underestimate
-    the local signal level. Single-segment assumption (sample_index global).
-
-    Parameters
-    ----------
-    peaks : structured ndarray
-        Output of subspace_detect_cfar().
-    recording : SpikeInterface recording object
-    k_amp : float
-        Multiplier on local σ. Higher = stricter. Default 3.5.
-    w_ms : float
-        Rolling MAD window in ms. Default 100.0.
-    peak_sign : str
-        'neg' or 'pos' (unused here — amplitude is always compared as |v|).
-
-    Returns
-    -------
-    peaks[keep] : structured ndarray
-        Subset of input peaks that pass the local-σ gate.
-    """
-    from scipy.ndimage import median_filter
-
+def filter_peaks_by_local_sigma(peaks, recording, *, k_amp=3.5, w_ms=100.0, peak_sign="neg"):
+    """Local-σ amplitude gate. σ_local via block-wise MAD on a w_ms grid + interp to peak
+    positions (σ is a slow envelope → no per-sample rolling median). Trough voltage is read
+    from the trace in the SAME pass (exact, detector-agnostic — matches the original
+    trace[samp] test, not peaks['amplitude'] which is filter-output for MF). Single-segment."""
     n = len(peaks)
     if n == 0:
         return peaks
     fs = recording.get_sampling_frequency()
     N = recording.get_num_samples()
-    w_env = int(w_ms * 1e-3 * fs)
-    ch_ids = recording.get_channel_ids()
+    n_ch = recording.get_num_channels()
+    blk = max(1, int(w_ms * 1e-3 * fs))
+    n_blk = int(np.ceil(N / blk))
+    sigma_grid = np.full((n_ch, n_blk), np.nan, np.float32)
+
     samp = peaks["sample_index"].astype(np.int64)
     chan = peaks["channel_index"].astype(np.int64)
+    amp = np.full(n, np.nan, np.float32)                 # true trough voltage, filled in-pass
+
+    chunk = blk * 300                                    # multiple of blk → grid aligns; ~460MB/chunk
+    for c0 in tqdm(range(0, N, chunk), desc=f"[local-σ gate] k={k_amp}", unit="chunk"):
+        c1 = min(c0 + chunk, N)
+        tr = recording.get_traces(start_frame=c0, end_frame=c1, return_in_uV=True).astype("float32")
+
+        in_chunk = (samp >= c0) & (samp < c1)            # exact voltage, same pass, no re-read
+        if in_chunk.any():
+            amp[in_chunk] = tr[samp[in_chunk] - c0, chan[in_chunk]]
+
+        T = tr.shape[0]; nb = int(np.ceil(T / blk)); pad = nb * blk - T
+        trp = np.pad(tr, ((0, pad), (0, 0)), constant_values=np.nan) if pad else tr
+        b = trp.reshape(nb, blk, n_ch)
+        med = np.nanmedian(b, axis=1)
+        mad = np.nanmedian(np.abs(b - med[:, None, :]), axis=1)
+        sigma_grid[:, c0 // blk:c0 // blk + nb] = (1.4826 * mad).T
+
+    centers = (np.arange(n_blk) + 0.5) * blk
+    amp = np.abs(amp)
     keep = np.zeros(n, bool)
-    for ci in tqdm(np.unique(chan), desc=f"[local-σ gate] k={k_amp}", unit="ch"):
-        idx = np.where(chan == ci)[0]
-        trace = recording.get_traces(start_frame=0, end_frame=N,
-                                     channel_ids=[ch_ids[int(ci)]],
-                                     return_in_uV=True).flatten().astype("float32")
-        sig_loc = 1.4826 * median_filter(np.abs(trace - median_filter(trace, w_env)), w_env)
-        keep[idx] = np.abs(trace[samp[idx]]) > k_amp * sig_loc[samp[idx]]
+    for ci in np.unique(chan):
+        m = chan == ci
+        sg = sigma_grid[ci]; good = np.isfinite(sg) & (sg > 0)
+        if not good.any():
+            continue
+        sig_at = np.interp(samp[m], centers[good], sg[good])
+        keep[m] = amp[m] > k_amp * sig_at
     print(f"[local-σ gate] kept {int(keep.sum()):,}/{n:,} (k={k_amp}, w={w_ms}ms)")
     return peaks[keep]
