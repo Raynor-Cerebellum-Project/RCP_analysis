@@ -48,15 +48,15 @@ SESSION_ID_PATTERN = None      # None = all, or regex like r'.*control.*'
 
 FIGURE_CONFIG = {
     # Core visualizations
-    'generate_session_summary': True,       # PSD overview (1-120 Hz)
+    'generate_session_summary': False,       # PSD overview (1-120 Hz)
     'generate_waveform_raster': False,       # Raw LFP traces across trials
     'generate_trial_heatmaps': False,        # Per-trial band power heatmaps
 
-    'generate_per_ua_spectrograms': True,   # 8x8 grid of spectrograms per array
+    'generate_per_ua_spectrograms': False,   # 8x8 grid of spectrograms per array
     'per_ua_default_trial': 3, 
     'generate_all_trial_spectrograms': False,  # If True, generate for each trial (can be many files!)
-    'generate_per_ua_trial_average': True,
-    'generate_per_ua_array_median': True,  # Median across all trials AND channels per Utah array
+    'generate_per_ua_trial_average': False,
+    'generate_per_ua_array_median': False,  # Median across all trials AND channels per Utah array
     
     # Inter-regional analyses
     'generate_coherence_matrix': False,      # Coherence between all array pairs
@@ -68,7 +68,7 @@ FIGURE_CONFIG = {
     
     # Spatial visualizations
     'generate_spatial_heatmaps': True,      # Static spatial maps at key timepoints
-    'generate_spatial_gif': False,           # Animated GIF of spatial activity
+    'generate_spatial_gif': True,           # Animated GIF of spatial activity
 }
 
 TIME_WINDOWS = {
@@ -177,7 +177,7 @@ PLOT_CONFIG = {
     'spatial_timepoints_ms': [-500, -300, -200, -100, -50, 0, 50, 100, 200, 300, 500],
     
     # Selected band for spatial analysis
-    'selected_band': 'Alpha',
+    'selected_band': 'Theta',
 }
 
 

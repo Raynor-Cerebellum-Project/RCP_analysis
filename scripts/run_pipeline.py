@@ -12,46 +12,49 @@ from RCP_analysis.python.functions.params_loading import load_experiment_params
 import os
 
 SESSIONS_TO_RUN = [
-    "NRR_RW035",
+    # "NRR_RW035",
     # "NRR_RW034",
-    "NRR_RW032",
-    "NRR_RW029",
-    "NRR_RW026",
+    # "NRR_RW032",
+    # "NRR_RW029",
+    # "NRR_RW026",
     "NRR_RW022",
-    "NRR_RW019",
-    "NRR_RW018",
-    "NRR_RW017",
-    "NRR_RW016",
-    "NRR_RW015",
-    "NRR_RW014",
-    "NRR_RW013",
-    "NRR_RW012",
-    "NRR_RW011",
+    # "NRR_RW019",
+    # "NRR_RW018",
+    # "NRR_RW017",
+    # "NRR_RW016",
+    # "NRR_RW015",
+    # "NRR_RW014",
+    # "NRR_RW013",
+    # "NRR_RW012",
+    # "NRR_RW011",
 ]
 
-BATCH_SCRIPTS = [
-    # "OCR_frame_correction.py",
-    # "align_dlc_two_cams_to_br.py",
-    # "align_VOG_to_br.py",
-    # "NPRW_Intan_analysis_mf.py",
-    # "compute_br_to_intan_shifts.py",
-    # "UA_BR_analysis_mf.py", 
-    "UA_BR_analysis_ssmf.py",
-    "make_aligned_npz_and_mat.py",
-    "extract_peri_stim.py",
-    "inspect_kinematics_trajectories.py",
-    # "plot_plateau_analysis.py",
-    # "RSA_calculation.py",
+SCRIPTS = [
+    # "batch_scripts/OCR_frame_correction.py",
+    # "batch_scripts/align_dlc_two_cams_to_br.py",
+    # "batch_scripts/align_VOG_to_br.py",
+    # "batch_scripts/NPRW_Intan_analysis_mf.py",
+    # "batch_scripts/compute_br_to_intan_shifts.py",
+    # "batch_scripts/UA_BR_analysis_mf.py", 
+    # "batch_scripts/UA_BR_analysis_ssmf.py",
+    # "batch_scripts/make_aligned_npz_and_mat.py",
+    # "batch_scripts/extract_peri_stim.py",
+    # "batch_scripts/inspect_kinematics_trajectories.py",
+    # "batch_scripts/plot_plateau_analysis.py",
+    # "batch_scripts/RSA_calculation.py",
 
     ### RUN ^ inspect_kinematics_trajectories.py to check for remaining bad traces -> add bad traces to /config/manual_trial_remove.csv
     ### RERUN extract_peri_stim.py
 
-    # "generate_stim_summary.py",
-    # "plot_complete_shaded_BT.py",
-    # "plot_peri_stim_raster.py",
-    # "analyze_lfp_bands.py",
-    # "quantify_stim_kinematics.py",
-    # "quantify_smoothed_position.py",
+    # "batch_scripts/generate_stim_summary.py",
+    # "batch_scripts/plot_complete_shaded_BT.py",
+    # "batch_scripts/plot_peri_stim_raster.py",
+    # "batch_scripts/analyze_lfp_bands.py",
+    # "batch_scripts/quantify_stim_kinematics.py",
+    # "batch_scripts/quantify_smoothed_position.py",
+
+
+    "scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py",
 ]
 
 
@@ -226,7 +229,7 @@ def _get_location_for_session(data_root: str, session: str) -> str:
     return location
 
 
-def run_scripts(base_dir: Path, batch_scripts_folder: Path):
+def run_scripts(base_dir: Path, scripts_folder: Path):
     params_path = base_dir / "config" / "params.yaml"
 
     if not params_path.exists():
@@ -257,8 +260,8 @@ def run_scripts(base_dir: Path, batch_scripts_folder: Path):
         print(f"[RAS] Session context: RCP_SESSION={session}, RCP_LOCATION={location}")
 
         # Run all scripts for this session
-        for batch_script in BATCH_SCRIPTS:
-            script_path = batch_scripts_folder / batch_script
+        for script in SCRIPTS:
+            script_path = scripts_folder / script
 
             if not script_path.exists():
                 print(f"[RAS: ERROR] Script not found: {script_path}")
@@ -266,7 +269,7 @@ def run_scripts(base_dir: Path, batch_scripts_folder: Path):
 
             print(f"\n[RAS] Running {script_path}\n")
 
-            status_column = SCRIPT_STATUS_COLUMNS.get(batch_script)
+            status_column = SCRIPT_STATUS_COLUMNS.get(script)
 
             try:
                 subprocess.run(
@@ -313,8 +316,8 @@ def run_scripts(base_dir: Path, batch_scripts_folder: Path):
 
 def main():
     BASE = Path(__file__).resolve().parents[1]
-    BATCH_SCRIPTS_FOLDER = BASE / "batch_scripts"
-    run_scripts(BASE, BATCH_SCRIPTS_FOLDER)
+    SCRIPTS_FOLDER = BASE
+    run_scripts(BASE, SCRIPTS_FOLDER)
     
 if __name__ == "__main__":
     main()
