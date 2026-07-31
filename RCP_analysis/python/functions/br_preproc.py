@@ -444,9 +444,15 @@ def load_electrode_mapping(csv_path: Path):
 
     return nsp_to_elec, region_grids, elec_to_region
 
-def get_region_from_group_name(grp_name: str) -> str:
-    """Extracts region name from group string like 'M1s (n=45)' -> 'M1s'."""
-    return grp_name.split(" (")[0].strip()
+def get_region_from_group_name(group_name: str) -> str:
+    """Extracts region name from group string like 'M1s (n=45)' -> 'M1s'
+    Args:
+        grp_name (str): Ex: 'M1s (n=45)'
+
+    Returns:
+        str: ex: M1s
+    """
+    return group_name.split(" (")[0].strip()
 
 def get_region_grid(region_name: str, utah_elec_grids: dict):
     """Gets the 8x8 grid for a given region."""
