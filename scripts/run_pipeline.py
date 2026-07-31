@@ -13,11 +13,11 @@ import os
 
 SESSIONS_TO_RUN = [
     # "NRR_RW035",
-    # "NRR_RW034",
+    "NRR_RW034",
     # "NRR_RW032",
     # "NRR_RW029",
     # "NRR_RW026",
-    "NRR_RW022",
+    # "NRR_RW022",
     # "NRR_RW019",
     # "NRR_RW018",
     # "NRR_RW017",
@@ -30,32 +30,28 @@ SESSIONS_TO_RUN = [
 ]
 
 SCRIPTS = [
-    # "batch_scripts/OCR_frame_correction.py",
-    # "batch_scripts/align_dlc_two_cams_to_br.py",
-    # "batch_scripts/align_VOG_to_br.py",
-    # "batch_scripts/NPRW_Intan_analysis_mf.py",
-    # "batch_scripts/compute_br_to_intan_shifts.py",
-    # "batch_scripts/UA_BR_analysis_mf.py", 
-    # "batch_scripts/UA_BR_analysis_ssmf.py",
-    # "batch_scripts/make_aligned_npz_and_mat.py",
-    # "batch_scripts/extract_peri_stim.py",
-    # "batch_scripts/inspect_kinematics_trajectories.py",
-    # "batch_scripts/plot_plateau_analysis.py",
-    # "batch_scripts/RSA_calculation.py",
-
+    # "preprocessing_scripts/OCR_frame_correction.py",
+    "preprocessing_scripts/align_dlc_two_cams_to_br.py",
+    # "preprocessing_scripts/align_VOG_to_br.py",
+    "preprocessing_scripts/NPRW_Intan_analysis_mf.py",
+    # "preprocessing_scripts/compute_br_to_intan_shifts.py",
+    # "preprocessing_scripts/UA_BR_analysis_mf.py", 
+    # "preprocessing_scripts/UA_BR_analysis_ssmf.py",
+    # "preprocessing_scripts/make_aligned_npz_and_mat.py",
+    # "preprocessing_scripts/extract_peri_stim.py",
+    # "preprocessing_scripts/inspect_kinematics_trajectories.py",
     ### RUN ^ inspect_kinematics_trajectories.py to check for remaining bad traces -> add bad traces to /config/manual_trial_remove.csv
     ### RERUN extract_peri_stim.py
 
-    # "batch_scripts/generate_stim_summary.py",
-    # "batch_scripts/plot_complete_shaded_BT.py",
-    # "batch_scripts/plot_peri_stim_raster.py",
-    # "batch_scripts/analyze_lfp_bands.py",
-    # "batch_scripts/quantify_stim_kinematics.py",
-    # "batch_scripts/quantify_smoothed_position.py",
+    # "analysis_scripts/plot_plateau_analysis.py",
+    # "analysis_scripts/RSA_calculation.py",
+    # "analysis_scripts/plot_complete_shaded_BT.py",
+    # "analysis_scripts/plot_peri_stim_raster.py",
 
 
+    # "analysis_scripts/analyze_lfp_bands.py",
     # "scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py",
-    "scripts/nikita_scripts/plotting_scripts/combine_UA_gifs.py",
+    # "scripts/nikita_scripts/plotting_scripts/combine_UA_gifs.py",
 ]
 
 
@@ -292,7 +288,7 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
 
             except subprocess.CalledProcessError as e:
                 print(
-                    f"[RAS: ERROR] Script {batch_script} failed for "
+                    f"[RAS: ERROR] Script {script} failed for "
                     f"{session} with exit code {e.returncode}"
                 )
 
