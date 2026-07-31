@@ -55,7 +55,6 @@ from .python.functions.intan_preproc import (
     reorder_recording_to_geometry,
     StimTriggerResult,
     extract_stim_npz,
-    extract_stim_triggers_and_blocks,
     extract_intan_aux_streams_npz,
 )    
 # blackrock / UA
@@ -157,7 +156,6 @@ __all__ = [
 
     # Intan
     "extract_stim_npz",
-    "extract_stim_triggers_and_blocks",
     "extract_intan_aux_streams_npz",
     "reorder_recording_to_geometry",
     "StimTriggerResult",
