@@ -125,6 +125,21 @@ def load_experiment_params(
     machines_yaml_path: Path | None = None,
     first_run: bool = False,
 ) -> experimentParams:
+    """_summary_
+
+    Args:
+        yaml_path (Path): _description_
+        repo_root (Path): _description_
+        machines_yaml_path (Path | None, optional): _description_. Defaults to None.
+        first_run (bool, optional): _description_. Defaults to False.
+
+    Raises:
+        RuntimeError: _description_
+        TypeError: _description_
+
+    Returns:
+        experimentParams: _description_
+    """
     cfg = yaml.safe_load(yaml_path.read_text())
 
     def expand_placeholders(obj): # Expand placeholders such as {REPO_ROOT}

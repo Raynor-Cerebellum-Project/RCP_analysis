@@ -30,16 +30,22 @@ SESSIONS_TO_RUN = [
 ]
 
 SCRIPTS = [
-    # "preprocessing_scripts/OCR_frame_correction.py",
-    "preprocessing_scripts/align_dlc_two_cams_to_br.py",
-    # "preprocessing_scripts/align_VOG_to_br.py",
-    "preprocessing_scripts/NPRW_Intan_analysis_mf.py",
-    # "preprocessing_scripts/compute_br_to_intan_shifts.py",
-    # "preprocessing_scripts/UA_BR_analysis_mf.py", 
-    # "preprocessing_scripts/UA_BR_analysis_ssmf.py",
-    # "preprocessing_scripts/make_aligned_npz_and_mat.py",
-    # "preprocessing_scripts/extract_peri_stim.py",
-    # "preprocessing_scripts/inspect_kinematics_trajectories.py",
+    ### Preprocessing
+    # "batch_scripts/OCR_frame_correction.py",
+    # "batch_scripts/align_dlc_two_cams_to_br.py",
+    # "batch_scripts/align_VOG_to_br.py",
+    # "batch_scripts/NPRW_Intan_analysis_mf.py",
+    # "batch_scripts/compute_br_to_intan_shifts.py",
+    # "batch_scripts/UA_BR_analysis_mf.py", 
+    # "batch_scripts/UA_BR_analysis_ssmf.py",
+    # "batch_scripts/make_aligned_npz_and_mat.py",
+    
+    ### Analysis
+    # "batch_scripts/extract_peri_stim.py",
+    # "batch_scripts/inspect_kinematics_trajectories.py",
+    # "batch_scripts/plot_plateau_analysis.py",
+    # "batch_scripts/RSA_calculation.py",
+
     ### RUN ^ inspect_kinematics_trajectories.py to check for remaining bad traces -> add bad traces to /config/manual_trial_remove.csv
     ### RERUN extract_peri_stim.py
 
@@ -72,9 +78,21 @@ SCRIPT_STATUS_COLUMNS = {
 
 
 def _update_script_status_for_session(data_root: str, session: str, status_column: str, value: str, ) -> None:
+    """_summary_
 
+    Args:
+        data_root (str): _description_
+        session (str): _description_
+        status_column (str): _description_
+        value (str): _description_
+
+    Raises:
+        FileNotFoundError: _description_
+        ValueError: _description_
+        KeyError: _description_
+        ValueError: _description_
+    """
     status_csv = Path(data_root) / "data_status_reaching.csv"
-
     if not status_csv.exists():
         raise FileNotFoundError(f"data_status_reaching.csv not found: {status_csv}")
 
@@ -120,7 +138,6 @@ def _update_script_status_for_session(data_root: str, session: str, status_colum
         writer.writerows(rows)
 
     print(f"[RAS] Updated {status_column} for session {target_session}: {value}")
-
 
 def _set_process_which_for_session(data_root: str, session: str) -> None:
     """
@@ -172,7 +189,6 @@ def _set_process_which_for_session(data_root: str, session: str) -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
-
 
 def _get_location_for_session(data_root: str, session: str) -> str:
     """
@@ -287,10 +303,7 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
                     )
 
             except subprocess.CalledProcessError as e:
-                print(
-                    f"[RAS: ERROR] Script {script} failed for "
-                    f"{session} with exit code {e.returncode}"
-                )
+                print(f"[RAS: ERROR] Script failed for {session} with exit code {e.returncode}")
 
                 # If this script has a corresponding CSV status column, write FAIL
                 if status_column is not None:
