@@ -13,11 +13,11 @@ import os
 
 SESSIONS_TO_RUN = [
     # "NRR_RW035",
-    "NRR_RW034",
+    # "NRR_RW034",
     # "NRR_RW032",
     # "NRR_RW029",
     # "NRR_RW026",
-    # "NRR_RW022",
+    "NRR_RW022",
     # "NRR_RW019",
     # "NRR_RW018",
     # "NRR_RW017",
@@ -31,9 +31,9 @@ SESSIONS_TO_RUN = [
 
 SCRIPTS = [
     # "preprocessing_scripts/OCR_frame_correction.py",
-    "preprocessing_scripts/align_dlc_two_cams_to_br.py",
+    # "preprocessing_scripts/align_dlc_two_cams_to_br.py",
     # "preprocessing_scripts/align_VOG_to_br.py",
-    "preprocessing_scripts/NPRW_Intan_analysis_mf.py",
+    # "preprocessing_scripts/NPRW_Intan_analysis_mf.py",
     # "preprocessing_scripts/compute_br_to_intan_shifts.py",
     # "preprocessing_scripts/UA_BR_analysis_mf.py", 
     # "preprocessing_scripts/UA_BR_analysis_ssmf.py",
@@ -50,7 +50,7 @@ SCRIPTS = [
 
 
     # "analysis_scripts/analyze_lfp_bands.py",
-    # "scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py",
+    "scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py",
     # "scripts/nikita_scripts/plotting_scripts/combine_UA_gifs.py",
 ]
 
@@ -63,6 +63,7 @@ SCRIPT_STATUS_COLUMNS = {
     "NPRW_Intan_analysis_mf.py": "NPRW_Intan_analysis",
     "compute_br_to_intan_shifts.py": "compute_shifts",
     "UA_BR_analysis_mf.py": "UA_BR_analysis",
+    "UA_BR_analysis_ssmf.py": "UA_BR_analysis",
     "make_aligned_npz_and_mat.py": "make_aligned",
     "extract_peri_stim.py": "extract_peri",
     "inspect_kinematics_trajectories.py": "manual_inspection",
@@ -266,7 +267,7 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
 
             print(f"\n[RAS] Running {script_path}\n")
 
-            status_column = SCRIPT_STATUS_COLUMNS.get(script)
+            status_column = SCRIPT_STATUS_COLUMNS.get(Path(script).name)
 
             try:
                 subprocess.run(

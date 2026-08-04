@@ -34,11 +34,18 @@ import re
 import warnings
 warnings.filterwarnings('ignore', message='.*tight_layout.*')
 
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except Exception:
+    torch = None
+    TORCH_AVAILABLE = False
+
 # =============================================================================
 # SESSION SELECTION - EDIT THESE TO FILTER WHICH SESSIONS TO PROCESS
 # =============================================================================
 
-SESSION_FILTER = [1, 17, 16, 15]          # None = all, or list like [1, 2, 3]
+SESSION_FILTER = [17, 16, 15, 1,]          # None = all, or list like [1, 2, 3]
 SESSION_ID_PATTERN = None      # None = all, or regex like r'.*control.*'
 
 
@@ -52,12 +59,15 @@ FIGURE_CONFIG = {
     'generate_waveform_raster': False,       # Raw LFP traces across trials
     'generate_trial_heatmaps': False,        # Per-trial band power heatmaps
 
+    # Spectrograms
     'generate_per_ua_spectrograms': False,   # 8x8 grid of spectrograms per array
     'per_ua_default_trial': 3, 
     'generate_all_trial_spectrograms': False,  # If True, generate for each trial (can be many files!)
     'generate_per_ua_trial_average': False,
-    'generate_per_ua_array_median': False,  # Median across all trials AND channels per Utah array
+    'generate_per_ua_array_median': True,  # Median across all trials AND channels per Utah array
+    'generate_control_median_baseline_norm_array_median': True,
     
+
     # Inter-regional analyses
     'generate_coherence_matrix': False,      # Coherence between all array pairs
     'generate_granger_causality': False,    # Optional: directional connectivity
@@ -67,8 +77,8 @@ FIGURE_CONFIG = {
     'generate_dose_response': False,         # Effect vs number of pulses
     
     # Spatial visualizations
-    'generate_spatial_heatmaps': True,      # Static spatial maps at key timepoints
-    'generate_spatial_gif': True,           # Animated GIF of spatial activity
+    'generate_spatial_heatmaps': False,      # Static spatial maps at key timepoints
+    'generate_spatial_gif': False,           # Animated GIF of spatial activity
 }
 
 TIME_WINDOWS = {
@@ -87,6 +97,11 @@ TIME_WINDOWS = {
 }
 
 ANALYSIS_CONFIG = {
+    'use_gpu_wavelet': True,
+    'gpu_backend': 'torch',
+    'gpu_batch_size': 32,
+
+
     # Frequency settings
     'freq_range': (1, 120),                 # Extended to 120 Hz as requested
     'freq_range_display': (1, 120),         # For PSD plots
@@ -158,15 +173,11 @@ PLOT_CONFIG = {
         'freq_max': 120,
         'freq_step': 1,                     # Hz resolution
         
-        # # Fallback STFT settings
-        # 'stft_nperseg': 256,
-        # 'stft_overlap_frac': 0.9,
-        
         # Display settings
         'cmap': 'jet', #viridis
-        'normalize': 'zscore',              # NEW: 'zscore', 'dB', or 'raw'
-        'vmin_zscore': -3,                  # NEW: z-score limits
-        'vmax_zscore': 3,                   # NEW: z-score limits
+        'normalize': 'zscore',              # 'zscore', 'dB', or 'raw'
+        'vmin_zscore': -1,                  # z-score limits
+        'vmax_zscore': 3,                   # z-score limits
         'vmin_uV2': 0,                      # For absolute power
         'vmax_uV2': None,                   # None = auto-scale to 95th percentile
         'vmin_db': -6,                      # For dB (if using relative)
@@ -180,10 +191,89 @@ PLOT_CONFIG = {
     'selected_band': 'Low Gamma',
 }
 
+# =============================================================================
+# WAVELET COMPARISON / TEST MODE CONFIGURATION
+# =============================================================================
+# When WAVELET_TEST_CONFIG['enabled'] is True, the script runs a comparison of
+# multiple TFR methods on ONE session/region instead of the full pipeline.
+# This is designed to diagnose temporal smearing from stimulation transients.
+
+WAVELET_TEST_CONFIG = {
+    'enabled': True,          # Set True to run wavelet comparison instead of normal pipeline
+
+    # --- Which region/array to test (must match a key in region_grids) ---
+    # e.g. 'M1i', 'SMA', 'PMd', 'M1s', or None for first available
+    'test_region': 'M1i',
+
+    # --- Methods to compare ---
+    # Each entry: dict with 'label' and 'method' (see compute_tfr_method)
+    'methods': [
+        # Fixed-cycle Morlet
+        {'label': 'Morlet n=3',  'method': 'morlet', 'n_cycles': 3},
+        {'label': 'Morlet n=5',  'method': 'morlet', 'n_cycles': 5},
+        {'label': 'Morlet n=7',  'method': 'morlet', 'n_cycles': 7},
+        {'label': 'Morlet n=10', 'method': 'morlet', 'n_cycles': 10},
+        # Adaptive-cycle Morlet: cycles scale with frequency band
+        # Low freq (<8 Hz): 3 cycles -> better time res; High freq (>30 Hz): 7 cycles
+        {'label': 'Morlet adaptive', 'method': 'morlet_adaptive',
+         'n_cycles_low': 3, 'n_cycles_high': 7,
+         'freq_low_max': 15, 'freq_high_min': 30},
+        # STFT: uniform time-frequency resolution, no wavelet smearing
+        {'label': 'STFT 250ms',  'method': 'stft', 'window_ms': 250},
+        {'label': 'STFT 100ms',  'method': 'stft', 'window_ms': 100},
+        # Paul wavelet (m=4): better time resolution than Morlet, good for transients
+        {'label': 'Paul m=4',    'method': 'paul', 'order': 4},
+    ],
+
+    # --- Normalization to apply to all methods ---
+    'normalize': 'zscore',   # 'zscore', 'dB', or 'raw'
+    'baseline_window': (-950, -650),  # ms, same as ANALYSIS_CONFIG default
+
+    # --- Display ---
+    'time_range_ms': (-500, 500),   # Time range to display
+    'freq_range': (1, 60),          # Focus on low/mid freq where smearing is worst
+    'vmin': -1,
+    'vmax': 3,
+    'cmap': 'jet',
+
+    # --- Output ---
+    'output_subdir': 'wavelet_comparison',  # Subfolder inside fig_dir
+}
+
 
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
+
+def _next_power_of_two(n):
+    n = int(n)
+    if n <= 1:
+        return 1
+    return 1 << (n - 1).bit_length()
+
+def interpolate_nans_1d(x):
+    """
+    Return finite float32 trace with NaN/Inf linearly interpolated.
+    Returns None if the whole trace is non-finite.
+    """
+    x = np.asarray(x, dtype=np.float32)
+    finite_mask = np.isfinite(x)
+
+    if not finite_mask.any():
+        return None
+
+    if finite_mask.all():
+        return x.astype(np.float32)
+
+    idx = np.arange(x.size)
+    x_interp = x.copy()
+    x_interp[~finite_mask] = np.interp(
+        idx[~finite_mask],
+        idx[finite_mask],
+        x[finite_mask]
+    )
+
+    return x_interp.astype(np.float32)
 
 def get_foi_with_notch_gaps(freq_min=1, freq_max=120, freq_step=1, notch_regions=None):
     """
@@ -212,44 +302,6 @@ def get_foi_with_notch_gaps(freq_min=1, freq_max=120, freq_step=1, notch_regions
         keep_mask[notch_mask] = False
     
     return foi_full[keep_mask]
-
-def should_process_session(session_id, data=None):
-    """
-    Check if a session should be processed based on filter settings.
-    
-    Args:
-        session_id: String session identifier
-        data: Optional loaded data dict (to check br_idx)
-    
-    Returns:
-        bool: True if session should be processed
-    """
-    # Check BR index filter
-    if SESSION_FILTER is not None:
-        br_idx = None
-        
-        # Try to extract from session_id
-        br_match = re.search(r'_(\d{3})(?:_|$|\.)', session_id)
-        if br_match:
-            br_idx = int(br_match.group(1))
-        
-        # Try to get from data
-        if br_idx is None and data is not None:
-            br_idx = data.get('br_idx', None)
-            if isinstance(br_idx, np.ndarray):
-                br_idx = int(br_idx.item())
-        
-        if br_idx is not None and br_idx not in SESSION_FILTER:
-            return False
-        elif br_idx is None:
-            print(f"    [Warn] Could not determine BR index for {session_id}")
-    
-    # Check pattern filter
-    if SESSION_ID_PATTERN is not None:
-        if not re.search(SESSION_ID_PATTERN, session_id, re.IGNORECASE):
-            return False
-    
-    return True
 
 def mask_notch_regions(f, psd, notch_regions=None):
     """
@@ -388,6 +440,284 @@ def zscore_normalize_spectrogram(Sxx, baseline_mask=None):
         raise ValueError(f"Unexpected Sxx shape: {Sxx.shape}")
     
     return Sxx_z
+
+def compute_array_median_raw_spectrograms(data, groups, fs=1000,
+                                          region_grids=None, elec_to_idx=None):
+    """
+    Compute raw Morlet spectrogram median across all valid trial/channel pairs
+    for each array/region.
+
+    This is the centralized raw array-median spectrogram helper used by:
+      - generate_per_ua_array_median_spectrogram(...)
+      - compute_control_median_baseline_norm(...)
+
+    Return keys are intentionally preserved:
+      'Sxx'
+      'f'
+      't_ms'
+      'n_valid_channels'
+      'n_valid_trial_channel_pairs'
+    """
+
+    spec_cfg = PLOT_CONFIG.get('spectrogram', {})
+
+    freq_min = spec_cfg.get('freq_min', 1)
+    freq_max = spec_cfg.get('freq_max', 120)
+    freq_step = spec_cfg.get('freq_step', 1)
+
+    n_cycles = spec_cfg.get(
+        'wavelet_cycles',
+        ANALYSIS_CONFIG.get('wavelet_cycles', 7)
+    )
+
+    foi = get_foi_with_notch_gaps(freq_min, freq_max, freq_step)
+
+    use_gpu = (
+        ANALYSIS_CONFIG.get('use_gpu_wavelet', False)
+        and ANALYSIS_CONFIG.get('gpu_backend', 'torch').lower() == 'torch'
+        and TORCH_AVAILABLE
+        and torch is not None
+        and torch.cuda.is_available()
+    )
+
+    gpu_batch_size = int(ANALYSIS_CONFIG.get('gpu_batch_size', 32))
+
+    if use_gpu:
+        try:
+            gpu_name = torch.cuda.get_device_name(0)
+            print(f"    Torch GPU Morlet enabled: {gpu_name}, batch_size={gpu_batch_size}")
+        except Exception:
+            print(f"    Torch GPU Morlet enabled, batch_size={gpu_batch_size}")
+    else:
+        print("    Torch GPU Morlet not enabled/available; using CPU Morlet.")
+
+    region_specs_raw = {}
+
+    if region_grids is None or elec_to_idx is None:
+        print("    WARNING: region_grids or elec_to_idx missing; cannot compute array median raw spectrograms.")
+        return region_specs_raw
+
+    bb_full, t_ms = get_broadband_full(data)
+
+    if bb_full is None:
+        print("    WARNING: broadband data missing; cannot compute array median raw spectrograms.")
+        return region_specs_raw
+
+    bb_full = np.asarray(bb_full)
+
+    if bb_full.ndim != 3:
+        print(f"    WARNING: expected broadband data shape trial x channel x time, got {bb_full.shape}")
+        return region_specs_raw
+
+    n_trials, n_channels, n_time = bb_full.shape
+
+    for region_name, grid_elec in region_grids.items():
+        print(f"    Computing raw array-median spectrogram for {region_name}...")
+
+        region_traces = []
+        valid_channel_indices = []
+
+        grid_elec_arr = np.asarray(grid_elec)
+
+        for elec_id in grid_elec_arr.ravel():
+            if elec_id is None:
+                continue
+
+            try:
+                if np.isnan(elec_id):
+                    continue
+            except Exception:
+                pass
+
+            ch_idx = elec_to_idx.get(int(elec_id), None)
+
+            if ch_idx is None:
+                continue
+
+            if ch_idx < 0 or ch_idx >= n_channels:
+                continue
+
+            valid_channel_indices.append(ch_idx)
+
+            for trial_idx in range(n_trials):
+                trace = bb_full[trial_idx, ch_idx, :]
+
+                if trace is None:
+                    continue
+
+                trace = np.asarray(trace)
+
+                if trace.size != n_time:
+                    continue
+
+                if not np.isfinite(trace).any():
+                    continue
+
+                region_traces.append(trace.astype(np.float32))
+
+        n_valid_channels = len(set(valid_channel_indices))
+        n_valid_trial_channel_pairs = len(region_traces)
+
+        if n_valid_trial_channel_pairs == 0:
+            print(f"      No valid trial/channel pairs for {region_name}; skipping.")
+            continue
+
+        traces_arr = np.stack(region_traces, axis=0).astype(np.float32)
+
+        Sxx_region_median_raw = None
+        f_out_saved = None
+        t_spec_ms_saved = None
+
+        if use_gpu:
+            try:
+                Sxx_all, f_out, t_out = compute_wavelet_spectrogram_batch_torch(
+                    traces_arr,
+                    fs=fs,
+                    foi=foi,
+                    n_cycles=n_cycles,
+                    batch_size=gpu_batch_size,
+                    device="cuda",
+                )
+
+                Sxx_region_median_raw = np.nanmedian(Sxx_all, axis=0)
+                f_out_saved = f_out
+                t_spec_ms_saved = np.asarray(t_out) * 1000.0 + float(t_ms[0])
+
+                print(
+                    f"      {region_name}: GPU complete, "
+                    f"{n_valid_channels} channels, "
+                    f"{n_valid_trial_channel_pairs} trial/channel pairs"
+                )
+
+            except Exception as e:
+                print(f"      WARNING: Torch GPU Morlet failed for {region_name}: {e}")
+                print("      Falling back to CPU Morlet for this region.")
+                Sxx_region_median_raw = None
+
+                if torch is not None and torch.cuda.is_available():
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
+
+        if Sxx_region_median_raw is None:
+            specs = []
+            f_out_saved = None
+            t_spec_ms_saved = None
+
+            for trace in region_traces:
+                Sxx, f_out, t_out = compute_wavelet_spectrogram(
+                    trace,
+                    fs=fs,
+                    foi=foi,
+                    n_cycles=n_cycles,
+                )
+
+                specs.append(Sxx)
+
+                if f_out_saved is None:
+                    f_out_saved = f_out
+                    t_spec_ms_saved = np.asarray(t_out) * 1000.0 + float(t_ms[0])
+
+            if len(specs) == 0:
+                print(f"      No valid CPU spectrograms for {region_name}; skipping.")
+                continue
+
+            stacked = np.stack(specs, axis=0)
+            Sxx_region_median_raw = np.nanmedian(stacked, axis=0)
+
+            print(
+                f"      {region_name}: CPU complete, "
+                f"{n_valid_channels} channels, "
+                f"{n_valid_trial_channel_pairs} trial/channel pairs"
+            )
+
+        region_specs_raw[region_name] = {
+            'Sxx': Sxx_region_median_raw,
+            'f': f_out_saved,
+            't_ms': t_spec_ms_saved,
+            'n_valid_channels': n_valid_channels,
+            'n_valid_trial_channel_pairs': n_valid_trial_channel_pairs,
+        }
+
+    return region_specs_raw
+
+def get_trial_count(data):
+    return int(data['broadband_full'].shape[0])
+
+def compute_control_median_baseline_norm(data, groups, fs=1000,
+                                         region_grids=None, elec_to_idx=None):
+    """
+    Compute control-reference mean/std from the baseline of the control
+    array-level median spectrogram.
+    """
+    region_specs_raw = compute_array_median_raw_spectrograms(
+        data=data,
+        groups=groups,
+        fs=fs,
+        region_grids=region_grids,
+        elec_to_idx=elec_to_idx,
+    )
+
+    baseline_win = ANALYSIS_CONFIG['baseline_window']
+    norm = {}
+
+    for region_name, spec in region_specs_raw.items():
+        Sxx_control_median_raw = spec['Sxx']
+        t_spec_ms = spec['t_ms']
+
+        bl_mask = (
+            (t_spec_ms >= baseline_win[0]) &
+            (t_spec_ms <= baseline_win[1])
+        )
+
+        if not bl_mask.any():
+            print(f"      [Skip] No baseline samples for control norm: {region_name}")
+            continue
+
+        baseline_values = Sxx_control_median_raw[:, bl_mask]
+
+        mean_val = np.nanmean(baseline_values, axis=1, keepdims=True)
+        std_val = np.nanstd(baseline_values, axis=1, keepdims=True)
+        std_val[std_val < 1e-10] = 1e-10
+
+        norm[region_name] = {
+            'mean': mean_val,
+            'std': std_val,
+            'foi': spec['f'],
+            'baseline_window': baseline_win,
+            'n_valid_channels': spec['n_valid_channels'],
+            'n_valid_trial_channel_pairs': spec['n_valid_trial_channel_pairs'],
+        }
+
+    return norm
+
+def compute_control_spatial_baseline(data, fs=1000):
+    """
+    Compute control baseline envelope for selected spatial band.
+    Shape returned: (1, n_channels, 1)
+    """
+    bb_full, t_ms = get_broadband_full(data)
+
+    band_name = PLOT_CONFIG.get('selected_band', 'Beta')
+    f_lo, f_hi = ANALYSIS_CONFIG['bands'][band_name]
+    baseline_win = ANALYSIS_CONFIG['baseline_window']
+
+    nyq = fs / 2
+    if f_hi >= nyq:
+        f_hi = nyq - 1
+
+    b, a = signal.butter(4, [f_lo / nyq, f_hi / nyq], btype='band')
+
+    filtered = signal.filtfilt(b, a, bb_full, axis=2)
+    envelope = np.abs(signal.hilbert(filtered, axis=2))
+
+    bl_mask = (t_ms >= baseline_win[0]) & (t_ms <= baseline_win[1])
+
+    baseline_power = np.nanmean(envelope[:, :, bl_mask], axis=(0, 2))
+    baseline_power[baseline_power < 1e-10] = 1e-10
+
+    return baseline_power[None, :, None]
 
 def get_time_axis(data):
     """Extract time axis in ms from data dict."""
@@ -533,7 +863,7 @@ def compute_wavelet_spectrogram(trace, fs, foi=None, baseline_window=None,
         wavelet = wavelet / np.sqrt(np.sum(np.abs(wavelet)**2))
         
         # Convolve
-        analytic = signal.convolve(trace_clean, wavelet, mode='same')
+        analytic = signal.fftconvolve(trace_clean, wavelet, mode='same')
         
         # Power
         Sxx[i_freq, :] = np.abs(analytic) ** 2
@@ -552,60 +882,752 @@ def compute_wavelet_spectrogram(trace, fs, foi=None, baseline_window=None,
     
     return Sxx, foi, t_sec
 
-def compute_stft_spectrogram(trace, fs, foi=None, baseline_window=None,
-                              t_ms=None, nperseg=256, noverlap=None):
+def compute_wavelet_spectrogram_batch_torch(traces, fs, foi=None, n_cycles=7, batch_size=32, device=None):
     """
-    Fallback STFT-based spectrogram.
-    
-    Args:
-        trace: 1D signal
-        fs: Sampling rate
-        foi: Frequencies of interest (for output masking)
-        baseline_window: (start_ms, end_ms) for baseline normalization
-        t_ms: Time axis in ms
-        nperseg: Samples per segment
-        noverlap: Overlap samples (default: 90%)
-    
-    Returns:
-        Sxx: Power matrix (n_freq, n_time) in µV²
-        f: Frequencies
-        t: Time in seconds
+    GPU Torch Morlet spectrogram for a batch of traces.
+
+    Parameters
+    ----------
+    traces : array-like
+        Shape: (n_signals, n_time)
+    fs : float
+        Sampling rate in Hz.
+    foi : array-like or None
+        Frequencies of interest.
+    n_cycles : float
+        Morlet wavelet cycles.
+    batch_size : int
+        Number of traces processed per GPU batch.
+    device : str or torch.device or None
+        Usually "cuda".
+
+    Returns
+    -------
+    Sxx_all : np.ndarray
+        Shape: (n_signals, n_freqs, n_time)
+    foi : np.ndarray
+        Frequencies.
+    t_out : np.ndarray
+        Time vector in seconds, relative to trace start.
     """
-    if noverlap is None:
-        noverlap = int(nperseg * 0.9)
-    
-    # Handle NaN values
-    trace_clean = trace.copy().astype(np.float64)
-    nan_mask = np.isnan(trace_clean)
-    if nan_mask.any():
-        if nan_mask.all():
-            return None, None, None
-        trace_clean[nan_mask] = np.interp(
-            np.flatnonzero(nan_mask),
-            np.flatnonzero(~nan_mask),
-            trace_clean[~nan_mask]
+
+    if torch is None:
+        raise RuntimeError("Torch is not available.")
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    device = torch.device(device)
+
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("Torch CUDA requested but not available.")
+
+    traces = np.asarray(traces)
+
+    if traces.ndim != 2:
+        raise ValueError(f"traces must be 2D, got shape {traces.shape}")
+
+    n_signals, n_time = traces.shape
+
+    if foi is None:
+        spec_cfg = PLOT_CONFIG.get('spectrogram', {})
+        freq_min = spec_cfg.get('freq_min', 1)
+        freq_max = spec_cfg.get('freq_max', 120)
+        freq_step = spec_cfg.get('freq_step', 1)
+        foi = get_foi_with_notch_gaps(freq_min, freq_max, freq_step)
+    else:
+        foi = np.asarray(foi, dtype=np.float32)
+
+    n_freqs = len(foi)
+    t_out = np.arange(n_time, dtype=np.float32) / float(fs)
+
+    # Clean traces on CPU before GPU transfer.
+    cleaned = []
+    for i in range(n_signals):
+        xi = interpolate_nans_1d(traces[i])
+        if xi is None:
+            xi = np.zeros(n_time, dtype=np.float32)
+        cleaned.append(xi)
+
+    traces_clean = np.stack(cleaned, axis=0).astype(np.float32)
+
+    Sxx_all = np.empty((n_signals, n_freqs, n_time), dtype=np.float32)
+
+    for start in range(0, n_signals, batch_size):
+        stop = min(start + batch_size, n_signals)
+
+        x_np = traces_clean[start:stop]
+        x = torch.as_tensor(x_np, dtype=torch.float32, device=device)
+
+        this_batch = stop - start
+        Sxx_batch = torch.empty(
+            (this_batch, n_freqs, n_time),
+            dtype=torch.float32,
+            device=device
         )
-    
-    f, t, Sxx = signal.spectrogram(
-        trace_clean, fs=fs, nperseg=nperseg, noverlap=noverlap, mode='psd'
+
+        for fi, freq in enumerate(foi):
+            freq_float = float(freq)
+
+            sigma_t = n_cycles / (2 * np.pi * freq_float)
+            wavelet_duration = 4 * sigma_t
+            wavelet_samples = int(wavelet_duration * fs)
+
+            if wavelet_samples % 2 == 0:
+                wavelet_samples += 1
+
+            if wavelet_samples < 3:
+                wavelet_samples = 3
+
+            t_wavelet = (
+                torch.arange(wavelet_samples, device=device, dtype=torch.float32)
+                / float(fs)
+                - wavelet_duration / 2.0
+            )
+
+            gaussian = torch.exp(-(t_wavelet ** 2) / (2 * sigma_t ** 2))
+
+            phase = 2 * np.pi * freq_float * t_wavelet
+            complex_sinusoid = torch.exp(1j * phase)
+
+            wavelet = gaussian.to(torch.complex64) * complex_sinusoid.to(torch.complex64)
+
+            wavelet_norm = torch.sqrt(torch.sum(torch.abs(wavelet) ** 2))
+            wavelet = wavelet / wavelet_norm
+
+            conv_len = n_time + wavelet_samples - 1
+            n_fft = _next_power_of_two(conv_len)
+
+            x_fft = torch.fft.fft(x.to(torch.complex64), n=n_fft, dim=1)
+            w_fft = torch.fft.fft(wavelet, n=n_fft)
+
+            analytic_full = torch.fft.ifft(x_fft * w_fft[None, :], n=n_fft, dim=1)
+            analytic_full = analytic_full[:, :conv_len]
+
+            same_start = (wavelet_samples - 1) // 2
+            analytic_same = analytic_full[:, same_start:same_start + n_time]
+
+            power = torch.abs(analytic_same) ** 2
+            Sxx_batch[:, fi, :] = power.to(torch.float32)
+
+        Sxx_all[start:stop] = Sxx_batch.detach().cpu().numpy()
+
+        del x, Sxx_batch
+
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    return Sxx_all, foi.astype(np.float32), t_out
+
+
+# =============================================================================
+# ALTERNATIVE TFR METHODS FOR WAVELET COMPARISON
+# =============================================================================
+
+def compute_morlet_adaptive_spectrogram(trace, fs, foi=None, t_ms=None,
+                                        n_cycles_low=3, n_cycles_high=7,
+                                        freq_low_max=8, freq_high_min=30):
+    """
+    Morlet wavelet with frequency-adaptive n_cycles.
+
+    At low frequencies (<= freq_low_max Hz): uses n_cycles_low
+      -> shorter window, better time resolution, less temporal smearing
+    At high frequencies (>= freq_high_min Hz): uses n_cycles_high
+      -> more cycles, better frequency resolution where it matters
+    In between: linearly interpolated.
+
+    This is the key approach to reduce stim-transient smearing at low freqs.
+    """
+    if foi is None:
+        foi = get_foi_with_notch_gaps()
+
+    trace_clean = interpolate_nans_1d(np.asarray(trace, dtype=np.float64))
+    if trace_clean is None:
+        return None, None, None
+
+    n_time = len(trace_clean)
+    n_freq = len(foi)
+    Sxx = np.zeros((n_freq, n_time), dtype=np.float64)
+
+    for i_freq, freq in enumerate(foi):
+        if freq <= 0:
+            continue
+
+        # Adaptive cycle count: linear interpolation between low and high
+        if freq <= freq_low_max:
+            nc = float(n_cycles_low)
+        elif freq >= freq_high_min:
+            nc = float(n_cycles_high)
+        else:
+            t = (freq - freq_low_max) / (freq_high_min - freq_low_max)
+            nc = n_cycles_low + t * (n_cycles_high - n_cycles_low)
+
+        sigma_t = nc / (2 * np.pi * freq)
+        wavelet_duration = 4 * sigma_t
+        wavelet_samples = int(wavelet_duration * fs)
+        if wavelet_samples % 2 == 0:
+            wavelet_samples += 1
+        wavelet_samples = max(wavelet_samples, 3)
+
+        t_w = np.arange(wavelet_samples) / fs - wavelet_duration / 2
+        gaussian = np.exp(-t_w**2 / (2 * sigma_t**2))
+        wavelet = gaussian * np.exp(2j * np.pi * freq * t_w)
+        wavelet /= np.sqrt(np.sum(np.abs(wavelet)**2))
+
+        analytic = signal.fftconvolve(trace_clean, wavelet, mode='same')
+        Sxx[i_freq, :] = np.abs(analytic) ** 2
+
+    t_sec = np.arange(n_time) / fs
+    return Sxx, foi, t_sec
+
+
+def compute_stft_spectrogram(trace, fs, foi=None, window_ms=200, t_ms=None):
+    """
+    Short-Time Fourier Transform spectrogram.
+
+    Unlike wavelets, STFT uses a FIXED window length -> uniform time AND
+    frequency resolution everywhere. No temporal smearing that scales with
+    frequency. Good for detecting sharp transients.
+
+    Shorter window_ms = better time resolution but coarser freq resolution.
+    """
+    if foi is None:
+        foi = get_foi_with_notch_gaps()
+
+    trace_clean = interpolate_nans_1d(np.asarray(trace, dtype=np.float64))
+    if trace_clean is None:
+        return None, None, None
+
+    n_time = len(trace_clean)
+    window_samps = int(window_ms / 1000.0 * fs)
+    if window_samps % 2 == 0:
+        window_samps += 1
+    window_samps = max(window_samps, 7)
+
+    # 75% overlap for smooth time axis
+    noverlap = int(window_samps * 0.75)
+    nperseg = window_samps
+
+    freqs_stft, t_stft, Zxx = signal.spectrogram(
+        trace_clean,
+        fs=fs,
+        window='hann',
+        nperseg=nperseg,
+        noverlap=noverlap,
+        scaling='density',
+        mode='psd',
     )
-    
-    # Mask to foi if provided
-    if foi is not None:
-        f_mask = (f >= foi[0]) & (f <= foi[-1])
-        f = f[f_mask]
-        Sxx = Sxx[f_mask, :]
-    
-    # Baseline normalization
-    if baseline_window is not None and t_ms is not None:
-        t_spec_ms = t * 1000 + t_ms[0]
-        bl_mask = (t_spec_ms >= baseline_window[0]) & (t_spec_ms <= baseline_window[1])
-        if bl_mask.sum() > 0:
-            baseline_power = np.nanmean(Sxx[:, bl_mask], axis=1, keepdims=True)
-            baseline_power[baseline_power < 1e-20] = 1e-20
-            Sxx = 10 * np.log10(Sxx / baseline_power)
-    
-    return Sxx, f, t
+
+    # Interpolate to our foi grid for consistent comparison
+    Sxx_interp = np.zeros((len(foi), len(t_stft)), dtype=np.float64)
+    for i_t in range(len(t_stft)):
+        Sxx_interp[:, i_t] = np.interp(foi, freqs_stft, Zxx[:, i_t],
+                                        left=np.nan, right=np.nan)
+
+    return Sxx_interp, foi, t_stft
+
+
+def compute_paul_wavelet_spectrogram(trace, fs, foi=None, order=4, t_ms=None):
+    """
+    Paul wavelet spectrogram.
+
+    Paul wavelets have BETTER TIME RESOLUTION than Morlet at equivalent
+    frequency resolution. They are one-sided (analytic) and particularly
+    well-suited for detecting transient events and onset responses.
+
+    The Paul wavelet of order m has:
+      - Time-bandwidth product: sigma_t * sigma_f = (m + 0.5) / (4*pi)
+      - Compared to Morlet: better time, slightly worse freq resolution
+
+    Scales are chosen so that the center frequency matches each FOI.
+    """
+    if foi is None:
+        foi = get_foi_with_notch_gaps()
+
+    trace_clean = interpolate_nans_1d(np.asarray(trace, dtype=np.float64))
+    if trace_clean is None:
+        return None, None, None
+
+    n_time = len(trace_clean)
+    n_freq = len(foi)
+    Sxx = np.zeros((n_freq, n_time), dtype=np.float64)
+
+    # Paul wavelet center frequency factor: psi_hat peaks at omega = 2*(m+1)
+    # => center_freq = (2*(m+1)) / (2*pi) * (1/scale) in Hz
+    # => scale = (2*(m+1)) / (2*pi*freq)
+    m = order
+    omega_0 = 2 * (m + 1)  # angular frequency of peak
+
+    for i_freq, freq in enumerate(foi):
+        if freq <= 0:
+            continue
+
+        scale = omega_0 / (2 * np.pi * freq)  # in seconds
+        scale_samps = scale * fs
+
+        # Window half-width: 4*scale for reasonable truncation
+        half_w = int(4 * scale_samps)
+        half_w = max(half_w, 2)
+        wlen = 2 * half_w + 1
+
+        t_w = (np.arange(wlen) - half_w) / fs  # in seconds
+
+        # Paul wavelet (unnormalized analytic form)
+        # psi(t/s) = (2^m * i^m * m!) / sqrt(pi*(2m)!) * (1 - i*t/s)^(-(m+1))
+        import math
+        norm_const = (2**m * math.factorial(m)) / np.sqrt(np.pi * math.factorial(2 * m))
+        eta = t_w / scale  # normalized time
+        wavelet = norm_const * (1 - 1j * eta) ** (-(m + 1))
+
+        # Normalize for unit energy
+        wavelet = wavelet / np.sqrt(np.sum(np.abs(wavelet)**2))
+
+        analytic = signal.fftconvolve(trace_clean, np.conj(wavelet[::-1]), mode='same')
+        Sxx[i_freq, :] = np.abs(analytic) ** 2
+
+    t_sec = np.arange(n_time) / fs
+    return Sxx, foi, t_sec
+
+
+def compute_tfr_method(trace, fs, method_cfg, foi=None, t_ms=None):
+    """
+    Dispatch function: compute TFR using the method specified in method_cfg.
+
+    Returns (Sxx, foi, t_sec) where:
+      Sxx : (n_freq, n_time) raw power
+      foi : frequency array
+      t_sec : time in seconds from trace start
+    """
+    method = method_cfg.get('method', 'morlet')
+
+    if method == 'morlet':
+        return compute_wavelet_spectrogram(
+            trace, fs, foi=foi, t_ms=t_ms,
+            n_cycles=method_cfg.get('n_cycles', 7),
+            normalize=False,
+        )
+    elif method == 'morlet_adaptive':
+        return compute_morlet_adaptive_spectrogram(
+            trace, fs, foi=foi, t_ms=t_ms,
+            n_cycles_low=method_cfg.get('n_cycles_low', 3),
+            n_cycles_high=method_cfg.get('n_cycles_high', 7),
+            freq_low_max=method_cfg.get('freq_low_max', 8),
+            freq_high_min=method_cfg.get('freq_high_min', 30),
+        )
+    elif method == 'stft':
+        return compute_stft_spectrogram(
+            trace, fs, foi=foi,
+            window_ms=method_cfg.get('window_ms', 200),
+            t_ms=t_ms,
+        )
+    elif method == 'paul':
+        return compute_paul_wavelet_spectrogram(
+            trace, fs, foi=foi,
+            order=method_cfg.get('order', 4),
+            t_ms=t_ms,
+        )
+    else:
+        raise ValueError(f"Unknown TFR method: {method!r}")
+
+
+def run_wavelet_comparison(lfp_dir, fig_dir, label=""):
+    """
+    Run a side-by-side comparison of TFR methods on one session/region.
+
+    Controlled by WAVELET_TEST_CONFIG. Outputs a grid figure with one column
+    per method. Each method gets two rows: raw spectrogram + time-frequency
+    resolution indicator (wavelet duration as a function of frequency).
+    Also plots the mean LFP trace above for reference.
+
+    This is the primary tool for diagnosing temporal smearing from the
+    stimulation low-frequency transient.
+    """
+    cfg = WAVELET_TEST_CONFIG
+    if not cfg.get('enabled', False):
+        return
+
+    lfp_dir = Path(lfp_dir)
+    fig_dir = Path(fig_dir)
+
+    print(f"\n{'='*60}")
+    print(f"WAVELET COMPARISON MODE ({label})")
+    print(f"{'='*60}")
+
+    # --- Find session file ---
+    files = sorted(lfp_dir.rglob("aligned_lfp__*.npz"))
+    if not files:
+        print(f"  [Skip] No aligned LFP npz files found in {lfp_dir}")
+        return
+
+    def _br_idx_from_lfp_file(path):
+        """
+        Extract BR/session index from aligned LFP npz filename.
+
+        Expected examples:
+            aligned_lfp__NRR_RW022_017_stim_reaches_target_target_A.npz
+            NRR_RW022_017_stim_reaches_target_target_A.npz
+        """
+        session_id = path.stem.replace("aligned_lfp__", "")
+        br_match = re.search(r'_(\d{3})(?:_|$|\.)', session_id)
+        if br_match:
+            return int(br_match.group(1))
+        return None
+
+    if SESSION_FILTER is not None:
+        session_filter_set = set(int(x) for x in SESSION_FILTER)
+
+        files_filtered = [
+            f for f in files
+            if _br_idx_from_lfp_file(f) in session_filter_set
+        ]
+    else:
+        files_filtered = files
+
+    if not files_filtered:
+        print(f"  [Skip] No aligned LFP npz files matched SESSION_FILTER={SESSION_FILTER}")
+        return
+
+    # Prefer stim/non-control files within SESSION_FILTER.
+    non_control_files = [
+        f for f in files_filtered
+        if 'baseline' not in f.stem.lower()
+        and 'control' not in f.stem.lower()
+    ]
+
+    npz_path = non_control_files[0] if non_control_files else files_filtered[0]
+
+    br_idx = _br_idx_from_lfp_file(npz_path)
+    print(f"  Using SESSION_FILTER={SESSION_FILTER}; selected BR={br_idx}: {npz_path.name}")
+
+    session_id = npz_path.stem.replace('aligned_lfp__', '')
+    print(f"  Session: {session_id}")
+
+    try:
+        data = dict(np.load(npz_path, allow_pickle=True))
+    except Exception as e:
+        print(f"  [Error] Failed to load {npz_path}: {e}")
+        return
+
+    if 'broadband_full' not in data:
+        print(f"  [Skip] No broadband_full in {npz_path.name}")
+        return
+
+    groups, nsp_to_elec, elec_to_idx, region_grids, ua_ids = _build_groups(data, data['broadband_full'].shape[1])
+    fs = int(data.get('fs_lfp', 1000))
+    bb_full, t_ms = get_broadband_full(data)
+    bb_full = np.asarray(bb_full)
+    n_trials, n_channels, n_time = bb_full.shape
+    t_ms_arr = np.asarray(t_ms)
+
+    # --- Find region ---
+    test_region = cfg.get('test_region')
+    region_name = None
+
+    if region_grids and test_region is not None:
+        if test_region in region_grids:
+            region_name = test_region
+        else:
+            print(f"  [Warn] test_region={test_region!r} not found. Available: {list(region_grids.keys())}")
+
+    if region_name is None and region_grids:
+        region_name = next(iter(region_grids))
+
+    print(f"  Region: {region_name}")
+
+    # --- Collect ALL traces for this region ---
+    region_traces = []
+    valid_channel_indices = []
+
+    if region_grids and region_name and elec_to_idx:
+        grid_elec = np.asarray(region_grids[region_name])
+
+        for elec_id in grid_elec.ravel():
+            if elec_id is None:
+                continue
+
+            try:
+                if np.isnan(float(elec_id)):
+                    continue
+            except Exception:
+                pass
+
+            ch_idx = elec_to_idx.get(int(elec_id))
+
+            if ch_idx is None:
+                continue
+
+            if ch_idx < 0 or ch_idx >= n_channels:
+                continue
+
+            valid_channel_indices.append(ch_idx)
+
+            for trial_idx in range(n_trials):
+                trace = bb_full[trial_idx, ch_idx, :]
+
+                if trace is None:
+                    continue
+
+                trace = np.asarray(trace)
+
+                if trace.size != n_time:
+                    continue
+
+                if not np.isfinite(trace).any():
+                    continue
+
+                region_traces.append(trace.astype(np.float64))
+
+    else:
+        # Fallback: use all channels from first available group
+        if groups:
+            grp_idxs = groups[0][0]
+
+            for ch_idx in grp_idxs:
+                if ch_idx is None:
+                    continue
+
+                if ch_idx < 0 or ch_idx >= n_channels:
+                    continue
+
+                valid_channel_indices.append(ch_idx)
+
+                for trial_idx in range(n_trials):
+                    trace = bb_full[trial_idx, ch_idx, :]
+
+                    if trace is None:
+                        continue
+
+                    trace = np.asarray(trace)
+
+                    if trace.size != n_time:
+                        continue
+
+                    if not np.isfinite(trace).any():
+                        continue
+
+                    region_traces.append(trace.astype(np.float64))
+
+    if not region_traces:
+        print(f"  [Skip] No valid traces for region {region_name}")
+        return
+
+    print(f"  Using all available data from {region_name}: {len(set(valid_channel_indices))} channels, {len(region_traces)} trial/channel pairs")
+
+    # --- Build FOI ---
+    f_min, f_max = cfg.get('freq_range', (1, 60))
+    foi = get_foi_with_notch_gaps(f_min, f_max, 1)
+    normalize_method = cfg.get('normalize', 'zscore')
+    baseline_win = cfg.get('baseline_window', (-950, -650))
+    time_range = cfg.get('time_range_ms', (-300, 500))
+    methods = cfg.get('methods', [])
+
+    if not methods:
+        print("  [Skip] No methods defined in WAVELET_TEST_CONFIG['methods']")
+        return
+
+    print(f"  Computing {len(methods)} methods on {len(region_traces)} traces...")
+
+    # --- Compute TFR for each method, then median across traces ---
+    method_results = []  # list of (label, Sxx_median, f, t_ms_plot)
+
+    for method_cfg in methods:
+        mlabel = method_cfg.get('label', method_cfg.get('method', '?'))
+        print(f"    [{mlabel}] ... ", end='', flush=True)
+
+        specs = []
+        f_out_saved = None
+        t_ms_plot = None
+
+        for trace in region_traces:
+            try:
+                Sxx, f_out, t_out = compute_tfr_method(trace, fs, method_cfg, foi=foi, t_ms=t_ms_arr)
+            except Exception as e:
+                print(f"\n      [Error] {e}")
+                continue
+            if Sxx is None:
+                continue
+            specs.append(Sxx)
+            if f_out_saved is None:
+                f_out_saved = np.asarray(f_out)
+                t_ms_plot = np.asarray(t_out) * 1000.0 + float(t_ms_arr[0])
+
+        if not specs:
+            print(f"FAILED")
+            method_results.append((mlabel, None, None, None))
+            continue
+
+        Sxx_median = np.nanmedian(np.stack(specs, axis=0), axis=0)  # (n_freq, n_time)
+
+        # Normalize
+        bl_mask = (t_ms_plot >= baseline_win[0]) & (t_ms_plot <= baseline_win[1])
+        if normalize_method == 'zscore':
+            Sxx_norm = zscore_normalize_spectrogram(Sxx_median, baseline_mask=bl_mask)
+        elif normalize_method == 'dB':
+            if bl_mask.any():
+                bl_power = np.nanmean(Sxx_median[:, bl_mask], axis=1, keepdims=True)
+                bl_power[bl_power < 1e-20] = 1e-20
+                Sxx_norm = 10 * np.log10(Sxx_median / bl_power)
+            else:
+                Sxx_norm = Sxx_median.copy()
+        else:
+            Sxx_norm = Sxx_median.copy()
+
+        print(f"done ({len(specs)}/{len(region_traces)} valid)")
+        method_results.append((mlabel, Sxx_norm, f_out_saved, t_ms_plot))
+
+    # Filter out failed methods
+    valid_results = [(lbl, sxx, f, t) for lbl, sxx, f, t in method_results if sxx is not None]
+    if not valid_results:
+        print("  [Skip] All methods failed.")
+        return
+
+    # --- Compute mean LFP trace for reference ---
+    mean_lfp = np.nanmean(np.stack(region_traces, axis=0), axis=0)  # (n_time,)
+    # Trim to display time range
+    t_display_mask = (t_ms_arr >= time_range[0]) & (t_ms_arr <= time_range[1])
+    t_display = t_ms_arr[t_display_mask]
+    mean_lfp_display = mean_lfp[t_display_mask]
+
+    # --- Build resolution indicator: temporal resolution at each frequency ---
+    # For Morlet: sigma_t = n_cycles / (2*pi*f) -> FWHM ~ 2.35*sigma_t
+    # This shows HOW MUCH temporal smearing each method has
+    def get_temporal_resolution_ms(method_cfg, freqs):
+        method = method_cfg.get('method', 'morlet')
+        freqs = np.asarray(freqs)
+        freqs = freqs[freqs > 0]
+        if method == 'morlet':
+            nc = method_cfg.get('n_cycles', 7)
+            sigma_t = nc / (2 * np.pi * freqs)
+            return freqs, sigma_t * 2.35 * 1000  # FWHM in ms
+        elif method == 'morlet_adaptive':
+            nc_lo = method_cfg.get('n_cycles_low', 3)
+            nc_hi = method_cfg.get('n_cycles_high', 7)
+            f_lo_max = method_cfg.get('freq_low_max', 8)
+            f_hi_min = method_cfg.get('freq_high_min', 30)
+            nc_arr = np.where(
+                freqs <= f_lo_max, nc_lo,
+                np.where(freqs >= f_hi_min, nc_hi,
+                         nc_lo + (freqs - f_lo_max) / (f_hi_min - f_lo_max) * (nc_hi - nc_lo))
+            )
+            sigma_t = nc_arr / (2 * np.pi * freqs)
+            return freqs, sigma_t * 2.35 * 1000
+        elif method == 'stft':
+            win_ms = method_cfg.get('window_ms', 200)
+            return freqs, np.full(len(freqs), win_ms)
+        elif method == 'paul':
+            m = method_cfg.get('order', 4)
+            omega_0 = 2 * (m + 1)
+            scale = omega_0 / (2 * np.pi * freqs)
+            # Paul wavelet effective duration approx: 2*sqrt(m+0.5)/(2*pi) / freq * 1000
+            return freqs, (2 * np.sqrt(m + 0.5) / (2 * np.pi * freqs)) * 1000
+        return freqs, np.full(len(freqs), np.nan)
+
+    # --- Plot ---
+    n_methods = len(valid_results)
+    vmin = cfg.get('vmin', -3)
+    vmax = cfg.get('vmax', 3)
+    cmap = cfg.get('cmap', 'jet')
+
+    # Figure layout: 3 rows per method column
+    # Row 0: mean LFP trace (shared, top)
+    # Row 1: spectrogram
+    # Row 2: temporal resolution curve
+    fig_height = 3 + 4 * n_methods  # Fallback if stacking rows
+
+    # Better: use a grid with shared top row
+    fig = plt.figure(figsize=(4 * n_methods, 9), dpi=120)
+    gs = fig.add_gridspec(
+        3, n_methods,
+        height_ratios=[1, 4, 1.5],
+        hspace=0.45,
+        wspace=0.35,
+    )
+
+    fig.suptitle(
+        f"Wavelet Method Comparison\n"
+        f"{session_id} | {region_name} | "
+        f"{len(region_traces)} trial/ch pairs | {normalize_method} norm",
+        fontsize=11, fontweight='bold', y=0.98,
+    )
+
+    for col_idx, (mlabel, Sxx_norm, f_out, t_ms_plot) in enumerate(valid_results):
+        # --- Row 0: mean LFP reference ---
+        ax_lfp = fig.add_subplot(gs[0, col_idx])
+        ax_lfp.plot(t_display, mean_lfp_display, color='#333333', lw=0.8)
+        ax_lfp.axvline(0, color='red', ls='--', lw=1, alpha=0.8)
+        ax_lfp.axvspan(0, 100, color='red', alpha=0.08)
+        ax_lfp.set_xlim(time_range)
+        ax_lfp.set_title(mlabel, fontsize=9, fontweight='bold')
+        ax_lfp.set_xlabel('')
+        ax_lfp.set_xticklabels([])
+        if col_idx == 0:
+            ax_lfp.set_ylabel('LFP (µV)', fontsize=7)
+        ax_lfp.tick_params(labelsize=7)
+        ax_lfp.grid(True, alpha=0.2)
+
+        # --- Row 1: Spectrogram ---
+        ax_spec = fig.add_subplot(gs[1, col_idx])
+
+        # Trim to display time range
+        t_disp_mask = (t_ms_plot >= time_range[0]) & (t_ms_plot <= time_range[1])
+        t_disp = t_ms_plot[t_disp_mask]
+        Sxx_disp = Sxx_norm[:, t_disp_mask]
+
+        # Trim frequency
+        f_mask = (f_out >= f_min) & (f_out <= f_max)
+        f_disp = f_out[f_mask]
+        Sxx_disp = Sxx_disp[f_mask, :]
+
+        if t_disp.size > 0 and f_disp.size > 0:
+            im = ax_spec.imshow(
+                Sxx_disp,
+                aspect='auto',
+                origin='lower',
+                extent=[t_disp[0], t_disp[-1], f_disp[0], f_disp[-1]],
+                vmin=vmin, vmax=vmax,
+                cmap=cmap,
+                interpolation='nearest',
+            )
+            plt.colorbar(im, ax=ax_spec, shrink=0.8, pad=0.02, label=normalize_method)
+
+        ax_spec.axvline(0, color='white', ls='--', lw=1, alpha=0.9)
+        ax_spec.set_xlim(time_range)
+        ax_spec.set_ylim(f_min, f_max)
+        ax_spec.set_xlabel('Time re. stim onset (ms)', fontsize=7)
+        if col_idx == 0:
+            ax_spec.set_ylabel('Frequency (Hz)', fontsize=7)
+        ax_spec.tick_params(labelsize=7)
+
+        # Mark notch regions
+        notch_regions = ANALYSIS_CONFIG.get('notch_regions', [(55, 65), (115, 125)])
+        for nlo, nhi in notch_regions:
+            if nlo < f_max and nhi > f_min:
+                ax_spec.axhspan(max(nlo, f_min), min(nhi, f_max),
+                                color='gray', alpha=0.3, zorder=5)
+
+        # --- Row 2: Temporal resolution ---
+        ax_res = fig.add_subplot(gs[2, col_idx])
+        method_cfg_entry = methods[col_idx] if col_idx < len(methods) else {}
+        res_freqs, res_ms = get_temporal_resolution_ms(method_cfg_entry, f_disp)
+        if res_freqs is not None and len(res_ms) > 0:
+            ax_res.plot(res_ms, res_freqs, color='navy', lw=1.5)
+            ax_res.set_xlabel('Temporal resolution\n(FWHM, ms)', fontsize=7)
+            if col_idx == 0:
+                ax_res.set_ylabel('Freq (Hz)', fontsize=7)
+            ax_res.set_ylim(f_min, f_max)
+            ax_res.grid(True, alpha=0.2)
+            ax_res.tick_params(labelsize=7)
+            # Shade region > 100ms (larger than typical stim window) in red
+            ax_res.axvline(100, color='red', ls=':', lw=1, alpha=0.6, label='100 ms')
+            ax_res.legend(fontsize=6, loc='upper right')
+
+    # --- Save ---
+    out_dir = fig_dir / cfg.get('output_subdir', 'wavelet_comparison')
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"wavelet_comparison__{session_id}__{region_name}__{normalize_method}.png"
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"\n  Saved wavelet comparison -> {out_path}")
 
 
 # =============================================================================
@@ -1573,7 +2595,7 @@ def generate_per_ua_spectrograms(data, session_id, fig_dir, groups, fs=1000,
     # Extract condition name
     br_match = re.search(r'_(\d{3})(?:_|$|\.)', session_id)
     target_match = re.search(r'target_([AB])$', session_id, re.IGNORECASE)
-    target_suffix = f"_target_{target_match.group(1).upper()}" if target_match else ""
+    target_suffix = f"_{target_match.group(1).upper()}" if target_match else ""
 
     if br_match:
         br_idx = int(br_match.group(1))
@@ -1901,7 +2923,8 @@ def _plot_spectrogram_grid(all_spectrograms, grid_elec, elec_to_idx, n_ch,
 
 def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, fs=1000,
                                              ua_ids_1based=None, nsp_to_elec=None,
-                                             region_grids=None, elec_to_idx=None):
+                                             region_grids=None, elec_to_idx=None,
+                                             control_median_baseline_norm=None):
     """
     Generate one 4-panel figure per session.
 
@@ -1927,18 +2950,11 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
         print("    [Skip] Need electrode mapping for per-UA array median spectrogram")
         return None
 
-    n_trials, n_ch, n_time = bb_full.shape
-
     # Spectrogram settings
     spec_cfg = PLOT_CONFIG.get('spectrogram', {})
-    freq_min = spec_cfg.get('freq_min', 1)
-    freq_max = spec_cfg.get('freq_max', 120)
     freq_step = spec_cfg.get('freq_step', 1)
 
-    foi = get_foi_with_notch_gaps(freq_min, freq_max, freq_step)
-
     normalize_method = spec_cfg.get('normalize', 'zscore')
-    n_cycles = spec_cfg.get('wavelet_cycles', 5)
     baseline_win = ANALYSIS_CONFIG['baseline_window']
 
     # Output directory
@@ -1947,7 +2963,7 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
     # Same condition naming logic as generate_per_ua_spectrograms()
     br_match = re.search(r'_(\d{3})(?:_|$|\.)', session_id)
     target_match = re.search(r'target_([AB])$', session_id, re.IGNORECASE)
-    target_suffix = f"_target_{target_match.group(1).upper()}" if target_match else ""
+    target_suffix = f"_{target_match.group(1).upper()}" if target_match else ""
 
     if br_match:
         br_idx = int(br_match.group(1))
@@ -1982,77 +2998,27 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
         vmax = spec_cfg.get('vmax_uV2', None)
         cbar_label = 'Power (µV²)'
 
-    # Store median spectrogram for each region
-    region_specs = {}
-
     print("      Computing array-level median spectrograms across trials and channels...")
 
-    for grp_idxs, grp_name in groups:
-        region_name = grp_name.split(' (')[0]
-        grid_elec = region_grids.get(region_name)
+    region_specs_raw = compute_array_median_raw_spectrograms(
+        data=data,
+        groups=groups,
+        fs=fs,
+        region_grids=region_grids,
+        elec_to_idx=elec_to_idx,
+    )
 
-        if grid_elec is None:
-            print(f"      [Skip] No grid for region {region_name}")
-            continue
+    if not region_specs_raw:
+        print("    [Skip] No valid raw array-level median spectrograms were computed")
+        return None
 
-        all_region_spectrograms = []
-        t_spec_ms_saved = None
-        f_out_saved = None
-        n_valid_channels = 0
-        n_valid_trial_channel_pairs = 0
+    region_specs = {}
 
-        # Loop through electrodes in the 8x8 grid for this region
-        for row in range(8):
-            for col in range(8):
-                elec_id = int(grid_elec[row, col])
-                data_idx = elec_to_idx.get(elec_id, None)
+    for region_name, raw_spec in region_specs_raw.items():
+        Sxx_region_median_raw = raw_spec['Sxx']
+        t_spec_ms_saved = raw_spec['t_ms']
 
-                if data_idx is None or data_idx >= n_ch:
-                    continue
-
-                channel_had_valid_trial = False
-
-                # Loop through all trials for this channel/electrode
-                for trial_idx in range(n_trials):
-                    trace = bb_full[trial_idx, data_idx, :]
-
-                    if np.all(np.isnan(trace)) or np.nanstd(trace) < 1e-10:
-                        continue
-
-                    Sxx, f_out, t_out = compute_wavelet_spectrogram(
-                        trace,
-                        fs,
-                        foi=foi,
-                        baseline_window=None,
-                        t_ms=t_ms,
-                        n_cycles=n_cycles,
-                        normalize=False
-                    )
-
-                    if Sxx is None:
-                        continue
-
-                    all_region_spectrograms.append(Sxx)
-                    n_valid_trial_channel_pairs += 1
-                    channel_had_valid_trial = True
-
-                    if t_spec_ms_saved is None:
-                        t_spec_ms_saved = t_out * 1000 + t_ms[0]
-                        f_out_saved = f_out
-
-                if channel_had_valid_trial:
-                    n_valid_channels += 1
-
-        if not all_region_spectrograms:
-            print(f"      [Skip] No valid spectrograms for array-level median: {region_name}")
-            continue
-
-        # Shape: (n_trial_channel_pairs, n_freq, n_time)
-        stacked = np.stack(all_region_spectrograms, axis=0)
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            Sxx_region_median = np.nanmedian(stacked, axis=0)
+        Sxx_region_median = Sxx_region_median_raw.copy()
 
         # Normalize AFTER taking the median
         if normalize_method == 'zscore':
@@ -2060,9 +3026,10 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
                 (t_spec_ms_saved >= baseline_win[0]) &
                 (t_spec_ms_saved <= baseline_win[1])
             )
+
             Sxx_region_median = zscore_normalize_spectrogram(
                 Sxx_region_median,
-                baseline_mask=bl_mask
+                baseline_mask=bl_mask,
             )
 
         elif normalize_method == 'dB':
@@ -2070,17 +3037,22 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
                 (t_spec_ms_saved >= baseline_win[0]) &
                 (t_spec_ms_saved <= baseline_win[1])
             )
+
             if bl_mask.any():
-                baseline_power = np.nanmean(Sxx_region_median[:, bl_mask], axis=1, keepdims=True)
+                baseline_power = np.nanmean(
+                    Sxx_region_median[:, bl_mask],
+                    axis=1,
+                    keepdims=True,
+                )
                 baseline_power[baseline_power < 1e-20] = 1e-20
-                Sxx_region_median = 10 * np.log10(Sxx_region_median / baseline_power)
+
+                Sxx_region_median = 10 * np.log10(
+                    Sxx_region_median / baseline_power
+                )
 
         region_specs[region_name] = {
+            **raw_spec,
             'Sxx': Sxx_region_median,
-            'f': f_out_saved,
-            't_ms': t_spec_ms_saved,
-            'n_valid_channels': n_valid_channels,
-            'n_valid_trial_channel_pairs': n_valid_trial_channel_pairs,
         }
 
     if not region_specs:
@@ -2194,7 +3166,7 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
             fontweight='bold'
         )
 
-        ax.set_xlabel('Time relative to stim onset (ms)')
+        ax.set_xlabel('Time relative to event onset (ms)')
         ax.set_ylabel('Frequency (Hz)')
 
         ax.tick_params(axis='both', labelsize=9)
@@ -2221,156 +3193,117 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
 
     print(f"    Saved array-level median spectrogram -> {out_path.relative_to(fig_dir)}")
 
-    return out_path
+    if control_median_baseline_norm is not None:
+        out_path_ctrl = condition_dir / "array_median_across_trials_and_channels_CONTROL_MEDIAN_BASELINE_NORM.png"
 
-# =============================================================================
-# TRAVELING WAVE ANALYSIS
-# =============================================================================
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharex=True, sharey=True)
+        axes = axes.flatten()
 
-def compute_instantaneous_phase(trace, fs, freq_center, freq_bandwidth=3):
-    """
-    Compute instantaneous phase for a single trace.
-    """
-    # Bandpass filter
-    nyq = fs / 2
-    low = max(0.1, (freq_center - freq_bandwidth)) / nyq
-    high = min(0.99, (freq_center + freq_bandwidth) / nyq)
-    
-    try:
-        b, a = signal.butter(4, [low, high], btype='band')
-        filtered = signal.filtfilt(b, a, trace)
-        analytic = signal.hilbert(filtered)
-        phase = np.angle(analytic)
-        phase_unwrapped = np.unwrap(phase)
-        return phase_unwrapped
-    except:
-        return np.full_like(trace, np.nan)
+        fig.suptitle(
+            f'{session_id}\n'
+            f'Array-Level Median Spectrograms | Control Median-Baseline Normalized\n'
+            f'Morlet Wavelets | Notch regions skipped: {notch_str}',
+            fontsize=14,
+            fontweight='bold'
+        )
 
+        im_for_cbar = None
+        plot_idx = 0
 
-def fit_phase_plane(phase_grid, electrode_spacing_mm=0.4):
-    """
-    Fit a plane to phase values across the electrode grid.
-    """
-    # Create position grids
-    x_pos = np.arange(8) * electrode_spacing_mm  # mm
-    y_pos = np.arange(8) * electrode_spacing_mm  # mm
-    xx, yy = np.meshgrid(x_pos, y_pos)
-    
-    # Flatten
-    x_flat = xx.flatten()
-    y_flat = yy.flatten()
-    phase_flat = phase_grid.flatten()
-    
-    # Remove NaN
-    valid = ~np.isnan(phase_flat)
-    if valid.sum() < 4:
-        return np.nan, np.nan, np.nan, np.nan, np.nan
-    
-    x_valid = x_flat[valid]
-    y_valid = y_flat[valid]
-    phase_valid = phase_flat[valid]
-    
-    # Linear regression: phase = bx*x + by*y + c
-    A = np.column_stack([x_valid, y_valid, np.ones(len(x_valid))])
-    
-    try:
-        coeffs, residuals, rank, s = np.linalg.lstsq(A, phase_valid, rcond=None)
-        bx, by, c = coeffs
-        
-        # Predicted phase
-        phase_pred = A @ coeffs
-        
-        # PGD = Pearson correlation between predicted and actual
-        if np.std(phase_valid) > 0 and np.std(phase_pred) > 0:
-            pgd = np.corrcoef(phase_valid, phase_pred)[0, 1]
-        else:
-            pgd = 0
-        
-        # Direction (radians, 0 = rightward, π/2 = upward)
-        direction = np.arctan2(by, bx)
-        
-        # Gradient magnitude (rad/mm)
-        gradient_mag = np.sqrt(bx**2 + by**2)
-        
-        return bx, by, pgd, direction, gradient_mag
-        
-    except:
-        return np.nan, np.nan, np.nan, np.nan, np.nan
+        for grp_idxs, grp_name in groups:
+            region_name = grp_name.split(' (')[0]
 
+            if region_name not in region_specs_raw:
+                continue
+            if region_name not in control_median_baseline_norm:
+                continue
+            if plot_idx >= len(axes):
+                break
 
-def _save_phase_snapshots(results, grid_elec, elec_to_idx, session_id, 
-                          region_name, band_name, condition_dir, fig_dir):
-    """
-    Save phase snapshots during detected traveling waves.
-    """
-    safe_region = region_name.replace(' ', '_')
-    phase_matrix = results['phase_matrix']
-    t_ms = results['t_ms']
-    wave_epochs = results['wave_epochs']
-    
-    if len(wave_epochs) == 0:
-        return
-    
-    # Take up to 3 example waves
-    for wave_idx, epoch in enumerate(wave_epochs[:3]):
-        start_idx = epoch['start_idx']
-        end_idx = epoch['end_idx']
-        
-        # Sample up to 5 time points during the wave
-        n_snapshots = min(5, end_idx - start_idx + 1)
-        if n_snapshots < 1:
-            continue
-            
-        snapshot_indices = np.linspace(start_idx, end_idx, n_snapshots, dtype=int)
-        
-        fig, axes = plt.subplots(1, n_snapshots, figsize=(4 * n_snapshots, 4))
-        if n_snapshots == 1:
-            axes = [axes]
-        
-        fig.suptitle(f'{region_name} {band_name} Wave {wave_idx + 1}\n'
-                    f'Direction: {epoch["mean_direction_deg"]:.0f}°, '
-                    f'Speed: {epoch["mean_speed_m_s"]:.2f} m/s',
-                    fontsize=12, fontweight='bold')
-        
-        for ax_idx, t_idx in enumerate(snapshot_indices):
-            ax = axes[ax_idx]
-            phase_snapshot = phase_matrix[:, :, t_idx]
-            
-            # Normalize phase to [0, 2π] for visualization
-            phase_norm = np.mod(phase_snapshot, 2 * np.pi)
-            
-            im = ax.imshow(phase_norm, cmap='twilight', vmin=0, vmax=2*np.pi,
-                          origin='upper', aspect='equal')
-            
-            # Add arrow showing wave direction
-            direction = results['direction_rad'][t_idx]
-            if np.isfinite(direction):
-                arrow_len = 1.5
-                center_y, center_x = 3.5, 3.5
-                dx = arrow_len * np.cos(direction)
-                dy = arrow_len * np.sin(direction)
-                ax.arrow(center_x, center_y, dx, dy, head_width=0.4, 
-                        head_length=0.2, fc='white', ec='black', lw=2)
-            
-            ax.set_title(f't = {t_ms[t_idx]:.0f} ms', fontsize=10)
-            ax.set_xticks(range(8))
-            ax.set_yticks(range(8))
-            ax.set_xticklabels(range(1, 9), fontsize=7)
-            ax.set_yticklabels(range(1, 9), fontsize=7)
-        
-        # Colorbar
-        fig.subplots_adjust(right=0.92)
-        cbar_ax = fig.add_axes([0.94, 0.2, 0.02, 0.6])
-        cbar = fig.colorbar(im, cax=cbar_ax)
-        cbar.set_label('Phase (rad)', fontsize=10)
-        cbar.set_ticks([0, np.pi, 2*np.pi])
-        cbar.set_ticklabels(['0', 'π', '2π'])
-        
-        plt.tight_layout(rect=[0, 0, 0.92, 0.92])
-        
-        out_path = condition_dir / f"{safe_region}_{band_name}_wave{wave_idx+1}_phases.png"
-        plt.savefig(out_path, dpi=120, bbox_inches='tight')
+            ax = axes[plot_idx]
+            spec = region_specs_raw[region_name]
+
+            Sxx_raw = spec['Sxx']
+            mean_val = control_median_baseline_norm[region_name]['mean']
+            std_val = control_median_baseline_norm[region_name]['std']
+
+            Sxx_ctrl = (Sxx_raw - mean_val) / std_val
+
+            f_spec = spec['f']
+            t_spec_ms = spec['t_ms']
+
+            im = ax.pcolormesh(
+                t_spec_ms,
+                np.arange(len(f_spec)),
+                Sxx_ctrl,
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                shading='auto',
+                rasterized=True
+            )
+
+            im_for_cbar = im
+
+            ax.axvline(0, color='white', ls='--', lw=1.2, alpha=0.9)
+            ax.axvline(100, color='white', ls=':', lw=1.0, alpha=0.7)
+
+            for notch_lo, notch_hi in notch_regions:
+                below_idx = np.where(f_spec < notch_lo)[0]
+                above_idx = np.where(f_spec > notch_hi)[0]
+                if len(below_idx) > 0 and len(above_idx) > 0:
+                    gap_y = below_idx[-1] + 0.5
+                    ax.axhline(gap_y, color='white', ls='-', lw=1.5, alpha=0.8)
+
+            tick_freqs = [1, 10, 20, 30, 40, 55, 65, 80, 100, 115]
+            tick_positions = []
+            tick_labels = []
+
+            for tf in tick_freqs:
+                if tf in f_spec:
+                    idx = np.where(f_spec == tf)[0][0]
+                    tick_positions.append(idx)
+                    tick_labels.append(str(tf))
+                else:
+                    idx = np.argmin(np.abs(f_spec - tf))
+                    if np.abs(f_spec[idx] - tf) <= freq_step:
+                        tick_positions.append(idx)
+                        tick_labels.append(str(int(f_spec[idx])))
+
+            ax.set_yticks(tick_positions)
+            ax.set_yticklabels(tick_labels)
+
+            ax.set_title(
+                f'{region_name}\n'
+                f'{spec["n_valid_channels"]} channels, '
+                f'{spec["n_valid_trial_channel_pairs"]} trial-channel spectra',
+                fontsize=11,
+                fontweight='bold'
+            )
+
+            ax.set_xlabel('Time relative to event onset (ms)')
+            ax.set_ylabel('Frequency (Hz)')
+            ax.tick_params(axis='both', labelsize=9)
+
+            plot_idx += 1
+
+        for idx in range(plot_idx, len(axes)):
+            axes[idx].axis('off')
+
+        if im_for_cbar is not None:
+            fig.subplots_adjust(right=0.88)
+            cbar_ax = fig.add_axes([0.90, 0.18, 0.02, 0.65])
+            cbar = fig.colorbar(im_for_cbar, cax=cbar_ax)
+            cbar.set_label('Power vs control median baseline (z)', fontsize=12)
+            cbar.ax.tick_params(labelsize=10)
+
+        plt.tight_layout(rect=[0, 0, 0.88, 0.92])
+        plt.savefig(out_path_ctrl, dpi=150, bbox_inches='tight')
         plt.close(fig)
+
+        print(f"    Saved control median-baseline normalized array-level median spectrogram -> {out_path_ctrl.relative_to(fig_dir)}")
+
+    return out_path
 
 
 # =============================================================================
@@ -2380,7 +3313,8 @@ def _save_phase_snapshots(results, grid_elec, elec_to_idx, session_id,
 def process_session(data, session_id, fig_dir, groups, fs=1000,
                     data_control=None, session_data_dict=None,
                     nsp_to_elec=None, elec_to_idx=None, region_grids=None,
-                    ua_ids_1based=None):
+                    ua_ids_1based=None, control_median_baseline_norm=None,
+                    control_spatial_baseline=None):
     """
     Run all enabled analyses for a session.
     """
@@ -2436,7 +3370,8 @@ def process_session(data, session_id, fig_dir, groups, fs=1000,
 
     # 4c. Per-UA array-level median spectrogram
     # Median across all trials and all channels/electrodes within each Utah array.
-    if FIGURE_CONFIG.get('generate_per_ua_array_median', False):
+    if (FIGURE_CONFIG.get('generate_per_ua_array_median', False) or
+            FIGURE_CONFIG.get('generate_control_median_baseline_norm_array_median', False)):
         if elec_to_idx is not None and region_grids is not None:
             print("  Generating per-UA array-level median spectrograms...")
             path = generate_per_ua_array_median_spectrogram(
@@ -2449,6 +3384,7 @@ def process_session(data, session_id, fig_dir, groups, fs=1000,
                 nsp_to_elec=nsp_to_elec,
                 region_grids=region_grids,
                 elec_to_idx=elec_to_idx,
+                control_median_baseline_norm=control_median_baseline_norm,
             )
             if path:
                 figure_paths.append(path)
@@ -2515,11 +3451,43 @@ def process_session(data, session_id, fig_dir, groups, fs=1000,
                         baseline_power[baseline_power < 1e-10] = 1e-10
                         band_dB = 10 * np.log10(envelope / baseline_power)
                     
-                    # Generate spatial heatmaps
+                    # Generate normal spatial heatmaps
                     if FIGURE_CONFIG.get('generate_spatial_heatmaps', True):
                         print("  Generating spatial heatmaps...")
-                        generate_spatial_heatmaps(band_dB, t_ms, ua_ids_1based, session_id,
-                                                  fig_dir, groups, elec_to_idx, region_grids)
+                        generate_spatial_heatmaps(
+                            band_dB,
+                            t_ms,
+                            ua_ids_1based,
+                            session_id,
+                            fig_dir,
+                            groups,
+                            elec_to_idx,
+                            region_grids
+                        )
+
+                    # Generate CONTROL-NORM spatial heatmaps
+                    if (FIGURE_CONFIG.get('generate_control_norm_spatial_heatmaps', False)
+                        and control_spatial_baseline is not None):
+
+                        if control_spatial_baseline.shape[1] == envelope.shape[1]:
+                            eps = 1e-12
+                            band_dB_control = 10 * np.log10(
+                                np.maximum(envelope, eps) / np.maximum(control_spatial_baseline, eps)
+                            )
+
+                            print("  Generating CONTROL-NORM spatial heatmaps...")
+                            generate_spatial_heatmaps(
+                                band_dB_control,
+                                t_ms,
+                                ua_ids_1based,
+                                session_id + "_CONTROL_NORM",
+                                fig_dir,
+                                groups,
+                                elec_to_idx,
+                                region_grids
+                            )
+                        else:
+                            print("    [Skip] Control spatial baseline channel mismatch")
                     
                     # Generate spatial GIF
                     if FIGURE_CONFIG.get('generate_spatial_gif', True):
@@ -2571,7 +3539,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
     print("\n--- Pass 1: Loading and organizing sessions ---")
     
     all_sessions = {}
-    control_data_by_target = {}  # target -> loaded data dict (e.g., 'A' -> data)
+    control_candidates_by_target = {}
     dose_response_cache = {}  # base_id -> {n_pulses: data}
     
     for npz_path in files:
@@ -2630,6 +3598,46 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 if pulse_match:
                     n_pulses = int(pulse_match.group(1))
                     is_control = (n_pulses == 0)
+                else:
+                    # Look up from aligned npz file matching this BR index to get stimulation duration
+                    br_match = re.search(r'_(\d{3})(?:_|$|\.)', session_id)
+                    if br_match:
+                        br_idx = int(br_match.group(1))
+                        try:
+                            import RCP_analysis.python.functions.config_loading as cfg
+                            import json
+                            aligned_files = list(cfg.ALIGNED_CKPT_ROOT.rglob(f"*__BR_{br_idx:03d}.npz"))
+                            if aligned_files:
+                                aln_data = np.load(aligned_files[0], allow_pickle=True)
+                                if 'align_meta' in aln_data:
+                                    meta_raw = aln_data['align_meta'].item()
+                                    meta = meta_raw if isinstance(meta_raw, dict) else json.loads(meta_raw)
+                                    stim_dur = float(meta.get('recording_stim_dur', 0.0))
+                                    if stim_dur > 0:
+                                        n_pulses = int(round(stim_dur / 2.5))
+                                        is_control = (n_pulses == 0)
+                        except Exception as e:
+                            print(f"    [Warn] Could not load stim duration from aligned file for BR {br_idx}: {e}")
+                        
+                        # Fallback to stim npz
+                        if n_pulses is None:
+                            try:
+                                import RCP_analysis as rcp
+                                import RCP_analysis.python.functions.config_loading as cfg
+                                stim_npz_path, _ = rcp.stim_npz_path_from_br_idx(br_idx, cfg.METADATA_CSV, cfg.NPRW_AUX_DATA)
+                                if stim_npz_path and stim_npz_path.exists():
+                                    stim = rcp.load_stim_detection(stim_npz_path)
+                                    block_bounds = stim.get("block_bounds_samples", [])
+                                    if len(block_bounds) > 0:
+                                        br2fs_intan = rcp.get_metadata_mapping(cfg.METADATA_ROOT / "br_to_intan_shifts.csv", 'br_idx', 'fs_intan')
+                                        fs_intan = float(br2fs_intan.get(br_idx, 30000.0))
+                                        block_durs = block_bounds[:, 1] - block_bounds[:, 0]
+                                        median_dur_samples = np.median(block_durs)
+                                        stim_dur_ms = median_dur_samples * 1000.0 / fs_intan
+                                        n_pulses = stim_dur_ms / 2.5
+                                        is_control = (n_pulses == 0)
+                            except Exception as e:
+                                pass
         
         # Extract base session ID (for dose-response grouping)
         base_id = re.sub(r'_\d+p(?:ulse)?s?(?:_|$)', '_', session_id, flags=re.IGNORECASE)
@@ -2662,15 +3670,22 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
         
         all_sessions[session_id] = session_info
         
-        # === CACHE CONTROL DATA BY TARGET ===
+        # === CACHE CONTROL CANDIDATES BY TARGET ===
         if is_control or n_pulses == 0:
-            if target is not None:
-                control_data_by_target[target] = data
-                print(f"    -> Control/Baseline for target {target}")
-            else:
-                # No target found - use as fallback for all
-                control_data_by_target['_default'] = data
-                print(f"    -> Control/Baseline (no target specified)")
+            target_key = target if target is not None else '_default'
+            n_trials = get_trial_count(data)
+
+            control_candidates_by_target.setdefault(target_key, []).append({
+                'data': data,
+                'session_id': session_id,
+                'n_trials': n_trials,
+                'fs': fs,
+                'groups': groups,
+                'elec_to_idx': elec_to_idx,
+                'region_grids': region_grids,
+            })
+
+            print(f"    -> Control/Baseline for target {target_key}, trials={n_trials}")
         else:
             print(f"    -> Stim session: {n_pulses if n_pulses else '?'} pulses, target {target}")
         
@@ -2680,6 +3695,40 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             dose_response_cache[dose_key] = {}
         if n_pulses is not None:
             dose_response_cache[dose_key][n_pulses] = data
+    
+
+    # =========================================================================
+    # SELECT BEST CONTROL PER TARGET
+    # =========================================================================
+    control_data_by_target = {}
+    control_median_baseline_norm_by_target = {}
+    control_spatial_baseline_by_target = {}
+
+    for target_key, candidates in control_candidates_by_target.items():
+        best = max(candidates, key=lambda x: x['n_trials'])
+
+        control_data_by_target[target_key] = best['data']
+
+        print(
+            f"  Best control for target {target_key}: "
+            f"{best['session_id']} ({best['n_trials']} trials)"
+        )
+
+        if FIGURE_CONFIG.get('generate_control_median_baseline_norm_array_median', False):
+            control_median_baseline_norm_by_target[target_key] = compute_control_median_baseline_norm(
+                best['data'],
+                best['groups'],
+                fs=best['fs'],
+                region_grids=best['region_grids'],
+                elec_to_idx=best['elec_to_idx'],
+            )
+
+        if FIGURE_CONFIG.get('generate_control_norm_spatial_heatmaps', False):
+            control_spatial_baseline_by_target[target_key] = compute_control_spatial_baseline(
+                best['data'],
+                fs=best['fs'],
+            )
+
     
     # =========================================================================
     # PASS 2: Process sessions (controls already loaded)
@@ -2693,6 +3742,21 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
     
     for session_id, info in all_sessions.items():
         target = info['target']
+
+        target_key = target if target is not None else '_default'
+
+        control_median_baseline_norm = control_median_baseline_norm_by_target.get(target_key)
+        if control_median_baseline_norm is None:
+            control_median_baseline_norm = control_median_baseline_norm_by_target.get('_default')
+
+        control_spatial_baseline = control_spatial_baseline_by_target.get(target_key)
+        if control_spatial_baseline is None:
+            control_spatial_baseline = control_spatial_baseline_by_target.get('_default')
+
+        if info['is_control']:
+            control_median_baseline_norm_for_session = None
+        else:
+            control_median_baseline_norm_for_session = control_median_baseline_norm
         
         # === GET CONTROL DATA FOR THIS SESSION'S TARGET ===
         data_control = None
@@ -2725,6 +3789,8 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             elec_to_idx=info['elec_to_idx'],
             region_grids=info['region_grids'],
             ua_ids_1based=info['ua_ids'],
+            control_median_baseline_norm=control_median_baseline_norm_for_session,
+            control_spatial_baseline=control_spatial_baseline,
         )
         
         processed_count += 1
@@ -2824,7 +3890,18 @@ if __name__ == "__main__":
     
     NPRW_FIG_DIR = cfg.OUT_BASE / "figures" / "NPRW_LFP"
     UA_FIG_DIR = cfg.OUT_BASE / "figures" / "UA_LFP"
-    
-    # Process both
-    process_directory(NPRW_LFP_DIR, NPRW_FIG_DIR, label="NPRW_Intan")
-    process_directory(UA_LFP_DIR, UA_FIG_DIR, label="Utah_Array")
+
+    # -------------------------------------------------------------------------
+    # WAVELET COMPARISON MODE
+    # If WAVELET_TEST_CONFIG['enabled'] is True, run the wavelet comparison
+    # instead of (or in addition to) the normal pipeline.
+    # Edit WAVELET_TEST_CONFIG at the top of this file to configure.
+    # -------------------------------------------------------------------------
+    if WAVELET_TEST_CONFIG.get('enabled', False):
+        print("\n[WAVELET TEST MODE ACTIVE]")
+        run_wavelet_comparison(NPRW_LFP_DIR, NPRW_FIG_DIR, label="NPRW_Intan")
+        run_wavelet_comparison(UA_LFP_DIR, UA_FIG_DIR, label="Utah_Array")
+    else:
+        # Normal pipeline
+        process_directory(NPRW_LFP_DIR, NPRW_FIG_DIR, label="NPRW_Intan")
+        process_directory(UA_LFP_DIR, UA_FIG_DIR, label="Utah_Array")
