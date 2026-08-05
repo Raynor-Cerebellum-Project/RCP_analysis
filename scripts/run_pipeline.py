@@ -73,9 +73,21 @@ SCRIPT_STATUS_COLUMNS = {
 
 
 def _update_script_status_for_session(data_root: str, session: str, status_column: str, value: str, ) -> None:
+    """_summary_
 
+    Args:
+        data_root (str): _description_
+        session (str): _description_
+        status_column (str): _description_
+        value (str): _description_
+
+    Raises:
+        FileNotFoundError: _description_
+        ValueError: _description_
+        KeyError: _description_
+        ValueError: _description_
+    """
     status_csv = Path(data_root) / "data_status_reaching.csv"
-
     if not status_csv.exists():
         raise FileNotFoundError(f"data_status_reaching.csv not found: {status_csv}")
 
@@ -121,7 +133,6 @@ def _update_script_status_for_session(data_root: str, session: str, status_colum
         writer.writerows(rows)
 
     print(f"[RAS] Updated {status_column} for session {target_session}: {value}")
-
 
 def _set_process_which_for_session(data_root: str, session: str) -> None:
     """
@@ -173,7 +184,6 @@ def _set_process_which_for_session(data_root: str, session: str) -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
-
 
 def _get_location_for_session(data_root: str, session: str) -> str:
     """
@@ -288,10 +298,7 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
                     )
 
             except subprocess.CalledProcessError as e:
-                print(
-                    f"[RAS: ERROR] Script {script} failed for "
-                    f"{session} with exit code {e.returncode}"
-                )
+                print(f"[RAS: ERROR] Script failed for {session} with exit code {e.returncode}")
 
                 # If this script has a corresponding CSV status column, write FAIL
                 if status_column is not None:
