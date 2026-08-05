@@ -45,6 +45,8 @@ except Exception:
 # SESSION SELECTION - EDIT THESE TO FILTER WHICH SESSIONS TO PROCESS
 # =============================================================================
 
+SESSION_FILTER = [17]
+# SESSION_FILTER = [1]
 SESSION_FILTER = [17, 16, 15, 1,]          # None = all, or list like [1, 2, 3]
 SESSION_ID_PATTERN = None      # None = all, or regex like r'.*control.*'
 
@@ -164,9 +166,24 @@ PLOT_CONFIG = {
     
     # Spectrogram settings
     'spectrogram': {
-        # Wavelet parameters (using Morlet wavelets - no external packages needed)
+        # TFR parameters
+        # Options:
+        #   'morlet'          = fixed-cycle Morlet
+        #   'morlet_adaptive' = frequency-adaptive Morlet
         'use_wavelet': True,
-        'wavelet_cycles': 5,                # Number of cycles (higher = better freq resolution)
+        'tfr_method': 'morlet_adaptive',
+
+        # Fixed Morlet fallback/default
+        'wavelet_cycles': 5,
+
+        # Adaptive Morlet settings
+        # <= adaptive_freq_low_max Hz uses adaptive_cycles_low
+        # >= adaptive_freq_high_min Hz uses adaptive_cycles_high
+        # Between them: cycles are linearly interpolated
+        'adaptive_cycles_low': 3,
+        'adaptive_cycles_high': 7,
+        'adaptive_freq_low_max': 15,
+        'adaptive_freq_high_min': 16,
         
         # Frequency settings
         'freq_min': 1,
@@ -176,8 +193,8 @@ PLOT_CONFIG = {
         # Display settings
         'cmap': 'jet', #viridis
         'normalize': 'zscore',              # 'zscore', 'dB', or 'raw'
-        'vmin_zscore': -1,                  # z-score limits
-        'vmax_zscore': 3,                   # z-score limits
+        'vmin_zscore': -6,                  # z-score limits
+        'vmax_zscore': 6,                   # z-score limits
         'vmin_uV2': 0,                      # For absolute power
         'vmax_uV2': None,                   # None = auto-scale to 95th percentile
         'vmin_db': -6,                      # For dB (if using relative)
@@ -199,7 +216,7 @@ PLOT_CONFIG = {
 # This is designed to diagnose temporal smearing from stimulation transients.
 
 WAVELET_TEST_CONFIG = {
-    'enabled': True,          # Set True to run wavelet comparison instead of normal pipeline
+    'enabled': False,          # Set True to run wavelet comparison instead of normal pipeline
 
     # --- Which region/array to test (must match a key in region_grids) ---
     # e.g. 'M1i', 'SMA', 'PMd', 'M1s', or None for first available
@@ -217,7 +234,7 @@ WAVELET_TEST_CONFIG = {
         # Low freq (<8 Hz): 3 cycles -> better time res; High freq (>30 Hz): 7 cycles
         {'label': 'Morlet adaptive', 'method': 'morlet_adaptive',
          'n_cycles_low': 3, 'n_cycles_high': 7,
-         'freq_low_max': 15, 'freq_high_min': 30},
+         'freq_low_max': 15, 'freq_high_min': 16},
         # STFT: uniform time-frequency resolution, no wavelet smearing
         {'label': 'STFT 250ms',  'method': 'stft', 'window_ms': 250},
         {'label': 'STFT 100ms',  'method': 'stft', 'window_ms': 100},
@@ -230,10 +247,10 @@ WAVELET_TEST_CONFIG = {
     'baseline_window': (-950, -650),  # ms, same as ANALYSIS_CONFIG default
 
     # --- Display ---
-    'time_range_ms': (-500, 500),   # Time range to display
-    'freq_range': (1, 60),          # Focus on low/mid freq where smearing is worst
-    'vmin': -1,
-    'vmax': 3,
+    'time_range_ms': (-950, 950),   # Time range to display
+    'freq_range': (8, 55),          # Focus on low/mid freq where smearing is worst
+    'vmin': -6,
+    'vmax': 6,
     'cmap': 'jet',
 
     # --- Output ---
@@ -465,15 +482,35 @@ def compute_array_median_raw_spectrograms(data, groups, fs=1000,
     freq_max = spec_cfg.get('freq_max', 120)
     freq_step = spec_cfg.get('freq_step', 1)
 
+    tfr_method = spec_cfg.get('tfr_method', 'morlet').lower()
+
     n_cycles = spec_cfg.get(
         'wavelet_cycles',
         ANALYSIS_CONFIG.get('wavelet_cycles', 7)
     )
 
+    adaptive_cycles_low = spec_cfg.get('adaptive_cycles_low', 3)
+    adaptive_cycles_high = spec_cfg.get('adaptive_cycles_high', 7)
+    adaptive_freq_low_max = spec_cfg.get('adaptive_freq_low_max', 15)
+    adaptive_freq_high_min = spec_cfg.get('adaptive_freq_high_min', 16)
+
+    if (
+        tfr_method == 'morlet_adaptive'
+        and adaptive_freq_high_min <= adaptive_freq_low_max
+    ):
+        print(
+            "    WARNING: adaptive_freq_high_min must be greater than "
+            "adaptive_freq_low_max. Expanding transition band automatically."
+        )
+        adaptive_freq_high_min = adaptive_freq_low_max + 15
+
     foi = get_foi_with_notch_gaps(freq_min, freq_max, freq_step)
 
+    # Adaptive Morlet uses CPU path unless/until Torch adaptive support is added.
+    # Torch GPU path supports fixed-cycle Morlet and adaptive Morlet.
     use_gpu = (
-        ANALYSIS_CONFIG.get('use_gpu_wavelet', False)
+        tfr_method in ('morlet', 'morlet_adaptive')
+        and ANALYSIS_CONFIG.get('use_gpu_wavelet', False)
         and ANALYSIS_CONFIG.get('gpu_backend', 'torch').lower() == 'torch'
         and TORCH_AVAILABLE
         and torch is not None
@@ -485,11 +522,31 @@ def compute_array_median_raw_spectrograms(data, groups, fs=1000,
     if use_gpu:
         try:
             gpu_name = torch.cuda.get_device_name(0)
-            print(f"    Torch GPU Morlet enabled: {gpu_name}, batch_size={gpu_batch_size}")
         except Exception:
-            print(f"    Torch GPU Morlet enabled, batch_size={gpu_batch_size}")
+            gpu_name = "CUDA"
+
+        if tfr_method == 'morlet_adaptive':
+            print(
+                f"    Torch GPU adaptive Morlet enabled: {gpu_name}, "
+                f"{adaptive_cycles_low}->{adaptive_cycles_high} cycles, "
+                f"{adaptive_freq_low_max}-{adaptive_freq_high_min} Hz transition, "
+                f"batch_size={gpu_batch_size}"
+            )
+        else:
+            print(
+                f"    Torch GPU fixed Morlet enabled: {gpu_name}, "
+                f"n_cycles={n_cycles}, batch_size={gpu_batch_size}"
+            )
     else:
-        print("    Torch GPU Morlet not enabled/available; using CPU Morlet.")
+        if tfr_method == 'morlet_adaptive':
+            print(
+                "    Adaptive Morlet enabled: "
+                f"{adaptive_cycles_low}->{adaptive_cycles_high} cycles, "
+                f"{adaptive_freq_low_max}-{adaptive_freq_high_min} Hz transition "
+                "(CPU path)"
+            )
+        else:
+            print("    Torch GPU Morlet not enabled/available; using CPU fixed Morlet.")
 
     region_specs_raw = {}
 
@@ -570,28 +627,41 @@ def compute_array_median_raw_spectrograms(data, groups, fs=1000,
 
         if use_gpu:
             try:
-                Sxx_all, f_out, t_out = compute_wavelet_spectrogram_batch_torch(
-                    traces_arr,
-                    fs=fs,
-                    foi=foi,
-                    n_cycles=n_cycles,
-                    batch_size=gpu_batch_size,
-                    device="cuda",
-                )
+                if tfr_method == 'morlet_adaptive':
+                    Sxx_all, f_out, t_out = compute_wavelet_spectrogram_batch_torch_adaptive(
+                        traces_arr,
+                        fs=fs,
+                        foi=foi,
+                        n_cycles_low=adaptive_cycles_low,
+                        n_cycles_high=adaptive_cycles_high,
+                        freq_low_max=adaptive_freq_low_max,
+                        freq_high_min=adaptive_freq_high_min,
+                        batch_size=gpu_batch_size,
+                        device="cuda",
+                    )
+                else:
+                    Sxx_all, f_out, t_out = compute_wavelet_spectrogram_batch_torch(
+                        traces_arr,
+                        fs=fs,
+                        foi=foi,
+                        n_cycles=n_cycles,
+                        batch_size=gpu_batch_size,
+                        device="cuda",
+                    )
 
                 Sxx_region_median_raw = np.nanmedian(Sxx_all, axis=0)
                 f_out_saved = f_out
                 t_spec_ms_saved = np.asarray(t_out) * 1000.0 + float(t_ms[0])
 
                 print(
-                    f"      {region_name}: GPU complete, "
+                    f"      {region_name}: GPU {tfr_method} complete, "
                     f"{n_valid_channels} channels, "
                     f"{n_valid_trial_channel_pairs} trial/channel pairs"
                 )
 
             except Exception as e:
-                print(f"      WARNING: Torch GPU Morlet failed for {region_name}: {e}")
-                print("      Falling back to CPU Morlet for this region.")
+                print(f"      WARNING: Torch GPU {tfr_method} failed for {region_name}: {e}")
+                print(f"      Falling back to CPU {tfr_method} for this region.")
                 Sxx_region_median_raw = None
 
                 if torch is not None and torch.cuda.is_available():
@@ -605,13 +675,31 @@ def compute_array_median_raw_spectrograms(data, groups, fs=1000,
             f_out_saved = None
             t_spec_ms_saved = None
 
+            if tfr_method == 'morlet_adaptive':
+                method_cfg = {
+                    'method': 'morlet_adaptive',
+                    'n_cycles_low': adaptive_cycles_low,
+                    'n_cycles_high': adaptive_cycles_high,
+                    'freq_low_max': adaptive_freq_low_max,
+                    'freq_high_min': adaptive_freq_high_min,
+                }
+            else:
+                method_cfg = {
+                    'method': 'morlet',
+                    'n_cycles': n_cycles,
+                }
+
             for trace in region_traces:
-                Sxx, f_out, t_out = compute_wavelet_spectrogram(
+                Sxx, f_out, t_out = compute_tfr_method(
                     trace,
-                    fs=fs,
+                    fs,
+                    method_cfg,
                     foi=foi,
-                    n_cycles=n_cycles,
+                    t_ms=t_ms,
                 )
+
+                if Sxx is None:
+                    continue
 
                 specs.append(Sxx)
 
@@ -627,7 +715,7 @@ def compute_array_median_raw_spectrograms(data, groups, fs=1000,
             Sxx_region_median_raw = np.nanmedian(stacked, axis=0)
 
             print(
-                f"      {region_name}: CPU complete, "
+                f"      {region_name}: CPU {tfr_method} complete, "
                 f"{n_valid_channels} channels, "
                 f"{n_valid_trial_channel_pairs} trial/channel pairs"
             )
@@ -686,6 +774,7 @@ def compute_control_median_baseline_norm(data, groups, fs=1000,
             'std': std_val,
             'foi': spec['f'],
             'baseline_window': baseline_win,
+            'tfr_method': PLOT_CONFIG.get('spectrogram', {}).get('tfr_method', 'morlet'),
             'n_valid_channels': spec['n_valid_channels'],
             'n_valid_trial_channel_pairs': spec['n_valid_trial_channel_pairs'],
         }
@@ -1019,6 +1108,161 @@ def compute_wavelet_spectrogram_batch_torch(traces, fs, foi=None, n_cycles=7, ba
 
     return Sxx_all, foi.astype(np.float32), t_out
 
+def compute_wavelet_spectrogram_batch_torch_adaptive(
+        traces, fs, foi=None,
+        n_cycles_low=3, n_cycles_high=7,
+        freq_low_max=15, freq_high_min=30,
+        batch_size=32, device=None):
+    """
+    GPU Torch adaptive Morlet spectrogram for a batch of traces.
+
+    Same output format as compute_wavelet_spectrogram_batch_torch(...), but
+    n_cycles changes by frequency:
+
+      freq <= freq_low_max   -> n_cycles_low
+      freq >= freq_high_min  -> n_cycles_high
+      between                -> linear interpolation
+    """
+
+    if torch is None:
+        raise RuntimeError("Torch is not available.")
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    device = torch.device(device)
+
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("Torch CUDA requested but not available.")
+
+    traces = np.asarray(traces)
+
+    if traces.ndim != 2:
+        raise ValueError(f"traces must be 2D, got shape {traces.shape}")
+
+    n_signals, n_time = traces.shape
+
+    if foi is None:
+        spec_cfg = PLOT_CONFIG.get('spectrogram', {})
+        freq_min = spec_cfg.get('freq_min', 1)
+        freq_max = spec_cfg.get('freq_max', 120)
+        freq_step = spec_cfg.get('freq_step', 1)
+        foi = get_foi_with_notch_gaps(freq_min, freq_max, freq_step)
+    else:
+        foi = np.asarray(foi, dtype=np.float32)
+
+    n_freqs = len(foi)
+    t_out = np.arange(n_time, dtype=np.float32) / float(fs)
+
+    if freq_high_min <= freq_low_max:
+        raise ValueError(
+            f"freq_high_min must be > freq_low_max for adaptive Morlet; "
+            f"got freq_low_max={freq_low_max}, freq_high_min={freq_high_min}"
+        )
+
+    # Precompute cycle count per frequency on CPU.
+    n_cycles_by_freq = np.empty(n_freqs, dtype=np.float32)
+
+    for fi, freq in enumerate(foi):
+        freq_float = float(freq)
+
+        if freq_float <= freq_low_max:
+            nc = float(n_cycles_low)
+        elif freq_float >= freq_high_min:
+            nc = float(n_cycles_high)
+        else:
+            frac = (freq_float - float(freq_low_max)) / (
+                float(freq_high_min) - float(freq_low_max)
+            )
+            nc = float(n_cycles_low) + frac * (
+                float(n_cycles_high) - float(n_cycles_low)
+            )
+
+        n_cycles_by_freq[fi] = nc
+
+    # Clean traces on CPU before GPU transfer.
+    cleaned = []
+
+    for i in range(n_signals):
+        xi = interpolate_nans_1d(traces[i])
+        if xi is None:
+            xi = np.zeros(n_time, dtype=np.float32)
+        cleaned.append(xi)
+
+    traces_clean = np.stack(cleaned, axis=0).astype(np.float32)
+
+    Sxx_all = np.empty((n_signals, n_freqs, n_time), dtype=np.float32)
+
+    for start in range(0, n_signals, batch_size):
+        stop = min(start + batch_size, n_signals)
+
+        x_np = traces_clean[start:stop]
+        x = torch.as_tensor(x_np, dtype=torch.float32, device=device)
+
+        this_batch = stop - start
+        Sxx_batch = torch.empty(
+            (this_batch, n_freqs, n_time),
+            dtype=torch.float32,
+            device=device
+        )
+
+        for fi, freq in enumerate(foi):
+            freq_float = float(freq)
+            nc = float(n_cycles_by_freq[fi])
+
+            if freq_float <= 0:
+                Sxx_batch[:, fi, :] = 0.0
+                continue
+
+            sigma_t = nc / (2 * np.pi * freq_float)
+            wavelet_duration = 4 * sigma_t
+            wavelet_samples = int(wavelet_duration * fs)
+
+            if wavelet_samples % 2 == 0:
+                wavelet_samples += 1
+
+            if wavelet_samples < 3:
+                wavelet_samples = 3
+
+            t_wavelet = (
+                torch.arange(wavelet_samples, device=device, dtype=torch.float32)
+                / float(fs)
+                - wavelet_duration / 2.0
+            )
+
+            gaussian = torch.exp(-(t_wavelet ** 2) / (2 * sigma_t ** 2))
+
+            phase = 2 * np.pi * freq_float * t_wavelet
+            complex_sinusoid = torch.exp(1j * phase)
+
+            wavelet = gaussian.to(torch.complex64) * complex_sinusoid.to(torch.complex64)
+
+            wavelet_norm = torch.sqrt(torch.sum(torch.abs(wavelet) ** 2))
+            wavelet = wavelet / wavelet_norm
+
+            conv_len = n_time + wavelet_samples - 1
+            n_fft = _next_power_of_two(conv_len)
+
+            x_fft = torch.fft.fft(x.to(torch.complex64), n=n_fft, dim=1)
+            w_fft = torch.fft.fft(wavelet, n=n_fft)
+
+            analytic_full = torch.fft.ifft(x_fft * w_fft[None, :], n=n_fft, dim=1)
+            analytic_full = analytic_full[:, :conv_len]
+
+            same_start = (wavelet_samples - 1) // 2
+            analytic_same = analytic_full[:, same_start:same_start + n_time]
+
+            power = torch.abs(analytic_same) ** 2
+            Sxx_batch[:, fi, :] = power.to(torch.float32)
+
+        Sxx_all[start:stop] = Sxx_batch.detach().cpu().numpy()
+
+        del x, Sxx_batch
+
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    return Sxx_all, foi.astype(np.float32), t_out
 
 # =============================================================================
 # ALTERNATIVE TFR METHODS FOR WAVELET COMPARISON
@@ -1259,35 +1503,35 @@ def run_wavelet_comparison(lfp_dir, fig_dir, label=""):
         print(f"  [Skip] No aligned LFP npz files found in {lfp_dir}")
         return
 
-    def _br_idx_from_lfp_file(path):
-        """
-        Extract BR/session index from aligned LFP npz filename.
+    # Apply the same session filtering logic used in process_directory(...)
+    files_filtered = []
 
-        Expected examples:
-            aligned_lfp__NRR_RW022_017_stim_reaches_target_target_A.npz
-            NRR_RW022_017_stim_reaches_target_target_A.npz
-        """
-        session_id = path.stem.replace("aligned_lfp__", "")
-        br_match = re.search(r'_(\d{3})(?:_|$|\.)', session_id)
-        if br_match:
-            return int(br_match.group(1))
-        return None
+    for npz_candidate in files:
+        session_candidate_id = npz_candidate.stem.replace("aligned_lfp__", "")
 
-    if SESSION_FILTER is not None:
-        session_filter_set = set(int(x) for x in SESSION_FILTER)
+        # Same SESSION_ID_PATTERN logic as process_directory(...)
+        if SESSION_ID_PATTERN is not None:
+            if not re.search(SESSION_ID_PATTERN, session_candidate_id, re.IGNORECASE):
+                continue
 
-        files_filtered = [
-            f for f in files
-            if _br_idx_from_lfp_file(f) in session_filter_set
-        ]
-    else:
-        files_filtered = files
+        # Same SESSION_FILTER logic as process_directory(...)
+        if SESSION_FILTER is not None:
+            br_match = re.search(r'_(\d{3})(?:_|$|\.)', session_candidate_id)
+            if br_match:
+                br_idx = int(br_match.group(1))
+                if br_idx not in SESSION_FILTER:
+                    continue
+
+        files_filtered.append(npz_candidate)
 
     if not files_filtered:
-        print(f"  [Skip] No aligned LFP npz files matched SESSION_FILTER={SESSION_FILTER}")
+        print(
+            f"  [Skip] No aligned LFP npz files matched "
+            f"SESSION_FILTER={SESSION_FILTER}, SESSION_ID_PATTERN={SESSION_ID_PATTERN}"
+        )
         return
 
-    # Prefer stim/non-control files within SESSION_FILTER.
+    # Prefer stim/non-control files after applying the same filter.
     non_control_files = [
         f for f in files_filtered
         if 'baseline' not in f.stem.lower()
@@ -1296,8 +1540,15 @@ def run_wavelet_comparison(lfp_dir, fig_dir, label=""):
 
     npz_path = non_control_files[0] if non_control_files else files_filtered[0]
 
-    br_idx = _br_idx_from_lfp_file(npz_path)
-    print(f"  Using SESSION_FILTER={SESSION_FILTER}; selected BR={br_idx}: {npz_path.name}")
+    selected_session_id = npz_path.stem.replace("aligned_lfp__", "")
+    selected_br_match = re.search(r'_(\d{3})(?:_|$|\.)', selected_session_id)
+    selected_br_idx = int(selected_br_match.group(1)) if selected_br_match else None
+
+    print(
+        f"  Applied standard session filters: "
+        f"SESSION_FILTER={SESSION_FILTER}, SESSION_ID_PATTERN={SESSION_ID_PATTERN}"
+    )
+    print(f"  Selected BR={selected_br_idx}: {npz_path.name}")
 
     session_id = npz_path.stem.replace('aligned_lfp__', '')
     print(f"  Session: {session_id}")
@@ -2815,11 +3066,23 @@ def _plot_spectrogram_grid(all_spectrograms, grid_elec, elec_to_idx, n_ch,
     
     # Update title to reflect normalization method
     norm_str = "Z-scored" if normalize_method == 'zscore' else normalize_method.upper()
+
+    tfr_method = spec_cfg.get('tfr_method', 'morlet').lower()
+    if tfr_method == 'morlet_adaptive':
+        tfr_label = (
+            f"Adaptive Morlet "
+            f"({spec_cfg.get('adaptive_cycles_low', 3)}-"
+            f"{spec_cfg.get('adaptive_cycles_high', 7)} cycles, "
+            f"{spec_cfg.get('adaptive_freq_low_max', 15)}-"
+            f"{spec_cfg.get('adaptive_freq_high_min', 30)} Hz transition)"
+        )
+    else:
+        tfr_label = f"Morlet Wavelets ({spec_cfg.get('wavelet_cycles', 5)} cycles)"
     
     fig.suptitle(f'{session_id} — {region_name}\n'
-                f'Time-Frequency Power ({trial_label}) | Morlet Wavelets | {norm_str}\n'
-                f'(Notch regions skipped: {notch_str})',
-                fontsize=16, fontweight='bold')
+            f'Time-Frequency Power ({trial_label}) | {tfr_label} | {norm_str}\n'
+            f'(Notch regions skipped: {notch_str})',
+            fontsize=16, fontweight='bold')
     
     im_for_cbar = None
     
@@ -3082,10 +3345,29 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
 
     norm_str = "Z-scored" if normalize_method == 'zscore' else normalize_method.upper()
 
+    tfr_method = spec_cfg.get('tfr_method', 'morlet').lower()
+
+    if tfr_method == 'morlet_adaptive':
+        adaptive_cycles_low = spec_cfg.get('adaptive_cycles_low', 3)
+        adaptive_cycles_high = spec_cfg.get('adaptive_cycles_high', 7)
+        adaptive_freq_low_max = spec_cfg.get('adaptive_freq_low_max', 15)
+        adaptive_freq_high_min = spec_cfg.get('adaptive_freq_high_min', 30)
+
+        if adaptive_freq_high_min <= adaptive_freq_low_max:
+            adaptive_freq_high_min = adaptive_freq_low_max + 15
+
+        tfr_label = (
+            f"Adaptive Morlet "
+            f"({adaptive_cycles_low}-{adaptive_cycles_high} cycles, "
+            f"{adaptive_freq_low_max}-{adaptive_freq_high_min} Hz transition)"
+        )
+    else:
+        tfr_label = f"Morlet Wavelets ({spec_cfg.get('wavelet_cycles', 5)} cycles)"
+
     fig.suptitle(
         f'{session_id}\n'
         f'Array-Level Median Spectrograms | Median Across All Trials and Channels\n'
-        f'Morlet Wavelets | {norm_str} | Notch regions skipped: {notch_str}',
+        f'{tfr_label} | {norm_str} | Notch regions skipped: {notch_str}',
         fontsize=14,
         fontweight='bold'
     )
@@ -3202,7 +3484,7 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
         fig.suptitle(
             f'{session_id}\n'
             f'Array-Level Median Spectrograms | Control Median-Baseline Normalized\n'
-            f'Morlet Wavelets | Notch regions skipped: {notch_str}',
+            f'{tfr_label} | Notch regions skipped: {notch_str}',
             fontsize=14,
             fontweight='bold'
         )
