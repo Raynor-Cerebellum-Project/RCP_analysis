@@ -87,6 +87,32 @@ from .python.functions.subspace_detector import (
 )
 
 
+from .python.functions.lfp_config import (
+    SESSION_FILTER,
+    SESSION_ID_PATTERN,
+    FIGURE_CONFIG,
+    TIME_WINDOWS,
+    ANALYSIS_CONFIG,
+    PLOT_CONFIG,
+    WAVELET_TEST_CONFIG,
+    TORCH_AVAILABLE,
+)
+
+from .python.functions.lfp_tfr import (
+    get_foi_with_notch_gaps,
+    mask_notch_regions,
+    zscore_normalize_spectrogram,
+    compute_wavelet_spectrogram,
+    compute_wavelet_spectrogram_batch_torch,
+    compute_wavelet_spectrogram_batch_torch_adaptive,
+    compute_morlet_adaptive_spectrogram,
+    compute_stft_spectrogram,
+    compute_multitaper_spectrogram,
+    compute_paul_wavelet_spectrogram,
+    compute_tfr_method,
+)
+
+
 __all__ = [
     # params
     "load_experiment_params",
@@ -110,7 +136,6 @@ __all__ = [
     "save_recording",
     
     "load_intan_aux", 
-    "load_br_intan_sync_ns5", 
     "load_behavior_npz",
     
     "median_across_trials",
@@ -165,4 +190,28 @@ __all__ = [
     
     # RSA
     "run_rsa",
+
+    # LFP config
+    "SESSION_FILTER",
+    "SESSION_ID_PATTERN",
+    "FIGURE_CONFIG",
+    "TIME_WINDOWS",
+    "ANALYSIS_CONFIG",
+    "PLOT_CONFIG",
+    "WAVELET_TEST_CONFIG",
+    "TORCH_AVAILABLE",
+
+    # TFR utils from lfp_tfr
+    "get_foi_with_notch_gaps",
+    "mask_notch_regions",
+    "zscore_normalize_spectrogram",
+    "compute_wavelet_spectrogram",
+    "compute_wavelet_spectrogram_batch_torch",
+    "compute_wavelet_spectrogram_batch_torch_adaptive",
+    "compute_morlet_adaptive_spectrogram",
+    "compute_stft_spectrogram",
+    "compute_multitaper_spectrogram",
+    "compute_paul_wavelet_spectrogram",
+    "compute_tfr_method",
+
 ]

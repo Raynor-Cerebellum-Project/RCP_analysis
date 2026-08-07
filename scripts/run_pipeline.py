@@ -47,6 +47,7 @@ SCRIPTS = [
     # "analysis_scripts/RSA_calculation.py",
     # "analysis_scripts/plot_complete_shaded_BT.py",
     # "analysis_scripts/plot_peri_stim_raster.py",
+    # "analysis_scripts/plot_stim_group_responses.py",
 
 
     # "analysis_scripts/analyze_lfp_bands.py",

@@ -23,6 +23,9 @@ import re
 import traceback
 from pathlib import Path
 from typing import Optional, Tuple, Dict, List
+import io
+import warnings
+import imageio
 
 import numpy as np
 import pandas as pd
@@ -76,7 +79,6 @@ ONSET_TIME_XLIM = (0, POST_ZERO_MS)  # ms
 CONTROL_BR_INDICES = [1]
 
 # Butterworth smoothing parameters
-SMOOTHING_METHOD = "butterworth"
 SMOOTHING_PARAMS = {
     "cutoff_hz": 8.0,
     "order": 4,
@@ -97,15 +99,35 @@ DETECTION_PARAMS = {
 }
 
 # Conditions used in selected statistical comparison
-COMPARE_CONDITIONS = [1, 12, 13, 14, 15, 16, 17]
+COMPARE_CONDITIONS = [1, 17]
 
 # Plot/save settings
 PLOT_EACH_CONDITION = True
 SAVE_FIGS = True
 SAVE_STATS = False
 
+GENERATE_DISTANCE_GIFS = True
+
+DISTANCE_GIF_CONFIG = {
+    "time_range_ms": (-500.0, 500.0),
+    "step_ms": 20.0,
+    "fps": 10,
+    "loop": 0,  # 0 = loop forever
+    "dpi": 100,
+    "figsize": (8, 5),
+    "ylim": (-0.1, 1.2),
+    "ci_alpha": 0.18,
+    "trail_alpha": 0.35,
+    "line_width": 2.2,
+    "marker_size": 5,
+    "interpolate": True,
+    "show_legend": False,
+    "show_condition_count": False,
+}
+
 RESULTS_ROOT = Path(PERI_ROOT).parents[1]
 SAVE_DIR = RESULTS_ROOT / "figures" / "plateau_analysis"
+GIF_DIR = SAVE_DIR / "gifs"
 
 PER_CONDITION_FIG_DIR = SAVE_DIR / "per_condition"
 COMPARISON_FIG_DIR = SAVE_DIR / "comparisons"
@@ -1935,6 +1957,413 @@ def analyze_selected_conditions(
 
 
 # =============================================================================
+# GIF generation: mean normalized distance ± 95% CI
+# =============================================================================
+
+def compute_mean_distance_ci_from_dist_norm(
+    dist_norm: np.ndarray,
+    aligned_time: Optional[np.ndarray] = None,
+) -> Optional[Dict[str, np.ndarray]]:
+    """
+    Compute mean normalized distance and 95% CI across trials.
+
+    Parameters
+    ----------
+    dist_norm:
+        Trial x time array of normalized distances.
+    aligned_time:
+        Time vector in ms. If None, sample indices are used.
+
+    Returns
+    -------
+    Dictionary containing:
+        time_ms, mean, ci_lower, ci_upper, ci95, n_valid
+    """
+
+    if not isinstance(dist_norm, np.ndarray):
+        return None
+
+    if dist_norm.ndim != 2:
+        return None
+
+    n_trials, n_timepoints = dist_norm.shape
+
+    if n_trials == 0 or n_timepoints == 0:
+        return None
+
+    if aligned_time is None:
+        time_ms = np.arange(n_timepoints, dtype=float)
+    else:
+        time_ms = np.asarray(aligned_time, dtype=float)
+
+    if time_ms.ndim != 1 or len(time_ms) != n_timepoints:
+        warnings.warn(
+            "aligned_time length does not match dist_norm time dimension. "
+            "Using sample indices instead."
+        )
+        time_ms = np.arange(n_timepoints, dtype=float)
+
+    with np.errstate(invalid="ignore"):
+        mean_dist = np.nanmean(dist_norm, axis=0)
+
+    n_valid = np.sum(~np.isnan(dist_norm), axis=0)
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        std_dist = np.nanstd(dist_norm, axis=0, ddof=1)
+        sem_dist = std_dist / np.sqrt(np.maximum(n_valid, 1))
+
+    t_crit = np.full(n_timepoints, np.nan, dtype=float)
+    valid_df = n_valid > 1
+
+    if np.any(valid_df):
+        t_crit[valid_df] = stats.t.ppf(0.975, df=n_valid[valid_df] - 1)
+
+    ci95 = t_crit * sem_dist
+    ci_lower = mean_dist - ci95
+    ci_upper = mean_dist + ci95
+
+    return {
+        "time_ms": time_ms,
+        "mean": mean_dist,
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+        "ci95": ci95,
+        "n_valid": n_valid,
+    }
+
+
+def interpolate_trace_to_grid(
+    source_time: np.ndarray,
+    source_values: np.ndarray,
+    target_time: np.ndarray,
+) -> np.ndarray:
+    """
+    Interpolate one trace onto a target time grid while preserving NaNs outside
+    the source time range.
+    """
+
+    source_time = np.asarray(source_time, dtype=float)
+    source_values = np.asarray(source_values, dtype=float)
+    target_time = np.asarray(target_time, dtype=float)
+
+    out = np.full_like(target_time, np.nan, dtype=float)
+
+    valid = np.isfinite(source_time) & np.isfinite(source_values)
+
+    if np.sum(valid) < 2:
+        return out
+
+    st = source_time[valid]
+    sv = source_values[valid]
+
+    sort_idx = np.argsort(st)
+    st = st[sort_idx]
+    sv = sv[sort_idx]
+
+    unique_time, unique_idx = np.unique(st, return_index=True)
+    unique_values = sv[unique_idx]
+
+    if len(unique_time) < 2:
+        return out
+
+    in_range = (target_time >= unique_time[0]) & (target_time <= unique_time[-1])
+    out[in_range] = np.interp(target_time[in_range], unique_time, unique_values)
+
+    return out
+
+
+def generate_mean_distance_ci_gif(
+    condition_data: Optional[List[Dict]],
+    target: str,
+    save_dir: Path,
+    config: Optional[Dict] = None,
+    cmap: str = "cool",
+    filename: Optional[str] = None,
+) -> Optional[Path]:
+    """
+    Generate a GIF of mean normalized distance ± 95% CI over time for one target.
+
+    Uses fixed axes and persistent Matplotlib objects where possible.
+    """
+
+    if condition_data is None or len(condition_data) == 0:
+        print(f"[gif] No condition data available for Target {target}; skipping.")
+        return None
+
+    cfg = DISTANCE_GIF_CONFIG.copy()
+
+    if config is not None:
+        cfg.update(config)
+
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    t_start, t_end = cfg.get("time_range_ms", (-500.0, 500.0))
+    step_ms = float(cfg.get("step_ms", 20.0))
+    fps = int(cfg.get("fps", 10))
+    loop = int(cfg.get("loop", 0))
+    frame_duration_sec = 1.0 / fps
+    dpi = int(cfg.get("dpi", 100))
+    figsize = cfg.get("figsize", (8, 5))
+    ylim = cfg.get("ylim", (-0.1, 1.2))
+    ci_alpha = float(cfg.get("ci_alpha", 0.18))
+    trail_alpha = float(cfg.get("trail_alpha", 0.35))
+    line_width = float(cfg.get("line_width", 2.2))
+    marker_size = float(cfg.get("marker_size", 5))
+    interpolate = bool(cfg.get("interpolate", True))
+    show_legend = bool(cfg.get("show_legend", True))
+    show_condition_count = bool(cfg.get("show_condition_count", True))
+
+    if step_ms <= 0:
+        raise ValueError("DISTANCE_GIF_CONFIG['step_ms'] must be greater than 0.")
+
+    frame_times = np.arange(t_start, t_end + step_ms, step_ms)
+
+    valid_conditions = []
+
+    for d in condition_data:
+        dist_norm = d.get("dist_norm", None)
+        aligned_time = d.get("aligned_time", None)
+
+        trace = compute_mean_distance_ci_from_dist_norm(
+            dist_norm=dist_norm,
+            aligned_time=aligned_time,
+        )
+
+        if trace is None:
+            continue
+
+        time_ms = trace["time_ms"]
+        mean_dist = trace["mean"]
+        ci_lower = trace["ci_lower"]
+        ci_upper = trace["ci_upper"]
+
+        in_window = (
+            np.isfinite(time_ms)
+            & (time_ms >= t_start)
+            & (time_ms <= t_end)
+        )
+
+        if np.sum(in_window) < 2:
+            continue
+
+        time_win = time_ms[in_window]
+        mean_win = mean_dist[in_window]
+        lower_win = ci_lower[in_window]
+        upper_win = ci_upper[in_window]
+
+        if interpolate:
+            plot_time = frame_times
+            plot_mean = interpolate_trace_to_grid(time_win, mean_win, frame_times)
+            plot_lower = interpolate_trace_to_grid(time_win, lower_win, frame_times)
+            plot_upper = interpolate_trace_to_grid(time_win, upper_win, frame_times)
+        else:
+            plot_time = time_win
+            plot_mean = mean_win
+            plot_lower = lower_win
+            plot_upper = upper_win
+
+        if np.sum(np.isfinite(plot_mean)) < 2:
+            continue
+
+        valid_conditions.append(
+            {
+                "label": d.get("label", f"C{d.get('cond_num', '?')}"),
+                "cond_num": d.get("cond_num", np.inf),
+                "onset_mean": d.get("mean", np.nan),
+                "n": d.get("n", None),
+                "time": plot_time,
+                "mean": plot_mean,
+                "ci_lower": plot_lower,
+                "ci_upper": plot_upper,
+            }
+        )
+
+    if len(valid_conditions) == 0:
+        print(f"[gif] No valid normalized-distance traces for Target {target}; skipping.")
+        return None
+
+    valid_conditions = sorted(valid_conditions, key=lambda x: x["cond_num"])
+
+    if filename is None:
+        filename = f"target_{target}_mean_normalized_distance_CI.gif"
+
+    out_path = save_dir / filename
+
+    onset_means = np.array([d["onset_mean"] for d in valid_conditions], dtype=float)
+
+    colormap = plt.colormaps.get_cmap(cmap)
+
+    if np.any(np.isfinite(onset_means)):
+        finite_means = onset_means[np.isfinite(onset_means)]
+        vmin = np.nanmin(finite_means)
+        vmax = np.nanmax(finite_means)
+
+        if np.isclose(vmin, vmax):
+            norm = Normalize(vmin=vmin - 1.0, vmax=vmax + 1.0)
+        else:
+            norm = Normalize(vmin=vmin, vmax=vmax)
+
+        colors = [
+            colormap(norm(m)) if np.isfinite(m)
+            else colormap(i / max(len(valid_conditions) - 1, 1))
+            for i, m in enumerate(onset_means)
+        ]
+    else:
+        colors = [
+            colormap(i / max(len(valid_conditions) - 1, 1))
+            for i in range(len(valid_conditions))
+        ]
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    ax.set_xlim(t_start, t_end)
+    ax.set_ylim(*ylim)
+    ax.set_xlabel("Time from stimulation onset (ms)")
+    ax.set_ylabel("Normalized distance")
+    ax.set_title(f"Target {target}: Mean Normalized Distance ± 95% CI")
+
+    ax.axhline(0, color="gray", linestyle=":", linewidth=1, alpha=0.8)
+    ax.axhline(1, color="gray", linestyle=":", linewidth=1, alpha=0.8)
+    ax.axvline(0, color="red", linestyle="--", linewidth=1.2, alpha=0.8, label="Stim onset")
+    ax.grid(True, alpha=0.25)
+
+    line_objects = []
+    marker_objects = []
+    ci_objects = []
+
+    for cond, color in zip(valid_conditions, colors):
+        line, = ax.plot(
+            [],
+            [],
+            color=color,
+            linewidth=line_width,
+            alpha=trail_alpha,
+            label=cond["label"],
+        )
+
+        marker, = ax.plot(
+            [],
+            [],
+            "o",
+            color=color,
+            markerfacecolor=color,
+            markeredgecolor="white",
+            markeredgewidth=0.6,
+            markersize=marker_size,
+            alpha=0.95,
+        )
+
+        line_objects.append(line)
+        marker_objects.append(marker)
+        ci_objects.append(None)
+
+    time_text = ax.text(
+        0.02,
+        0.95,
+        "",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=11,
+        bbox=dict(facecolor="white", edgecolor="none", alpha=0.75),
+    )
+
+    if show_condition_count:
+        ax.text(
+            0.02,
+            0.88,
+            f"{len(valid_conditions)} conditions",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=9,
+            bbox=dict(facecolor="white", edgecolor="none", alpha=0.65),
+        )
+
+    if show_legend:
+        ax.legend(
+            loc="lower right",
+            fontsize=8,
+            frameon=True,
+            framealpha=0.85,
+            ncol=2 if len(valid_conditions) > 5 else 1,
+        )
+
+    fig.tight_layout()
+
+    frames = []
+
+    print(
+        f"[gif] Generating Target {target} mean normalized distance GIF "
+        f"({len(frame_times)} frames)..."
+    )
+
+    for current_time in frame_times:
+        for i, old_ci in enumerate(ci_objects):
+            if old_ci is not None:
+                old_ci.remove()
+                ci_objects[i] = None
+
+        for i, cond in enumerate(valid_conditions):
+            t = cond["time"]
+            y = cond["mean"]
+            lo = cond["ci_lower"]
+            hi = cond["ci_upper"]
+
+            visible = np.isfinite(t) & np.isfinite(y) & (t <= current_time)
+
+            if np.sum(visible) < 1:
+                line_objects[i].set_data([], [])
+                marker_objects[i].set_data([], [])
+                continue
+
+            t_vis = t[visible]
+            y_vis = y[visible]
+
+            line_objects[i].set_data(t_vis, y_vis)
+            marker_objects[i].set_data([t_vis[-1]], [y_vis[-1]])
+
+            ci_visible = visible & np.isfinite(lo) & np.isfinite(hi)
+
+            if np.sum(ci_visible) >= 2:
+                ci_objects[i] = ax.fill_between(
+                    t[ci_visible],
+                    lo[ci_visible],
+                    hi[ci_visible],
+                    color=colors[i],
+                    alpha=ci_alpha,
+                    linewidth=0,
+                )
+
+        if current_time < 0:
+            time_label = f"t = {current_time:.0f} ms"
+        elif np.isclose(current_time, 0):
+            time_label = "t = 0 ms, stim onset"
+        else:
+            time_label = f"t = +{current_time:.0f} ms"
+
+        time_text.set_text(time_label)
+
+        fig.canvas.draw_idle()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=dpi)
+        buf.seek(0)
+        frames.append(imageio.v3.imread(buf))
+        buf.close()
+
+    imageio.mimsave(out_path, frames, duration=frame_duration_sec, loop=loop)
+
+    plt.close(fig)
+
+    print(f"[saved] {out_path}")
+
+    return out_path
+
+
+
+# =============================================================================
 # Optional export
 # =============================================================================
 
@@ -2040,6 +2469,36 @@ def main():
             COMPARISON_FIG_DIR / "target_A_all_conditions_plateau_onset_comparison.png",
         )
 
+    if GENERATE_DISTANCE_GIFS:
+        # All valid Target A conditions
+        generate_mean_distance_ci_gif(
+            target_a_condition_data,
+            target="A",
+            save_dir=GIF_DIR,
+            config=DISTANCE_GIF_CONFIG,
+            cmap="cool",
+            filename="target_A_mean_normalized_distance_CI.gif",
+        )
+
+        # Selected Target A conditions from COMPARE_CONDITIONS
+        if COMPARE_CONDITIONS:
+            target_a_compare_condition_data = _extract_condition_data_for_target(
+                all_results,
+                target="A",
+                pulse_width_ms=PULSE_WIDTH_MS,
+                min_reaches=3,
+                conditions_to_compare=COMPARE_CONDITIONS,
+            )
+
+            generate_mean_distance_ci_gif(
+                target_a_compare_condition_data,
+                target="A selected conditions",
+                save_dir=GIF_DIR,
+                config=DISTANCE_GIF_CONFIG,
+                cmap="cool",
+                filename="target_A_COMPARE_CONDITIONS_mean_normalized_distance_CI.gif",
+            )
+
     print("\n" + "=" * 60)
     print("TARGET B ANALYSIS")
     print("=" * 60)
@@ -2055,6 +2514,36 @@ def main():
             target_b_fig,
             COMPARISON_FIG_DIR / "target_B_all_conditions_plateau_onset_comparison.png",
         )
+
+    if GENERATE_DISTANCE_GIFS:
+        # All valid Target B conditions
+        generate_mean_distance_ci_gif(
+            target_b_condition_data,
+            target="B",
+            save_dir=GIF_DIR,
+            config=DISTANCE_GIF_CONFIG,
+            cmap="cool",
+            filename="target_B_mean_normalized_distance_CI.gif",
+        )
+
+        # Selected Target B conditions from COMPARE_CONDITIONS
+        if COMPARE_CONDITIONS:
+            target_b_compare_condition_data = _extract_condition_data_for_target(
+                all_results,
+                target="B",
+                pulse_width_ms=PULSE_WIDTH_MS,
+                min_reaches=3,
+                conditions_to_compare=COMPARE_CONDITIONS,
+            )
+
+            generate_mean_distance_ci_gif(
+                target_b_compare_condition_data,
+                target="B selected conditions",
+                save_dir=GIF_DIR,
+                config=DISTANCE_GIF_CONFIG,
+                cmap="cool",
+                filename="target_B_COMPARE_CONDITIONS_mean_normalized_distance_CI.gif",
+            )
 
     # -------------------------------------------------------------------------
     # Cell 21 equivalent: selected condition statistics
