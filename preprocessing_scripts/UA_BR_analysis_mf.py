@@ -651,7 +651,7 @@ def main():
                         ax.grid(True, alpha=0.3)
 
                         plt.tight_layout()
-                        diag_path = UA_CKPT_OUT.parent.parent / "figures" / f"artifact_alignment_br{br_idx:03d}.png"
+                        diag_path = UA_CKPT_OUT.parent.parent / "figures" / "artifact_alignment" / f"artifact_alignment_br{br_idx:03d}.png"
                         diag_path.parent.mkdir(parents=True, exist_ok=True)
                         plt.savefig(diag_path, dpi=120)
                         plt.close()
