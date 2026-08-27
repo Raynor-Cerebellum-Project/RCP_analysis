@@ -5,6 +5,7 @@ import socket
 import yaml
 import csv
 import os
+import json
 
 # Params model
 @dataclass
@@ -189,9 +190,31 @@ def load_experiment_params(
     pre_cfg = dict(cfg.get("preprocessing", {}) or {})
 
     # ensure process_only is a list[int]
-    po = pre_cfg.get("process_only", [])
+    # Priority:
+    #   1) RCP_PROCESS_ONLY environment variable
+    #   2) preprocessing.process_only from params.yaml
+    env_process_only = os.environ.get("RCP_PROCESS_ONLY")
+
+    if env_process_only is not None:
+        try:
+            po = json.loads(env_process_only)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                "RCP_PROCESS_ONLY must be valid JSON, e.g. '[]' or '[1, 2, 5]'. "
+                f"Got: {env_process_only!r}"
+            ) from e
+    else:
+        po = pre_cfg.get("process_only", [])
+
+    if po is None:
+        po = []
+
     if not isinstance(po, list):
-        raise TypeError("preprocessing.process_only must be a list (e.g. [1,2])")
+        raise TypeError(
+            "process_only must be a list, either from preprocessing.process_only "
+            "or RCP_PROCESS_ONLY, e.g. [] or [1, 2]."
+        )
+
     pre_cfg["process_only"] = [int(x) for x in po]
 
     # dataclass

@@ -10,6 +10,7 @@ import sys
 from datetime import datetime
 from RCP_analysis.python.functions.params_loading import load_experiment_params 
 import os
+import json
 
 SESSIONS_TO_RUN = [
     # "NRR_RW035",
@@ -17,7 +18,7 @@ SESSIONS_TO_RUN = [
     # "NRR_RW032",
     # "NRR_RW029",
     # "NRR_RW026",
-    "NRR_RW022",
+    # "NRR_RW022",
     # "NRR_RW019",
     # "NRR_RW018",
     # "NRR_RW017",
@@ -25,9 +26,11 @@ SESSIONS_TO_RUN = [
     # "NRR_RW015",
     # "NRR_RW014",
     # "NRR_RW013",
-    # "NRR_RW012",
+    "NRR_RW012",
     # "NRR_RW011",
 ]
+
+PROCESS_ONLY = []
 
 SCRIPTS = [
     # "preprocessing_scripts/OCR_frame_correction.py",
@@ -43,7 +46,7 @@ SCRIPTS = [
     ### RUN ^ inspect_kinematics_trajectories.py to check for remaining bad traces -> add bad traces to /config/manual_trial_remove.csv
     ### RERUN extract_peri_stim.py
 
-    # "analysis_scripts/plot_plateau_analysis.py",
+    "analysis_scripts/plot_plateau_analysis.py",
     # "analysis_scripts/RSA_calculation.py",
     # "analysis_scripts/plot_complete_shaded_BT.py",
     # "analysis_scripts/plot_peri_stim_raster.py",
@@ -51,7 +54,7 @@ SCRIPTS = [
 
 
     # "analysis_scripts/analyze_lfp_bands.py",
-    "scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py",
+    # "scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py",
     # "scripts/nikita_scripts/plotting_scripts/combine_UA_gifs.py",
 ]
 
@@ -265,8 +268,9 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
         env = os.environ.copy()
         env["RCP_SESSION"] = session
         env["RCP_LOCATION"] = location
+        env["RCP_PROCESS_ONLY"] = json.dumps(PROCESS_ONLY)
 
-        print(f"[RAS] Session context: RCP_SESSION={session}, RCP_LOCATION={location}")
+        print(f"[RAS] Session context: RCP_SESSION={session}, RCP_LOCATION={location}, RCP_PROCESS_ONLY={PROCESS_ONLY}")
 
         # Run all scripts for this session
         for script in SCRIPTS:
