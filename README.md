@@ -166,8 +166,8 @@ Analyzes reach kinematics (Duration, Peak Speed) comparing stimulation condition
 ## Other plots
 
 - RSA plots: `~/scripts/bryan_scripts/RSA_consistency/RSA_poststim_grouped_up.ipynb`
-<!-- - Plot raw traces with peaks labeled: `~/scripts/bryan_scripts/quick_plots/plot_HPF_traces_with_peaks.ipynb` -->
 - Dynamics: `~/scripts/bryan_scripts/dynamics/PoisLDS_NPRW_combined.ipynb`
+- Plot raw traces with peaks labeled: `~/scripts/bryan_scripts/quick_plots/plot_HPF_traces_with_peaks.ipynb`
 ---
 
 ## Intermediate outputs:
