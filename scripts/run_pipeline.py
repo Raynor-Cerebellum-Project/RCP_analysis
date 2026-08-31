@@ -26,8 +26,8 @@ SESSIONS_TO_RUN = [
     # "NRR_RW015",
     # "NRR_RW014",
     # "NRR_RW013",
-    "NRR_RW012",
-    # "NRR_RW011",
+    # "NRR_RW012",
+    "NRR_RW011",
 ]
 
 PROCESS_ONLY = []
@@ -41,12 +41,12 @@ SCRIPTS = [
     # "preprocessing_scripts/UA_BR_analysis_mf.py", 
     # "preprocessing_scripts/UA_BR_analysis_ssmf.py",
     # "preprocessing_scripts/make_aligned_npz_and_mat.py",
-    # "preprocessing_scripts/extract_peri_stim.py",
-    # "preprocessing_scripts/inspect_kinematics_trajectories.py",
+    "preprocessing_scripts/extract_peri_stim.py",
+    "preprocessing_scripts/inspect_kinematics_trajectories.py",
     ### RUN ^ inspect_kinematics_trajectories.py to check for remaining bad traces -> add bad traces to /config/manual_trial_remove.csv
     ### RERUN extract_peri_stim.py
 
-    "analysis_scripts/plot_plateau_analysis.py",
+    # "analysis_scripts/plot_plateau_analysis.py",
     # "analysis_scripts/RSA_calculation.py",
     # "analysis_scripts/plot_complete_shaded_BT.py",
     # "analysis_scripts/plot_peri_stim_raster.py",

@@ -111,6 +111,12 @@ def find_all_peristim_files() -> list:
     if continuous_dir.exists():
         for f in sorted(continuous_dir.glob("*.npz")):
             files.append((f, 'continuous_stim', 'continuous_stim'))
+
+    # At rest
+    at_rest_dir = PERI_ROOT / "at_rest"
+    if at_rest_dir.exists():
+        for f in sorted(at_rest_dir.glob("*.npz")):
+            files.append((f, 'at_rest', 'at_rest'))
     
     # # Legacy structure
     # for target in ['Target_A', 'Target_B']:
