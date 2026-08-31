@@ -72,12 +72,13 @@ Inputs:
 
 Output:
 1. `data/results/checkpoints/.../aligned.npz` files containing aligned spike times, behavioral traces, event timings, and metadata for each condition and target
-2. `data_status_reaching.csv` timestamps of when each step is ran
+2. `data/results/checkpoints/.../peristim_*.npz` files containing peri-stim tensors for each condition and target
+3. `data_status_reaching.csv` timestamps of when each step is ran
 
 ---
 # Steps of the pipeline
 ## Preprocessing
-1. Frame correction: `batch_scripts/OCR_frame_correction.py`
+1. Frame correction: `preprocessing/OCR_frame_correction.py`
 2. DeepLabCut 2-camera data alignment: `batch_scripts/align_dlc_two_cams_to_br.py`
 3. VOG to Blackrock (BR) alignment: `batch_scripts/align_VOG_to_br.py`
 4. NPRW preprocessing and spike detection (matched filter): `batch_scripts/NPRW_Intan_analysis_mf.py`
@@ -87,20 +88,20 @@ Output:
 7. Create aligned files `batch_scripts/make_aligned_npz_and_mat.py`
    - One file created per condition, per side
    - Output: `data/results/checkpoints/.../aligned_*.npz`
-
-## Analysis
-1. Extract peri-stim tensors based on event timing (IR or stim): `batch_scripts/extract_peri_stim.py`
+8. Extract peri-stim tensors based on event timing (IR or stim): `batch_scripts/extract_peri_stim.py`
    - Trial $\times$ Channels $\times$ Time Bins
    - Output: `data/results/checkpoints/.../peristim_*.npz`
-2. Output kinematic trajectories for manual inspection: `batch_scripts/inspect_kinematics_trajectories.py`
-3. Plateau analysis plots for manual inspection of kinematics: `batch_scripts/plot_plateau_analysis.py`
+9. Output kinematic trajectories for manual inspection: `batch_scripts/inspect_kinematics_trajectories.py`
+
+## Analysis
+1. Kinematics analysis: `batch_scripts/plot_plateau_analysis.py`
    - Rerun from `batch_scripts/extract_peri_stim.py` after curation
-4. Extract RSA tensors from correlating region of interests (ROI): `batch_scripts/RSA_calculation.py`
+2. Extract RSA tensors from correlating region of interests (ROI): `batch_scripts/RSA_calculation.py`
    - Trial $\times$ Trial correlation
    - ROI can be set in `config/params.yaml`
-5. Plot peri-stim firing rate plots: `analysis_scripts/plot_complete_shaded_BT.py`
+3. Plot peri-stim firing rate plots: `analysis_scripts/plot_complete_shaded_BT.py`
    - Gaussian smoother parameters can be set in `config/params.yaml`
-6. Plot peri-stim rasters: `analysis_scripts/plot_peri_stim_raster.py`
+4. Plot peri-stim rasters: `analysis_scripts/plot_peri_stim_raster.py`
 
 # Artifact correction schematic
 ![alt text](https://github.com/Raynor-Cerebellum-Project/RCP_analysis/blob/main/docs/utah_array_analysis_and_artifact_correction.png "artifact correction schematic")
