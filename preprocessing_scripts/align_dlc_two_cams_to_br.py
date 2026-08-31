@@ -1,3 +1,9 @@
+import sys
+import RCP_analysis as rcp
+from RCP_analysis.python.functions.config_loading import *
+import numpy as np
+import pandas as pd
+
 """ 
     This script aligns two camera perspectives to the Blackrock recording. It scans through all paired cam-0 and cam-1 .csv files and outputs aligned timing based on frame mappings identified from OCR_frame_mapping_BT_edit.py script.
     The alignment is based on the camera sync pulse (.ns5 files), may need to double-check which channel the sync pulse is at (camera_sync_ch in params.yaml).
@@ -102,13 +108,30 @@ def main():
         # If nothing weird with mapping vid_idx to br path, start outputting
         if ns5_path is not None:
             try:
-                frames_corrected = max(len(aligned_dlc0.index), len(aligned_dlc1.index)) # use the max of the two as length
-                ns5_samples = rcp.frame2sample_br_ns5_sync(frames_corrected, ns5_path,
-                                          sync_chan=str(CAMERA_SYNC_CH))
-                aligned_dlc0 = aligned_dlc0.reindex(range(frames_corrected)); aligned_dlc1 = aligned_dlc1.reindex(range(frames_corrected))
-                aligned_dlc0.insert(0, "ns5_sample", ns5_samples);   aligned_dlc1.insert(0, "ns5_sample", ns5_samples)
-                # Put in max length vector (What if mismatch?)
+                frames_corrected = max(len(aligned_dlc0.index), len(aligned_dlc1.index))
+
+                ns5_samples = rcp.frame2sample_br_ns5_sync(
+                    frames_corrected,
+                    ns5_path,
+                    sync_chan=str(CAMERA_SYNC_CH)
+                )
+
+                n_use = len(ns5_samples)
+
+                if n_use < frames_corrected:
+                    print(
+                        f"[warn] {cond}: using only {n_use}/{frames_corrected} frames "
+                        f"because NS5 sync has fewer pulses."
+                    )
+
+                aligned_dlc0 = aligned_dlc0.reindex(range(frames_corrected)).iloc[:n_use].copy()
+                aligned_dlc1 = aligned_dlc1.reindex(range(frames_corrected)).iloc[:n_use].copy()
+
+                aligned_dlc0.insert(0, "ns5_sample", ns5_samples)
+                aligned_dlc1.insert(0, "ns5_sample", ns5_samples)
+
                 print(f"[map] Attached NS5 time from {ns5_path.name}")
+
             except Exception as e:
                 print(f"[warn] Could not attach NS5 time for {cond}: {e}")
 

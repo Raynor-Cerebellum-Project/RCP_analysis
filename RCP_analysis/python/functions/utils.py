@@ -297,9 +297,11 @@ def frame2sample_br_ns5_sync(
 
     edges = np.asarray(edges, dtype=np.int32)
     if edges.size < n_corrected:
-        raise RuntimeError(
-            f"NS5 rising edges ({edges.size}) fewer than corrected frames ({n_corrected})."
+        print(
+            f"[warn] NS5 rising edges ({edges.size}) fewer than corrected frames ({n_corrected}); "
+            f"truncating to {edges.size} frames."
         )
+        return edges
 
     samples = edges[:n_corrected]
     return samples
