@@ -1,25 +1,15 @@
+"""
+    This script aligns VOG to the Blackrock recording. It attaches BR ns2 sample times to VOG CSVs, may need to double-check which channel the sync pulse is at (VOG_sync_ch in params.yaml).
+    Input:
+        VOG .csv files
+    Output:
+        Aligned .csv file at results/checkpoints/VOG/*_VOG_aligned.csv
+"""
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 
-"""
-Attach BR ns2 sample times to VOG CSVs using the VOG_File ↔ BR_File mapping.
-
-Input:
-    VOG/*.csv  (e.g. NRR_RW011_002.csv)
-
-Requires:
-    Metadata CSV with columns: VOG_File, BR_File
-    rcp.frame2sample_br_ns2_sync
-    rcp.find_ns2_by_br_index
-
-Output:
-    results/checkpoints/VOG/<cond>_VOG_aligned.csv
-    (same columns as original + 'ns2_sample')
-"""
-
 # ---------- Config ----------
 # Base paths from config_loading
-
 VOG_SYNC = int(UA_CFG.get("VOG_sync_ch", 135))  # BR ns2 sync channel for VOG
 
 

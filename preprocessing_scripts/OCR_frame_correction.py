@@ -1,3 +1,10 @@
+"""
+    Because FLIR cameras could drop frames, we use OCR to get a mapping of the frames to the actual times.
+    Inputs:
+        1. Two camera .avi files
+    Outputs:
+        1. .csv files that contains the mapping of frames to correct frames/times
+"""
 # FlirSync_EasyOCR_folder.py
 # Reads one video or a folder of videos and writes per-video CSVs that include:
 # AVI_framenum, OCR_framenum, CORRECTED_framenum, delta_t, n_missing,

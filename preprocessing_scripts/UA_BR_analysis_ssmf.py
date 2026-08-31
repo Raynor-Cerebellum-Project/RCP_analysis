@@ -1,10 +1,23 @@
 """ 
-    This script preprocesses the Blackrock data.
+    This script preprocesses the Blackrock data. Preprocessing and spike sorting are handled in Python using SpikeInterface (https://spikeinterface.readthedocs.io/)
+    Steps:
+        1. Load geometry and mapping (.xlsm file)
+        2. Build .npz for auxiliary data (channels in .ns5 and .ns2 file, HR, touchscreen ... etc.)
+        3. Extract target labels from touchscreen signal (with DLC kinematics fallback if touchscreen is unresponsive)
+        4. Load neural data (.ns6) and config (location to data, geometry, and mapping)
+        5. **Artifact Correction:**
+        - Per-channel lag calibration using CSV lookup
+        - Region-wise Incremental PCA (IPCA) artifact subtraction (rank 7 by default)
+        - Generates diagnostic alignment plots
+        6. High-pass filtering clean data
+        7. **Spike Detection via Subspace Matched Filtering:**
+        - Uses pre-computed extremum templates (median_extremum_basis_norm_UA_PortA_r3.npy)
+        8. Saves .npz file per session with peaks, noise levels, and metadata
     Input:
         .ns6 files from Blackrock
     Output:
-        Checkpoint after preprocessing
-        Checkpoint after matched-filtering and calculating MUA peak locations and firing rate
+        pp_*.npz files after preprocessing
+        aligned_*.npz files per condition with spike times
 """
 import logging
 logging.getLogger("spikeinterface").setLevel(logging.WARNING)

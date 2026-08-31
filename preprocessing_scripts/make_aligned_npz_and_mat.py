@@ -1,3 +1,21 @@
+"""
+    This script creates the `aligned.npz` files
+        Steps:
+        1. Align Neural, aux, and behavioral data (NPRW, UA, kinematics, HR, target, and VOG)
+        2. Create spike time (peaks) dictionaries for both NPRW and UA
+        3. Permute UA channel labels and UA peak dictionary by region
+        4. Output `.npz` and `.mat` files in `~/results/checkpoints/Aligned`
+
+        Outputs: directories (based on condition type)
+        1. `Aligned/control_reaches/` - Control trials (no stim)
+        2. `Aligned/stim_reaches/` - Stimulation condition reaches
+        3. `Aligned/at_rest/` - At rest conditions (no reach)
+        4. `Aligned/Grasp/` - Grasp experiment trials
+        5. `Aligned/IMU/` - IMU experiment trials
+        6. `Aligned/continuous_stim/` - Continuous stimulation trials
+
+"""
+
 import json, csv
 from scipy.io import savemat
 import RCP_analysis as rcp

@@ -1,6 +1,7 @@
 paths:
-  data_root: "Current Project Databases - NHP/2025 Cerebellum prosthesis/Nike"
+  data_root: "Current Project Databases - NHP/2025 Cerebellum prosthesis/Bert"
   geom_mat_rel: "config/probes/ImecPrimateStimRec128_BT_corrected_091525.mat"
+  process_fastigial: True
 kinematics:
   keypoints: [index, middle, hand, wrist, start, TA, TB]
   num_camera: 2
@@ -97,7 +98,7 @@ rsa_params:
   targets: ["target_A", "target_B"]
   probes: ["NPRW", "UA"]
 
-# ---- per-session overrides
+# per-session overrides
 sessions:
   BL_RW_003_Session_1:
     probe: "NPRW" # Placeholder

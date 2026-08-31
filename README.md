@@ -3,32 +3,32 @@
 ## Overview
 This repository contains the analysis pipeline for preprocessing, quantifying, and comparing stimulation trials from the Raynor experiments.  
 
-![alt text](https://github.com/Raynor-Cerebellum-Project/RCP_analysis/blob/main/docs/pipeline_schematic.png "pipeline_schematic")
+![pipeline_schematic](https://github.com/Raynor-Cerebellum-Project/RCP_analysis/blob/main/docs/pipeline_schematic.png "pipeline_schematic")
 
 [Summary of recorded signals](https://docs.google.com/document/d/1C4-xSWL8n7P_mMrYqlUxQR6blz9WIHDU4B7O9bxhMnE/edit?tab=t.0)
-
-[Example final figures: Nike's plots for reaching](https://docs.google.com/presentation/d/1L_EA5BOvmqIdInJ0WPRp5rtgeDXCOmu6qmt2yeqPC-s/edit?slide=id.g3afc5261748_0_102#slide=id.g3afc5261748_0_102)
 
 The folder structure is as follows:
 ```
 .
-├─ batch_scripts                             # Pipeline scripts
-├─ config
-│ └─ params.yaml                             # Params file indicating location of data, session
-├─ curation_scripts                          # Visualizing kinematics and OCR frame correction
+├─ analysis_scripts                          # Scripts for analysis, use as needed
+├─ config                                    # Includes probe geometry and mapping files
+│ └─ params.yaml                             # Params file for probes, preprocessing, and analysis
+│ └─ machines.yaml                           # User specific data mounts
+├─ docs                                      # Documentation figures
+├─ preprocessing_scripts                     # Scripts for each step in the preprocessing pipeline
 ├─ RCP_analysis
 │ └─ python
-│     ├─ functions                           # Functions for scripts
+│     ├─ functions                           # Functions as part of the RCP_analysis package
 │     └─ plotting                            # Plotting code
-├─ scripts                                   # Main + supplementary scripts
-  └─ your_scripts                            # Scripts for individual prototyping
+├─ scripts                                   # Scripts for individual prototyping
+  └─ your_scripts
 ├─ LICENSE
 └─ README.md
 ```
 Outputs:
 ```
 .
-├─ data                   # Experimental data files
+├─ data                   # Experimental data folder
 │ └─ results              # Output files
 │     ├─ aux_data             # Auxillary data (sync pulses etc.)
 │     ├─ checkpoints          # Intermediate files
@@ -58,100 +58,53 @@ pip install -e .
 ```
 
 ---
-## 0: Frame correction
-`curation_scripts/OCR_frame_mapping_BT_edit.py`
-
-Run by specifying path to video folder:
-
-```bash
-python curation_scripts/OCR_frame_mapping_BT_edit.py PATH_TO_VIDEO_FOLDER
-```
-This creates the OCR files for the pipeline
-
-NOTE: Make sure to use double quotes for windows paths.
-
 # Details of the pipeline
 Ideally, you should be able to run the pipeline by:
-1. Set session info in `config/params.yaml`
-2. Run `scripts/analyze_and_plot_FR_UA_NPRW.py`
+1. Set `data_root` in `config/params.yaml`
+2. Add to `config/machines.yaml` if first time using
+3. Run `scripts/run_pipeline.py`
 
-As long as you have the inputs:
+Inputs:
 1. Raw neural signals (NPRW, UA)
 2. Metadata from handwritten notes
-3. Mapping and geometry if available
-4. `config/params.yaml` indicating location of data and other params
+3. Mapping and geometry
+4. `config/params.yaml`
 5. Impedances for both NPRW and UA
 
-## 1. Align kinematics from two cameras and VOG
-`batch_scripts/align_dlc_two_cams_to_br.py`
-`batch_scripts/align_VOG_to_br.py`
+Output:
+1. `data/results/checkpoints/.../aligned.npz` files containing aligned spike times, behavioral traces, event timings, and metadata for each condition and target
+2. `data_status_reaching.csv` timestamps of when each step is ran
 
-**Steps:**
-1. Load OCR and DLC file for both cameras (or just VOG)
-2. Find corresponding BR `.ns5` files to extract rising edges in `camera_sync_ch` (`VOG_sync_ch`) (corresponds to frames) Note: You can set these in `config/params.yaml`
-3. Align both cameras to the BR frames
-4. Output aligned .csv file
+---
+# Steps of the pipeline
+## Preprocessing
+1. Frame correction: `batch_scripts/OCR_frame_correction.py`
+2. DeepLabCut 2-camera data alignment: `batch_scripts/align_dlc_two_cams_to_br.py`
+3. VOG to Blackrock (BR) alignment: `batch_scripts/align_VOG_to_br.py`
+4. NPRW preprocessing and spike detection (matched filter): `batch_scripts/NPRW_Intan_analysis_mf.py`
+5. Compute timeshift between Intan and BR `batch_scripts/compute_br_to_intan_shifts.py`
+6. UA preprocessing and spike detection (subspace): `batch_scripts/UA_BR_analysis_ssmf.py`
+   - Alternatively use `batch_scripts/UA_BR_analysis_mf.py` for matched filter
+7. Create aligned files `batch_scripts/make_aligned_npz_and_mat.py`
+   - One file created per condition, per side
+   - Output: `data/results/checkpoints/.../aligned_*.npz`
 
-## 2. Intan / NPRW Neural data preprocessing
-`batch_scripts/NPRW_Intan_analysis_threshold.py`
+## Analysis
+1. Extract peri-stim tensors based on event timing (IR or stim): `batch_scripts/extract_peri_stim.py`
+   - Trial $\times$ Channels $\times$ Time Bins
+   - Output: `data/results/checkpoints/.../peristim_*.npz`
+2. Output kinematic trajectories for manual inspection: `batch_scripts/inspect_kinematics_trajectories.py`
+3. Plateau analysis plots for manual inspection of kinematics: `batch_scripts/plot_plateau_analysis.py`
+   - Rerun from `batch_scripts/extract_peri_stim.py` after curation
+4. Extract RSA tensors from correlating region of interests (ROI): `batch_scripts/RSA_calculation.py`
+   - Trial $\times$ Trial correlation
+   - ROI can be set in `config/params.yaml`
+5. Plot peri-stim firing rate plots: `analysis_scripts/plot_complete_shaded_BT.py`
+   - Gaussian smoother parameters can be set in `config/params.yaml`
+6. Plot peri-stim rasters: `analysis_scripts/plot_peri_stim_raster.py`
 
-Preprocessing and spike sorting are handled in Python using [SpikeInterface](https://spikeinterface.readthedocs.io/)
-
-**Steps:**
-1. Load geometry and mapping (`.mat` file)
-2. Extract stim data, ir crossings, and locations of stim pulses (individual pulses and blocks) - saves .npz file
-3. Extract auxiliary data (sync pulses) - saves .npz file
-4. Load Intan neural data, attach probe info, and reorder based on mapping
-5. Preprocess Intan (`.rhs`) data (high-pass filter, common local median reference default radius: 30, 150 $\mu\text{m}$)
-6. Remove artifacts (zero stim regions) with $\pm$ 20
-7. Threshold and calculate MUA (peaks)
-8. Saves `.npz` file per session
-
-## 3. Compute time difference between BR and Intan recordings
-`batch_scripts/compute_br_to_intan_shifts.py`
-
-**Steps:**
-1. Load metadata to match intan files to BR files
-2. Load template sent from BR to Intan and Intan ADC file
-3. Match the template to the BR template signal
-4. Save the shifts and adjusted shifts and other information calculated from these two signals in `data_root/location/Metadata/br_to_intan_shifts.csv`
-
-## 4. BR / UA Neural data preprocessing
-`batch_scripts/UA_BR_analysis_mf.py`
-
+# Artifact correction schematic
 ![alt text](https://github.com/Raynor-Cerebellum-Project/RCP_analysis/blob/main/docs/utah_array_analysis_and_artifact_correction.png "artifact correction schematic")
-
-**Steps:**
-1. Load geometry and mapping (`.xlsm` file)
-2. Build `.npz` for auxiliary data (channels in .ns5 and .ns2 file, HR, touchscreen ... etc.)
-3. Extract target labels from touchscreen signal (with DLC kinematics fallback if touchscreen is unresponsive)
-4. Load neural data (`.ns6`) and config (location to data, geometry, and mapping)
-5. **Artifact Correction:**
-   - Per-channel lag calibration using CSV lookup
-   - Region-wise Incremental PCA (IPCA) artifact subtraction (rank 7 by default)
-   - Generates diagnostic alignment plots
-6. High-pass filtering clean data
-7. **Spike Detection via Matched Filtering:**
-   - Uses pre-computed median extremum templates (`median_extremum_templates_norm_UA_PortB.npy`)
-   - Falls back to `locally_exclusive` method if matched filtering fails
-8. Saves `.npz` file per session with peaks, noise levels, and metadata
-
-## 5. Align data streams
-`batch_scripts/make_aligned_npz_and_mat.py`
-
-**Steps:**
-1. Align Neural, aux, and behavioral data (NPRW, UA, kinematics, HR, target, and VOG)
-2. Create peak dictionaries for both NPRW and UA
-3. Permute UA channel labels and UA peak dictionary by region
-4. Output `.npz` and `.mat` files in `~/results/checkpoints/Aligned`
-
-**Output directories** (based on session type):
-- `Aligned/control_reaches/` - Control trials (no stim)
-- `Aligned/stim_reaches/` - Stimulation condition reaches
-- `Aligned/at_rest/` - At rest conditions (no reach)
-- `Aligned/Grasp/` - Grasp experiment trials
-- `Aligned/IMU/` - IMU experiment trials
-- `Aligned/continuous_stim/` - Continuous stimulation trials
 
 ## 6. Create peri-IR / peri-stim files
 `batch_scripts/extract_peri_stim.py`
@@ -282,8 +235,7 @@ Analyzes reach kinematics (Duration, Peak Speed) comparing stimulation condition
 1. Plots of kinematics (position and velocity) and neural data (Firing rate plot)
 2. RSA to evaluate consistency of stim response
 
-
-See examples: [Nike's plots for reaching](https://docs.google.com/presentation/d/1L_EA5BOvmqIdInJ0WPRp5rtgeDXCOmu6qmt2yeqPC-s/edit?slide=id.g3afc5261748_0_102#slide=id.g3afc5261748_0_102)
+[Example final figures: Nike's plots for reaching](https://docs.google.com/presentation/d/1L_EA5BOvmqIdInJ0WPRp5rtgeDXCOmu6qmt2yeqPC-s/edit?slide=id.g3afc5261748_0_102#slide=id.g3afc5261748_0_102)
 
 ## TODOs
 - Switch to hdf5 / NWB format

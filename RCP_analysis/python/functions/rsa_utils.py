@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 import numpy as np
 from scipy import stats
+from sklearn.metrics import silhouette_score, silhouette_samples
 import matplotlib.pyplot as plt
 import RCP_analysis as rcp
 import os
@@ -656,7 +657,8 @@ def _plot_rdm_with_block_ticks(
 
     for c, lab in zip(centers, block_labels):
         ax.text(c, -0.02, lab, transform=ax.get_xaxis_transform(),
-                 ha="center", va="top", fontsize=8, rotation=45, clip_on=False)
+                 ha="right", va="top", rotation=45, rotation_mode="anchor",
+                 fontsize=8, clip_on=False)
         ax.text(-0.02, c, lab, transform=ax.get_yaxis_transform(),
                  ha="right", va="center", fontsize=8, clip_on=False)
 
@@ -666,13 +668,154 @@ def _plot_rdm_with_block_ticks(
     if own_fig:
         fig.tight_layout()
         if out_svg is not None:
-            fig.savefig(out_svg, dpi=300)
+            fig.savefig(out_svg, dpi=300, bbox_inches="tight")
             out_svg_rel = os.path.relpath(out_svg, OUT_BASE)
             plt.close(fig)
             return out_svg_rel
         else:
             plt.close(fig)
             return None
+
+def _rsm_to_distance(RSM: np.ndarray, kind: str = "angular") -> np.ndarray:
+    """Correlation similarity -> distance for silhouette (metric='precomputed')."""
+    R = 0.5 * (RSM + RSM.T)  # enforce exact symmetry
+    if kind == "angular":
+        D = np.sqrt(np.clip(2.0 * (1.0 - R), 0.0, None))
+    else:  # "corr"
+        D = np.clip(1.0 - R, 0.0, 2.0)
+    np.fill_diagonal(D, 0.0)
+    return D
+
+def _pairwise_silhouette(
+    RSM: np.ndarray, block_sizes: list[int], kind: str = "angular"
+) -> np.ndarray:
+    """K x K silhouette computed two conditions at a time; NaN diagonal."""
+    K = len(block_sizes)
+    if K < 2:
+        logger.info(f"[sil-pair] {K} condition(s); pairwise silhouette needs >=2, skipping")
+        return np.full((K, K), np.nan)
+
+    D = _rsm_to_distance(RSM, kind=kind)
+    labels = np.repeat(np.arange(K), block_sizes)
+    S = np.full((K, K), np.nan)
+    for i in range(K):
+        for j in range(i + 1, K):
+            sel = np.where((labels == i) | (labels == j))[0]
+            Dij, lij = D[np.ix_(sel, sel)], labels[sel]
+            ok = np.isfinite(Dij).all(axis=1)
+            Dij, lij = Dij[np.ix_(ok, ok)], lij[ok]
+            uniq, counts = np.unique(lij, return_counts=True)
+            if len(uniq) < 2 or counts.min() < 2:
+                continue
+            S[i, j] = S[j, i] = float(silhouette_score(Dij, lij, metric="precomputed"))
+    return S
+
+def _within_condition_consistency(
+    RSM: np.ndarray, block_sizes: list[int]
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Per-condition mean within-block trial-to-trial correlation.
+    Returns (mean_r [K], n_pairs [K]); NaN where a block has <2 usable trials.
+    """
+    offs = np.r_[0, np.cumsum(block_sizes)]
+    K = len(block_sizes)
+    mean_r = np.full(K, np.nan)
+    n_pairs = np.zeros(K, dtype=int)
+    for k in range(K):
+        blk = RSM[offs[k]:offs[k + 1], offs[k]:offs[k + 1]]
+        if blk.shape[0] < 2:
+            continue
+        vals = blk[np.triu_indices(blk.shape[0], k=1)]
+        vals = vals[np.isfinite(vals)]
+        if vals.size == 0:
+            continue
+        mean_r[k] = float(vals.mean())
+        n_pairs[k] = vals.size
+    return mean_r, n_pairs
+
+def _plot_pairwise_silhouette(
+    S: np.ndarray,
+    block_labels: list[str],
+    title: str,
+    out_svg: Path | None,
+    vmax: float | None = None,
+    annotate: bool = True,
+    diag_values: np.ndarray | None = None,
+    ax: plt.Axes | None = None,
+):
+    """
+    Heatmap of the K x K pairwise silhouette matrix. Diagonal is undefined and
+    rendered as a distinct 'bad' color, not as zero.
+
+    vmax: color limit; symmetric about 0 so that 0 (= no separation) sits at the
+    midpoint of the diverging map. Defaults to the largest finite |S|.
+
+    diag_values: optional length-K values printed on the (uncolored) diagonal --
+    intended for within-condition mean correlation. These are a DIFFERENT
+    quantity from the off-diagonal silhouettes and are deliberately left off the
+    color scale; say so in the title.
+    """
+    own_fig = ax is None
+    if own_fig:
+        fig, ax = plt.subplots(figsize=(1.0 + 0.55 * len(block_labels),
+                                        1.0 + 0.55 * len(block_labels)))
+    else:
+        fig = ax.figure
+
+    finite = np.isfinite(S)
+    if vmax is None:
+        vmax = float(np.max(np.abs(S[finite]))) if finite.any() else 1.0
+        vmax = max(vmax, 1e-3)
+
+    cmap = plt.colormaps["RdBu_r"].copy()
+    cmap.set_bad("0.85")  # undefined pairs and the diagonal
+
+    im = ax.imshow(
+        np.ma.masked_invalid(S), cmap=cmap, vmin=-vmax, vmax=vmax,
+        origin="upper", interpolation="nearest", aspect="equal",
+    )
+
+    K = len(block_labels)
+    ax.set_xticks(range(K))
+    ax.set_yticks(range(K))
+    ax.set_xticklabels(block_labels, rotation=45, ha="right", fontsize=8)
+    ax.set_yticklabels(block_labels, fontsize=8)
+    ax.set_xticks(np.arange(K + 1) - 0.5, minor=True)
+    ax.set_yticks(np.arange(K + 1) - 0.5, minor=True)
+    ax.grid(which="minor", color="white", linewidth=0.8)
+    ax.tick_params(which="minor", length=0)
+    ax.set_title(title, fontsize=9)
+
+    if annotate:
+        for i in range(K):
+            for j in range(K):
+                if i == j or not np.isfinite(S[i, j]):
+                    continue
+                # white text on saturated cells, black on pale ones
+                color = "white" if abs(S[i, j]) > 0.6 * vmax else "black"
+                ax.text(j, i, f"{S[i, j]:.2f}", ha="center", va="center",
+                        fontsize=7, color=color)
+
+    if diag_values is not None:
+        for k in range(min(K, len(diag_values))):
+            if not np.isfinite(diag_values[k]):
+                continue
+            # diagonal is uncolored, so always dark text
+            ax.text(k, k, f"{diag_values[k]:.2f}", ha="center", va="center",
+                    fontsize=7, color="0.25", style="italic")
+            
+    cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cb.set_label("Pairwise silhouette")
+
+    if own_fig:
+        fig.tight_layout()
+        if out_svg is not None:
+            fig.savefig(out_svg, dpi=300)
+            out_svg_rel = os.path.relpath(out_svg, OUT_BASE)
+            plt.close(fig)
+            return out_svg_rel
+        plt.close(fig)
+    return None
 
 # Do RSA
 def run_rsa(
@@ -687,6 +830,7 @@ def run_rsa(
     cond_order: Optional[Iterable] = None,
     move_alpha: float = 0.05,
     stim_alpha: float = 0.05,
+    sil_vmax: float | None = None,
     debug_masks: bool = False,
 ):
     """
@@ -952,9 +1096,9 @@ def run_rsa(
         kept_ch = blocks[0].move_mask.sum() if blocks else 0
 
         title = (
-            f"{target_disp} ({source}, criterion={criterion or 'all-ch'})\n"
-            f"({int(poststim_win_ms[0])} to {int(poststim_win_ms[1])} ms post-stim)\n"
-            f"n={RSM.shape[0]}, {len(blocks)} conditions, {kept_ch} channels"
+            f"RSA\n{target_disp} ({source}, criterion={criterion or 'all-ch'})\n"
+            f"{int(poststim_win_ms[0])} to {int(poststim_win_ms[1])} ms post-stim, {kept_ch} channels\n"
+            f"n={RSM.shape[0]}, {len(blocks)} conditions"
         )
 
         out_svg = (
@@ -967,6 +1111,32 @@ def run_rsa(
             RSM, sizes_t, block_labels_t, title,
             out_svg=out_svg, vmin=vmin, vmax=vmax,
         )
+        cons_r, cons_n = _within_condition_consistency(RSM, sizes_t)
+        logger.info(
+            f"[within] {criterion or 'all-ch'}: " +
+            "  ".join(f"{lab}={r:+.3f}(n={n})"
+                      for lab, r, n in zip(block_labels_t, cons_r, cons_n)
+                      if np.isfinite(r))
+        )
+        S_pair = _pairwise_silhouette(RSM, sizes_t)
+        cons_r, cons_n = _within_condition_consistency(RSM, sizes_t)
+        sil_rel = None
+        if np.isfinite(S_pair).any():
+            sil_svg = (
+                FIG_DIR / target / f"silhouette_{source}_{criterion or 'all-ch'}_criterion_"
+                        f"poststim{int(poststim_win_ms[0])}-{int(poststim_win_ms[1])}.png"
+                if SAVE_SVG else None
+            )
+            sil_rel = _plot_pairwise_silhouette(
+                S_pair, block_labels_t,
+                f"Silhouette score matrix\n{target_disp} ({source}, criterion={criterion or 'all-ch'})\n"
+                f"{int(poststim_win_ms[0])} to {int(poststim_win_ms[1])} ms post-stim, {kept_ch} channels\n"
+                f"Diagonal = within-condition correlation",
+                vmax=sil_vmax, diag_values=cons_r, out_svg=sil_svg,
+            )
+        if sil_rel is not None:
+            logger.info(f"[sil-pair]{'':<8} figure saved  {sil_rel}")
+            
         crit_label = criterion or "all-ch"
         tag = f"[rsa-{crit_label}]"
         if out_svg_rel is not None:

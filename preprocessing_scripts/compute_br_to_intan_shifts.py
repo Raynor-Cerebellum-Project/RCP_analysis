@@ -1,3 +1,14 @@
+"""
+Compute
+Steps:
+    1. Load metadata to match intan files to BR files
+    2. Load template sent from BR to Intan and Intan ADC file
+    3. Match the template to the BR template signal
+    4. Save the shifts and adjusted shifts and other information calculated from these two signals in `data_root/location/Metadata/br_to_intan_shifts.csv`
+Input:
+
+Output:
+"""
 import numpy as np
 import csv
 import spikeinterface.extractors as se

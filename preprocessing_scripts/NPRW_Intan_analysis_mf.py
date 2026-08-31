@@ -1,3 +1,21 @@
+"""
+    This script preprocesses the Intan data. Preprocessing and spike sorting are handled in Python using SpikeInterface (https://spikeinterface.readthedocs.io/)
+    Steps:
+        1. Load geometry and mapping (.mat file)
+        2. Extract stim data, ir crossings, and locations of stim pulses (individual pulses and blocks) - saves .npz file
+        3. Extract auxiliary data (sync pulses) - saves .npz file
+        4. Load Intan neural data, attach probe info, and reorder based on mapping
+        5. Preprocess Intan (.rhs) data (high-pass filter, common local median reference default radius: 30, 150 micrometers
+        6. Remove artifacts (zero stim regions) + additional space specified in `config/params.yaml`
+        7. Use presaved template to perform matched filter and calculate MUA (peaks)
+        8. Saves .npz file per condition
+    Input:
+        .rhs files from Intan
+    Output:
+        pp_*.npz files after preprocessing
+        aligned_*.npz files per condition with spike times
+"""
+
 import gc
 import numpy as np
 from scipy.io import loadmat
@@ -12,15 +30,6 @@ from spikeinterface.sortingcomponents.peak_detection import detect_peaks
 
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
-
-"""
-    This script preprocesses the Intan data.
-    Input:
-        .rhs files from Intan
-    Output:
-        Checkpoint after preprocessing
-        Checkpoint after thresholding and calculating MUA peak locations and firing rate
-"""
 
 # Config
 # Base paths from config_loading

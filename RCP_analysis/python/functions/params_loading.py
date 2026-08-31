@@ -64,24 +64,28 @@ def _get_monkey_from_data_root(data_root: str) -> str:
     Example:
         /some/path/Nike -> Nike
         /some/path/Ada  -> Ada
+        /some/path/Bert -> Bert
     """
     monkey = Path(data_root).name.strip()
 
-    if monkey not in {"Nike", "Ada"}:
+    if monkey not in {"Nike", "Ada", "Bert"}:
         raise ValueError(
             f"Could not identify monkey from data_root: {data_root}. "
-            f"Expected final folder to be 'Nike' or 'Ada', got '{monkey}'."
+            f"Expected final folder to be 'Nike' or 'Ada' or 'Bert', got '{monkey}'."
         )
 
     return monkey
 
 
-def _get_location_session_from_status_csv(data_root: str) -> tuple[str, str]:
+def _get_location_session_from_status_csv(data_root: str, process_fastigial: bool) -> tuple[str, str]:
     """
     Read data_root/data_status_reaching.csv and find the first row where
     'Process Session?' is 'Yes'. Return that row's Location and Session.
     """
-    status_csv = Path(data_root) / "data_status_reaching.csv"
+    if process_fastigial:
+        status_csv = Path(data_root) / "data_status_fastigial.csv"
+    else:
+        status_csv = Path(data_root) / "data_status_reaching.csv"
 
     if not status_csv.exists():
         raise FileNotFoundError(f"data_status_reaching.csv not found: {status_csv}")
@@ -158,6 +162,7 @@ def load_experiment_params(
     paths = cfg.get("paths", {}) or {}
     relative_data_root = paths.get("data_root", "")
     geom_mat_rel = paths.get("geom_mat_rel")
+    process_fastigial = paths.get("process_fastigial", False)
 
     # resolve machine-specific prefix and combine with the lab-relative data_root
     if machines_yaml_path is None:
@@ -181,7 +186,7 @@ def load_experiment_params(
                 f"got RCP_LOCATION={env_location!r}, RCP_SESSION={env_session!r}"
             )
         else:
-            location, session = _get_location_session_from_status_csv(data_root)
+            location, session = _get_location_session_from_status_csv(data_root, process_fastigial)
 
     kin_cfg = dict(cfg.get("kinematics", {}) or {})
     kin_cfg["num_camera"] = kin_cfg.get("num_camera")
