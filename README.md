@@ -58,10 +58,9 @@ pip install -e .
 ```
 
 ---
-# Details of the pipeline
-Ideally, you should be able to run the pipeline by:
-1. Set `data_root` in `config/params.yaml`
-2. Add to `config/machines.yaml` if first time using
+# Running the pipeline:
+1. Setting `data_root` in `config/params.yaml`
+2. Add to `config/machines.yaml` if using a new workspace
 3. Run `scripts/run_pipeline.py`
 
 Inputs:
@@ -105,7 +104,6 @@ Output:
 
 # Artifact correction schematic
 ![alt text](https://github.com/Raynor-Cerebellum-Project/RCP_analysis/blob/main/docs/utah_array_analysis_and_artifact_correction.png "artifact correction schematic")
-
 
 ## LFP Band Analysis
 `preprocessing_scripts/analyze_lfp_bands.py`
