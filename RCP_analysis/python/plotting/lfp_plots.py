@@ -1503,6 +1503,157 @@ def generate_stim_vs_control(data_stim, data_control, session_id, fig_dir,
     return out_path
 
 
+def generate_vs_rest(data_a, data_rest, session_id, fig_dir, groups, fs=1000,
+                     label_a="Stim", out_subdir="vs_Rest"):
+    """
+    Compare any condition (stim or control reaches) against at-rest LFP.
+
+    Reuses the same PSD + band-power-difference layout as generate_stim_vs_control
+    but with configurable axis labels and a separate output subdirectory so the
+    three comparison types (stim-vs-control, stim-vs-rest, control-vs-rest) land
+    in distinct folders.
+
+    Parameters
+    ----------
+    data_a : dict
+        LFP npz data for the primary condition (stim or control reaches).
+    data_rest : dict
+        LFP npz data for the at-rest baseline.
+    session_id : str
+        Identifier used in the figure title and filename.
+    fig_dir : Path
+        Root figure output directory.
+    groups : list
+        Channel-group list from build_groups().
+    fs : int
+        Sampling frequency in Hz (default 1000).
+    label_a : str
+        Human-readable label for the primary condition (default "Stim").
+    out_subdir : str
+        Subdirectory inside fig_dir to save figures (default "vs_Rest").
+    """
+    try:
+        a_full, t_a = get_broadband_full(data_a)
+        rest_full, t_rest = get_broadband_full(data_rest)
+    except (KeyError, TypeError) as e:
+        print(f"    [Skip] Missing data for {label_a} vs Rest: {e}")
+        return None
+
+    # Slice to post-stim window
+    bb_a, _ = slice_time_window(a_full, t_a,
+                                TIME_WINDOWS['post_start'], TIME_WINDOWS['post_end'])
+    bb_rest, _ = slice_time_window(rest_full, t_rest,
+                                   TIME_WINDOWS['post_start'], TIME_WINDOWS['post_end'])
+
+    n_regions = len(groups)
+    bands = ANALYSIS_CONFIG['bands']
+
+    fig = plt.figure(figsize=(16, 10))
+    gs = GridSpec(2, n_regions, figure=fig)
+
+    fig.suptitle(
+        f'{label_a} vs At-Rest: {session_id}\n'
+        f'({label_a}: {bb_a.shape[0]} trials, Rest: {bb_rest.shape[0]} trials)',
+        fontsize=12, fontweight='bold'
+    )
+
+    nperseg = min(bb_a.shape[2], bb_rest.shape[2], 512)
+    freq_range = ANALYSIS_CONFIG['freq_range_display']
+    notch_regions = ANALYSIS_CONFIG.get('notch_regions', [(55, 65), (115, 125)])
+
+    for col, (grp_idxs, grp_name) in enumerate(groups):
+        short_name = grp_name.split(' (')[0]
+
+        valid_a_idx    = [i for i in grp_idxs if i < bb_a.shape[1]]
+        valid_rest_idx = [i for i in grp_idxs if i < bb_rest.shape[1]]
+
+        if not valid_a_idx or not valid_rest_idx:
+            continue
+
+        # --- Top row: PSD comparison ---
+        ax_psd = fig.add_subplot(gs[0, col])
+
+        a_data = bb_a[:, valid_a_idx, :]
+        f, Pxx_a = signal.welch(a_data, fs=fs, nperseg=nperseg, axis=2)
+        Pxx_a_mean = np.nanmean(Pxx_a, axis=(0, 1))
+
+        rest_data = bb_rest[:, valid_rest_idx, :]
+        _, Pxx_rest = signal.welch(rest_data, fs=fs, nperseg=nperseg, axis=2)
+        Pxx_rest_mean = np.nanmean(Pxx_rest, axis=(0, 1))
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            psd_a_dB    = 10 * np.log10(Pxx_a_mean    + 1e-20)
+            psd_rest_dB = 10 * np.log10(Pxx_rest_mean + 1e-20)
+
+        psd_a_dB    = mask_notch_regions(f, psd_a_dB,    notch_regions)
+        psd_rest_dB = mask_notch_regions(f, psd_rest_dB, notch_regions)
+
+        f_mask = (f >= freq_range[0]) & (f <= freq_range[1])
+
+        ax_psd.plot(f[f_mask], psd_a_dB[f_mask],    'r-', lw=2, label=label_a)
+        ax_psd.plot(f[f_mask], psd_rest_dB[f_mask], 'k-', lw=2, label='Rest', alpha=0.7)
+
+        for f_lo, f_hi in notch_regions:
+            ax_psd.axvspan(f_lo, f_hi, color='gray', alpha=0.15, zorder=0)
+
+        add_band_shading(ax_psd)
+        ax_psd.set_title(f'{short_name}', fontsize=11, fontweight='bold')
+        ax_psd.set_xlabel('Frequency (Hz)')
+        ax_psd.set_ylabel('Power (dB)' if col == 0 else '')
+        ax_psd.set_xlim(freq_range)
+        ax_psd.legend(loc='upper right', fontsize='small')
+        ax_psd.grid(True, alpha=0.3)
+
+        # --- Bottom row: Band-power difference ---
+        ax_diff = fig.add_subplot(gs[1, col])
+
+        band_names = list(bands.keys())
+        x_pos = np.arange(len(band_names))
+        diff_means, diff_cis = [], []
+
+        for band_name, (f_lo, f_hi) in bands.items():
+            f_band_mask = (f >= f_lo) & (f <= f_hi)
+
+            a_band    = np.nanmean(Pxx_a[:, :, f_band_mask],    axis=(1, 2))
+            rest_band = np.nanmean(Pxx_rest[:, :, f_band_mask], axis=(1, 2))
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                a_dB    = 10 * np.log10(a_band    + 1e-20)
+                rest_dB = 10 * np.log10(rest_band + 1e-20)
+
+            diff = np.mean(a_dB) - np.mean(rest_dB)
+            sem_diff = np.sqrt(
+                (np.std(a_dB)**2    / max(len(a_dB),    1)) +
+                (np.std(rest_dB)**2 / max(len(rest_dB), 1))
+            ) * 1.96
+
+            diff_means.append(diff)
+            diff_cis.append(sem_diff)
+
+        colors = ['red' if d > 0 else 'blue' for d in diff_means]
+        ax_diff.bar(x_pos, diff_means, yerr=diff_cis, color=colors, alpha=0.7,
+                    capsize=4, edgecolor='black')
+        ax_diff.axhline(0, color='black', ls='-', lw=1)
+        ax_diff.set_xticks(x_pos)
+        ax_diff.set_xticklabels(band_names, fontsize=8, rotation=45, ha='right')
+        ax_diff.set_ylabel(f'Δ Power (dB)\n({label_a} - Rest)' if col == 0 else '')
+        ax_diff.set_title('Power Difference', fontsize=10)
+        ax_diff.grid(True, alpha=0.3, axis='y')
+
+    plt.tight_layout()
+
+    out_dir = fig_dir / out_subdir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{out_subdir.lower()}_{session_id}.png"
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"    Saved {label_a} vs Rest -> {out_path.name}")
+
+    return out_path
+
+
 # =============================================================================
 # FIGURE 7: DOSE-RESPONSE ANALYSIS
 # =============================================================================

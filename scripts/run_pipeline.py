@@ -26,7 +26,7 @@ SESSIONS_TO_RUN = [
     # "NRR_RW015",
     # "NRR_RW014",
     # "NRR_RW013",
-    # "NRR_RW012",
+    "NRR_RW012",
     "NRR_RW011",
 ]
 
@@ -53,8 +53,8 @@ SCRIPTS = [
     # "analysis_scripts/plot_stim_group_responses.py",
 
 
-    # "analysis_scripts/analyze_lfp_bands.py",
-    # "scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py",
+    "analysis_scripts/analyze_lfp_bands.py",
+    "scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py",
     # "scripts/nikita_scripts/plotting_scripts/combine_UA_gifs.py",
 ]
 

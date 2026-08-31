@@ -1,6 +1,8 @@
 intan_filename,br_idx,trials_to_drop,reason
 NRR_RW011_251203,4,"21",weird reach
 NRR_RW011_251203,6,"2",bad tracking
+NRR_RW011_251203,8,"7, 14",at-rest reaches
+NRR_RW011_251203,9,"0, 2, 7, 10, 11, 12, 14",at-rest reaches
 NRR_RW011_251203,10,"26",bad tracking
 NRR_RW011_251203,12,"12, 19, 22",bad tracking
 NRR_RW011_251203,13,"24",bad tracking
@@ -15,12 +17,19 @@ NRR_RW011_251203,23,"1, 11",opposite reach
 NRR_RW011_251203,24,"3, 6, 13, 26, 33, 34, 36, 37",bad tracking and opposite reach
 NRR_RW011_251203,25,"1, 3",bad tracking and opposite reach
 NRR_RW011_251203,27,"5, 20, 21",bad tracking and opposite reach
+
 NRR_RW012_260116,3,"9",backwards reach
-NRR_RW012_260116,32,"15, 32",bad tracking
+NRR_RW012_260116,4,"0,1,2,7,9,10,26",at-rest reach
+NRR_RW012_260116,5,"0,1,8,20,21",at-rest reach
+NRR_RW012_260116,6,"6,10,14,16,17,18,19,20,22,",at-rest reach
 NRR_RW012_260116,7,"29",opposite reach
 NRR_RW012_260116,8,"6, 20, 27",opposite reach
 NRR_RW012_260116,9,"14, 21",bad tracking
 NRR_RW012_260116,12,"21",bad tracking
+NRR_RW012_260116,13,"0,1,13,17",at-rest reach
+NRR_RW012_260116,14,"2,3,4,6,7,9,19",at-rest reach
+NRR_RW012_260116,15,"5,6",at-rest reach
+NRR_RW012_260116,17,"0,1,5,6",at-rest reach
 NRR_RW012_260116,18,"0, 3, 9, 30",bad tracking and opposite reach
 NRR_RW012_260116,20,"0, 29",opposite reach
 NRR_RW012_260116,22,"1, 2, 6",opposite reach
@@ -32,11 +41,47 @@ NRR_RW012_260116,28,"11",bad tracking
 NRR_RW012_260116,29,"6, 13, 25",opposite reach
 NRR_RW012_260116,30,"14",opposite reach
 NRR_RW012_260116,31,"1, 5",bad tracking
+NRR_RW012_260116,32,"15, 32",bad tracking
+
+NRR_RW013_260129,1,"8,19",opposite reach
+NRR_RW013_260129,9,"0,10",at-rest reach
+NRR_RW013_260129,54,"6,7",at-rest reach
+NRR_RW013_260129,85,"6,10",at-rest reach
+NRR_RW013_260129,86,"9",at-rest reach
+NRR_RW013_260129,113,"2,3",at-rest reach
+NRR_RW013_260129,114,"2,4,5",at-rest reach
+
+
+NRR_RW015_260202,35,"1,2",at-rest reaching
+NRR_RW015_260202,47,"5,9,10",at-rest reaching
+NRR_RW015_260202,49,"1",at-rest reaching
+NRR_RW015_260202,50,"3",at-rest reaching
+NRR_RW015_260202,53,"8,9,10",at-rest reaching
+NRR_RW015_260202,54,"0,9,10",at-rest reaching
+NRR_RW015_260202,55,"3",at-rest reaching
+NRR_RW015_260202,58,"7",at-rest reaching
+NRR_RW015_260202,59,"0",at-rest reaching
+NRR_RW015_260202,60,"7",at-rest reaching
+NRR_RW015_260202,61,"8",at-rest reaching
+NRR_RW015_260202,62,"0,8",at-rest reaching
+NRR_RW015_260202,63,"1,2,11",at-rest reaching
+NRR_RW015_260202,95,"8,10",at-rest reaching
+NRR_RW015_260202,102,"3,4,15",at-rest reaching
+NRR_RW015_260202,104,"0",at-rest reaching
+NRR_RW015_260202,106,"1",at-rest reaching
+NRR_RW015_260202,111,"8",at-rest reaching
+NRR_RW015_260202,125,"7",at-rest reaching
+
+NRR_RW016_260206,16,"3,15,28,31,32",bad reach
+NRR_RW016_260206,18,"8",bad reach
+
+
 NRR_RW022_260311,11,"4, 5",opposite reach
 NRR_RW022_260311,16,"4",bad tracking
 NRR_RW022_260311,21,"26",opposite reach
 NRR_RW022_260311,24,"16, 17",bad tracking and bad tracking
 NRR_RW022_260311,25,"14, 20",opposite reach
+
 NRR_RW026_260324,2,"3",bad tracking
 NRR_RW026_260324,3,"6",opposite reach
 NRR_RW026_260324,4,"7",opposite reach
@@ -54,8 +99,10 @@ NRR_RW026_260324,53,"3, 5",opposite reach
 NRR_RW026_260324,54,"3, 4",opposite reach
 NRR_RW026_260324,59,"12",opposite reach
 NRR_RW026_260324,61,"3, 11, 12",opposite reach
+
 NRR_RW032_250416,3,"16",bad tracking
 NRR_RW032_250416,6,"6",bad tracking
+
 NRR_RW035_260507,3,"8",bad start
 NRR_RW035_260507,4,"6",bad start
 NRR_RW035_260507,8,"10,11",bad tracking and opposite reach
