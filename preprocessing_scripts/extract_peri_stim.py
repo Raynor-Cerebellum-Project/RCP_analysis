@@ -1,3 +1,36 @@
+"""
+    This file extracts peri-stimulus data from aligned.npz files, and distributes it into conditions.
+    
+There are multiple condition types that are processed separately:
+    1. Control reaches (No stim) - aligned to IR crossing, split by target (A/B)
+    2. Stim condition reaches - aligned to stim onset, split by target (A/B)
+    3. At rest conditions (No reach) - aligned to stim onset, no target splitting
+    4. Grasp trials - aligned to stim onset, no target splitting
+    5. IMU trials - aligned to stim onset, no target splitting  
+    6. Continuous stim - aligned to IR crossing, no target splitting
+
+Steps:
+    1. Load aligned `.npz` files from appropriate condition directory
+    2. Apply behavior-based trial gating (drop trials with bad kinematics)
+    3. Compute trial labels (A/B/N) from touchscreen state
+    4. Extract peri-event traces for neural data (NPRW, UA)
+    5. Deduplicate MUA peaks, bin counts, and estimate firing rates using Gaussian kernel smoothing
+    6. Baseline-correct traces (subtract mean of first 150 ms)
+    7. Calculate median, variance, and mean traces across trials
+    8. Extract peri-event behavior traces (position and velocity)
+    9. Interpolate small NaN gaps in kinematics (≤4 samples)
+    10. Z-score normalize behavior columns
+    11. Separate left (A) and right (B) reaches for stim/control conditions
+    12. Output `.npz` and `.mat` files in `results/checkpoints/PeriStim/<condition_type>/`
+
+Outputs:
+    1. `PeriStim/control_reaches/target_A/`, `target_B/`
+    2. `PeriStim/stim_reaches/target_A/`, `target_B/`
+    3. `PeriStim/at_rest/`
+    4. `PeriStim/Grasp/`
+    5. `PeriStim/IMU/`
+    6. `PeriStim/continuous_stim/`
+"""
 import re, json
 import pandas as pd
 import numpy as np

@@ -1,3 +1,12 @@
+"""
+This script plots the firing rate plots based on Gaussian smoothing parameters
+Steps:
+    1. Plot aligned baseline traces
+    2. Plot aligned condition traces
+    3. Plot aligned at rest traces
+    4. These plots include (Median, variance, mean traces, median count traces, and chosen / best DLC coordinates)
+    4, Plot first 4 trials
+"""
 from types import SimpleNamespace
 import numpy as np
 import matplotlib
