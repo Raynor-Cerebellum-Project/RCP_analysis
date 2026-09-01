@@ -41,8 +41,8 @@ SCRIPTS = [
     # "preprocessing_scripts/UA_BR_analysis_mf.py", 
     # "preprocessing_scripts/UA_BR_analysis_ssmf.py",
     # "preprocessing_scripts/make_aligned_npz_and_mat.py",
-    "preprocessing_scripts/extract_peri_stim.py",
-    "preprocessing_scripts/inspect_kinematics_trajectories.py",
+    # "preprocessing_scripts/extract_peri_stim.py",
+    # "preprocessing_scripts/inspect_kinematics_trajectories.py",
     ### RUN ^ inspect_kinematics_trajectories.py to check for remaining bad traces -> add bad traces to /config/manual_trial_remove.csv
     ### RERUN extract_peri_stim.py
 
@@ -53,7 +53,7 @@ SCRIPTS = [
     # "analysis_scripts/plot_stim_group_responses.py",
 
 
-    "analysis_scripts/analyze_lfp_bands.py",
+    # "preprocessing_scripts/analyze_lfp_bands.py",
     "scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py",
     # "scripts/nikita_scripts/plotting_scripts/combine_UA_gifs.py",
 ]
