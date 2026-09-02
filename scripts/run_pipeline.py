@@ -26,7 +26,7 @@ SESSIONS_TO_RUN = [
     # "NRR_RW015",
     # "NRR_RW014",
     # "NRR_RW013",
-    "NRR_RW012",
+    # "NRR_RW012",
     "NRR_RW011",
 ]
 

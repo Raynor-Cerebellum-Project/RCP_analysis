@@ -1,3 +1,26 @@
+"""
+    Analyzes LFP bands (Alpha, Beta, Low/High Gamma) for NPRW (Intan) and Utah Array (Blackrock)
+    
+    Pipeline:
+      1. Extraction: Loads stimulation events and extracts epochs (-1000ms to +1000ms) with padding.
+      2. Blanking: Applies 'copy_baseline' blanking to remove stim artifacts (-5ms to +101ms).
+      3. Local CMR (Intan): Subtracts common median within local radius (loaded from config). 
+      4. Utah CMR: DISABLED.
+      5. Filtering: Zero-phase bandpass filtering in specific frequency bands (using padded epochs).
+      6. Cleaning/Rejection: 
+         - No baseline correction or exponential/template subtraction.
+         - Bad channels rejected based on IMPEDANCE thresholds (Intan > 7000 kOhm, Utah > 1000 kOhm).
+      
+    Associated Scripts:
+      - debug_lfp_pipeline_plots.py: Visualizes the pipeline steps.
+      - plot_lfp_check.py: General quality check of aligned LFP.
+    
+    Output:
+        Aligned data .npz files containing windowed traces for each band.
+        - NPRW: results/checkpoints/NPRW_LFP/aligned_lfp    __{session_name}.npz
+        - Utah: results/checkpoints/UA_LFP/aligned_lfp__{session_name}.npz
+"""
+
 import gc
 import os
 import csv
@@ -123,28 +146,6 @@ EXCLUDE_BASELINE_TRIALS = {
     # "baseline_portB_targetB": [2, 3, 4, 6, 8, 10, 12, 15, 17, 20, 22, 23, 24, 26, 28, 30, 31, 35],
 }
 
-"""
-    Analyzes LFP bands (Alpha, Beta, Low/High Gamma) for NPRW (Intan) and Utah Array (Blackrock)
-    
-    Pipeline:
-      1. Extraction: Loads stimulation events and extracts epochs (-1000ms to +1000ms) with padding.
-      2. Blanking: Applies 'copy_baseline' blanking to remove stim artifacts (-5ms to +101ms).
-      3. Local CMR (Intan): Subtracts common median within local radius (loaded from config). 
-      4. Utah CMR: DISABLED.
-      5. Filtering: Zero-phase bandpass filtering in specific frequency bands (using padded epochs).
-      6. Cleaning/Rejection: 
-         - No baseline correction or exponential/template subtraction.
-         - Bad channels rejected based on IMPEDANCE thresholds (Intan > 7000 kOhm, Utah > 1000 kOhm).
-      
-    Associated Scripts:
-      - debug_lfp_pipeline_plots.py: Visualizes the pipeline steps.
-      - plot_lfp_check.py: General quality check of aligned LFP.
-    
-    Output:
-        Aligned data .npz files containing windowed traces for each band.
-        - NPRW: results/checkpoints/NPRW_LFP/aligned_lfp__{session_name}.npz
-        - Utah: results/checkpoints/UA_LFP/aligned_lfp__{session_name}.npz
-"""
 
 # ---------- CONSTANTS ----------
 TARGET_FS = 1000
@@ -198,6 +199,9 @@ si.set_global_job_kwargs(**global_job_kwargs)
 
 # Cache for stim file checks to avoid redundant disk I/O
 STIM_CACHE = {}
+
+# What to actually process?
+SKIP_EXISTING = True
 
 
 # =============================================================================
@@ -965,9 +969,6 @@ def process_baseline_group_utah(
         out_dir.mkdir(parents=True, exist_ok=True)
         
         final_out_npz = out_dir / out_name
-        # if final_out_npz.exists():
-        #     print(f"  [Baseline] Skipping {out_name}, output exists.")
-        #     continue
 
         print(f"\n[Baseline UA] Aggregating Target {label}: {len(all_epochs_by_label[label])} sessions involved.")
         concat_epochs = np.concatenate(all_epochs_by_label[label], axis=0)
@@ -1073,27 +1074,57 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
     
     # Identify all peristim files to process
     peristim_files = find_peristim_files(sess_name, br_idx)
-    
-    # Pre-check: if all potential outputs already exist, skip loading raw data
-    # all_outputs_exist = True
-    # if not peristim_files:
-    #     out_name = f"aligned_lfp__{sess_id}_stim_reaches.npz"
-    #     if not (UA_LFP_CKPT_ROOT / "stim_reaches" / out_name).exists():
-    #         all_outputs_exist = False
-    # else:
-    #     for cat, target, _ in peristim_files:
-    #         target_str = f"_target_{target}" if target else ""
-    #         out_name = f"aligned_lfp__{sess_id}_{cat}{target_str}.npz"
-    #         target_dir = UA_LFP_CKPT_ROOT / cat
-    #         if target:
-    #             target_dir = target_dir / target
-    #         if not (target_dir / out_name).exists():
-    #             all_outputs_exist = False
-    #             break
-    
-    # if all_outputs_exist:
-    #     print(f"[UA] Skipping {sess_name} (BR={br_idx}), all outputs exist.")
-    #     return
+
+    print(f"  [UA] Found {len(peristim_files)} PeriStim files for sess={sess_name}, BR={br_idx:03d}")
+    for cat, target, p in peristim_files:
+        print(f"      cat={cat}, target={target}, file={p.name}")
+
+    # -------------------------------------------------------------------------
+    # Pre-raw-load per-output skip:
+    # Remove already-processed PeriStim outputs from peristim_files BEFORE
+    # loading Blackrock data. If nothing remains, skip the session entirely.
+    # -------------------------------------------------------------------------
+    if SKIP_EXISTING:
+        if peristim_files:
+            pending_peristim_files = []
+
+            for cat, target, p in peristim_files:
+                target_str = f"_target_{target}" if target else ""
+                out_name = f"aligned_lfp__{sess_id}_{cat}{target_str}.npz"
+
+                target_dir = UA_LFP_CKPT_ROOT / cat
+                if target:
+                    target_dir = target_dir / target
+
+                expected_out = target_dir / out_name
+
+                if expected_out.exists():
+                    print(f"  [UA] Pre-skip existing output: {expected_out}")
+                else:
+                    pending_peristim_files.append((cat, target, p))
+
+            if not pending_peristim_files:
+                print(
+                    f"[UA] Skipping {sess_name} BR={br_idx:03d}; "
+                    f"all PeriStim UA_LFP outputs already exist."
+                )
+                return
+
+            # Critical: only keep missing outputs
+            peristim_files = pending_peristim_files
+
+        else:
+            # No PeriStim files found. This session would use fallback stim_reaches.
+            out_name = f"aligned_lfp__{sess_id}_stim_reaches.npz"
+            expected_out = UA_LFP_CKPT_ROOT / "stim_reaches" / out_name
+
+            if expected_out.exists():
+                print(
+                    f"[UA] Skipping {sess_name} BR={br_idx:03d}; "
+                    f"fallback UA_LFP output already exists:"
+                )
+                print(f"     {expected_out}")
+                return
         
     print(f"[UA] Processing {sess_id} (Source: {sess_path.name})")
     
@@ -1112,9 +1143,6 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         return
     
     fs_native = rec_mapped.get_sampling_frequency()
-    
-    # Identify all peristim files to process
-    peristim_files = find_peristim_files(sess_name, br_idx)
     
     # If no peristim files found, fallback to standard stim detection
     if not peristim_files:
@@ -1189,12 +1217,24 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
 
         stim_ms_ua_list = []
         cat_target_list = []
+
         for cat, target, p in peristim_files:
             try:
                 ps = np.load(p, allow_pickle=True)
+
+                event_ms = None
                 if "event_ms" in ps and ps["event_ms"].size > 0:
-                    stim_ms_ua_list.append(ps["event_ms"])
+                    event_ms = ps["event_ms"]
+                elif "stim_ms" in ps and ps["stim_ms"].size > 0:
+                    event_ms = ps["stim_ms"]
+
+                if event_ms is not None:
+                    stim_ms_ua_list.append(np.asarray(event_ms).flatten())
                     cat_target_list.append((cat, target))
+                    print(f"  [UA] Loaded {cat} events from {p.name}: {len(event_ms)} events")
+                else:
+                    print(f"  [UA] PeriStim file has no event_ms/stim_ms events: {p.name}")
+
             except Exception as e:
                 print(f"  [UA] Failed to load peristim {p.name}: {e}")
 
@@ -1235,9 +1275,6 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         target_dir.mkdir(parents=True, exist_ok=True)
         
         final_out_npz = target_dir / out_name
-        # if final_out_npz.exists():
-        #     print(f"  [UA] Skipping {out_name}, output exists.")
-        #     continue
 
         print(f"  [UA] Segmenting {cat}{target_str} ({len(stim_ms_ua)} events)...")
         
@@ -1376,7 +1413,7 @@ def quick_check_stim(sess_path: Path, stream_name: str, intan_idx: int, br_idx: 
     # -------------------------------------------------------------------------
     print(f"    [Check] No stim found. Checking for baseline PeriStim files...")
     try:
-        for target in ["control_reaches/target_A", "control_reaches/target_B", "control_reaches", "Grasp", "IMU", "continuous_stim"]:
+        for target in ["control_reaches/target_A", "control_reaches/target_B", "control_reaches", "Grasp", "IMU", "continuous_stim", "at_rest"]:
             target_dir = PERI_ROOT / target
             if not target_dir.exists():
                 continue
@@ -1388,9 +1425,14 @@ def quick_check_stim(sess_path: Path, stream_name: str, intan_idx: int, br_idx: 
                 baseline_file = matches[0]
                 print(f"    [Check] Found baseline file: {baseline_file.name}")
                 try:
-                    bl_data = np.load(baseline_file, allow_pickle=True)
-                    if "stim_ms" in bl_data and bl_data["stim_ms"].size > 0:
-                        print(f"    [Check] Baseline file has {bl_data['stim_ms'].size} IR events.")
+                    event_key = None
+                    if "event_ms" in bl_data and bl_data["event_ms"].size > 0:
+                        event_key = "event_ms"
+                    elif "stim_ms" in bl_data and bl_data["stim_ms"].size > 0:
+                        event_key = "stim_ms"
+
+                    if event_key is not None:
+                        print(f"    [Check] PeriStim file has {bl_data[event_key].size} events in {event_key}.")
                         return True
                 except Exception as e:
                     print(f"    [Check] Failed to load baseline file: {e}")

@@ -45,9 +45,10 @@ except Exception:
 # SESSION SELECTION - EDIT THESE TO FILTER WHICH SESSIONS TO PROCESS
 # =============================================================================
 
-SESSION_FILTER = [17]
+# SESSION_FILTER = [17]
 # SESSION_FILTER = [1]
-SESSION_FILTER = [17, 16, 15, 1,]          # None = all, or list like [1, 2, 3]
+# SESSION_FILTER = [17, 16, 15, 1,]          # None = all, or list like [1, 2, 3]
+SESSION_FILTER = None
 SESSION_ID_PATTERN = None      # None = all, or regex like r'.*control.*'
 
 
@@ -57,8 +58,8 @@ SESSION_ID_PATTERN = None      # None = all, or regex like r'.*control.*'
 
 FIGURE_CONFIG = {
     # Core visualizations
-    'generate_session_summary': False,       # PSD overview (1-120 Hz)
-    'generate_waveform_raster': False,       # Raw LFP traces across trials
+    'generate_session_summary': True,       # PSD overview (1-120 Hz)
+    'generate_waveform_raster': True,       # Raw LFP traces across trials
     'generate_trial_heatmaps': False,        # Per-trial band power heatmaps
 
     # Spectrograms
@@ -831,8 +832,49 @@ def get_broadband_full(data):
         (broadband_full, t_ms): Arrays of shape (n_trials, n_channels, n_times) and (n_times,)
     """
     if 'broadband_full' in data:
+        bb = np.asarray(data['broadband_full'])
         t_ms = get_time_axis(data)
-        return np.array(data['broadband_full']), t_ms
+
+        # Make sure selected time axis matches broadband_full time dimension
+        if bb.ndim == 3:
+            n_time = bb.shape[-1]
+            t_ms = np.asarray(t_ms)
+
+            if t_ms.size != n_time:
+                matched = False
+
+                # Try alternate full-time keys
+                for key in ['t_full_ms', 't_ms', 'rel_time_full']:
+                    if key in data:
+                        cand = np.asarray(data[key])
+                        if cand.ndim == 1 and cand.size == n_time:
+                            print(
+                                f"    [Info] Using {key} as time axis because it matches "
+                                f"broadband_full length {n_time}"
+                            )
+                            t_ms = cand
+                            matched = True
+                            break
+
+                # If no saved time axis matches, reconstruct one from fs_lfp
+                if not matched:
+                    fs = float(data.get('fs_lfp', 1000))
+                    dt_ms = 1000.0 / fs
+
+                    old_t = np.asarray(t_ms).ravel()
+                    if old_t.size:
+                        start_ms = float(old_t[0])
+                    else:
+                        start_ms = -0.5 * n_time * dt_ms
+
+                    print(
+                        f"    [Warn] Time axis length mismatch: broadband_full has {n_time} samples, "
+                        f"time axis has {old_t.size}; reconstructing from fs_lfp={fs}"
+                    )
+
+                    t_ms = start_ms + np.arange(n_time) * dt_ms
+
+        return bb, np.asarray(t_ms)
     
     # Construct from pre + post (legacy format)
     if 'broadband_pre' not in data or 'broadband_post' not in data:
@@ -861,6 +903,14 @@ def get_broadband_full(data):
     # Concatenate
     broadband_full = np.concatenate([pre, post], axis=-1)
     t_ms = np.concatenate([t_pre, t_post])
+
+    # Optional safety check for legacy path too
+    if broadband_full.shape[-1] != t_ms.size:
+        raise ValueError(
+            f"Legacy broadband/time mismatch: "
+            f"broadband_full.shape[-1]={broadband_full.shape[-1]}, "
+            f"len(t_ms)={t_ms.size}"
+        )
     
     return broadband_full, t_ms
 
@@ -3592,10 +3642,12 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
 # =============================================================================
 
 def process_session(data, session_id, fig_dir, groups, fs=1000,
-                    data_control=None, session_data_dict=None,
+                    data_control=None, data_rest=None,
+                    session_data_dict=None,
                     nsp_to_elec=None, elec_to_idx=None, region_grids=None,
                     ua_ids_1based=None, control_median_baseline_norm=None,
-                    control_spatial_baseline=None):
+                    control_spatial_baseline=None,
+                    is_control=False, is_at_rest=False):
     """
     Run all enabled analyses for a session.
     """
@@ -3821,6 +3873,7 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
     
     all_sessions = {}
     control_candidates_by_target = {}
+    at_rest_candidates_by_target = {}
     dose_response_cache = {}  # base_id -> {n_pulses: data}
     
     for npz_path in files:
