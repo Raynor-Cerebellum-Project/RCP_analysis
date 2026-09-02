@@ -4,8 +4,6 @@ summarize_stim_response_groups.py
 
 Simple stimulation response grouping analysis.
 
-This script replaces large per-channel raster grids / shuffle-heavy summaries with:
-
 1. Channel/electrode classification:
     - unchanged
     - post_increase

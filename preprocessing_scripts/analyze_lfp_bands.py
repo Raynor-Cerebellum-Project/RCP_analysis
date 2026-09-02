@@ -22,24 +22,15 @@
 """
 
 import gc
-import os
 import csv
-import re
 import numpy as np
 from scipy import signal
-from scipy.io import loadmat
-from scipy.optimize import curve_fit
 from pathlib import Path
 import pandas as pd
 
-# SpikeInterface
-from probeinterface import Probe
 import spikeinterface as si
 import spikeinterface.preprocessing as spre
 import spikeinterface.extractors as se
-import warnings
-from joblib import Parallel, delayed
-from scipy.optimize import curve_fit, OptimizeWarning
 
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
@@ -996,12 +987,12 @@ def process_baseline_group_utah(
             "broadband_full": bb_full,
         }
         
-        for band_name, (low, high) in LFP_BANDS.items():
-            print(f"    Filtering {band_name}...")
-            filt_epochs = filter_zero_phase(concat_epochs_clean, TARGET_FS, low, high)
-            results[f'{band_name}_full'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_FULL)
-            results[f'{band_name}_pre'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_PRE)
-            results[f'{band_name}_post'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_POST)
+        # for band_name, (low, high) in LFP_BANDS.items():
+        #     print(f"    Filtering {band_name}...")
+        #     filt_epochs = filter_zero_phase(concat_epochs_clean, TARGET_FS, low, high)
+        #     results[f'{band_name}_full'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_FULL)
+        #     results[f'{band_name}_pre'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_PRE)
+        #     results[f'{band_name}_post'], _ = slice_epoch(filt_epochs, rel_t_epoch, WIN_POST)
         
         active_sessions = active_sessions_by_label[label]
         save_dict = {
@@ -1250,18 +1241,18 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         local_radii=None 
     )
     
-    # Pre-calculate filtered recordings lazily
-    filtered_recs = {}
-    for band_name, (low, high) in LFP_BANDS.items():
-        filtered_recs[band_name] = spre.bandpass_filter(
-            rec_proc, 
-            freq_min=low, 
-            freq_max=high,
-            filter_order=FILTER_ORDER,
-            dtype='float32',
-            add_reflect_padding=True,
-            ignore_low_freq_error=True,
-        )
+    # # Pre-calculate filtered recordings lazily
+    # filtered_recs = {}
+    # for band_name, (low, high) in LFP_BANDS.items():
+    #     filtered_recs[band_name] = spre.bandpass_filter(
+    #         rec_proc, 
+    #         freq_min=low, 
+    #         freq_max=high,
+    #         filter_order=FILTER_ORDER,
+    #         dtype='float32',
+    #         add_reflect_padding=True,
+    #         ignore_low_freq_error=True,
+    #     )
 
     # 3. Process each event set
     for stim_ms_ua, (cat, target) in zip(stim_ms_ua_list, cat_target_list):
@@ -1321,19 +1312,19 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         _, t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
         _, t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
         
-        # Band Analysis
-        for band_name, rec_filtered in filtered_recs.items():
-            segs_list_filt = []
-            for idx_res in valid_indices:
-                seg = extract_single_epoch(rec_filtered, idx_res, pre_samps, post_samps)
-                if seg is not None:
-                    segs_list_filt.append(seg)
+        # # Band Analysis
+        # for band_name, rec_filtered in filtered_recs.items():
+        #     segs_list_filt = []
+        #     for idx_res in valid_indices:
+        #         seg = extract_single_epoch(rec_filtered, idx_res, pre_samps, post_samps)
+        #         if seg is not None:
+        #             segs_list_filt.append(seg)
             
-            if segs_list_filt:
-                segs_filt = np.stack(segs_list_filt, axis=0)
-                results[f'{band_name}_full'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_FULL)
-                results[f'{band_name}_pre'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_PRE)
-                results[f'{band_name}_post'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_POST)
+        #     if segs_list_filt:
+        #         segs_filt = np.stack(segs_list_filt, axis=0)
+        #         results[f'{band_name}_full'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_FULL)
+        #         results[f'{band_name}_pre'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_PRE)
+        #         results[f'{band_name}_post'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_POST)
 
         # Save
         save_dict = {
@@ -1353,7 +1344,7 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         print(f"    Saved -> {final_out_npz}")
 
     # Cleanup
-    del filtered_recs, rec_proc, rec_mapped, rec_raw
+    del rec_proc, rec_mapped, rec_raw
     gc.collect()
 
 
