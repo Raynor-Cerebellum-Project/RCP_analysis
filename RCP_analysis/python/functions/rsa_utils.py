@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import Iterable, Optional
 import numpy as np
 from scipy import stats
-from sklearn.metrics import silhouette_score, silhouette_samples
 import matplotlib.pyplot as plt
 import RCP_analysis as rcp
 import os
@@ -676,6 +675,67 @@ def _plot_rdm_with_block_ticks(
             plt.close(fig)
             return None
 
+def _two_group_silhouette(D: np.ndarray, in_group_b: np.ndarray) -> float:
+    """
+    Mean silhouette for a 2-cluster split of a precomputed distance matrix.
+    Equivalent to silhouette_score(D, labels, metric="precomputed") for K=2,
+    but ~100x faster, which matters when it's called n_perm times per pair.
+    D must have a zero diagonal (guaranteed by _rsm_to_distance).
+    """
+    gb = np.asarray(in_group_b, dtype=bool)
+    ga = ~gb
+    nb, na = int(gb.sum()), int(ga.sum())
+    if nb < 2 or na < 2:
+        return np.nan
+    sum_b = D[:, gb].sum(axis=1)  # self-distance is 0, so it drops out
+    sum_a = D[:, ga].sum(axis=1)
+    a = np.where(gb, sum_b / (nb - 1), sum_a / (na - 1))  # within-cluster
+    b = np.where(gb, sum_a / na, sum_b / nb)              # nearest-other-cluster
+    denom = np.maximum(a, b)
+    s = np.divide(b - a, denom, out=np.zeros_like(denom), where=denom > 0)
+    return float(np.mean(s))
+
+def _null_pvalue(obs: float, null: np.ndarray, tail: str) -> float:
+    """
+    Empirical p-value: fraction of the label-shuffle null at least as extreme as
+    obs, with the +1 correction. No distributional assumption, but resolution is
+    floored at 1/(n_perm+1) -- see _p_stars for why that matters for the stars.
+    """
+    null = null[np.isfinite(null)]
+    if null.size == 0:
+        return np.nan
+    n = null.size
+    if tail == "greater":
+        return (1.0 + np.sum(null >= obs)) / (n + 1.0)
+    if tail == "less":
+        return (1.0 + np.sum(null <= obs)) / (n + 1.0)
+    center = null.mean()
+    return (1.0 + np.sum(np.abs(null - center) >= abs(obs - center))) / (n + 1.0)
+
+def _fdr_adjust_pairs(P: np.ndarray) -> np.ndarray:
+    """BH-adjust the K*(K-1)/2 unique pair p-values, mirrored back to K x K."""
+    K = P.shape[0]
+    Q = np.full_like(P, np.nan)
+    iu = np.triu_indices(K, k=1)
+    pv = P[iu]
+    valid = np.isfinite(pv)
+    if not valid.any():
+        return Q
+    adj = np.full(pv.shape, np.nan)
+    adj[valid] = stats.false_discovery_control(pv[valid], method="bh")
+    Q[iu] = adj
+    Q[iu[1], iu[0]] = adj
+    return Q
+
+def _p_stars(q: float) -> str:
+    """
+    Single significance tier. Graded tiers (**/***) aren't used because with a
+    1/(n_perm+1) p-value floor, BH ties give a pair a smaller q the more OTHER
+    pairs are also significant -- so tier would track the number of significant
+    pairs, not this pair's separation.
+    """
+    return "*" if np.isfinite(q) and q < 0.05 else ""
+
 def _rsm_to_distance(RSM: np.ndarray, kind: str = "angular") -> np.ndarray:
     """Correlation similarity -> distance for silhouette (metric='precomputed')."""
     R = 0.5 * (RSM + RSM.T)  # enforce exact symmetry
@@ -687,28 +747,65 @@ def _rsm_to_distance(RSM: np.ndarray, kind: str = "angular") -> np.ndarray:
     return D
 
 def _pairwise_silhouette(
-    RSM: np.ndarray, block_sizes: list[int], kind: str = "angular"
-) -> np.ndarray:
-    """K x K silhouette computed two conditions at a time; NaN diagonal."""
+    RSM: np.ndarray,
+    block_sizes: list[int],
+    kind: str = "angular",
+    n_perm: int = 0,
+    tail: str = "greater",
+    rng=None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    K x K silhouette computed two conditions at a time; NaN diagonal.
+
+    If n_perm > 0, each pair also gets a null distribution built by shuffling the
+    two conditions' trial labels (group sizes preserved) and recomputing the
+    silhouette on the same distance matrix. Returns (S, P) where P holds the
+    uncorrected empirical p-values; NaN P entries mean the pair wasn't tested.
+    """
     K = len(block_sizes)
+    S = np.full((K, K), np.nan)
+    P = np.full((K, K), np.nan)
     if K < 2:
         logger.info(f"[sil-pair] {K} condition(s); pairwise silhouette needs >=2, skipping")
-        return np.full((K, K), np.nan)
+        return S, P
 
+    if n_perm > 0:
+        p_floor = 1.0 / (n_perm + 1.0)
+        n_pairs = K * (K - 1) // 2
+        if p_floor * n_pairs > 0.05:
+            logger.warning(
+                f"[sil-pair][warn] p floor {p_floor:.4f} x {n_pairs} pairs > 0.05; "
+                f"no pair can reach q<0.05. Need n_perm >~ {int(n_pairs / 0.05)}."
+            )
+
+    rng = np.random.default_rng(rng)
     D = _rsm_to_distance(RSM, kind=kind)
     labels = np.repeat(np.arange(K), block_sizes)
-    S = np.full((K, K), np.nan)
+
     for i in range(K):
         for j in range(i + 1, K):
             sel = np.where((labels == i) | (labels == j))[0]
             Dij, lij = D[np.ix_(sel, sel)], labels[sel]
             ok = np.isfinite(Dij).all(axis=1)
             Dij, lij = Dij[np.ix_(ok, ok)], lij[ok]
-            uniq, counts = np.unique(lij, return_counts=True)
-            if len(uniq) < 2 or counts.min() < 2:
+            g = lij == j
+            if g.sum() < 2 or (~g).sum() < 2:
                 continue
-            S[i, j] = S[j, i] = float(silhouette_score(Dij, lij, metric="precomputed"))
-    return S
+
+            obs = _two_group_silhouette(Dij, g)
+            if not np.isfinite(obs):
+                continue
+            S[i, j] = S[j, i] = obs
+
+            if n_perm > 0:
+                null = np.empty(n_perm)
+                perm = g.copy()
+                for p in range(n_perm):
+                    rng.shuffle(perm)  # in-place, preserves group sizes
+                    null[p] = _two_group_silhouette(Dij, perm)
+                P[i, j] = P[j, i] = _null_pvalue(obs, null, tail)
+
+    return S, P
 
 def _within_condition_consistency(
     RSM: np.ndarray, block_sizes: list[int]
@@ -742,6 +839,8 @@ def _plot_pairwise_silhouette(
     annotate: bool = True,
     diag_values: np.ndarray | None = None,
     ax: plt.Axes | None = None,
+    qvals: np.ndarray | None = None,
+    footnote: str | None = None,
 ):
     """
     Heatmap of the K x K pairwise silhouette matrix. Diagonal is undefined and
@@ -753,7 +852,7 @@ def _plot_pairwise_silhouette(
     diag_values: optional length-K values printed on the (uncolored) diagonal --
     intended for within-condition mean correlation. These are a DIFFERENT
     quantity from the off-diagonal silhouettes and are deliberately left off the
-    color scale; say so in the title.
+    color scale; say so via footnote.
     """
     own_fig = ax is None
     if own_fig:
@@ -791,9 +890,14 @@ def _plot_pairwise_silhouette(
             for j in range(K):
                 if i == j or not np.isfinite(S[i, j]):
                     continue
+                txt = f"{S[i, j]:.2f}"
+                if qvals is not None:
+                    stars = _p_stars(qvals[i, j])
+                    if stars:
+                        txt += f"$^{{{stars}}}$"
                 # white text on saturated cells, black on pale ones
                 color = "white" if abs(S[i, j]) > 0.6 * vmax else "black"
-                ax.text(j, i, f"{S[i, j]:.2f}", ha="center", va="center",
+                ax.text(j, i, txt, ha="center", va="center",
                         fontsize=7, color=color)
 
     if diag_values is not None:
@@ -806,11 +910,14 @@ def _plot_pairwise_silhouette(
             
     cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cb.set_label("Pairwise silhouette")
-
+    
+    if footnote:
+        fig.text(0.98, 0.02, footnote, ha="right", va="bottom",
+                 fontsize=7, color="0.35")
     if own_fig:
         fig.tight_layout()
         if out_svg is not None:
-            fig.savefig(out_svg, dpi=300)
+            fig.savefig(out_svg, dpi=300, bbox_inches="tight")
             out_svg_rel = os.path.relpath(out_svg, OUT_BASE)
             plt.close(fig)
             return out_svg_rel
@@ -831,6 +938,9 @@ def run_rsa(
     move_alpha: float = 0.05,
     stim_alpha: float = 0.05,
     sil_vmax: float | None = None,
+    sil_n_perm: int = 1000,
+    sil_tail: str = "greater",
+    sil_seed: int | None = 0,
     debug_masks: bool = False,
 ):
     """
@@ -1096,8 +1206,8 @@ def run_rsa(
         kept_ch = blocks[0].move_mask.sum() if blocks else 0
 
         title = (
-            f"RSA\n{target_disp} ({source}, criterion={criterion or 'all-ch'})\n"
-            f"{int(poststim_win_ms[0])} to {int(poststim_win_ms[1])} ms post-stim, {kept_ch} channels\n"
+            f"RSA\n{target_disp} ({source}, criterion={criterion or 'all-ch'}, {kept_ch} channels)\n"
+            f"{int(poststim_win_ms[0])} to {int(poststim_win_ms[1])} ms post-stim\n"
             f"n={RSM.shape[0]}, {len(blocks)} conditions"
         )
 
@@ -1111,6 +1221,10 @@ def run_rsa(
             RSM, sizes_t, block_labels_t, title,
             out_svg=out_svg, vmin=vmin, vmax=vmax,
         )
+        S_pair, P_pair = _pairwise_silhouette(
+            RSM, sizes_t, n_perm=sil_n_perm, tail=sil_tail, rng=sil_seed,
+        )
+        Q_pair = _fdr_adjust_pairs(P_pair) if sil_n_perm > 0 else None
         cons_r, cons_n = _within_condition_consistency(RSM, sizes_t)
         logger.info(
             f"[within] {criterion or 'all-ch'}: " +
@@ -1118,8 +1232,14 @@ def run_rsa(
                       for lab, r, n in zip(block_labels_t, cons_r, cons_n)
                       if np.isfinite(r))
         )
-        S_pair = _pairwise_silhouette(RSM, sizes_t)
-        cons_r, cons_n = _within_condition_consistency(RSM, sizes_t)
+        if Q_pair is not None:
+            iu = np.triu_indices(len(sizes_t), 1)
+            q = Q_pair[iu]
+            tested = np.isfinite(q)
+            logger.info(
+                f"[sil-pair] {int((q[tested] < 0.05).sum())}/{int(tested.sum())} pairs significant "
+                f"(perm n={sil_n_perm}, tail={sil_tail}, BH q<0.05)"
+            )
         sil_rel = None
         if np.isfinite(S_pair).any():
             sil_svg = (
@@ -1127,12 +1247,15 @@ def run_rsa(
                         f"poststim{int(poststim_win_ms[0])}-{int(poststim_win_ms[1])}.png"
                 if SAVE_SVG else None
             )
+            star_note = ("  * - q<0.05 vs shuffle null (BH-corrected)"
+                if Q_pair is not None else "")
             sil_rel = _plot_pairwise_silhouette(
                 S_pair, block_labels_t,
-                f"Silhouette score matrix\n{target_disp} ({source}, criterion={criterion or 'all-ch'})\n"
-                f"{int(poststim_win_ms[0])} to {int(poststim_win_ms[1])} ms post-stim, {kept_ch} channels\n"
-                f"Diagonal = within-condition correlation",
-                vmax=sil_vmax, diag_values=cons_r, out_svg=sil_svg,
+                f"Silhouette score matrix\n{target_disp} ({source}, criterion={criterion or 'all-ch'}, {kept_ch} channels)\n"
+                f"{int(poststim_win_ms[0])} to {int(poststim_win_ms[1])} ms post-stim",
+                vmax=sil_vmax, diag_values=cons_r, qvals=Q_pair,
+                footnote=f"Diagonal = within-condition correlation{star_note}",
+                out_svg=sil_svg,
             )
         if sil_rel is not None:
             logger.info(f"[sil-pair]{'':<8} figure saved  {sil_rel}")
