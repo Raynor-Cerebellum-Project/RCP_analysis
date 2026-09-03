@@ -3,6 +3,8 @@
 ## Overview
 This repository contains the analysis pipeline for preprocessing, quantifying, and comparing stimulation trials from the Raynor experiments.  
 
+[Documentation](https://rcp-reaching-analysis.readthedocs.io/en/latest/index.html)
+
 ![pipeline_schematic](https://github.com/Raynor-Cerebellum-Project/RCP_analysis/blob/main/docs/source/images/pipeline_schematic.png "pipeline_schematic")
 
 [Summary of recorded signals](https://docs.google.com/document/d/1C4-xSWL8n7P_mMrYqlUxQR6blz9WIHDU4B7O9bxhMnE/edit?tab=t.0)
