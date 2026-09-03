@@ -95,7 +95,7 @@ Visualization
 
 .. Kinematics quantification -- commented out, kept for reference.
 
-   ``batch_scripts/quantify_stim_kinematics.py`` analyzes reach kinematics
+   ``preprocessing_scripts/quantify_stim_kinematics.py`` analyzes reach kinematics
    (duration, peak speed) comparing stimulation conditions to baseline:
    speed-based reach endpoint detection; statistical analysis (Welch's t-test
    vs baseline) with significance clustering; violin/box plots with

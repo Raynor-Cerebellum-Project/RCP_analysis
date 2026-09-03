@@ -1,0 +1,211 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="generator" content="Docutils 0.18.1: http://docutils.sourceforge.net/" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Steps of the pipeline &mdash; RCP_reaching_analysis 1.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=92fd9be5" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=f2a433a1"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Preprocessing" href="preprocessing/index.html" />
+    <link rel="prev" title="Running the pipeline" href="../running.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            RCP_reaching_analysis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../install.html">Installing the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../running.html">Running the pipeline</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Steps of the pipeline</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#preprocessing">Preprocessing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#analysis">Analysis</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#artifact-correction-schematic">Artifact correction schematic</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#detailed-pages">Detailed pages</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="preprocessing/index.html">Preprocessing</a></li>
+<li class="toctree-l3"><a class="reference internal" href="analysis/index.html">Analysis</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../lfp_analysis.html">LFP band analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../outputs.html">Outputs and other plots</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">RCP_reaching_analysis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Steps of the pipeline</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/steps/index.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="steps-of-the-pipeline">
+<h1>Steps of the pipeline<a class="headerlink" href="#steps-of-the-pipeline" title="Link to this heading"></a></h1>
+<section id="preprocessing">
+<h2>Preprocessing<a class="headerlink" href="#preprocessing" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p><strong>Frame correction</strong> — <code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/OCR_frame_correction.py</span></code></p></li>
+<li><p><strong>DeepLabCut 2-camera data alignment</strong> — <code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/align_dlc_two_cams_to_br.py</span></code></p></li>
+<li><p><strong>VOG to Blackrock (BR) alignment</strong> — <code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/align_VOG_to_br.py</span></code></p></li>
+<li><p><strong>NPRW preprocessing and spike detection</strong> (matched filter) —
+<code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/NPRW_Intan_analysis_mf.py</span></code></p></li>
+<li><p><strong>Compute timeshift between Intan and BR</strong> —
+<code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/compute_br_to_intan_shifts.py</span></code></p></li>
+<li><p><strong>UA preprocessing and spike detection</strong> (subspace) —
+<code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/UA_BR_analysis_ssmf.py</span></code></p>
+<ul class="simple">
+<li><p>Alternatively use <code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/UA_BR_analysis_mf.py</span></code> for a matched filter.</p></li>
+</ul>
+</li>
+<li><p><strong>Create aligned files</strong> — <code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/make_aligned_npz_and_mat.py</span></code></p>
+<ul class="simple">
+<li><p>One file per condition, per side.</p></li>
+<li><p>Output: <code class="docutils literal notranslate"><span class="pre">data/results/checkpoints/.../aligned_*.npz</span></code></p></li>
+</ul>
+</li>
+<li><p><strong>Extract peri-stim tensors</strong> based on event timing (IR or stim) —
+<code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/extract_peri_stim.py</span></code></p>
+<ul class="simple">
+<li><p>Shape: trials × channels × time bins.</p></li>
+<li><p>Output: <code class="docutils literal notranslate"><span class="pre">data/results/checkpoints/.../peristim_*.npz</span></code></p></li>
+</ul>
+</li>
+<li><p><strong>Output kinematic trajectories</strong> for manual inspection —
+<code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/inspect_kinematics_trajectories.py</span></code></p></li>
+</ol>
+</section>
+<section id="analysis">
+<h2>Analysis<a class="headerlink" href="#analysis" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p><strong>Kinematics analysis</strong> — <code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/plot_plateau_analysis.py</span></code></p>
+<ul class="simple">
+<li><p>Rerun from <code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/extract_peri_stim.py</span></code> after curation.</p></li>
+</ul>
+</li>
+<li><p><strong>Extract RSA tensors</strong> from correlating regions of interest (ROI) —
+<code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/RSA_calculation.py</span></code></p>
+<ul class="simple">
+<li><p>Trial × trial correlation.</p></li>
+<li><p>ROIs can be set in <code class="docutils literal notranslate"><span class="pre">config/params.yaml</span></code>.</p></li>
+</ul>
+</li>
+<li><p><strong>Plot peri-stim firing rate plots</strong> —
+<code class="docutils literal notranslate"><span class="pre">analysis_scripts/plot_complete_shaded_BT.py</span></code></p>
+<ul class="simple">
+<li><p>Gaussian smoother parameters can be set in <code class="docutils literal notranslate"><span class="pre">config/params.yaml</span></code>.</p></li>
+</ul>
+</li>
+<li><p><strong>Plot peri-stim rasters</strong> — <code class="docutils literal notranslate"><span class="pre">analysis_scripts/plot_peri_stim_raster.py</span></code></p></li>
+</ol>
+</section>
+<section id="artifact-correction-schematic">
+<h2>Artifact correction schematic<a class="headerlink" href="#artifact-correction-schematic" title="Link to this heading"></a></h2>
+<img alt="Utah array analysis and artifact correction schematic" class="align-center" src="../_images/utah_array_analysis_and_artifact_correction.png" />
+</section>
+<section id="detailed-pages">
+<h2>Detailed pages<a class="headerlink" href="#detailed-pages" title="Link to this heading"></a></h2>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="preprocessing/index.html">Preprocessing</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="preprocessing/ocr_frame_correction.html">1. OCR Frame Correction</a></li>
+<li class="toctree-l2"><a class="reference internal" href="preprocessing/align_dlc.html">2. DeepLabCut Two-Camera Alignment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="preprocessing/align_vog.html">3. VOG to Blackrock Alignment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="preprocessing/intan.html">4. Intan (NPRW) Preprocessing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="preprocessing/compute_shifts.html">5. Compute BR-to-Intan Shifts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="preprocessing/ua_br.html">6. Utah Array (Blackrock) Preprocessing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="preprocessing/make_aligned.html">7. Create Aligned Files</a></li>
+<li class="toctree-l2"><a class="reference internal" href="preprocessing/extract_peri_stim.html">8. Extract Peri-Stimulus Data</a></li>
+<li class="toctree-l2"><a class="reference internal" href="preprocessing/inspect_kinematics.html">9. Inspect Kinematics Trajectories</a></li>
+<li class="toctree-l2"><a class="reference internal" href="preprocessing/analyze_lfp_bands.html">10. Analyze LFP Bands</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="analysis/index.html">Analysis</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="analysis/plot_complete_shaded.html">1. Peri-Stim Firing Rate Plots</a></li>
+<li class="toctree-l2"><a class="reference internal" href="analysis/plot_plateau_analysis.html">2. Plateau Analysis</a></li>
+<li class="toctree-l2"><a class="reference internal" href="analysis/plot_peri_stim_raster.html">3. Peri-Stim Rasters</a></li>
+<li class="toctree-l2"><a class="reference internal" href="analysis/plot_bin_counts.html">4. Bin Counts Per Target</a></li>
+<li class="toctree-l2"><a class="reference internal" href="analysis/rsa_calculation.html">5. RSA Calculation</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="../running.html" class="btn btn-neutral float-left" title="Running the pipeline" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="preprocessing/index.html" class="btn btn-neutral float-right" title="Preprocessing" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Bryan Tseng.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

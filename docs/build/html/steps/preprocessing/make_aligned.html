@@ -1,0 +1,164 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="generator" content="Docutils 0.18.1: http://docutils.sourceforge.net/" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>7. Create Aligned Files &mdash; RCP_reaching_analysis 1.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=92fd9be5" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=f2a433a1"></script>
+      <script src="../../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="8. Extract Peri-Stimulus Data" href="extract_peri_stim.html" />
+    <link rel="prev" title="6. Utah Array (Blackrock) Preprocessing" href="ua_br.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            RCP_reaching_analysis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../install.html">Installing the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../running.html">Running the pipeline</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Steps of the pipeline</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../index.html#preprocessing">Preprocessing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#analysis">Analysis</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#artifact-correction-schematic">Artifact correction schematic</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../index.html#detailed-pages">Detailed pages</a><ul class="current">
+<li class="toctree-l3 current"><a class="reference internal" href="index.html">Preprocessing</a><ul class="current">
+<li class="toctree-l4"><a class="reference internal" href="ocr_frame_correction.html">1. OCR Frame Correction</a></li>
+<li class="toctree-l4"><a class="reference internal" href="align_dlc.html">2. DeepLabCut Two-Camera Alignment</a></li>
+<li class="toctree-l4"><a class="reference internal" href="align_vog.html">3. VOG to Blackrock Alignment</a></li>
+<li class="toctree-l4"><a class="reference internal" href="intan.html">4. Intan (NPRW) Preprocessing</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compute_shifts.html">5. Compute BR-to-Intan Shifts</a></li>
+<li class="toctree-l4"><a class="reference internal" href="ua_br.html">6. Utah Array (Blackrock) Preprocessing</a></li>
+<li class="toctree-l4 current"><a class="current reference internal" href="#">7. Create Aligned Files</a></li>
+<li class="toctree-l4"><a class="reference internal" href="extract_peri_stim.html">8. Extract Peri-Stimulus Data</a></li>
+<li class="toctree-l4"><a class="reference internal" href="inspect_kinematics.html">9. Inspect Kinematics Trajectories</a></li>
+<li class="toctree-l4"><a class="reference internal" href="analyze_lfp_bands.html">10. Analyze LFP Bands</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="../analysis/index.html">Analysis</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../lfp_analysis.html">LFP band analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../outputs.html">Outputs and other plots</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">RCP_reaching_analysis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Steps of the pipeline</a></li>
+          <li class="breadcrumb-item"><a href="index.html">Preprocessing</a></li>
+      <li class="breadcrumb-item active"><span class="section-number">7. </span>Create Aligned Files</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/steps/preprocessing/make_aligned.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="create-aligned-files">
+<h1>Create Aligned Files<a class="headerlink" href="#create-aligned-files" title="Link to this heading"></a></h1>
+<p>Script: <code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/make_aligned_npz_and_mat.py</span></code></p>
+<p>Creates the <code class="docutils literal notranslate"><span class="pre">aligned.npz</span></code> files by combining neural, auxiliary, and behavioral data into a single aligned file per condition.</p>
+<section id="steps">
+<h2>Steps<a class="headerlink" href="#steps" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Align neural, aux, and behavioral data (NPRW, UA, kinematics, HR, target, and VOG).</p></li>
+<li><p>Create spike time (peaks) dictionaries for both NPRW and UA.</p></li>
+<li><p>Permute UA channel labels and UA peak dictionary by region.</p></li>
+<li><p>Output <code class="docutils literal notranslate"><span class="pre">.npz</span></code> and <code class="docutils literal notranslate"><span class="pre">.mat</span></code> files in <code class="docutils literal notranslate"><span class="pre">~/results/checkpoints/Aligned</span></code>.</p></li>
+</ol>
+</section>
+<section id="outputs">
+<h2>Outputs<a class="headerlink" href="#outputs" title="Link to this heading"></a></h2>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">Aligned/control_reaches/</span></code></dt><dd><p>Control trials (no stim).</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">Aligned/stim_reaches/</span></code></dt><dd><p>Stimulation condition reaches.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">Aligned/at_rest/</span></code></dt><dd><p>At rest conditions (no reach).</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">Aligned/Grasp/</span></code></dt><dd><p>Grasp experiment trials.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">Aligned/IMU/</span></code></dt><dd><p>IMU experiment trials.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">Aligned/continuous_stim/</span></code></dt><dd><p>Continuous stimulation trials.</p>
+</dd>
+</dl>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="ua_br.html" class="btn btn-neutral float-left" title="6. Utah Array (Blackrock) Preprocessing" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="extract_peri_stim.html" class="btn btn-neutral float-right" title="8. Extract Peri-Stimulus Data" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Bryan Tseng.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

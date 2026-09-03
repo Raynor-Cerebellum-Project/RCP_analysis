@@ -34,9 +34,3 @@ Other plots
 
 ``~/scripts/bryan_scripts/quick_plots/plot_HPF_traces_with_peaks.ipynb``
    Raw traces with peaks labeled.
-
-TODOs
------
-
-* Switch to HDF5 / NWB format
-* Refine alignment using the triangle sync pulse

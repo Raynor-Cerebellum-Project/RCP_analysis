@@ -17,12 +17,11 @@ Inputs
 Outputs
 -------
 
-``data/results/checkpoints/.../aligned.npz``
-   Aligned spike times, behavioral traces, event timings, and metadata, one
-   file per condition and target.
+``data/results/checkpoints/.../aligned_*.npz``
+   Aligned spike times, behavioral traces, event timings, and metadata, one file per condition and target.
 
 ``data/results/checkpoints/.../peristim_*.npz``
-   Peri-stim tensors, one file per condition and target.
+   Peri-stim (event) tensors, one file per condition and target.
 
 ``data_status_reaching.csv``
-   Timestamps recording when each step was run.
+   Timestamps that keep track of when each step was run.

@@ -1,0 +1,183 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="generator" content="Docutils 0.18.1: http://docutils.sourceforge.net/" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Extract Peri-Stimulus Data &mdash; RCP_reaching_analysis 1.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=92fd9be5" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=f2a433a1"></script>
+      <script src="../../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="9. Inspect Kinematics Trajectories" href="inspect_kinematics.html" />
+    <link rel="prev" title="7. Create Aligned Files" href="make_aligned.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            RCP_reaching_analysis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../install.html">Installing the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../running.html">Running the pipeline</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Steps of the pipeline</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../index.html#preprocessing">Preprocessing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#analysis">Analysis</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#artifact-correction-schematic">Artifact correction schematic</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../index.html#detailed-pages">Detailed pages</a><ul class="current">
+<li class="toctree-l3 current"><a class="reference internal" href="index.html">Preprocessing</a><ul class="current">
+<li class="toctree-l4"><a class="reference internal" href="ocr_frame_correction.html">1. OCR Frame Correction</a></li>
+<li class="toctree-l4"><a class="reference internal" href="align_dlc.html">2. DeepLabCut Two-Camera Alignment</a></li>
+<li class="toctree-l4"><a class="reference internal" href="align_vog.html">VOG to Blackrock Alignment</a></li>
+<li class="toctree-l4"><a class="reference internal" href="intan.html">4. Intan (NPRW) Preprocessing</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compute_shifts.html">5. Compute BR-to-Intan Shifts</a></li>
+<li class="toctree-l4"><a class="reference internal" href="ua_br.html">6. Utah Array (Blackrock) Preprocessing</a></li>
+<li class="toctree-l4"><a class="reference internal" href="make_aligned.html">7. Create Aligned Files</a></li>
+<li class="toctree-l4 current"><a class="current reference internal" href="#">Extract Peri-Stimulus Data</a></li>
+<li class="toctree-l4"><a class="reference internal" href="inspect_kinematics.html">9. Inspect Kinematics Trajectories</a></li>
+<li class="toctree-l4"><a class="reference internal" href="analyze_lfp_bands.html">Analyze LFP Bands</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="../analysis/index.html">Analysis</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../lfp_analysis.html">LFP band analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../outputs.html">Outputs and other plots</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">RCP_reaching_analysis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Steps of the pipeline</a></li>
+          <li class="breadcrumb-item"><a href="index.html">Preprocessing</a></li>
+      <li class="breadcrumb-item active">Extract Peri-Stimulus Data</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/steps/preprocessing/extract_peri_stim.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="extract-peri-stimulus-data">
+<h1>Extract Peri-Stimulus Data<a class="headerlink" href="#extract-peri-stimulus-data" title="Link to this heading"></a></h1>
+<p>Script: <code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/extract_peri_stim.py</span></code></p>
+<p>Extracts peri-stimulus data from <code class="docutils literal notranslate"><span class="pre">aligned.npz</span></code> files and distributes it into conditions.</p>
+<section id="condition-types">
+<h2>Condition Types<a class="headerlink" href="#condition-types" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p><strong>Control reaches</strong> (no stim) — aligned to IR crossing, split by target (A/B).</p></li>
+<li><p><strong>Stim condition reaches</strong> — aligned to stim onset, split by target (A/B).</p></li>
+<li><p><strong>At rest</strong> (no reach) — aligned to stim onset, no target splitting.</p></li>
+<li><p><strong>Grasp trials</strong> — aligned to stim onset, no target splitting.</p></li>
+<li><p><strong>IMU trials</strong> — aligned to stim onset, no target splitting.</p></li>
+<li><p><strong>Continuous stim</strong> — aligned to IR crossing, no target splitting.</p></li>
+</ol>
+</section>
+<section id="steps">
+<h2>Steps<a class="headerlink" href="#steps" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Load aligned <code class="docutils literal notranslate"><span class="pre">.npz</span></code> files from the appropriate condition directory.</p></li>
+<li><p>Apply behavior-based trial gating (drop trials with bad kinematics).</p></li>
+<li><p>Compute trial labels (A/B/N) from touchscreen state.</p></li>
+<li><p>Extract peri-event traces for neural data (NPRW, UA).</p></li>
+<li><p>Deduplicate MUA peaks, bin counts, and estimate firing rates using Gaussian kernel smoothing.</p></li>
+<li><p>Baseline-correct traces (subtract mean of first 150 ms).</p></li>
+<li><p>Calculate median, variance, and mean traces across trials.</p></li>
+<li><p>Extract peri-event behavior traces (position and velocity).</p></li>
+<li><p>Interpolate small NaN gaps in kinematics (≤4 samples).</p></li>
+<li><p>Z-score normalize behavior columns.</p></li>
+<li><p>Separate left (A) and right (B) reaches for stim/control conditions.</p></li>
+<li><p>Output <code class="docutils literal notranslate"><span class="pre">.npz</span></code> and <code class="docutils literal notranslate"><span class="pre">.mat</span></code> files in <code class="docutils literal notranslate"><span class="pre">results/checkpoints/PeriStim/&lt;condition_type&gt;/</span></code>.</p></li>
+</ol>
+</section>
+<section id="outputs">
+<h2>Outputs<a class="headerlink" href="#outputs" title="Link to this heading"></a></h2>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">PeriStim/control_reaches/target_A/</span></code>, <code class="docutils literal notranslate"><span class="pre">target_B/</span></code></dt><dd><p>Control reaches (no stim), aligned to IR crossing, split by target.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">PeriStim/stim_reaches/target_A/</span></code>, <code class="docutils literal notranslate"><span class="pre">target_B/</span></code></dt><dd><p>Stimulation condition reaches, aligned to stim onset, split by target.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">PeriStim/at_rest/</span></code></dt><dd><p>At-rest trials (no reach), aligned to stim onset.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">PeriStim/Grasp/</span></code></dt><dd><p>Grasp experiment trials, aligned to stim onset.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">PeriStim/IMU/</span></code></dt><dd><p>IMU experiment trials, aligned to stim onset.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">PeriStim/continuous_stim/</span></code></dt><dd><p>Continuous stimulation trials, aligned to IR crossing.</p>
+</dd>
+</dl>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="make_aligned.html" class="btn btn-neutral float-left" title="7. Create Aligned Files" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="inspect_kinematics.html" class="btn btn-neutral float-right" title="9. Inspect Kinematics Trajectories" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Bryan Tseng.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

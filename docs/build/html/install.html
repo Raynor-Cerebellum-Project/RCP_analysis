@@ -3,18 +3,18 @@
 <!DOCTYPE html>
 <html class="writer-html5" lang="en" data-content_root="./">
 <head>
-  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta charset="utf-8" /><meta name="generator" content="Docutils 0.18.1: http://docutils.sourceforge.net/" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Installing the pipeline &mdash; RCP_reaching_analysis 1.0 documentation</title>
-      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=92fd9be5" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
 
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
       <script src="_static/documentation_options.js?v=f2a433a1"></script>
-      <script src="_static/doctools.js?v=9bcbadda"></script>
+      <script src="_static/doctools.js?v=9a2dae69"></script>
       <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
@@ -43,15 +43,9 @@
 </div>
         </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
               <ul class="current">
-<li class="toctree-l1 current"><a class="current reference internal" href="#">Installing the pipeline</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="#clone-the-repository">Clone the repository</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#create-the-environment">Create the environment</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#install-easyocr">Install easyocr</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#install-rcp-analysis">Install RCP_analysis</a></li>
-</ul>
-</li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Installing the pipeline</a></li>
 <li class="toctree-l1"><a class="reference internal" href="running.html">Running the pipeline</a></li>
-<li class="toctree-l1"><a class="reference internal" href="pipeline_steps.html">Steps of the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="steps/index.html">Steps of the pipeline</a></li>
 <li class="toctree-l1"><a class="reference internal" href="lfp_analysis.html">LFP band analysis</a></li>
 <li class="toctree-l1"><a class="reference internal" href="outputs.html">Outputs and other plots</a></li>
 </ul>
@@ -83,35 +77,27 @@
   <section id="installing-the-pipeline">
 <h1>Installing the pipeline<a class="headerlink" href="#installing-the-pipeline" title="Link to this heading"></a></h1>
 <p>Use <strong>Anaconda Prompt</strong> on Windows, and make sure CUDA is installed.</p>
-<section id="clone-the-repository">
-<h2>Clone the repository<a class="headerlink" href="#clone-the-repository" title="Link to this heading"></a></h2>
+<p><strong>Clone the repository</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Raynor-Cerebellum-Project/RCP_analysis.git
 <span class="nb">cd</span><span class="w"> </span>RCP_analysis
 </pre></div>
 </div>
-</section>
-<section id="create-the-environment">
-<h2>Create the environment<a class="headerlink" href="#create-the-environment" title="Link to this heading"></a></h2>
+<p><strong>Create the environment</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>conda<span class="w"> </span>env<span class="w"> </span>create<span class="w"> </span>-f<span class="w"> </span>environment.yml<span class="w"> </span>-n<span class="w"> </span>pipeline
 conda<span class="w"> </span>activate<span class="w"> </span>pipeline
 python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--upgrade<span class="w"> </span>pip
 </pre></div>
 </div>
-</section>
-<section id="install-easyocr">
-<h2>Install easyocr<a class="headerlink" href="#install-easyocr" title="Link to this heading"></a></h2>
+<p><strong>Install easyocr</strong></p>
 <p>Install without dependencies so that pip does not touch the PyTorch build that
 <code class="docutils literal notranslate"><span class="pre">environment.yml</span></code> pinned:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>easyocr<span class="w"> </span>--no-deps
 </pre></div>
 </div>
-</section>
-<section id="install-rcp-analysis">
-<h2>Install RCP_analysis<a class="headerlink" href="#install-rcp-analysis" title="Link to this heading"></a></h2>
+<p><strong>Install RCP_analysis</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.
 </pre></div>
 </div>
-</section>
 </section>
 
 
