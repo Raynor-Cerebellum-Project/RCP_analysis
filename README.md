@@ -3,7 +3,7 @@
 ## Overview
 This repository contains the analysis pipeline for preprocessing, quantifying, and comparing stimulation trials from the Raynor experiments.  
 
-![pipeline_schematic](https://github.com/Raynor-Cerebellum-Project/RCP_analysis/blob/main/docs/pipeline_schematic.png "pipeline_schematic")
+![pipeline_schematic](https://github.com/Raynor-Cerebellum-Project/RCP_analysis/blob/main/docs/source/images/pipeline_schematic.png "pipeline_schematic")
 
 [Summary of recorded signals](https://docs.google.com/document/d/1C4-xSWL8n7P_mMrYqlUxQR6blz9WIHDU4B7O9bxhMnE/edit?tab=t.0)
 
@@ -104,7 +104,7 @@ Output:
 4. Plot peri-stim rasters: `analysis_scripts/plot_peri_stim_raster.py`
 
 # Artifact correction schematic
-![alt text](https://github.com/Raynor-Cerebellum-Project/RCP_analysis/blob/main/docs/utah_array_analysis_and_artifact_correction.png "artifact correction schematic")
+![alt text](https://github.com/Raynor-Cerebellum-Project/RCP_analysis/blob/main/docs/source/images/utah_array_analysis_and_artifact_correction.png "artifact correction schematic")
 
 ## LFP Band Analysis
 `preprocessing_scripts/analyze_lfp_bands.py`
