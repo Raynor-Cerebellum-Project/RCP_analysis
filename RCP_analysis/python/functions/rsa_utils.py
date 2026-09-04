@@ -924,6 +924,234 @@ def _plot_pairwise_silhouette(
         plt.close(fig)
     return None
 
+def run_time_domain_corr(
+    source: str = "NPRW",
+    target: str = "target_A",
+    poststim_win_ms: tuple[float, float] = (-800, 600.0),
+    channel_criterion: str | None | Iterable[str | None] = None,
+    cond_label_extras: dict | None = None,
+    vmin: float = -1.0,
+    vmax: float = 1.0,
+    skip_conds: Optional[Iterable[int]] = None,
+    cond_order: Optional[Iterable] = None,
+    move_alpha: float = 0.05,
+    stim_alpha: float = 0.05,
+    debug_masks: bool = False,
+):
+    """
+    """
+    cond_label_extras = cond_label_extras or {}
+    skip_conds = set(skip_conds or [])
+
+    # normalize channel_criterion to a list of criteria to build/plot; a bare
+    # string or None means "just one", anything else is treated as an iterable
+    if channel_criterion is None or isinstance(channel_criterion, str):
+        criteria = [channel_criterion]
+    else:
+        criteria = list(channel_criterion)
+    needs_movement = any(c in ("movement", "union", "intersection") for c in criteria)
+    needs_stim = any(c in ("stim", "union", "intersection") for c in criteria)
+
+    logger.info(
+        f"\n{'='*70}\n"
+        f"[run] probe={source}  target={target}  "
+        f"poststim={poststim_win_ms[0]}-{poststim_win_ms[1]}ms\n"
+        f"{'='*70}"
+    )
+
+    # 1. Gather NPZ files: stim + control + at_rest given a target
+    #   at_rest NPZs have no target subfolder
+    stim_dir = PERI_ROOT / "stim_reaches" / target
+    baseline_dir = PERI_ROOT / "control_reaches" / target
+    at_rest_dir = PERI_ROOT / "at_rest"
+
+    # List folders
+    stim_files = sorted(stim_dir.glob("*.npz")) if stim_dir.exists() else []
+    baseline_paths = sorted(baseline_dir.glob("*.npz")) if baseline_dir.exists() else []
+    at_rest_files = sorted(at_rest_dir.glob("*.npz")) if at_rest_dir.exists() else []
+
+    # Checks
+    if not stim_files:
+        raise SystemExit(f"[rsa] no PeriStim NPZs found in {stim_dir}")
+    if baseline_paths:
+        logger.info(f"[run] baseline: {[rcp.short_npz_name(p) for p in baseline_paths]}")
+    else:
+        logger.warning(f"[run][warn] no control_reaches NPZs found in {baseline_dir}")
+    if at_rest_files:
+        logger.info(f"[run] at_rest: {[rcp.short_npz_name(p) for p in at_rest_files]}")
+
+    # Collect conditions -- done once regardless of how many criteria are requested
+    blocks, skipped = _collect_condition_blocks(
+        baseline_paths + stim_files + at_rest_files, source=source, poststim_win_ms=poststim_win_ms,
+        skip_conds=skip_conds, min_trials=MIN_TRIALS_PER_COND,
+    )
+
+    # Report skipped files
+    parts = []
+    if skipped.get("in_skip_conds"):
+        parts.append("skip_conds=" + ",".join(map(str, sorted(skipped["in_skip_conds"]))))
+    if skipped.get("too_few_trials"):
+        parts.append(f"too_few_trials(<{MIN_TRIALS_PER_COND})=" + ",".join(map(str, sorted(skipped["too_few_trials"]))))
+    if skipped.get("missing_or_empty"):
+        parts.append("other_skips=" + str(len(skipped["missing_or_empty"])))
+    if parts:
+        logger.info("[run][skip] " + " | ".join(parts))
+
+    if not blocks:
+        raise SystemExit("[rsa] no conditions with enough trials")
+
+    # baseline files actually retained after skip_conds/min_trials filtering -- masks
+    # must be computed from these, not the raw glob result, or a skipped baseline
+    # file would still silently contribute to the movement/stim null distribution
+    baseline_paths_kept = [block.path for block in blocks if block.is_baseline]
+    if len(baseline_paths_kept) != len(baseline_paths):
+        dropped = sorted(set(rcp.short_npz_name(p) for p in baseline_paths) - set(rcp.short_npz_name(p) for p in baseline_paths_kept))
+        logger.info(f"[run] baseline (after skip_conds): {[rcp.short_npz_name(p) for p in baseline_paths_kept]}  (dropped: {dropped})")
+
+    # Channel masks: computed from the raw baseline NPZs and build flags for the blocks
+    move_mask = None
+    if needs_movement:
+        move_mask = _compute_movement_mask(baseline_paths_kept, source, alpha=move_alpha)
+        if debug_masks:
+            _plot_movement_mask_debug(baseline_paths_kept, source, target, alpha=move_alpha)
+
+    ctrl_pool = None
+    if needs_stim:
+        ctrl_pool = _build_ctrl_pool(baseline_paths_kept, source)
+        if ctrl_pool is None:
+            logger.warning("[run][warn] no ctrl files for stim criterion; stim mask disabled")
+
+    if ctrl_pool is not None:
+        bl_rates, bl_rel_t = _load_rates(baseline_paths_kept[0], source)
+        for block in blocks:
+            if block.is_baseline:
+                continue
+            block.stim_mask = _compute_stim_mask(block.path, ctrl_pool, source, alpha=stim_alpha)
+
+    # Reorder blocks to match given condition order
+    if cond_order is not None:
+        order_map = {c: i for i, c in enumerate(cond_order)}
+
+        def _okey(block: Block):
+            c = "Baseline" if block.is_baseline or block.cond is None else block.cond
+            return order_map.get(c, len(order_map))
+
+        blocks = sorted(blocks, key=_okey)
+
+    # Crop all blocks to a common channel count
+    condition_ch_ct = [block.X.shape[1] for block in blocks]
+    if len(set(condition_ch_ct)) > 1:
+        min_dim = min(condition_ch_ct)
+        logger.warning(f"[run][warn] feature dimension mismatch {set(condition_ch_ct)} -> cropping all to {min_dim}")
+        for block in blocks:
+            block.X = block.X[:, :min_dim]
+            if block.stim_mask is not None:
+                block.stim_mask = block.stim_mask[:min_dim]
+        if move_mask is not None:
+            move_mask = move_mask[:min_dim]
+        condition_ch_ct = [min_dim] * len(blocks)
+
+    # z-score per channel then slice back into per-block chunks
+    X_all = np.vstack([block.X for block in blocks])
+    if Z_SCORE_FEATURES and X_all.size:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mu = np.nanmean(X_all, axis=0, keepdims=True)
+            sd = np.nanstd(X_all, axis=0, keepdims=True)
+            X_all = (X_all - mu) / np.where(sd > 0, sd, 1.0)
+
+    # drop any trials that are still NaNs post normalization (e.g. constant channels)
+    valid_rows = np.isfinite(X_all).all(axis=1)
+    if not valid_rows.all():
+        logger.info(f"[run][note] dropping {int((~valid_rows).sum())} trials post-normalization")
+        block_edge = 0
+        
+        # Remove NaN trials from each block and update block sizes
+        for block in blocks:
+            n = block.X.shape[0]
+            keep = valid_rows[block_edge:block_edge + n]
+            block.X = block.X[keep]
+            block_edge += n
+        X_all = X_all[valid_rows]
+        blocks = [block for block in blocks if block.n_trials > 0]
+        if not blocks:
+            raise SystemExit("[rsa] all blocks empty after final filtering")
+        
+    # Redistribute
+    block_edge = 0
+    for block in blocks:
+        n = block.X.shape[0]
+        block.X_z = X_all[block_edge:block_edge + n, :]
+        block_edge += n
+
+    # labels and title pieces that don't depend on channel_criterion -- computed once
+    target_disp = {"target_A": "Left reaches", "target_B": "Right reaches"}.get(target, target.replace("_", " "))
+
+    def _label_for_block(block: Block, cond_label_extras: dict) -> str:
+        if block.target == "at_rest":
+            return cond_label_extras.get("at_rest", "At rest")
+        if block.is_baseline:
+            return cond_label_extras.get("Baseline", "Baseline")
+        return cond_label_extras.get(block.cond, f"Cond {block.cond}")
+
+    block_labels_t = [_label_for_block(block, cond_label_extras) for block in blocks]
+
+    # Global union of channels that pass the stim criterion in *any* condition,
+    # used as a single fixed channel set for the "stim" criterion (instead of
+    # each block keeping its own per-condition stim_mask, which gave every
+    # condition a different channel selection).
+    stim_mask_union = None
+    if any(c == "stim" for c in criteria):
+        per_block_stim_masks = [b.stim_mask for b in blocks if b.stim_mask is not None]
+        if per_block_stim_masks:
+            stim_mask_union = np.zeros_like(per_block_stim_masks[0])
+            for m in per_block_stim_masks:
+                stim_mask_union |= m
+            logger.info(
+                f"[stim][union] {stim_mask_union.sum()}/{stim_mask_union.size} "
+                f"channels passing stim criterion"
+            )
+        else:
+            logger.info("[stim][union] no per-block stim masks available; falling back to all channels")
+
+    if debug_masks and stim_mask_union is not None:
+        stim_block = next(
+            (b for b in blocks if not b.is_baseline and b.target != "at_rest"),
+            None,
+        )
+        if stim_block is not None:
+            _plot_stim_mask_debug(
+                stim_block.path, stim_mask_union, source, target,
+                baseline_rates=bl_rates, baseline_rel_t=bl_rel_t,
+                alpha=stim_alpha,
+            )
+        
+    # Build and plot one RSM per criterion
+    for criterion in criteria:
+        # Determine channel mask for each criterion
+        for block in blocks:
+            n_ch = block.X_z.shape[1]
+            all_ch = np.ones(n_ch, bool)
+            
+            if criterion == "movement":
+                block.move_mask = move_mask if move_mask is not None else all_ch
+            elif criterion == "stim":
+                block.move_mask = stim_mask_union if stim_mask_union is not None else all_ch
+            elif criterion == "union":
+                move_mask_checked = move_mask if move_mask is not None else all_ch
+                block.move_mask = (move_mask_checked | stim_mask_union) if stim_mask_union is not None else move_mask_checked
+            elif criterion == "intersection":
+                move_mask_checked = move_mask if move_mask is not None else all_ch
+                block.move_mask = (move_mask_checked & stim_mask_union) if stim_mask_union is not None else move_mask_checked
+            else:
+                block.move_mask = all_ch
+        
+        # Blocks contain per condition data (condition x time_bin x channels) (Condition 1: blocks[1].X_z)
+        # should have 63 time bins
+        # Sliding window for 80 ms (4 time bins) with 20 ms (1 time bin) step
+        # Plot condition x time bin x channels, after correlating sliding window with control condition (Control: blocks[0].X_z)
+        
+    return 1
+
 # Do RSA
 def run_rsa(
     source: str = "NPRW",
@@ -1200,6 +1428,9 @@ def run_rsa(
                 block.move_mask = (move_mask_checked & stim_mask_union) if stim_mask_union is not None else move_mask_checked
             else:
                 block.move_mask = all_ch
+
+
+
 
         RSM, sizes_t = _build_rsm_pairwise(blocks)
 
