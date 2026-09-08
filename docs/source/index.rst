@@ -57,6 +57,7 @@ Contents
    steps/index
    lfp_analysis
    outputs
+   api
 
 
 Contact

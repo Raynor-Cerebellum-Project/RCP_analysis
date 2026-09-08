@@ -1,0 +1,560 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>rsa_utils.py &mdash; RCP_reaching_analysis 1.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=f2a433a1"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="impedance_utils.py" href="impedance_utils.html" />
+    <link rel="prev" title="reach_onset_detection.py" href="reach_onset_detection.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            RCP_reaching_analysis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../install.html">Installing the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../running.html">Running the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../steps/index.html">Steps of the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../lfp_analysis.html">LFP band analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../outputs.html">Outputs and other plots</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../api.html">Python API</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="../api.html#modules">Modules</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="params_loading.html">params_loading.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="config_loading.html">config_loading.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="utils.html">utils.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="intan_preproc.html">intan_preproc.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="br_preproc.html">br_preproc.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="artifact_correction.html">artifact_correction.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="artifact_correction_template_matching.html">artifact_correction_template_matching.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="subspace_detector.html">subspace_detector.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="reach_onset_detection.html">reach_onset_detection.py</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">rsa_utils.py</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#module-constants">Module constants</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#data-container">Data container</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#entry-points">Entry points</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#feature-extraction">Feature extraction</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#channel-masks">Channel masks</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#rsm-and-statistics">RSM and statistics</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#plotting">Plotting</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="impedance_utils.html">impedance_utils.py</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">RCP_reaching_analysis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../api.html">Python API</a></li>
+      <li class="breadcrumb-item active">rsa_utils.py</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/api/rsa_utils.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="rsa-utils-py">
+<h1>rsa_utils.py<a class="headerlink" href="#rsa-utils-py" title="Link to this heading"></a></h1>
+<p><code class="docutils literal notranslate"><span class="pre">RCP_analysis/python/functions/rsa_utils.py</span></code></p>
+<p>The Representational Similarity Analysis pipeline. It reads peri-stim NPZs, cuts
+one scalar feature per channel per trial out of a post-stim window, optionally
+restricts the channel set by a functional criterion, correlates every trial
+against every other, and scores how separable the conditions are.</p>
+<p>Only <code class="xref py py-func docutils literal notranslate"><span class="pre">run_rsa()</span></code> is re-exported at the package top level; everything else is
+a private stage of that pipeline, documented here because the stages are what
+you tune.</p>
+<p>Pipeline:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">NPZ</span> <span class="n">files</span>
+  <span class="o">-&gt;</span> <span class="n">_trial_features_from_peristim_npz</span>   <span class="p">(</span><span class="n">time</span> <span class="n">window</span> <span class="o">-&gt;</span> <span class="n">per</span><span class="o">-</span><span class="n">trial</span> <span class="n">features</span><span class="p">)</span>
+  <span class="o">-&gt;</span> <span class="n">_collect_condition_blocks</span>           <span class="p">(</span><span class="n">one</span> <span class="n">Block</span> <span class="n">per</span> <span class="n">file</span><span class="p">,</span> <span class="k">with</span> <span class="n">filtering</span><span class="p">)</span>
+  <span class="o">-&gt;</span> <span class="n">_compute_movement_mask</span> <span class="o">/</span> <span class="n">_compute_stim_mask</span>   <span class="p">(</span><span class="n">channel</span> <span class="n">selection</span><span class="p">)</span>
+  <span class="o">-&gt;</span> <span class="k">global</span> <span class="n">z</span><span class="o">-</span><span class="n">score</span> <span class="n">across</span> <span class="nb">all</span> <span class="n">trials</span>
+  <span class="o">-&gt;</span> <span class="n">_build_rsm_pairwise</span>                 <span class="p">(</span><span class="n">trial</span> <span class="n">x</span> <span class="n">trial</span> <span class="n">correlations</span><span class="p">)</span>
+  <span class="o">-&gt;</span> <span class="n">_pairwise_silhouette</span> <span class="o">+</span> <span class="n">_within_condition_consistency</span>
+  <span class="o">-&gt;</span> <span class="n">figures</span> <span class="n">under</span> <span class="n">results</span><span class="o">/</span><span class="n">figures</span><span class="o">/</span><span class="n">rsa_from_peristim</span><span class="o">/&lt;</span><span class="n">target</span><span class="o">&gt;/</span>
+</pre></div>
+</div>
+<section id="module-constants">
+<h2>Module constants<a class="headerlink" href="#module-constants" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 12.0%" />
+<col style="width: 58.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Name</p></th>
+<th class="head"><p>Value</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Z_SCORE_FEATURES</span></code></p></td>
+<td><p>True</p></td>
+<td><p>Z-score channels across all trials before correlating.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">SAVE_SVG</span></code></p></td>
+<td><p>True</p></td>
+<td><p>Write figures to <code class="docutils literal notranslate"><span class="pre">FIG_DIR</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">MIN_TRIALS_PER_COND</span></code></p></td>
+<td><p>4</p></td>
+<td><p>Drop non-baseline conditions with fewer trials.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">MIN_VALID_FEATURES</span></code></p></td>
+<td><p>2</p></td>
+<td><p>A trial needs at least this many finite channels.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">FIG_DIR</span></code></p></td>
+<td><p>—</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">OUT_BASE/figures/rsa_from_peristim</span></code> (with <code class="docutils literal notranslate"><span class="pre">target_A</span></code> / <code class="docutils literal notranslate"><span class="pre">target_B</span></code>
+subfolders), created on import.</p></td>
+</tr>
+</tbody>
+</table>
+<p>The module also configures a <code class="docutils literal notranslate"><span class="pre">logging</span></code> logger named <code class="docutils literal notranslate"><span class="pre">rsa</span></code> at <code class="docutils literal notranslate"><span class="pre">INFO</span></code>. Set
+it to <code class="docutils literal notranslate"><span class="pre">DEBUG</span></code> for per-file detail.</p>
+</section>
+<section id="data-container">
+<h2>Data container<a class="headerlink" href="#data-container" title="Link to this heading"></a></h2>
+<dl class="py class">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils.Block">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">Block</span></span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils.Block" title="Link to this definition"></a></dt>
+<dd><p>One condition’s worth of trials, carried through every stage.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Fields<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">X</span></code> <code class="docutils literal notranslate"><span class="pre">(n_trials,</span> <span class="pre">n_features)</span></code> — raw per-channel features.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">cond</span></code> — the file’s <code class="docutils literal notranslate"><span class="pre">br_idx</span></code>, set for baseline files too so
+<code class="docutils literal notranslate"><span class="pre">skip_conds</span></code> can target a specific baseline by BR number.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">target</span></code> — <code class="docutils literal notranslate"><span class="pre">&quot;target_A&quot;</span></code> / <code class="docutils literal notranslate"><span class="pre">&quot;target_B&quot;</span></code> / <code class="docutils literal notranslate"><span class="pre">&quot;at_rest&quot;</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">is_baseline</span></code> (bool) — file lives under <code class="docutils literal notranslate"><span class="pre">control_reaches/</span></code>; used for
+labeling and the relaxed trial-count floor.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">path</span></code>, <code class="docutils literal notranslate"><span class="pre">labels</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">stim_mask</span></code>, <code class="docutils literal notranslate"><span class="pre">move_mask</span></code> — channel masks; <code class="docutils literal notranslate"><span class="pre">move_mask</span></code> is the
+effective mask used when building the RSM, whatever criterion set it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">X_z</span></code> — features after the global z-score.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">n_trials</span></code> (property).</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+<section id="entry-points">
+<h2>Entry points<a class="headerlink" href="#entry-points" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils.run_rsa">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">run_rsa</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">source</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'NPRW'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">target</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'target_A'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">poststim_win_ms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.0,</span> <span class="pre">50.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">channel_criterion</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cond_label_extras</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vmin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vmax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_conds</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cond_order</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">move_alpha</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.05</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stim_alpha</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.05</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sil_vmax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sil_n_perm</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sil_tail</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'greater'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sil_seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">debug_masks</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils.run_rsa" title="Link to this definition"></a></dt>
+<dd><p>Build a trial × trial RSM for one reach target from the peri-stim NPZs, plus
+the pairwise silhouette matrix, and save both figures.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>source</strong> (<em>str</em>) – <code class="docutils literal notranslate"><span class="pre">&quot;NPRW&quot;</span></code> or <code class="docutils literal notranslate"><span class="pre">&quot;UA&quot;</span></code> — selects the
+<code class="docutils literal notranslate"><span class="pre">*_rates_zeroed</span></code> / <code class="docutils literal notranslate"><span class="pre">*_rel_t</span></code> arrays read from each NPZ.</p></li>
+<li><p><strong>target</strong> (<em>str</em>) – <code class="docutils literal notranslate"><span class="pre">&quot;target_A&quot;</span></code> / <code class="docutils literal notranslate"><span class="pre">&quot;target_B&quot;</span></code>; picks the subfolder under
+<code class="docutils literal notranslate"><span class="pre">stim_reaches/</span></code> and <code class="docutils literal notranslate"><span class="pre">control_reaches/</span></code>. Call once per target. NPZs
+under <code class="docutils literal notranslate"><span class="pre">PERI_ROOT/at_rest</span></code> have no target subfolder and are always
+included, labeled via <code class="docutils literal notranslate"><span class="pre">cond_label_extras[&quot;at_rest&quot;]</span></code>.</p></li>
+<li><p><strong>poststim_win_ms</strong> (<em>tuple</em>) – window relative to stim <strong>offset</strong>, not onset —
+see the note below.</p></li>
+<li><p><strong>channel_criterion</strong> – <code class="docutils literal notranslate"><span class="pre">None</span></code>, one of <code class="docutils literal notranslate"><span class="pre">&quot;movement&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;stim&quot;</span></code>,
+<code class="docutils literal notranslate"><span class="pre">&quot;union&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;intersection&quot;</span></code>, or an iterable of those. An iterable
+loads, feature-extracts and z-scores the NPZs once, then builds one RSM
+and figure per criterion; the movement and stim masks are likewise
+computed once and reused.</p></li>
+<li><p><strong>cond_label_extras</strong> (<em>dict</em>) – overrides for block labels, keyed by <code class="docutils literal notranslate"><span class="pre">cond</span></code>,
+plus the special keys <code class="docutils literal notranslate"><span class="pre">&quot;Baseline&quot;</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;at_rest&quot;</span></code>.</p></li>
+<li><p><strong>vmax</strong> (<em>vmin</em><em>,</em>) – colour limits for the RSM.</p></li>
+<li><p><strong>skip_conds</strong> – BR numbers to exclude — applies to baseline files too.</p></li>
+<li><p><strong>cond_order</strong> – explicit condition ordering; unlisted blocks sort last.
+Use <code class="docutils literal notranslate"><span class="pre">&quot;Baseline&quot;</span></code> for the baseline entry.</p></li>
+<li><p><strong>stim_alpha</strong> (<em>move_alpha</em><em>,</em>) – FDR-adjusted significance thresholds for the
+two channel tests.</p></li>
+<li><p><strong>sil_vmax</strong> – colour limit for the silhouette heatmap; default is the
+largest finite <code class="docutils literal notranslate"><span class="pre">|S|</span></code>.</p></li>
+<li><p><strong>sil_n_perm</strong> (<em>int</em>) – label shuffles per pair for the permutation test;
+0 disables it.</p></li>
+<li><p><strong>sil_tail</strong> (<em>str</em>) – <code class="docutils literal notranslate"><span class="pre">&quot;greater&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;less&quot;</span></code> or two-sided.</p></li>
+<li><p><strong>sil_seed</strong> – seed for the shuffle RNG.</p></li>
+<li><p><strong>debug_masks</strong> (<em>bool</em>) – also render the mask diagnostic heatmaps.</p></li>
+</ul>
+</dd>
+</dl>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><code class="docutils literal notranslate"><span class="pre">poststim_win_ms</span></code> is relative to stim <strong>offset</strong>: the window actually
+used is <code class="docutils literal notranslate"><span class="pre">poststim_win_ms</span> <span class="pre">+</span> <span class="pre">stim_dur</span></code>, where <code class="docutils literal notranslate"><span class="pre">stim_dur</span></code> is read from
+each file’s own metadata. So <code class="docutils literal notranslate"><span class="pre">(0.0,</span> <span class="pre">50.0)</span></code> against a 100 ms stim pulls
+<code class="docutils literal notranslate"><span class="pre">rel_t</span></code> in <code class="docutils literal notranslate"><span class="pre">[100,</span> <span class="pre">150]</span></code> ms, and files with different stim durations
+get different absolute windows for the same argument. Files with no
+stim-duration metadata (baseline, at_rest) fall back to <code class="docutils literal notranslate"><span class="pre">stim_dur</span> <span class="pre">=</span> <span class="pre">0</span></code>,
+making the window absolute.</p>
+</div>
+<p>Channel criteria:</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 22.0%" />
+<col style="width: 78.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Criterion</p></th>
+<th class="head"><p>Channels kept</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p>All channels.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">&quot;movement&quot;</span></code></p></td>
+<td><p>Response window differs from that trial’s own pre-movement baseline
+(paired Wilcoxon signed-rank, BH-corrected), OR’d across baseline files.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">&quot;stim&quot;</span></code></p></td>
+<td><p>Differs from the pooled control trials (Mann-Whitney U, BH-corrected),
+unioned across all conditions so every condition uses one fixed set.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">&quot;union&quot;</span></code> / <code class="docutils literal notranslate"><span class="pre">&quot;intersection&quot;</span></code></p></td>
+<td><p>The OR / AND of the two masks above.</p></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils.run_time_domain_corr">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">run_time_domain_corr</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">source</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'NPRW'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">target</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'target_A'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">poststim_win_ms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(-800,</span> <span class="pre">600.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">channel_criterion</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cond_label_extras</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vmin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vmax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_conds</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cond_order</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">move_alpha</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.05</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stim_alpha</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.05</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">debug_masks</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils.run_time_domain_corr" title="Link to this definition"></a></dt>
+<dd><div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p><strong>Work in progress.</strong> It runs the same loading, masking and z-scoring
+stages as <a class="reference internal" href="#RCP_analysis.python.functions.rsa_utils.run_rsa" title="RCP_analysis.python.functions.rsa_utils.run_rsa"><code class="xref py py-func docutils literal notranslate"><span class="pre">run_rsa()</span></code></a> but stops before building an RSM and returns
+<code class="docutils literal notranslate"><span class="pre">1</span></code>. The intended output — a sliding-window (80 ms wide, 20 ms step)
+correlation of each condition against the control condition, plotted as
+condition × time bin × channels — is sketched in comments at the end of
+the criterion loop.</p>
+</div>
+</dd></dl>
+
+</section>
+<section id="feature-extraction">
+<h2>Feature extraction<a class="headerlink" href="#feature-extraction" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._trial_features_from_peristim_npz">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_trial_features_from_peristim_npz</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">npz_path</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">source</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'NPRW'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">poststim_win_ms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.0,</span> <span class="pre">50.0)</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._trial_features_from_peristim_npz" title="Link to this definition"></a></dt>
+<dd><p>Build per-trial feature vectors from one peri-stim NPZ by averaging
+<code class="docutils literal notranslate"><span class="pre">&lt;source&gt;_rates_zeroed</span></code> over the post-stim window, giving one scalar per
+channel per trial. Trials with fewer than <code class="docutils literal notranslate"><span class="pre">MIN_VALID_FEATURES</span></code> finite
+channels are dropped.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p><code class="docutils literal notranslate"><span class="pre">(X,</span> <span class="pre">labels,</span> <span class="pre">info)</span></code> — <code class="docutils literal notranslate"><span class="pre">X</span></code> <code class="docutils literal notranslate"><span class="pre">(n_trials,</span> <span class="pre">n_channels)</span></code>, one
+<code class="docutils literal notranslate"><span class="pre">&quot;cond&lt;N&gt;_&lt;target&gt;_t&lt;i&gt;&quot;</span></code> label per surviving trial, and an <code class="docutils literal notranslate"><span class="pre">info</span></code>
+dict with <code class="docutils literal notranslate"><span class="pre">cond</span></code>, <code class="docutils literal notranslate"><span class="pre">target</span></code>, <code class="docutils literal notranslate"><span class="pre">is_baseline</span></code>, <code class="docutils literal notranslate"><span class="pre">n_trials</span></code>, <code class="docutils literal notranslate"><span class="pre">n_ch</span></code>
+and <code class="docutils literal notranslate"><span class="pre">file</span></code>.</p>
+</dd>
+</dl>
+<p>Returns an empty result — never raises — when the time axis or rate array is
+missing, the window contains no samples, or the arrays are empty or
+mismatched, so a corrupt file drops out of the analysis instead of stopping it.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._collect_condition_blocks">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_collect_condition_blocks</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">npz_files</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">source</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">poststim_win_ms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_conds</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">min_trials</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._collect_condition_blocks" title="Link to this definition"></a></dt>
+<dd><p>One <a class="reference internal" href="#RCP_analysis.python.functions.rsa_utils.Block" title="RCP_analysis.python.functions.rsa_utils.Block"><code class="xref py py-class docutils literal notranslate"><span class="pre">Block</span></code></a> per NPZ, applying <code class="docutils literal notranslate"><span class="pre">skip_conds</span></code> by BR number and the
+<code class="docutils literal notranslate"><span class="pre">min_trials</span></code> floor (baseline blocks only need ≥1 trial).</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p><code class="docutils literal notranslate"><span class="pre">(blocks,</span> <span class="pre">skip_summary)</span></code>; the summary buckets dropped files into
+<code class="docutils literal notranslate"><span class="pre">in_skip_conds</span></code>, <code class="docutils literal notranslate"><span class="pre">too_few_trials</span></code> and <code class="docutils literal notranslate"><span class="pre">missing_or_empty</span></code> for the
+one-line skip report.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._load_rates">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_load_rates</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">path</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">source</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._load_rates" title="Link to this definition"></a></dt>
+<dd><p><code class="docutils literal notranslate"><span class="pre">(rates</span> <span class="pre">(n_trials,</span> <span class="pre">n_ch,</span> <span class="pre">T),</span> <span class="pre">rel_t</span> <span class="pre">(T,))</span></code>, or <code class="docutils literal notranslate"><span class="pre">(None,</span> <span class="pre">None)</span></code> if the keys
+are missing or the time axis does not match.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._get_region_arrays">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_get_region_arrays</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">npz_path</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">source</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._get_region_arrays" title="Link to this definition"></a></dt>
+<dd><p><code class="docutils literal notranslate"><span class="pre">(ua_region_names,</span> <span class="pre">ua_region)</span></code> for debug-plot labeling. Always
+<code class="docutils literal notranslate"><span class="pre">(None,</span> <span class="pre">None)</span></code> for NPRW — region grouping only exists for UA channels.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._stim_dur_ms">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_stim_dur_ms</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">peristim_npz</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._stim_dur_ms" title="Link to this definition"></a></dt>
+<dd><p>Median <code class="docutils literal notranslate"><span class="pre">stim_dur</span></code> from <code class="docutils literal notranslate"><span class="pre">nprw_meta</span></code>, or <code class="docutils literal notranslate"><span class="pre">0.0</span></code> when absent.</p>
+</dd></dl>
+
+</section>
+<section id="channel-masks">
+<h2>Channel masks<a class="headerlink" href="#channel-masks" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._compute_movement_mask">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_compute_movement_mask</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">baseline_paths</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">source</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_win</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(-800.0,</span> <span class="pre">-500.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">resp_win</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.0,</span> <span class="pre">300.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">alpha</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.05</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._compute_movement_mask" title="Link to this definition"></a></dt>
+<dd><p>Flag channels whose movement-response window differs from their own
+pre-movement baseline window. Paired Wilcoxon signed-rank per channel (the
+two windows come from the same trials), FDR-corrected per baseline file, then
+OR’d across files. Returns <code class="docutils literal notranslate"><span class="pre">None</span></code> if no baseline file was usable.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._movement_pvalues">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_movement_pvalues</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">rates</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mb</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mr</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._movement_pvalues" title="Link to this definition"></a></dt>
+<dd><p>The per-channel signed-rank test behind the mask. NaN where the test cannot
+run — fewer than 2 valid trials, or all-zero differences.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._build_ctrl_pool">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_build_ctrl_pool</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">baseline_paths</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">source</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stim_win</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(105.0,</span> <span class="pre">150.0)</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._build_ctrl_pool" title="Link to this definition"></a></dt>
+<dd><p>Per-trial mean rate in <code class="docutils literal notranslate"><span class="pre">stim_win</span></code> for every control trial, pooled across
+baseline files, as <code class="docutils literal notranslate"><span class="pre">(n_ch,</span> <span class="pre">n_ctrl_trials)</span></code>. Columns are trials, so the
+rank-sum test treats trials — not trial × timepoint samples — as the
+independent unit.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._compute_stim_mask">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_compute_stim_mask</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">stim_path</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ctrl_pool</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">source</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stim_win</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(105.0,</span> <span class="pre">150.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">alpha</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.05</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._compute_stim_mask" title="Link to this definition"></a></dt>
+<dd><p>Flag channels in one stim file whose per-trial mean rate in <code class="docutils literal notranslate"><span class="pre">stim_win</span></code>
+differs from the pooled control trials. Unpaired two-sided Mann-Whitney U per
+channel (control and stim are different trials), FDR-corrected across
+channels. Returns <code class="docutils literal notranslate"><span class="pre">None</span></code> on a channel-count mismatch.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._fdr_pass_mask">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_fdr_pass_mask</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">pvals</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">alpha</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._fdr_pass_mask" title="Link to this definition"></a></dt>
+<dd><p>Benjamini-Hochberg correction across channels. NaN p-values — a channel that
+could not be tested — never pass.</p>
+</dd></dl>
+
+</section>
+<section id="rsm-and-statistics">
+<h2>RSM and statistics<a class="headerlink" href="#rsm-and-statistics" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._build_rsm_pairwise">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_build_rsm_pairwise</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">blocks</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._build_rsm_pairwise" title="Link to this definition"></a></dt>
+<dd><p>Full trial × trial Pearson similarity matrix across blocks.</p>
+<p>Each block pair is correlated over the <strong>union</strong> of their two channel masks,
+falling back to all channels if that union is empty, so within-block and
+cross-block entries for a given pair always use a consistent channel set.
+This is well-defined because a Pearson correlation between two trials depends
+only on those two trials’ features.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p><code class="docutils literal notranslate"><span class="pre">(RSM,</span> <span class="pre">sizes)</span></code> — <code class="docutils literal notranslate"><span class="pre">(N,</span> <span class="pre">N)</span></code> with NaN where a trial had
+non-finite features, and the per-block trial counts.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._rsm_to_distance">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_rsm_to_distance</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">RSM</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kind</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'angular'</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._rsm_to_distance" title="Link to this definition"></a></dt>
+<dd><p>Similarity → distance for the silhouette. <code class="docutils literal notranslate"><span class="pre">&quot;angular&quot;</span></code> gives
+<code class="docutils literal notranslate"><span class="pre">sqrt(2(1</span> <span class="pre">-</span> <span class="pre">r))</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;corr&quot;</span></code> gives <code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">-</span> <span class="pre">r</span></code> clipped to <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">2]</span></code>. The
+matrix is symmetrized and the diagonal zeroed.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._two_group_silhouette">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_two_group_silhouette</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">D</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">in_group_b</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._two_group_silhouette" title="Link to this definition"></a></dt>
+<dd><p>Mean silhouette for a 2-cluster split of a precomputed distance matrix.
+Equivalent to <code class="docutils literal notranslate"><span class="pre">silhouette_score(D,</span> <span class="pre">labels,</span> <span class="pre">metric=&quot;precomputed&quot;)</span></code> for
+K = 2 but roughly 100× faster, which matters when it runs <code class="docutils literal notranslate"><span class="pre">n_perm</span></code> times
+per pair. NaN if either group has fewer than 2 members.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._pairwise_silhouette">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_pairwise_silhouette</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">RSM</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">block_sizes</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kind</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'angular'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_perm</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tail</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'greater'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rng</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._pairwise_silhouette" title="Link to this definition"></a></dt>
+<dd><p>K × K silhouette computed two conditions at a time, with a NaN diagonal.</p>
+<p>With <code class="docutils literal notranslate"><span class="pre">n_perm</span> <span class="pre">&gt;</span> <span class="pre">0</span></code> each pair also gets a null built by shuffling the two
+conditions’ trial labels (group sizes preserved) and recomputing the
+silhouette on the same distance matrix.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p><code class="docutils literal notranslate"><span class="pre">(S,</span> <span class="pre">P)</span></code> — silhouettes and uncorrected empirical p-values; NaN in
+<code class="docutils literal notranslate"><span class="pre">P</span></code> means the pair was not tested.</p>
+</dd>
+</dl>
+<p>Warns when <code class="docutils literal notranslate"><span class="pre">1/(n_perm</span> <span class="pre">+</span> <span class="pre">1)</span> <span class="pre">×</span> <span class="pre">n_pairs</span> <span class="pre">&gt;</span> <span class="pre">0.05</span></code>, i.e. when the p-value floor
+makes it impossible for any pair to reach <code class="docutils literal notranslate"><span class="pre">q</span> <span class="pre">&lt;</span> <span class="pre">0.05</span></code> after correction.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._null_pvalue">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_null_pvalue</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">obs</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">null</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tail</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._null_pvalue" title="Link to this definition"></a></dt>
+<dd><p>Empirical p-value with the <code class="docutils literal notranslate"><span class="pre">+1</span></code> correction: the fraction of the shuffle
+null at least as extreme as <code class="docutils literal notranslate"><span class="pre">obs</span></code>. Resolution is floored at
+<code class="docutils literal notranslate"><span class="pre">1/(n_perm</span> <span class="pre">+</span> <span class="pre">1)</span></code>.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._fdr_adjust_pairs">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_fdr_adjust_pairs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">P</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._fdr_adjust_pairs" title="Link to this definition"></a></dt>
+<dd><p>BH-adjust the <code class="docutils literal notranslate"><span class="pre">K(K-1)/2</span></code> unique pair p-values and mirror them back into a
+K × K matrix.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._p_stars">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_p_stars</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">q</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._p_stars" title="Link to this definition"></a></dt>
+<dd><p><code class="docutils literal notranslate"><span class="pre">&quot;*&quot;</span></code> when <code class="docutils literal notranslate"><span class="pre">q</span> <span class="pre">&lt;</span> <span class="pre">0.05</span></code>, else <code class="docutils literal notranslate"><span class="pre">&quot;&quot;</span></code>. Deliberately a single tier: with a
+<code class="docutils literal notranslate"><span class="pre">1/(n_perm</span> <span class="pre">+</span> <span class="pre">1)</span></code> p-value floor, BH ties would make a pair’s tier track <em>how
+many other pairs</em> are significant rather than its own separation.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._within_condition_consistency">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_within_condition_consistency</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">RSM</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">block_sizes</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._within_condition_consistency" title="Link to this definition"></a></dt>
+<dd><p>Per-condition mean within-block trial-to-trial correlation.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p><code class="docutils literal notranslate"><span class="pre">(mean_r</span> <span class="pre">[K],</span> <span class="pre">n_pairs</span> <span class="pre">[K])</span></code>; NaN where a block has fewer than 2
+usable trials.</p>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+<section id="plotting">
+<h2>Plotting<a class="headerlink" href="#plotting" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._plot_rdm_with_block_ticks">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_plot_rdm_with_block_ticks</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">RSM</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">block_sizes</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">block_labels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">title</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_svg</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vmin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vmax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._plot_rdm_with_block_ticks" title="Link to this definition"></a></dt>
+<dd><p>Plot the similarity matrix with small unlabeled ticks at block boundaries and
+text labels centered on each block, mirrored on both axes. With <code class="docutils literal notranslate"><span class="pre">ax=None</span></code>
+it owns the figure and returns the saved path relative to <code class="docutils literal notranslate"><span class="pre">OUT_BASE</span></code>;
+given an <code class="docutils literal notranslate"><span class="pre">ax</span></code> it draws into it and leaves saving to the caller.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._plot_pairwise_silhouette">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_plot_pairwise_silhouette</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">S</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">block_labels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">title</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_svg</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vmax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">annotate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">diag_values</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">qvals</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">footnote</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._plot_pairwise_silhouette" title="Link to this definition"></a></dt>
+<dd><p>Heatmap of the K × K silhouette matrix. The colour scale is symmetric about
+0 so “no separation” sits at the midpoint of the diverging map; undefined
+pairs and the diagonal render in a distinct grey.</p>
+<p><code class="docutils literal notranslate"><span class="pre">diag_values</span></code> (typically the within-condition mean correlation) is printed
+on the uncoloured diagonal — a <em>different</em> quantity from the off-diagonal
+silhouettes, deliberately left off the colour scale, which is what the
+<code class="docutils literal notranslate"><span class="pre">footnote</span></code> is for. <code class="docutils literal notranslate"><span class="pre">qvals</span></code> adds a significance star to each annotated
+cell.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._draw_channel_heatmap">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_draw_channel_heatmap</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ax</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">traces</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rel_t</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vext</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">title</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">region_arr</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">region_names</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ch_subset</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vlines</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vspans</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._draw_channel_heatmap" title="Link to this definition"></a></dt>
+<dd><p>Shared channel × time imshow used by both debug plots: draws the heatmap,
+any vertical lines and shaded spans, and — for UA data — horizontal rules at
+region boundaries with the region names as y tick labels.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._plot_movement_mask_debug">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_plot_movement_mask_debug</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">baseline_paths</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">source</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">target</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_win</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(-800.0,</span> <span class="pre">-500.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">resp_win</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.0,</span> <span class="pre">300.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">alpha</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.05</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._plot_movement_mask_debug" title="Link to this definition"></a></dt>
+<dd><p>One figure per baseline file: median-trace heatmaps for all, failing and
+passing channels, with the baseline and response windows marked. Saved as
+<code class="docutils literal notranslate"><span class="pre">debug_&lt;source&gt;_movement_criterion_*.png</span></code> under <code class="docutils literal notranslate"><span class="pre">FIG_DIR/&lt;target&gt;</span></code>.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.rsa_utils._plot_stim_mask_debug">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.rsa_utils.</span></span><span class="sig-name descname"><span class="pre">_plot_stim_mask_debug</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">stim_path</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">passes</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">source</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">target</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stim_win</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(105.0,</span> <span class="pre">150.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">alpha</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.05</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">baseline_rates</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">baseline_rel_t</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.rsa_utils._plot_stim_mask_debug" title="Link to this definition"></a></dt>
+<dd><p>One figure for a single stim file: baseline (all channels), stim (all
+channels), failing, and passing, with the stim window marked and the artifact
+blanking span shaded. Saved as <code class="docutils literal notranslate"><span class="pre">debug_&lt;source&gt;_stim_criterion_*.png</span></code>.</p>
+</dd></dl>
+
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="reach_onset_detection.html" class="btn btn-neutral float-left" title="reach_onset_detection.py" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="impedance_utils.html" class="btn btn-neutral float-right" title="impedance_utils.py" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Bryan Tseng.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

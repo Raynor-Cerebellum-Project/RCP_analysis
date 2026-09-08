@@ -1,0 +1,562 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>utils.py &mdash; RCP_reaching_analysis 1.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=f2a433a1"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="intan_preproc.py" href="intan_preproc.html" />
+    <link rel="prev" title="config_loading.py" href="config_loading.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            RCP_reaching_analysis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../install.html">Installing the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../running.html">Running the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../steps/index.html">Steps of the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../lfp_analysis.html">LFP band analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../outputs.html">Outputs and other plots</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../api.html">Python API</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="../api.html#modules">Modules</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="params_loading.html">params_loading.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="config_loading.html">config_loading.py</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">utils.py</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#status-csv-and-naming">Status CSV and naming</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#ocr-dlc-discovery">OCR / DLC discovery</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#sync-and-frame-to-sample-mapping">Sync and frame-to-sample mapping</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#aligned-behavior-csvs">Aligned behavior CSVs</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#intan-helpers">Intan helpers</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#peri-stim-segments">Peri-stim segments</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#stim-detection-files">Stim detection files</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#session-and-file-lookup">Session and file lookup</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#kinematics-filtering">Kinematics filtering</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#spike-binning-and-rate-estimation">Spike binning and rate estimation</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="intan_preproc.html">intan_preproc.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="br_preproc.html">br_preproc.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="artifact_correction.html">artifact_correction.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="artifact_correction_template_matching.html">artifact_correction_template_matching.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="subspace_detector.html">subspace_detector.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="reach_onset_detection.html">reach_onset_detection.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="rsa_utils.html">rsa_utils.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="impedance_utils.html">impedance_utils.py</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">RCP_reaching_analysis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../api.html">Python API</a></li>
+      <li class="breadcrumb-item active">utils.py</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/api/utils.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="utils-py">
+<h1>utils.py<a class="headerlink" href="#utils-py" title="Link to this heading"></a></h1>
+<p><code class="docutils literal notranslate"><span class="pre">RCP_analysis/python/functions/utils.py</span></code></p>
+<p>The general-purpose toolbox: status-CSV bookkeeping, OCR/DLC discovery and
+loading, video-frame-to-sample sync, peri-stim segment extraction, stim-detection
+NPZ readers, kinematics filtering, and spike binning / rate smoothing. Nearly
+everything here is re-exported at the package top level.</p>
+<section id="status-csv-and-naming">
+<h2>Status CSV and naming<a class="headerlink" href="#status-csv-and-naming" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.short_npz_name">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">short_npz_name</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">path</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.short_npz_name" title="Link to this definition"></a></dt>
+<dd><p>Shorten a peri-stim NPZ filename for logging by keeping the segment from
+<code class="docutils literal notranslate"><span class="pre">BR_</span></code> onward, e.g.
+<code class="docutils literal notranslate"><span class="pre">peristim__NRR_RW022_260311_135426__BR_001_target_A.npz</span></code> →
+<code class="docutils literal notranslate"><span class="pre">BR_001_target_A.npz</span></code>. Falls back to the full filename if there is no
+<code class="docutils literal notranslate"><span class="pre">BR_</span></code> segment.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.update_status_cell">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">update_status_cell</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">csv_path</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">row_id</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">column</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">value</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">id_column</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.update_status_cell" title="Link to this definition"></a></dt>
+<dd><p>Set one cell in <code class="docutils literal notranslate"><span class="pre">data_status*.csv</span></code> and rewrite the file in place.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>csv_path</strong> (<em>Path</em>) – the status CSV.</p></li>
+<li><p><strong>row_id</strong> (<em>str</em>) – value in <code class="docutils literal notranslate"><span class="pre">id_column</span></code> identifying the row, e.g. <code class="docutils literal notranslate"><span class="pre">&quot;NRR_RW011&quot;</span></code>.</p></li>
+<li><p><strong>column</strong> (<em>str</em>) – header of the cell to write, e.g. <code class="docutils literal notranslate"><span class="pre">&quot;Peristim</span> <span class="pre">traces</span> <span class="pre">extracted&quot;</span></code>.</p></li>
+<li><p><strong>value</strong> (<em>str</em>) – new cell contents, e.g. <code class="docutils literal notranslate"><span class="pre">&quot;Completed&quot;</span></code>.</p></li>
+<li><p><strong>id_column</strong> (<em>str</em>) – header of the ID column.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+<section id="ocr-dlc-discovery">
+<h2>OCR / DLC discovery<a class="headerlink" href="#ocr-dlc-discovery" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.find_per_cond_inputs">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">find_per_cond_inputs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">video_root</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.find_per_cond_inputs" title="Link to this definition"></a></dt>
+<dd><p>Scan <code class="docutils literal notranslate"><span class="pre">video_root/DLC</span></code> and <code class="docutils literal notranslate"><span class="pre">video_root/OCR</span></code> for <code class="docutils literal notranslate"><span class="pre">NRR_*_Cam-*.csv</span></code> files
+and return <code class="docutils literal notranslate"><span class="pre">{cond_id:</span> <span class="pre">{&quot;ocr&quot;:</span> <span class="pre">{cam:</span> <span class="pre">Path},</span> <span class="pre">&quot;dlc&quot;:</span> <span class="pre">{cam:</span> <span class="pre">Path}}}</span></code>. When a
+condition/camera has several files, the newest by mtime wins. Only conditions
+that have <strong>both</strong> cameras (0 and 1) for <strong>both</strong> OCR and DLC are returned.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils._parse_condition_cam">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">_parse_condition_cam</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">path</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils._parse_condition_cam" title="Link to this definition"></a></dt>
+<dd><p>Split a filename like <code class="docutils literal notranslate"><span class="pre">NRR_RW007_001_[date]_Cam-1DLC_Resnet50_....csv</span></code> into
+<code class="docutils literal notranslate"><span class="pre">(cond_id,</span> <span class="pre">cam_number)</span></code>. Returns <code class="docutils literal notranslate"><span class="pre">(None,</span> <span class="pre">None)</span></code> for files with no
+<code class="docutils literal notranslate"><span class="pre">_Cam-</span></code> segment.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.get_metadata_mapping">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">get_metadata_mapping</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">meta_csv</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">field1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">field2</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.get_metadata_mapping" title="Link to this definition"></a></dt>
+<dd><p>Build a <code class="docutils literal notranslate"><span class="pre">{int(field1):</span> <span class="pre">str(field2)}</span></code> mapping from the session metadata CSV,
+e.g. <code class="docutils literal notranslate"><span class="pre">BR_File</span></code> → <code class="docutils literal notranslate"><span class="pre">Intan_File</span></code>. Rows with a blank key or value, or a
+non-integer key, are skipped.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.load_ocr_map">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">load_ocr_map</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ocr_csv</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.load_ocr_map" title="Link to this definition"></a></dt>
+<dd><p>Load the OCR frame-correction CSV, keeping <code class="docutils literal notranslate"><span class="pre">AVI_framenum</span></code>,
+<code class="docutils literal notranslate"><span class="pre">OCR_framenum</span></code> and <code class="docutils literal notranslate"><span class="pre">CORRECTED_framenum</span></code> as numeric columns. Warns (but
+continues) if the final <code class="docutils literal notranslate"><span class="pre">OCR_framenum</span></code> and <code class="docutils literal notranslate"><span class="pre">CORRECTED_framenum</span></code> disagree.
+Raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code> if there are no valid rows.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.load_dlc">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">load_dlc</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dlc_csv</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.load_dlc" title="Link to this definition"></a></dt>
+<dd><p>Load a 3-header-row DeepLabCut CSV. If a <code class="docutils literal notranslate"><span class="pre">frame</span></code> column is present at any
+header level it becomes the <code class="docutils literal notranslate"><span class="pre">AVI_framenum</span></code> index, otherwise a <code class="docutils literal notranslate"><span class="pre">0..N-1</span></code>
+range index is used. MultiIndex columns are flattened to
+<code class="docutils literal notranslate"><span class="pre">bodypart_coord</span></code>-style names and cast to numeric where possible.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.align_dlc_to_corrected">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">align_dlc_to_corrected</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dlc_df</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ocr_df</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.align_dlc_to_corrected" title="Link to this definition"></a></dt>
+<dd><p>Reindex DLC rows from <code class="docutils literal notranslate"><span class="pre">AVI_framenum</span></code> into <code class="docutils literal notranslate"><span class="pre">CORRECTED_framenum</span></code> space
+using the OCR mapping. Frames dropped by the camera become rows of NaN.</p>
+</dd></dl>
+
+</section>
+<section id="sync-and-frame-to-sample-mapping">
+<h2>Sync and frame-to-sample mapping<a class="headerlink" href="#sync-and-frame-to-sample-mapping" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.detect_IR_crossings">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">detect_IR_crossings</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fs</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">refractory_sec</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0005</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.detect_IR_crossings" title="Link to this definition"></a></dt>
+<dd><p>Detect falling threshold crossings of an IR beam-break trace. The threshold
+is the midpoint of the signal’s min and max; NaNs are filled with the median
+first so indexing is unchanged. Crossings closer together than
+<code class="docutils literal notranslate"><span class="pre">refractory_sec</span></code> are dropped.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p><code class="docutils literal notranslate"><span class="pre">int64</span></code> array of sample indices.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.frame2sample_br_ns5_sync">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">frame2sample_br_ns5_sync</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_corrected</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ns_path</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sync_chan</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.frame2sample_br_ns5_sync" title="Link to this definition"></a></dt>
+<dd><p>Read the camera sync channel from a Blackrock NS5 file, detect rising edges
+with hysteresis (low = midpoint, high = midpoint of the midpoint and the
+max), and return the first <code class="docutils literal notranslate"><span class="pre">n_corrected</span></code> edge sample indices.</p>
+<p>If there are fewer edges than corrected frames it warns and returns the
+shorter array rather than raising.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.frame2sample_br_ns2_sync">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">frame2sample_br_ns2_sync</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_corrected</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ns_path</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sync_chan</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.frame2sample_br_ns2_sync" title="Link to this definition"></a></dt>
+<dd><p>Same hysteresis edge detection against the NS2 (LFP) stream, used for the VOG
+sync. Unlike the NS5 version this <strong>raises</strong> <code class="docutils literal notranslate"><span class="pre">RuntimeError</span></code> when there are
+fewer edges than corrected frames.</p>
+</dd></dl>
+
+</section>
+<section id="aligned-behavior-csvs">
+<h2>Aligned behavior CSVs<a class="headerlink" href="#aligned-behavior-csvs" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.load_behavior_npz">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">load_behavior_npz</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">csv_path</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_cam</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.load_behavior_npz" title="Link to this definition"></a></dt>
+<dd><p>Read an aligned-behavior CSV and return
+<code class="docutils literal notranslate"><span class="pre">(ns5_sample,</span> <span class="pre">cam0,</span> <span class="pre">cam0_cols,</span> <span class="pre">cam1,</span> <span class="pre">cam1_cols)</span></code>, where <code class="docutils literal notranslate"><span class="pre">ns5_sample</span></code> is
+<code class="docutils literal notranslate"><span class="pre">int64</span></code> and the camera feature blocks are <code class="docutils literal notranslate"><span class="pre">float32</span></code>.</p>
+<p>Tolerant of several layouts: two-level headers (both-camera files),
+single-level headers, columns already prefixed <code class="docutils literal notranslate"><span class="pre">cam0_</span></code> / <code class="docutils literal notranslate"><span class="pre">cam1_</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">ns5_sample</span></code> variants such as <code class="docutils literal notranslate"><span class="pre">ns5_sample_15</span></code> or <code class="docutils literal notranslate"><span class="pre">cam0_ns5_sample</span></code>.
+For unprefixed single-camera files with <code class="docutils literal notranslate"><span class="pre">num_cam=2</span></code>, the camera is inferred
+from <code class="docutils literal notranslate"><span class="pre">Cam-0</span></code> / <code class="docutils literal notranslate"><span class="pre">Cam-1</span></code> in the filename (defaulting to camera 0).</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils._read_behavior_csv_robust">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">_read_behavior_csv_robust</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">csv_path</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_cam</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils._read_behavior_csv_robust" title="Link to this definition"></a></dt>
+<dd><p>Header-normalizing reader used by <a class="reference internal" href="#RCP_analysis.python.functions.utils.load_behavior_npz" title="RCP_analysis.python.functions.utils.load_behavior_npz"><code class="xref py py-func docutils literal notranslate"><span class="pre">load_behavior_npz()</span></code></a>; returns
+<code class="docutils literal notranslate"><span class="pre">(df,</span> <span class="pre">ns5_col)</span></code> with the ns5 column renamed to <code class="docutils literal notranslate"><span class="pre">ns5_sample</span></code>.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils._flatten_cols_mi">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">_flatten_cols_mi</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mi</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils._flatten_cols_mi" title="Link to this definition"></a></dt>
+<dd><p>Flatten MultiIndex columns, dropping <code class="docutils literal notranslate"><span class="pre">nan</span></code> / <code class="docutils literal notranslate"><span class="pre">Unnamed*</span></code> levels and
+normalizing any ns5-sample-like name to <code class="docutils literal notranslate"><span class="pre">ns5_sample</span></code>.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils._is_ns5_col">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">_is_ns5_col</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils._is_ns5_col" title="Link to this definition"></a></dt>
+<dd><p>True for <code class="docutils literal notranslate"><span class="pre">ns5_sample</span></code>, <code class="docutils literal notranslate"><span class="pre">ns5sample</span></code> and suffixed variants like
+<code class="docutils literal notranslate"><span class="pre">ns5_sample_15</span></code>.</p>
+</dd></dl>
+
+</section>
+<section id="intan-helpers">
+<h2>Intan helpers<a class="headerlink" href="#intan-helpers" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.list_intan_sessions">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">list_intan_sessions</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">root</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.list_intan_sessions" title="Link to this definition"></a></dt>
+<dd><p>Sorted list of session subdirectories under <code class="docutils literal notranslate"><span class="pre">root</span></code>.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.save_recording">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">save_recording</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">rec</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_dir</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.save_recording" title="Link to this definition"></a></dt>
+<dd><p><code class="docutils literal notranslate"><span class="pre">rec.save(folder=out_dir,</span> <span class="pre">overwrite=True)</span></code>, creating <code class="docutils literal notranslate"><span class="pre">out_dir</span></code> first.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.load_intan_aux">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">load_intan_aux</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">npz_path</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.load_intan_aux" title="Link to this definition"></a></dt>
+<dd><p>Read an Intan aux NPZ (memory-mapped) and return
+<code class="docutils literal notranslate"><span class="pre">(triangle_sync_signal,</span> <span class="pre">br_template_signal,</span> <span class="pre">fs_hz)</span></code> — rows 0 and 1 of
+<code class="docutils literal notranslate"><span class="pre">aux_traces</span></code>. If only one row is present, a zero row is appended.</p>
+</dd></dl>
+
+</section>
+<section id="peri-stim-segments">
+<h2>Peri-stim segments<a class="headerlink" href="#peri-stim-segments" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.extract_peristim_segments">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">extract_peristim_segments</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">rate_hz</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">counts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">t_ms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stim_ms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">win_ms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(-800.0,</span> <span class="pre">1200.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">min_trials</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.extract_peristim_segments" title="Link to this definition"></a></dt>
+<dd><p>Cut <code class="docutils literal notranslate"><span class="pre">(n_ch,</span> <span class="pre">T)</span></code> rate (and optional count) traces into per-trial windows
+around each stim time.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>rate_hz</strong> – <code class="docutils literal notranslate"><span class="pre">(n_ch,</span> <span class="pre">T)</span></code> firing rates.</p></li>
+<li><p><strong>counts</strong> – <code class="docutils literal notranslate"><span class="pre">(n_ch,</span> <span class="pre">T)</span></code> spike counts, or None.</p></li>
+<li><p><strong>t_ms</strong> – <code class="docutils literal notranslate"><span class="pre">(T,)</span></code> timebase in ms, assumed uniformly binned.</p></li>
+<li><p><strong>stim_ms</strong> – trigger times in ms, in the same timebase.</p></li>
+<li><p><strong>win_ms</strong> – window relative to each trigger.</p></li>
+<li><p><strong>min_trials</strong> – raise if fewer valid trials survive.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><code class="docutils literal notranslate"><span class="pre">(rate_segments,</span> <span class="pre">count_segments,</span> <span class="pre">rel_time_ms,</span> <span class="pre">stim_ms_valid)</span></code> with
+segments shaped <code class="docutils literal notranslate"><span class="pre">(n_trials,</span> <span class="pre">n_ch,</span> <span class="pre">n_twin)</span></code>.</p>
+</dd>
+</dl>
+<p>Triggers whose window falls outside <code class="docutils literal notranslate"><span class="pre">t_ms</span></code>, or whose slice length does not
+match the expected window length, are silently skipped — which is why
+<code class="docutils literal notranslate"><span class="pre">stim_ms_valid</span></code> is returned alongside.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.baseline_zero_each_trial">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">baseline_zero_each_trial</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">segments</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rel_time_ms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">normalize_first_ms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">200.0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.baseline_zero_each_trial" title="Link to this definition"></a></dt>
+<dd><p>Subtract, per trial and channel, the mean over the first
+<code class="docutils literal notranslate"><span class="pre">normalize_first_ms</span></code> of the window. Raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code> if that window
+contains no bins.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.median_across_trials">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">median_across_trials</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">zeroed_segments</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.median_across_trials" title="Link to this definition"></a></dt>
+<dd><p>NaN-ignoring median over the trial axis: <code class="docutils literal notranslate"><span class="pre">(n_trials,</span> <span class="pre">n_ch,</span> <span class="pre">n_t)</span></code> →
+<code class="docutils literal notranslate"><span class="pre">(n_ch,</span> <span class="pre">n_t)</span></code>. All-NaN bins stay NaN.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.variance_across_trials">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">variance_across_trials</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">zeroed_segments</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.variance_across_trials" title="Link to this definition"></a></dt>
+<dd><p>NaN-ignoring variance over the trial axis, same shapes as above.</p>
+</dd></dl>
+
+</section>
+<section id="stim-detection-files">
+<h2>Stim detection files<a class="headerlink" href="#stim-detection-files" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.load_stim_detection">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">load_stim_detection</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">npz_path</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.load_stim_detection" title="Link to this definition"></a></dt>
+<dd><p>Read a <code class="docutils literal notranslate"><span class="pre">stim_stream.npz</span></code> and return a dict with <code class="docutils literal notranslate"><span class="pre">trigger_pairs</span></code>
+<code class="docutils literal notranslate"><span class="pre">(n_pulses,</span> <span class="pre">2)</span></code>, <code class="docutils literal notranslate"><span class="pre">block_bounds_samples</span></code> <code class="docutils literal notranslate"><span class="pre">(n_blocks,</span> <span class="pre">2)</span></code>,
+<code class="docutils literal notranslate"><span class="pre">pulse_sizes</span></code> <code class="docutils literal notranslate"><span class="pre">(n_pulses,)</span></code> and <code class="docutils literal notranslate"><span class="pre">active_channels</span></code> (empty if absent).
+Sample indices are in Intan index space.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.stim_npz_path_from_br_idx">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">stim_npz_path_from_br_idx</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">br_idx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mapping_csv</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">nprw_aux_root</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.stim_npz_path_from_br_idx" title="Link to this definition"></a></dt>
+<dd><p>Map a Blackrock file index to its Intan session and return
+<code class="docutils literal notranslate"><span class="pre">(stim_npz_path,</span> <span class="pre">session_name)</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">BR_File</span></code> → <code class="docutils literal notranslate"><span class="pre">Intan_File</span></code> comes from the metadata CSV; the session name is
+the <em>n</em>-th <code class="docutils literal notranslate"><span class="pre">*_Intan_streams</span></code> directory under <code class="docutils literal notranslate"><span class="pre">nprw_aux_root</span></code>
+(<code class="docutils literal notranslate"><span class="pre">Intan_File</span></code> is 1-based). Returns <code class="docutils literal notranslate"><span class="pre">(None,</span> <span class="pre">None)</span></code> — with a printed warning
+— if the CSV, the mapping, or the session index cannot be resolved.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.detect_stim_channels_from_npz">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">detect_stim_channels_from_npz</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">stim_npz_path</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">eps</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-12</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">min_edges</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.detect_stim_channels_from_npz" title="Link to this definition"></a></dt>
+<dd><p>Count 0→nonzero rising edges per channel across the whole <code class="docutils literal notranslate"><span class="pre">stim_traces</span></code>
+array and return the geometry-ordered indices of channels with at least
+<code class="docutils literal notranslate"><span class="pre">min_edges</span></code>. Per-channel threshold is the midpoint of the 5th and 95th
+percentiles; channels with no finite data are ignored. Returns an empty array
+if the file or the <code class="docutils literal notranslate"><span class="pre">stim_traces</span></code> key is missing.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.aligned_stim_ms">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">aligned_stim_ms</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">stim_ms_abs</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">meta</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.aligned_stim_ms" title="Link to this definition"></a></dt>
+<dd><p>Shift absolute Intan stim times into the aligned timebase of a combined file,
+using <code class="docutils literal notranslate"><span class="pre">meta[&quot;shift_ms&quot;]</span></code> or, failing that,
+<code class="docutils literal notranslate"><span class="pre">meta[&quot;shift_sample&quot;]</span> <span class="pre">*</span> <span class="pre">1000</span> <span class="pre">/</span> <span class="pre">meta[&quot;fs_intan&quot;]</span></code>. Returns the input
+unchanged when neither key is present.</p>
+</dd></dl>
+
+</section>
+<section id="session-and-file-lookup">
+<h2>Session and file lookup<a class="headerlink" href="#session-and-file-lookup" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.parse_intan_session_dtkey">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">parse_intan_session_dtkey</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">session</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.parse_intan_session_dtkey" title="Link to this definition"></a></dt>
+<dd><p>Extract the trailing <code class="docutils literal notranslate"><span class="pre">YYMMDD_HHMMSS</span></code> from a session name as a sortable int;
+returns <code class="docutils literal notranslate"><span class="pre">999999999999</span></code> when the pattern is absent, so unparsable sessions
+sort last.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.build_session_index_map">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">build_session_index_map</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">intan_sessions</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.build_session_index_map" title="Link to this definition"></a></dt>
+<dd><p>Sort sessions chronologically and return <code class="docutils literal notranslate"><span class="pre">({session:</span> <span class="pre">index},</span> <span class="pre">{index:</span> <span class="pre">session})</span></code>
+with 1-based indices matching the <code class="docutils literal notranslate"><span class="pre">Intan_File</span></code> column.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.find_ns5_by_br_index">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">find_ns5_by_br_index</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">br_root</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">br_idx</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.find_ns5_by_br_index" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.find_ns2_by_br_index">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">find_ns2_by_br_index</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">br_root</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">br_idx</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.find_ns2_by_br_index" title="Link to this definition"></a></dt>
+<dd><p>Recursively find the <code class="docutils literal notranslate"><span class="pre">.ns5</span></code> / <code class="docutils literal notranslate"><span class="pre">.ns2</span></code> file whose stem ends with the
+zero-padded 3-digit BR index (<code class="docutils literal notranslate"><span class="pre">br_idx=1</span></code> → <code class="docutils literal notranslate"><span class="pre">*001.ns5</span></code>). On multiple hits,
+prefer the newest mtime, then the largest file. Returns <code class="docutils literal notranslate"><span class="pre">None</span></code> with a
+warning if there is no match.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.ua_title_from_meta">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">ua_title_from_meta</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">meta</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.ua_title_from_meta" title="Link to this definition"></a></dt>
+<dd><p>Plot title for Utah array figures: <code class="docutils literal notranslate"><span class="pre">&quot;Blackrock</span> <span class="pre">/</span> <span class="pre">UA:</span> <span class="pre">NRR_RW_001_&lt;br_idx&gt;&quot;</span></code>,
+or <code class="docutils literal notranslate"><span class="pre">&quot;Utah/BR&quot;</span></code> when <code class="docutils literal notranslate"><span class="pre">br_idx</span></code> is absent.</p>
+</dd></dl>
+
+</section>
+<section id="kinematics-filtering">
+<h2>Kinematics filtering<a class="headerlink" href="#kinematics-filtering" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.butter_lowpass_pos_and_vel">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">butter_lowpass_pos_and_vel</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">TxD</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">t_ms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cutoff_hz</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">order</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.butter_lowpass_pos_and_vel" title="Link to this definition"></a></dt>
+<dd><p>Zero-phase Butterworth low-pass of a <code class="docutils literal notranslate"><span class="pre">(T,</span> <span class="pre">D)</span></code> position array plus a central
+difference velocity. Returns <code class="docutils literal notranslate"><span class="pre">(pos_filt,</span> <span class="pre">vel,</span> <span class="pre">t_ms)</span></code>. The sample rate is
+derived from the median <code class="docutils literal notranslate"><span class="pre">diff(t_ms)</span></code>; columns too short for <code class="docutils literal notranslate"><span class="pre">filtfilt</span></code>
+are passed through unfiltered. Velocity units are position units per ms.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.butter_lowpass_pos_and_vel_3d">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">butter_lowpass_pos_and_vel_3d</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">NKT</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">t_ms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cutoff_hz</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">order</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.butter_lowpass_pos_and_vel_3d" title="Link to this definition"></a></dt>
+<dd><p>Same as above for <code class="docutils literal notranslate"><span class="pre">(n_trials,</span> <span class="pre">n_keypoints,</span> <span class="pre">T)</span></code> arrays, filtering each
+trial × keypoint trace independently.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils._butter_lowpass_ba">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">_butter_lowpass_ba</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">cutoff_hz</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fs_hz</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">order</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils._butter_lowpass_ba" title="Link to this definition"></a></dt>
+<dd><p>Butterworth low-pass coefficients with the normalized cutoff clamped into
+<code class="docutils literal notranslate"><span class="pre">(0,</span> <span class="pre">1)</span></code>.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils._filtfilt_nanaware">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">_filtfilt_nanaware</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">b</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">a</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils._filtfilt_nanaware" title="Link to this definition"></a></dt>
+<dd><p><code class="docutils literal notranslate"><span class="pre">filtfilt</span></code> (Gustafsson’s method) on a trace containing NaNs: NaNs are
+filled with the median before filtering and restored afterwards.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils._central_diff_ms">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">_central_diff_ms</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt_ms</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils._central_diff_ms" title="Link to this definition"></a></dt>
+<dd><p>Central-difference derivative, one-sided at the edges. Any sample whose
+neighbour is NaN yields NaN.</p>
+</dd></dl>
+
+</section>
+<section id="spike-binning-and-rate-estimation">
+<h2>Spike binning and rate estimation<a class="headerlink" href="#spike-binning-and-rate-estimation" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.dedup_peaks">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">dedup_peaks</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">peaks</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">amps</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dedup_ms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.5</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_cluster_ms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.dedup_peaks" title="Link to this definition"></a></dt>
+<dd><p>Collapse near-simultaneous detections per channel, keeping the largest
+<code class="docutils literal notranslate"><span class="pre">|amplitude|</span></code> in each cluster. A cluster ends when the ISI exceeds
+<code class="docutils literal notranslate"><span class="pre">dedup_ms</span></code> or the cluster spans more than <code class="docutils literal notranslate"><span class="pre">max_cluster_ms</span></code>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>peaks</strong> – <code class="docutils literal notranslate"><span class="pre">{channel:</span> <span class="pre">spike_times_ms}</span></code></p></li>
+<li><p><strong>amps</strong> – <code class="docutils literal notranslate"><span class="pre">{channel:</span> <span class="pre">amplitudes}</span></code>, same keys and lengths.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><code class="docutils literal notranslate"><span class="pre">(peaks_dedup,</span> <span class="pre">amps_dedup)</span></code> in the same dict form.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.bin_counts_around_stim">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">bin_counts_around_stim</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">peaks_ms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bin_ms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stim_times_ms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">art_before_ms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">art_after_ms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">win_ms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(-600,</span> <span class="pre">600)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">step_ms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.bin_counts_around_stim" title="Link to this definition"></a></dt>
+<dd><p>Bin spikes around each stim event, leaving a blanking gap of
+<code class="docutils literal notranslate"><span class="pre">[-art_before_ms,</span> <span class="pre">art_after_ms]</span></code> for the artifact. Bin centres walk outward
+from the edges of that gap in both directions.</p>
+<p><code class="docutils literal notranslate"><span class="pre">step_ms=None</span></code> (the default) gives contiguous non-overlapping bins of width
+<code class="docutils literal notranslate"><span class="pre">bin_ms</span></code>. <code class="docutils literal notranslate"><span class="pre">step_ms</span> <span class="pre">&lt;</span> <span class="pre">bin_ms</span></code> gives sliding, overlapping windows;
+<code class="docutils literal notranslate"><span class="pre">step_ms</span> <span class="pre">&gt;</span> <span class="pre">bin_ms</span></code> leaves gaps between bins.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p><code class="docutils literal notranslate"><span class="pre">(counts,</span> <span class="pre">bin_centers_ms,</span> <span class="pre">bin_widths_ms,</span> <span class="pre">n_left_bins)</span></code> with
+<code class="docutils literal notranslate"><span class="pre">counts</span></code> shaped <code class="docutils literal notranslate"><span class="pre">(n_trials,</span> <span class="pre">n_channels,</span> <span class="pre">n_bins)</span></code>; channels are ordered
+by <code class="docutils literal notranslate"><span class="pre">sorted(peaks_ms)</span></code> and <code class="docutils literal notranslate"><span class="pre">n_left_bins</span></code> is the index of the first bin
+after the blanking gap.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils.smooth_counts_gauss">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">smooth_counts_gauss</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">counts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bin_widths_ms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bin_centers_ms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sigma_ms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">left_bins</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils.smooth_counts_gauss" title="Link to this definition"></a></dt>
+<dd><p>Convert counts to rates in Hz and Gaussian-smooth them in milliseconds,
+independently on each side of the stim blanking gap so the artifact window is
+never smoothed across. NaN bins are excluded from the local normalization
+rather than treated as zeros.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>left_bins</strong> – number of bins before the gap, from
+<a class="reference internal" href="#RCP_analysis.python.functions.utils.bin_counts_around_stim" title="RCP_analysis.python.functions.utils.bin_counts_around_stim"><code class="xref py py-func docutils literal notranslate"><span class="pre">bin_counts_around_stim()</span></code></a>.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>array shaped like <code class="docutils literal notranslate"><span class="pre">counts</span></code>, in Hz.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.utils._smooth_segment">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.utils.</span></span><span class="sig-name descname"><span class="pre">_smooth_segment</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">seg_counts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">seg_widths_ms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">seg_centers</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sigma_ms</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.utils._smooth_segment" title="Link to this definition"></a></dt>
+<dd><p>One-sided worker for <a class="reference internal" href="#RCP_analysis.python.functions.utils.smooth_counts_gauss" title="RCP_analysis.python.functions.utils.smooth_counts_gauss"><code class="xref py py-func docutils literal notranslate"><span class="pre">smooth_counts_gauss()</span></code></a>: counts → rates, then a
+NaN-aware Gaussian weighted average over bin centres.</p>
+</dd></dl>
+
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="config_loading.html" class="btn btn-neutral float-left" title="config_loading.py" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="intan_preproc.html" class="btn btn-neutral float-right" title="intan_preproc.py" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Bryan Tseng.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

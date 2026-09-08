@@ -1,0 +1,247 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>subspace_detector.py &mdash; RCP_reaching_analysis 1.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=f2a433a1"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="reach_onset_detection.py" href="reach_onset_detection.html" />
+    <link rel="prev" title="artifact_correction_template_matching.py" href="artifact_correction_template_matching.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            RCP_reaching_analysis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../install.html">Installing the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../running.html">Running the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../steps/index.html">Steps of the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../lfp_analysis.html">LFP band analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../outputs.html">Outputs and other plots</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../api.html">Python API</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="../api.html#modules">Modules</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="params_loading.html">params_loading.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="config_loading.html">config_loading.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="utils.html">utils.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="intan_preproc.html">intan_preproc.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="br_preproc.html">br_preproc.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="artifact_correction.html">artifact_correction.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="artifact_correction_template_matching.html">artifact_correction_template_matching.py</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">subspace_detector.py</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#functions">Functions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#private-helpers">Private helpers</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="reach_onset_detection.html">reach_onset_detection.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="rsa_utils.html">rsa_utils.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="impedance_utils.html">impedance_utils.py</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">RCP_reaching_analysis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../api.html">Python API</a></li>
+      <li class="breadcrumb-item active">subspace_detector.py</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/api/subspace_detector.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="subspace-detector-py">
+<h1>subspace_detector.py<a class="headerlink" href="#subspace-detector-py" title="Link to this heading"></a></h1>
+<p><code class="docutils literal notranslate"><span class="pre">RCP_analysis/python/functions/subspace_detector.py</span></code></p>
+<p>Standalone subspace-CFAR spike detector. A low-rank signal subspace is built
+from aligned waveforms or unit templates, and the detector scores every sample
+by the ratio of in-subspace to out-of-subspace energy — an F statistic whose
+threshold gives a constant false-alarm rate independent of the local noise
+level.</p>
+<p>Reference: Kraut &amp; Scharf 1999, CFAR-F subspace detector.</p>
+<p>Requires <code class="docutils literal notranslate"><span class="pre">numpy</span></code>, <code class="docutils literal notranslate"><span class="pre">scipy</span></code>, <code class="docutils literal notranslate"><span class="pre">tqdm</span></code>, <code class="docutils literal notranslate"><span class="pre">numba</span></code>, <code class="docutils literal notranslate"><span class="pre">torch</span></code>, and a
+SpikeInterface recording. Used by
+<code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/UA_BR_analysis_ssmf.py</span></code>.</p>
+<p>Typical use:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">basis</span> <span class="o">=</span> <span class="n">rcp</span><span class="o">.</span><span class="n">build_subspace_basis</span><span class="p">(</span><span class="n">my_templates</span><span class="p">,</span> <span class="n">rank</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+<span class="n">peaks</span> <span class="o">=</span> <span class="n">rcp</span><span class="o">.</span><span class="n">subspace_detect_cfar</span><span class="p">(</span><span class="n">recording</span><span class="p">,</span> <span class="n">basis</span><span class="p">,</span> <span class="n">cfar_alpha</span><span class="o">=</span><span class="mf">1e-4</span><span class="p">)</span>
+
+<span class="c1"># optional: suppress chewing-band bursts</span>
+<span class="n">peaks</span> <span class="o">=</span> <span class="n">rcp</span><span class="o">.</span><span class="n">filter_peaks_by_local_sigma</span><span class="p">(</span><span class="n">peaks</span><span class="p">,</span> <span class="n">recording</span><span class="p">,</span> <span class="n">k_amp</span><span class="o">=</span><span class="mf">3.5</span><span class="p">)</span>
+</pre></div>
+</div>
+<section id="functions">
+<h2>Functions<a class="headerlink" href="#functions" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.subspace_detector.build_subspace_basis">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.subspace_detector.</span></span><span class="sig-name descname"><span class="pre">build_subspace_basis</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">waveforms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.subspace_detector.build_subspace_basis" title="Link to this definition"></a></dt>
+<dd><p>Truncated-SVD signal subspace from aligned spike waveforms or per-unit
+templates.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>waveforms</strong> – <code class="docutils literal notranslate"><span class="pre">(n_wave,</span> <span class="pre">N)</span></code> — rows are trough-aligned snippets or
+templates, all of length <code class="docutils literal notranslate"><span class="pre">N</span></code>. <strong>Alignment matters</strong>: every row must have
+its trough at the same sample.</p></li>
+<li><p><strong>rank</strong> (<em>int</em>) – number of components to keep.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><code class="docutils literal notranslate"><span class="pre">(N,</span> <span class="pre">rank)</span></code> <code class="docutils literal notranslate"><span class="pre">float32</span></code> with orthonormal columns.</p>
+</dd>
+</dl>
+<p>The basis is deliberately <strong>not</strong> mean-centered, so the first component is
+the dominant spike shape itself. Prints the cumulative variance captured.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.subspace_detector.subspace_detect_cfar">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.subspace_detector.</span></span><span class="sig-name descname"><span class="pre">subspace_detect_cfar</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">recording</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">basis</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cfar_alpha</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-4</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">peak_sign</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'neg'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">refractory_ms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.5</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">snap_ms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.6</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">chunk_s</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">30.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">progress_bar</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.subspace_detector.subspace_detect_cfar" title="Link to this definition"></a></dt>
+<dd><p>Subspace matched detector with a CFAR-F threshold.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>recording</strong> – SpikeInterface recording (multi-segment supported).</p></li>
+<li><p><strong>basis</strong> – <code class="docutils literal notranslate"><span class="pre">(N,</span> <span class="pre">r)</span></code> orthonormal-column basis from
+<a class="reference internal" href="#RCP_analysis.python.functions.subspace_detector.build_subspace_basis" title="RCP_analysis.python.functions.subspace_detector.build_subspace_basis"><code class="xref py py-func docutils literal notranslate"><span class="pre">build_subspace_basis()</span></code></a>.</p></li>
+<li><p><strong>cfar_alpha</strong> (<em>float</em>) – false-alarm rate; the threshold is
+<code class="docutils literal notranslate"><span class="pre">F.ppf(1</span> <span class="pre">-</span> <span class="pre">alpha,</span> <span class="pre">r,</span> <span class="pre">N</span> <span class="pre">-</span> <span class="pre">r)</span> <span class="pre">*</span> <span class="pre">r</span> <span class="pre">/</span> <span class="pre">(N</span> <span class="pre">-</span> <span class="pre">r)</span></code>.</p></li>
+<li><p><strong>peak_sign</strong> (<em>str</em>) – <code class="docutils literal notranslate"><span class="pre">&quot;neg&quot;</span></code> snaps to the local minimum, anything else to
+the maximum.</p></li>
+<li><p><strong>refractory_ms</strong> (<em>float</em>) – minimum separation between kept peaks, per channel.</p></li>
+<li><p><strong>snap_ms</strong> (<em>float</em>) – half-width of the window searched when snapping the
+detection to the true trough.</p></li>
+<li><p><strong>chunk_s</strong> (<em>float</em>) – seconds per chunk — the VRAM knob.</p></li>
+<li><p><strong>progress_bar</strong> (<em>bool</em>) – show the per-chunk tqdm bar.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>structured array with fields <code class="docutils literal notranslate"><span class="pre">sample_index</span></code> (int64),
+<code class="docutils literal notranslate"><span class="pre">channel_index</span></code> (int64), <code class="docutils literal notranslate"><span class="pre">segment_index</span></code> (int64) and <code class="docutils literal notranslate"><span class="pre">amplitude</span></code>
+(float32), sorted by segment then sample.</p>
+</dd>
+</dl>
+<p>The two convolutions (signal energy and total energy) run through
+<code class="docutils literal notranslate"><span class="pre">torch.nn.functional.conv1d</span></code> on CUDA when available and on CPU otherwise —
+the CPU path is a fallback, not a different algorithm. All channels in a
+time chunk go through one convolution, so runtime is I/O-bound rather than
+compute-bound. Chunks overlap by <code class="docutils literal notranslate"><span class="pre">2N</span> <span class="pre">+</span> <span class="pre">snap</span></code> samples and each channel
+carries its refractory state across the seam, so peaks at chunk boundaries
+are neither missed nor double-counted.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.subspace_detector.filter_peaks_by_local_sigma">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.subspace_detector.</span></span><span class="sig-name descname"><span class="pre">filter_peaks_by_local_sigma</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">peaks</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">recording</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">k_amp</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3.5</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">w_ms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">peak_sign</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'neg'</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.subspace_detector.filter_peaks_by_local_sigma" title="Link to this definition"></a></dt>
+<dd><p>Amplitude gate against the <em>local</em> noise level: keep a peak only if
+<code class="docutils literal notranslate"><span class="pre">|trough</span> <span class="pre">voltage|</span> <span class="pre">&gt;</span> <span class="pre">k_amp</span> <span class="pre">*</span> <span class="pre">sigma_local</span></code>. Useful for suppressing
+chewing-band bursts, which raise the noise floor without being spikes.</p>
+<p><code class="docutils literal notranslate"><span class="pre">sigma_local</span></code> is estimated block-wise (<code class="docutils literal notranslate"><span class="pre">1.4826</span> <span class="pre">×</span> <span class="pre">MAD</span></code> on a <code class="docutils literal notranslate"><span class="pre">w_ms</span></code> grid)
+and interpolated to the peak positions, since sigma is a slow envelope. The
+trough voltage is read from the trace in the same pass, so the test is exact
+and detector-agnostic — it does not reuse <code class="docutils literal notranslate"><span class="pre">peaks[&quot;amplitude&quot;]</span></code>, which is
+filter output for a matched filter.</p>
+<p>Single-segment only. Prints how many peaks survived.</p>
+</dd></dl>
+
+</section>
+<section id="private-helpers">
+<h2>Private helpers<a class="headerlink" href="#private-helpers" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.subspace_detector._subspace_pick_channel">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.subspace_detector.</span></span><span class="sig-name descname"><span class="pre">_subspace_pick_channel</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">Fc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">thr</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lag</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">w_snap</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">min_sep</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">a</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">t0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">t1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">seg_len</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">last_kept</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">neg</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.subspace_detector._subspace_pick_channel" title="Link to this definition"></a></dt>
+<dd><p>Numba-compiled per-channel peak picker used inside
+<a class="reference internal" href="#RCP_analysis.python.functions.subspace_detector.subspace_detect_cfar" title="RCP_analysis.python.functions.subspace_detector.subspace_detect_cfar"><code class="xref py py-func docutils literal notranslate"><span class="pre">subspace_detect_cfar()</span></code></a>. For each contiguous region where the F
+statistic exceeds the threshold it takes the argmax, snaps to the trough (or
+peak) within <code class="docutils literal notranslate"><span class="pre">±w_snap</span></code>, converts to a global sample index, discards
+anything outside the chunk’s committed window, then enforces the refractory
+period.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p><code class="docutils literal notranslate"><span class="pre">(kept_sample_indices,</span> <span class="pre">last_kept)</span></code> — <code class="docutils literal notranslate"><span class="pre">last_kept</span></code> is carried into
+the next chunk so the refractory period spans the seam.</p>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="artifact_correction_template_matching.html" class="btn btn-neutral float-left" title="artifact_correction_template_matching.py" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="reach_onset_detection.html" class="btn btn-neutral float-right" title="reach_onset_detection.py" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Bryan Tseng.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
