@@ -1,0 +1,25 @@
+# Read the Docs configuration file
+# See https://docs.readthedocs.io/en/stable/config-file/v2.html for details
+
+# Required
+version: 2
+
+build:
+  os: ubuntu-22.04
+  tools:
+    nodejs: "20"
+    python: "3.10"
+  jobs:
+    post_install:
+      - pip install sphinx-rtd-theme
+
+sphinx:
+  configuration: docs/source/conf.py
+
+# Optionally, but recommended,
+# declare the Python requirements required to build your documentation
+# See https://docs.readthedocs.io/en/stable/guides/reproducible-builds.html
+# python:
+#    install:
+#    - requirements: docs/requirements.txt
+        

@@ -1,0 +1,39 @@
+Stimulation Group Responses
+============================
+
+Script: ``analysis_scripts/plot_stim_group_responses.py``
+
+Simple stimulation response grouping analysis.
+
+Channel Classification
+-----------------------
+
+Post-stimulation response type:
+
+- ``unchanged``
+- ``post_increase``
+- ``post_decrease``
+- ``mixed_post``
+
+During-stimulation response type:
+
+- ``during_increase``
+- ``no_during_increase``
+
+Comparison Modes
+----------------
+
+``pre``
+   Stim post/during compared to stim pre-stim baseline.
+
+``control``
+   Stim post/during compared to matched control trials.
+
+Figures Generated
+-----------------
+
+- Changed vs. unchanged PSTH.
+- Response type PSTH.
+- During increase vs. no-during-increase PSTH.
+- Class count bar plot.
+- Utah grid class map.

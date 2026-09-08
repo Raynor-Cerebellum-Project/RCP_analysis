@@ -1,0 +1,251 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>config_loading.py &mdash; RCP_reaching_analysis 1.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=f2a433a1"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="utils.py" href="utils.html" />
+    <link rel="prev" title="params_loading.py" href="params_loading.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            RCP_reaching_analysis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../install.html">Installing the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../running.html">Running the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../steps/index.html">Steps of the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../lfp_analysis.html">LFP band analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../outputs.html">Outputs and other plots</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../api.html">Python API</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="../api.html#modules">Modules</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="params_loading.html">params_loading.py</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">config_loading.py</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#constants">Constants</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#input-directories">Input directories</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#output-directories">Output directories</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="utils.html">utils.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="intan_preproc.html">intan_preproc.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="br_preproc.html">br_preproc.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="artifact_correction.html">artifact_correction.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="artifact_correction_template_matching.html">artifact_correction_template_matching.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="subspace_detector.html">subspace_detector.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="reach_onset_detection.html">reach_onset_detection.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="rsa_utils.html">rsa_utils.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="impedance_utils.html">impedance_utils.py</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">RCP_reaching_analysis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../api.html">Python API</a></li>
+      <li class="breadcrumb-item active">config_loading.py</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/api/config_loading.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="config-loading-py">
+<h1>config_loading.py<a class="headerlink" href="#config-loading-py" title="Link to this heading"></a></h1>
+<p><code class="docutils literal notranslate"><span class="pre">RCP_analysis/python/functions/config_loading.py</span></code></p>
+<p>Executed once at import time. It loads <code class="docutils literal notranslate"><span class="pre">config/params.yaml</span></code> through
+<a class="reference internal" href="params_loading.html#RCP_analysis.python.functions.params_loading.load_experiment_params" title="RCP_analysis.python.functions.params_loading.load_experiment_params"><code class="xref py py-func docutils literal notranslate"><span class="pre">load_experiment_params()</span></code></a>,
+derives every session directory from it, and creates the output directories that
+the pipeline writes into. There are no functions here — the module <em>is</em> the
+configuration.</p>
+<p>Import it for its constants:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">RCP_analysis.python.functions.config_loading</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<span class="c1"># or</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">RCP_analysis</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">rcp</span>
+<span class="n">rcp</span><span class="o">.</span><span class="n">config_loading</span><span class="o">.</span><span class="n">PERI_ROOT</span>
+</pre></div>
+</div>
+<p>Failure behaviour: if <code class="docutils literal notranslate"><span class="pre">params.yaml</span></code> is missing or fails to parse, a warning is
+printed and <code class="docutils literal notranslate"><span class="pre">PARAMS</span></code>, <code class="docutils literal notranslate"><span class="pre">SESSION_LOC</span></code>, <code class="docutils literal notranslate"><span class="pre">OUT_BASE</span></code> and <code class="docutils literal notranslate"><span class="pre">MONKEY</span></code> are set to
+<code class="docutils literal notranslate"><span class="pre">None</span></code> rather than raising — so importing the package never hard-fails on a
+machine that isn’t configured yet.</p>
+<section id="constants">
+<h2>Constants<a class="headerlink" href="#constants" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 70.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Name</p></th>
+<th class="head"><p>Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">REPO_ROOT</span></code></p></td>
+<td><p>Repository root, three parents up from this file.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PARAMS_PATH</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">REPO_ROOT/config/params.yaml</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PARAMS</span></code></p></td>
+<td><p>The loaded <code class="docutils literal notranslate"><span class="pre">experimentParams</span></code>, or <code class="docutils literal notranslate"><span class="pre">None</span></code> on failure.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">MONKEY</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">PARAMS.monkey</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SESSION_LOC</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">PARAMS.data_root</span> <span class="pre">/</span> <span class="pre">PARAMS.location</span></code>, resolved.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">METADATA_CSV</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SESSION_LOC/Metadata/&lt;session&gt;_metadata.csv</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">UA_CFG</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">PARAMS.probes[&quot;UA&quot;]</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CAMERA_SYNC_CH</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">UA_CFG[&quot;camera_sync_ch&quot;]</span></code>, default <code class="docutils literal notranslate"><span class="pre">134</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">KEYPOINTS_ORDER</span></code></p></td>
+<td><p>Tuple of DLC keypoint names from <code class="docutils literal notranslate"><span class="pre">PARAMS.kinematics</span></code>.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="input-directories">
+<h2>Input directories<a class="headerlink" href="#input-directories" title="Link to this heading"></a></h2>
+<p>All under <code class="docutils literal notranslate"><span class="pre">SESSION_LOC</span></code> and created if missing:
+<code class="docutils literal notranslate"><span class="pre">BR_ROOT</span></code> (<code class="docutils literal notranslate"><span class="pre">Blackrock</span></code>), <code class="docutils literal notranslate"><span class="pre">VIDEO_ROOT</span></code> (<code class="docutils literal notranslate"><span class="pre">Video</span></code>), <code class="docutils literal notranslate"><span class="pre">VOG_ROOT</span></code> (<code class="docutils literal notranslate"><span class="pre">VOG</span></code>),
+<code class="docutils literal notranslate"><span class="pre">INTAN_ROOT</span></code> (<code class="docutils literal notranslate"><span class="pre">Intan</span></code>), <code class="docutils literal notranslate"><span class="pre">METADATA_ROOT</span></code> (<code class="docutils literal notranslate"><span class="pre">Metadata</span></code>).</p>
+</section>
+<section id="output-directories">
+<h2>Output directories<a class="headerlink" href="#output-directories" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">OUT_BASE</span></code> is <code class="docutils literal notranslate"><span class="pre">SESSION_LOC/results</span></code>. Beneath it:</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 70.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Name</p></th>
+<th class="head"><p>Path under <code class="docutils literal notranslate"><span class="pre">OUT_BASE</span></code></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">BEHV_AUX_DATA</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">aux_data/Behavior</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">NPRW_AUX_DATA</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">aux_data/NPRW</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">UA_AUX_DATA</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">aux_data/UA</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">BEHV_CKPT_ROOT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">checkpoints/Behavior</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">NPRW_CKPT_ROOT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">checkpoints/NPRW</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">UA_CKPT_ROOT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">checkpoints/UA</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ALIGNED_CKPT_ROOT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">checkpoints/Aligned</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">VOG_CKPT_ROOT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">checkpoints/VOG</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PERI_ROOT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">checkpoints/PeriStim</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><code class="docutils literal notranslate"><span class="pre">config_loading</span></code> imports <code class="docutils literal notranslate"><span class="pre">params_loading</span></code> with a relative import
+specifically to avoid a circular dependency with the package’s top-level
+<code class="docutils literal notranslate"><span class="pre">__init__</span></code>. Keep it that way when editing.</p>
+</div>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="params_loading.html" class="btn btn-neutral float-left" title="params_loading.py" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="utils.html" class="btn btn-neutral float-right" title="utils.py" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Bryan Tseng.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

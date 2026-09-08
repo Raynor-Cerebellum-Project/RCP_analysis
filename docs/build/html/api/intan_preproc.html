@@ -1,0 +1,280 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>intan_preproc.py &mdash; RCP_reaching_analysis 1.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=f2a433a1"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="br_preproc.py" href="br_preproc.html" />
+    <link rel="prev" title="utils.py" href="utils.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            RCP_reaching_analysis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../install.html">Installing the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../running.html">Running the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../steps/index.html">Steps of the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../lfp_analysis.html">LFP band analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../outputs.html">Outputs and other plots</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../api.html">Python API</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="../api.html#modules">Modules</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="params_loading.html">params_loading.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="config_loading.html">config_loading.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="utils.html">utils.py</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">intan_preproc.py</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#channel-mapping">Channel mapping</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#stim-detection">Stim detection</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#aux-streams">Aux streams</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#constants">Constants</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="br_preproc.html">br_preproc.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="artifact_correction.html">artifact_correction.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="artifact_correction_template_matching.html">artifact_correction_template_matching.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="subspace_detector.html">subspace_detector.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="reach_onset_detection.html">reach_onset_detection.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="rsa_utils.html">rsa_utils.py</a></li>
+<li class="toctree-l3"><a class="reference internal" href="impedance_utils.html">impedance_utils.py</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">RCP_reaching_analysis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../api.html">Python API</a></li>
+      <li class="breadcrumb-item active">intan_preproc.py</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/api/intan_preproc.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="intan-preproc-py">
+<h1>intan_preproc.py<a class="headerlink" href="#intan-preproc-py" title="Link to this heading"></a></h1>
+<p><code class="docutils literal notranslate"><span class="pre">RCP_analysis/python/functions/intan_preproc.py</span></code></p>
+<p>Reads Intan recordings: reorders channels into probe geometry, detects
+stimulation pulses and blocks from the stim stream, and caches stim and aux
+streams as NPZ. Used by <code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/NPRW_Intan_analysis_mf.py</span></code>.</p>
+<section id="channel-mapping">
+<h2>Channel mapping<a class="headerlink" href="#channel-mapping" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.intan_preproc.reorder_recording_to_geometry">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.intan_preproc.</span></span><span class="sig-name descname"><span class="pre">reorder_recording_to_geometry</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">rec</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">perm</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.intan_preproc.reorder_recording_to_geometry" title="Link to this definition"></a></dt>
+<dd><p>Return a <code class="docutils literal notranslate"><span class="pre">ChannelSliceRecording</span></code> whose channels follow <code class="docutils literal notranslate"><span class="pre">perm</span></code>, a
+permutation from device order to geometric order. <code class="docutils literal notranslate"><span class="pre">perm=None</span></code> returns the
+recording unchanged with a warning, so callers can pass an unresolved mapping
+through safely.</p>
+</dd></dl>
+
+</section>
+<section id="stim-detection">
+<h2>Stim detection<a class="headerlink" href="#stim-detection" title="Link to this heading"></a></h2>
+<dl class="py class">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.intan_preproc.StimTriggerResult">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.intan_preproc.</span></span><span class="sig-name descname"><span class="pre">StimTriggerResult</span></span><a class="headerlink" href="#RCP_analysis.python.functions.intan_preproc.StimTriggerResult" title="Link to this definition"></a></dt>
+<dd><p>Dataclass returned by the pulse detectors.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Fields<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">active_channels</span></code> <code class="docutils literal notranslate"><span class="pre">(n_active,)</span></code> — <strong>1-based</strong> channel IDs.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">trigger_pairs</span></code> <code class="docutils literal notranslate"><span class="pre">(n_pulses,</span> <span class="pre">2)</span></code> — <code class="docutils literal notranslate"><span class="pre">[start_sample,</span> <span class="pre">end_sample]</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">block_bounds_samples</span></code> <code class="docutils literal notranslate"><span class="pre">(n_blocks,</span> <span class="pre">2)</span></code> — <code class="docutils literal notranslate"><span class="pre">[block_start,</span> <span class="pre">block_end]</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">pulse_sizes</span></code> <code class="docutils literal notranslate"><span class="pre">(n_pulses,)</span></code> — pulse length in samples.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.intan_preproc.scan_active_channels">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.intan_preproc.</span></span><span class="sig-name descname"><span class="pre">scan_active_channels</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">rec</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">chunk_s</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">30.0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.intan_preproc.scan_active_channels" title="Link to this definition"></a></dt>
+<dd><p>Channels with any nonzero stim sample, as <strong>0-based</strong> indices. Scans in
+<code class="docutils literal notranslate"><span class="pre">chunk_s</span></code> blocks so memory stays bounded, and stops early once every
+channel is known to be active.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.intan_preproc.load_channel_signal">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.intan_preproc.</span></span><span class="sig-name descname"><span class="pre">load_channel_signal</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">rec</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ch_index</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">chunk_s</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">30.0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.intan_preproc.load_channel_signal" title="Link to this definition"></a></dt>
+<dd><p>Load one channel as scaled <code class="docutils literal notranslate"><span class="pre">float32</span></code>, filled in chunks (~86 MB for a
+12-minute session).</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.intan_preproc.load_traces_chunked">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.intan_preproc.</span></span><span class="sig-name descname"><span class="pre">load_traces_chunked</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">rec</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ch_indices</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">chunk_s</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">30.0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.intan_preproc.load_traces_chunked" title="Link to this definition"></a></dt>
+<dd><p>Build a <code class="docutils literal notranslate"><span class="pre">(n_channels,</span> <span class="pre">n_samples)</span></code> scaled <code class="docutils literal notranslate"><span class="pre">float32</span></code> array without a
+full-size temporary. <code class="docutils literal notranslate"><span class="pre">ch_indices</span></code> selects a 0-based subset; <code class="docutils literal notranslate"><span class="pre">None</span></code> loads
+every channel.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.intan_preproc.extract_stim_npz">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.intan_preproc.</span></span><span class="sig-name descname"><span class="pre">extract_stim_npz</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">sess</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_dir</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stim_stream_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'Stim</span> <span class="pre">channel'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">chanmap_perm</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">save_traces</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">det_channel</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.intan_preproc.extract_stim_npz" title="Link to this definition"></a></dt>
+<dd><p>Detect stim pulses and blocks for one Intan session and write
+<code class="docutils literal notranslate"><span class="pre">&lt;out_dir&gt;/&lt;session&gt;_Intan_streams/stim_stream.npz</span></code>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>sess</strong> (<em>Path</em>) – Intan session directory.</p></li>
+<li><p><strong>out_dir</strong> (<em>Path</em>) – root for the <code class="docutils literal notranslate"><span class="pre">*_Intan_streams</span></code> output folder.</p></li>
+<li><p><strong>stim_stream_name</strong> (<em>str</em>) – SpikeInterface stream name.</p></li>
+<li><p><strong>chanmap_perm</strong> – geometry permutation, see
+<a class="reference internal" href="#RCP_analysis.python.functions.intan_preproc.reorder_recording_to_geometry" title="RCP_analysis.python.functions.intan_preproc.reorder_recording_to_geometry"><code class="xref py py-func docutils literal notranslate"><span class="pre">reorder_recording_to_geometry()</span></code></a>.</p></li>
+<li><p><strong>save_traces</strong> – <code class="docutils literal notranslate"><span class="pre">True</span></code> saves all channels’ traces (~0.46 GB per
+recorded minute), <code class="docutils literal notranslate"><span class="pre">&quot;active&quot;</span></code> saves only channels carrying stim, <code class="docutils literal notranslate"><span class="pre">False</span></code>
+omits traces and saves detection output only.</p></li>
+<li><p><strong>det_channel</strong> – 0-based override for the detection channel; defaults to
+the first active channel.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>the dict of saved arrays, or <code class="docutils literal notranslate"><span class="pre">None</span></code> if the stream could not be read.</p>
+</dd>
+</dl>
+<p>Saved keys: <code class="docutils literal notranslate"><span class="pre">active_channels</span></code> (1-based), <code class="docutils literal notranslate"><span class="pre">active_channels_0based</span></code>,
+<code class="docutils literal notranslate"><span class="pre">trigger_pairs</span></code>, <code class="docutils literal notranslate"><span class="pre">block_bounds_samples</span></code>, <code class="docutils literal notranslate"><span class="pre">pulse_sizes</span></code>, optionally
+<code class="docutils literal notranslate"><span class="pre">stim_traces</span></code> and <code class="docutils literal notranslate"><span class="pre">stim_traces_channels_0based</span></code>, plus a JSON <code class="docutils literal notranslate"><span class="pre">meta</span></code>
+string carrying session name, <code class="docutils literal notranslate"><span class="pre">fs_hz</span></code>, channel and sample counts, channel
+order (<code class="docutils literal notranslate"><span class="pre">geometry</span></code>/<code class="docutils literal notranslate"><span class="pre">device</span></code>), the detection channel, and which traces were
+saved.</p>
+<p>Read the result back with
+<a class="reference internal" href="utils.html#RCP_analysis.python.functions.utils.load_stim_detection" title="RCP_analysis.python.functions.utils.load_stim_detection"><code class="xref py py-func docutils literal notranslate"><span class="pre">load_stim_detection()</span></code></a>.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.intan_preproc._extract_stim_triggers_and_blocks_1d">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.intan_preproc.</span></span><span class="sig-name descname"><span class="pre">_extract_stim_triggers_and_blocks_1d</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">stim_signal</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">active_channels_0based</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.intan_preproc._extract_stim_triggers_and_blocks_1d" title="Link to this definition"></a></dt>
+<dd><p>Pulse and block detection on a single detection channel — the routine
+<a class="reference internal" href="#RCP_analysis.python.functions.intan_preproc.extract_stim_npz" title="RCP_analysis.python.functions.intan_preproc.extract_stim_npz"><code class="xref py py-func docutils literal notranslate"><span class="pre">extract_stim_npz()</span></code></a> actually uses.</p>
+<p>Pulses: falling edges (rising edges if there are more of them) are taken
+every other edge, since each biphasic pulse produces two; ends are every
+second return-to-zero, found with one sorted <code class="docutils literal notranslate"><span class="pre">searchsorted</span></code> lookup.</p>
+<p>Blocks: a gap between consecutive pulse starts larger than 50× the median
+pulse size starts a new block.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>That 50× rule currently treats anything faster than ~10 Hz stim as a
+single block (see the <code class="docutils literal notranslate"><span class="pre">TODO</span></code> in the source).</p>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">active_channels</span></code> on the result is converted back to 1-based for
+compatibility.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.intan_preproc._extract_stim_triggers_and_blocks">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.intan_preproc.</span></span><span class="sig-name descname"><span class="pre">_extract_stim_triggers_and_blocks</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">stim_data</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.intan_preproc._extract_stim_triggers_and_blocks" title="Link to this definition"></a></dt>
+<dd><p>Older <code class="docutils literal notranslate"><span class="pre">(n_channels,</span> <span class="pre">n_samples)</span></code> version of the same detection, kept for
+reference. It indexes the detection channel with the 1-based ID, so prefer
+the <code class="docutils literal notranslate"><span class="pre">_1d</span></code> variant above.</p>
+</dd></dl>
+
+</section>
+<section id="aux-streams">
+<h2>Aux streams<a class="headerlink" href="#aux-streams" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RCP_analysis.python.functions.intan_preproc.extract_intan_aux_streams_npz">
+<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.intan_preproc.</span></span><span class="sig-name descname"><span class="pre">extract_intan_aux_streams_npz</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">sess</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_dir</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">aux_streams</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">('USB</span> <span class="pre">board</span> <span class="pre">ADC</span> <span class="pre">input</span> <span class="pre">channel',)</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.intan_preproc.extract_intan_aux_streams_npz" title="Link to this definition"></a></dt>
+<dd><p>Read the Intan aux stream(s), convert unsigned to signed, and save
+<code class="docutils literal notranslate"><span class="pre">&lt;out_dir&gt;/&lt;session&gt;_Intan_streams/aux_streams.npz</span></code> containing
+<code class="docutils literal notranslate"><span class="pre">aux_traces</span></code> <code class="docutils literal notranslate"><span class="pre">(n_channels,</span> <span class="pre">n_samples)</span></code> in µV plus a JSON <code class="docutils literal notranslate"><span class="pre">meta</span></code>
+(session, stream name, <code class="docutils literal notranslate"><span class="pre">fs_hz</span></code>, channel count and IDs, dtype, shape).</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>the output path, or <code class="docutils literal notranslate"><span class="pre">None</span></code> if the stream could not be read.</p>
+</dd>
+</dl>
+<p>Read it back with
+<a class="reference internal" href="utils.html#RCP_analysis.python.functions.utils.load_intan_aux" title="RCP_analysis.python.functions.utils.load_intan_aux"><code class="xref py py-func docutils literal notranslate"><span class="pre">load_intan_aux()</span></code></a>, which returns
+rows 0 and 1 as the triangle sync and BR template signals.</p>
+</dd></dl>
+
+</section>
+<section id="constants">
+<h2>Constants<a class="headerlink" href="#constants" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">STIM_CHUNK_S</span> <span class="pre">=</span> <span class="pre">30.0</span></code> — default chunk size, in seconds, for every chunked
+reader in this module.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="utils.html" class="btn btn-neutral float-left" title="utils.py" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="br_preproc.html" class="btn btn-neutral float-right" title="br_preproc.py" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Bryan Tseng.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

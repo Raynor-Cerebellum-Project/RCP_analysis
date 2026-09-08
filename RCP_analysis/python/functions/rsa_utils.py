@@ -3,9 +3,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 import numpy as np
 from scipy import stats
-from sklearn.metrics import silhouette_score, silhouette_samples
 import matplotlib.pyplot as plt
-import RCP_analysis as rcp
 import os
 import logging
 
@@ -16,7 +14,8 @@ if not logger.handlers:
     handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)
 
-from RCP_analysis.python.functions.config_loading import *
+from .config_loading import *
+from .utils import short_npz_name
 
 # rsa params
 Z_SCORE_FEATURES = True          # z-score channels across trials before distances
@@ -321,7 +320,7 @@ def _compute_movement_mask(
             n_ch = n_ch_file
             ever_passes = np.zeros(n_ch, dtype=bool)
         if n_ch_file != n_ch:
-            logger.debug(f"[move] ch mismatch in {rcp.short_npz_name(path)}; skipping")
+            logger.debug(f"[move] ch mismatch in {short_npz_name(path)}; skipping")
             continue
 
         pvals = _movement_pvalues(rates, baseline_mask, response_mask)
@@ -383,7 +382,7 @@ def _compute_stim_mask(
         return None
     n_ch = rates.shape[1]
     if ctrl_pool.shape[0] != n_ch:
-        logger.debug(f"[stim] ch mismatch for {rcp.short_npz_name(stim_path)}; skipping stim mask")
+        logger.debug(f"[stim] ch mismatch for {short_npz_name(stim_path)}; skipping stim mask")
         return None
 
     stim_trial_mean = np.nanmean(rates[:, :, stim_mask], axis=2)  # (n_trials, n_ch)
@@ -402,7 +401,7 @@ def _compute_stim_mask(
         pvals[ch] = p
 
     passes = _fdr_pass_mask(pvals, alpha)
-    logger.info(f"[stim] {passes.sum()}/{n_ch} pass for {rcp.short_npz_name(stim_path)}")
+    logger.info(f"[stim] {passes.sum()}/{n_ch} pass for {short_npz_name(stim_path)}")
     return passes
 
 # Channel-mask for UA files
@@ -488,7 +487,7 @@ def _plot_movement_mask_debug(
                 region_arr=region_arr, region_names=region_names, ch_subset=ch_subset,
                 vlines=vlines,
             )
-        plt.suptitle(f"Movement mask  Wilcoxon signed-rank, FDR alpha={alpha}  {rcp.short_npz_name(path).removesuffix('.npz')}", fontsize=10)
+        plt.suptitle(f"Movement mask  Wilcoxon signed-rank, FDR alpha={alpha}  {short_npz_name(path).removesuffix('.npz')}", fontsize=10)
         plt.tight_layout()
         
         out_svg = (
@@ -550,7 +549,7 @@ def _plot_stim_mask_debug(
             vlines=vlines, vspans=vspans,
         )
     
-    plt.suptitle(f"Stim mask  Mann-Whitney U, FDR alpha={alpha}  {rcp.short_npz_name(stim_path).removesuffix('.npz')}", fontsize=10)
+    plt.suptitle(f"Stim mask  Mann-Whitney U, FDR alpha={alpha}  {short_npz_name(stim_path).removesuffix('.npz')}", fontsize=10)
     plt.tight_layout()
     
     out_svg = (
@@ -676,6 +675,67 @@ def _plot_rdm_with_block_ticks(
             plt.close(fig)
             return None
 
+def _two_group_silhouette(D: np.ndarray, in_group_b: np.ndarray) -> float:
+    """
+    Mean silhouette for a 2-cluster split of a precomputed distance matrix.
+    Equivalent to silhouette_score(D, labels, metric="precomputed") for K=2,
+    but ~100x faster, which matters when it's called n_perm times per pair.
+    D must have a zero diagonal (guaranteed by _rsm_to_distance).
+    """
+    gb = np.asarray(in_group_b, dtype=bool)
+    ga = ~gb
+    nb, na = int(gb.sum()), int(ga.sum())
+    if nb < 2 or na < 2:
+        return np.nan
+    sum_b = D[:, gb].sum(axis=1)  # self-distance is 0, so it drops out
+    sum_a = D[:, ga].sum(axis=1)
+    a = np.where(gb, sum_b / (nb - 1), sum_a / (na - 1))  # within-cluster
+    b = np.where(gb, sum_a / na, sum_b / nb)              # nearest-other-cluster
+    denom = np.maximum(a, b)
+    s = np.divide(b - a, denom, out=np.zeros_like(denom), where=denom > 0)
+    return float(np.mean(s))
+
+def _null_pvalue(obs: float, null: np.ndarray, tail: str) -> float:
+    """
+    Empirical p-value: fraction of the label-shuffle null at least as extreme as
+    obs, with the +1 correction. No distributional assumption, but resolution is
+    floored at 1/(n_perm+1) -- see _p_stars for why that matters for the stars.
+    """
+    null = null[np.isfinite(null)]
+    if null.size == 0:
+        return np.nan
+    n = null.size
+    if tail == "greater":
+        return (1.0 + np.sum(null >= obs)) / (n + 1.0)
+    if tail == "less":
+        return (1.0 + np.sum(null <= obs)) / (n + 1.0)
+    center = null.mean()
+    return (1.0 + np.sum(np.abs(null - center) >= abs(obs - center))) / (n + 1.0)
+
+def _fdr_adjust_pairs(P: np.ndarray) -> np.ndarray:
+    """BH-adjust the K*(K-1)/2 unique pair p-values, mirrored back to K x K."""
+    K = P.shape[0]
+    Q = np.full_like(P, np.nan)
+    iu = np.triu_indices(K, k=1)
+    pv = P[iu]
+    valid = np.isfinite(pv)
+    if not valid.any():
+        return Q
+    adj = np.full(pv.shape, np.nan)
+    adj[valid] = stats.false_discovery_control(pv[valid], method="bh")
+    Q[iu] = adj
+    Q[iu[1], iu[0]] = adj
+    return Q
+
+def _p_stars(q: float) -> str:
+    """
+    Single significance tier. Graded tiers (**/***) aren't used because with a
+    1/(n_perm+1) p-value floor, BH ties give a pair a smaller q the more OTHER
+    pairs are also significant -- so tier would track the number of significant
+    pairs, not this pair's separation.
+    """
+    return "*" if np.isfinite(q) and q < 0.05 else ""
+
 def _rsm_to_distance(RSM: np.ndarray, kind: str = "angular") -> np.ndarray:
     """Correlation similarity -> distance for silhouette (metric='precomputed')."""
     R = 0.5 * (RSM + RSM.T)  # enforce exact symmetry
@@ -687,28 +747,65 @@ def _rsm_to_distance(RSM: np.ndarray, kind: str = "angular") -> np.ndarray:
     return D
 
 def _pairwise_silhouette(
-    RSM: np.ndarray, block_sizes: list[int], kind: str = "angular"
-) -> np.ndarray:
-    """K x K silhouette computed two conditions at a time; NaN diagonal."""
+    RSM: np.ndarray,
+    block_sizes: list[int],
+    kind: str = "angular",
+    n_perm: int = 0,
+    tail: str = "greater",
+    rng=None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    K x K silhouette computed two conditions at a time; NaN diagonal.
+
+    If n_perm > 0, each pair also gets a null distribution built by shuffling the
+    two conditions' trial labels (group sizes preserved) and recomputing the
+    silhouette on the same distance matrix. Returns (S, P) where P holds the
+    uncorrected empirical p-values; NaN P entries mean the pair wasn't tested.
+    """
     K = len(block_sizes)
+    S = np.full((K, K), np.nan)
+    P = np.full((K, K), np.nan)
     if K < 2:
         logger.info(f"[sil-pair] {K} condition(s); pairwise silhouette needs >=2, skipping")
-        return np.full((K, K), np.nan)
+        return S, P
 
+    if n_perm > 0:
+        p_floor = 1.0 / (n_perm + 1.0)
+        n_pairs = K * (K - 1) // 2
+        if p_floor * n_pairs > 0.05:
+            logger.warning(
+                f"[sil-pair][warn] p floor {p_floor:.4f} x {n_pairs} pairs > 0.05; "
+                f"no pair can reach q<0.05. Need n_perm >~ {int(n_pairs / 0.05)}."
+            )
+
+    rng = np.random.default_rng(rng)
     D = _rsm_to_distance(RSM, kind=kind)
     labels = np.repeat(np.arange(K), block_sizes)
-    S = np.full((K, K), np.nan)
+
     for i in range(K):
         for j in range(i + 1, K):
             sel = np.where((labels == i) | (labels == j))[0]
             Dij, lij = D[np.ix_(sel, sel)], labels[sel]
             ok = np.isfinite(Dij).all(axis=1)
             Dij, lij = Dij[np.ix_(ok, ok)], lij[ok]
-            uniq, counts = np.unique(lij, return_counts=True)
-            if len(uniq) < 2 or counts.min() < 2:
+            g = lij == j
+            if g.sum() < 2 or (~g).sum() < 2:
                 continue
-            S[i, j] = S[j, i] = float(silhouette_score(Dij, lij, metric="precomputed"))
-    return S
+
+            obs = _two_group_silhouette(Dij, g)
+            if not np.isfinite(obs):
+                continue
+            S[i, j] = S[j, i] = obs
+
+            if n_perm > 0:
+                null = np.empty(n_perm)
+                perm = g.copy()
+                for p in range(n_perm):
+                    rng.shuffle(perm)  # in-place, preserves group sizes
+                    null[p] = _two_group_silhouette(Dij, perm)
+                P[i, j] = P[j, i] = _null_pvalue(obs, null, tail)
+
+    return S, P
 
 def _within_condition_consistency(
     RSM: np.ndarray, block_sizes: list[int]
@@ -742,6 +839,8 @@ def _plot_pairwise_silhouette(
     annotate: bool = True,
     diag_values: np.ndarray | None = None,
     ax: plt.Axes | None = None,
+    qvals: np.ndarray | None = None,
+    footnote: str | None = None,
 ):
     """
     Heatmap of the K x K pairwise silhouette matrix. Diagonal is undefined and
@@ -753,7 +852,7 @@ def _plot_pairwise_silhouette(
     diag_values: optional length-K values printed on the (uncolored) diagonal --
     intended for within-condition mean correlation. These are a DIFFERENT
     quantity from the off-diagonal silhouettes and are deliberately left off the
-    color scale; say so in the title.
+    color scale; say so via footnote.
     """
     own_fig = ax is None
     if own_fig:
@@ -791,9 +890,14 @@ def _plot_pairwise_silhouette(
             for j in range(K):
                 if i == j or not np.isfinite(S[i, j]):
                     continue
+                txt = f"{S[i, j]:.2f}"
+                if qvals is not None:
+                    stars = _p_stars(qvals[i, j])
+                    if stars:
+                        txt += f"$^{{{stars}}}$"
                 # white text on saturated cells, black on pale ones
                 color = "white" if abs(S[i, j]) > 0.6 * vmax else "black"
-                ax.text(j, i, f"{S[i, j]:.2f}", ha="center", va="center",
+                ax.text(j, i, txt, ha="center", va="center",
                         fontsize=7, color=color)
 
     if diag_values is not None:
@@ -806,16 +910,247 @@ def _plot_pairwise_silhouette(
             
     cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cb.set_label("Pairwise silhouette")
-
+    
+    if footnote:
+        fig.text(0.98, 0.02, footnote, ha="right", va="bottom",
+                 fontsize=7, color="0.35")
     if own_fig:
         fig.tight_layout()
         if out_svg is not None:
-            fig.savefig(out_svg, dpi=300)
+            fig.savefig(out_svg, dpi=300, bbox_inches="tight")
             out_svg_rel = os.path.relpath(out_svg, OUT_BASE)
             plt.close(fig)
             return out_svg_rel
         plt.close(fig)
     return None
+
+def run_time_domain_corr(
+    source: str = "NPRW",
+    target: str = "target_A",
+    poststim_win_ms: tuple[float, float] = (-800, 600.0),
+    channel_criterion: str | None | Iterable[str | None] = None,
+    cond_label_extras: dict | None = None,
+    vmin: float = -1.0,
+    vmax: float = 1.0,
+    skip_conds: Optional[Iterable[int]] = None,
+    cond_order: Optional[Iterable] = None,
+    move_alpha: float = 0.05,
+    stim_alpha: float = 0.05,
+    debug_masks: bool = False,
+):
+    """
+    """
+    cond_label_extras = cond_label_extras or {}
+    skip_conds = set(skip_conds or [])
+
+    # normalize channel_criterion to a list of criteria to build/plot; a bare
+    # string or None means "just one", anything else is treated as an iterable
+    if channel_criterion is None or isinstance(channel_criterion, str):
+        criteria = [channel_criterion]
+    else:
+        criteria = list(channel_criterion)
+    needs_movement = any(c in ("movement", "union", "intersection") for c in criteria)
+    needs_stim = any(c in ("stim", "union", "intersection") for c in criteria)
+
+    logger.info(
+        f"\n{'='*70}\n"
+        f"[run] probe={source}  target={target}  "
+        f"poststim={poststim_win_ms[0]}-{poststim_win_ms[1]}ms\n"
+        f"{'='*70}"
+    )
+
+    # 1. Gather NPZ files: stim + control + at_rest given a target
+    #   at_rest NPZs have no target subfolder
+    stim_dir = PERI_ROOT / "stim_reaches" / target
+    baseline_dir = PERI_ROOT / "control_reaches" / target
+    at_rest_dir = PERI_ROOT / "at_rest"
+
+    # List folders
+    stim_files = sorted(stim_dir.glob("*.npz")) if stim_dir.exists() else []
+    baseline_paths = sorted(baseline_dir.glob("*.npz")) if baseline_dir.exists() else []
+    at_rest_files = sorted(at_rest_dir.glob("*.npz")) if at_rest_dir.exists() else []
+
+    # Checks
+    if not stim_files:
+        raise SystemExit(f"[rsa] no PeriStim NPZs found in {stim_dir}")
+    if baseline_paths:
+        logger.info(f"[run] baseline: {[short_npz_name(p) for p in baseline_paths]}")
+    else:
+        logger.warning(f"[run][warn] no control_reaches NPZs found in {baseline_dir}")
+    if at_rest_files:
+        logger.info(f"[run] at_rest: {[short_npz_name(p) for p in at_rest_files]}")
+
+    # Collect conditions -- done once regardless of how many criteria are requested
+    blocks, skipped = _collect_condition_blocks(
+        baseline_paths + stim_files + at_rest_files, source=source, poststim_win_ms=poststim_win_ms,
+        skip_conds=skip_conds, min_trials=MIN_TRIALS_PER_COND,
+    )
+
+    # Report skipped files
+    parts = []
+    if skipped.get("in_skip_conds"):
+        parts.append("skip_conds=" + ",".join(map(str, sorted(skipped["in_skip_conds"]))))
+    if skipped.get("too_few_trials"):
+        parts.append(f"too_few_trials(<{MIN_TRIALS_PER_COND})=" + ",".join(map(str, sorted(skipped["too_few_trials"]))))
+    if skipped.get("missing_or_empty"):
+        parts.append("other_skips=" + str(len(skipped["missing_or_empty"])))
+    if parts:
+        logger.info("[run][skip] " + " | ".join(parts))
+
+    if not blocks:
+        raise SystemExit("[rsa] no conditions with enough trials")
+
+    # baseline files actually retained after skip_conds/min_trials filtering -- masks
+    # must be computed from these, not the raw glob result, or a skipped baseline
+    # file would still silently contribute to the movement/stim null distribution
+    baseline_paths_kept = [block.path for block in blocks if block.is_baseline]
+    if len(baseline_paths_kept) != len(baseline_paths):
+        dropped = sorted(set(short_npz_name(p) for p in baseline_paths) - set(short_npz_name(p) for p in baseline_paths_kept))
+        logger.info(f"[run] baseline (after skip_conds): {[short_npz_name(p) for p in baseline_paths_kept]}  (dropped: {dropped})")
+
+    # Channel masks: computed from the raw baseline NPZs and build flags for the blocks
+    move_mask = None
+    if needs_movement:
+        move_mask = _compute_movement_mask(baseline_paths_kept, source, alpha=move_alpha)
+        if debug_masks:
+            _plot_movement_mask_debug(baseline_paths_kept, source, target, alpha=move_alpha)
+
+    ctrl_pool = None
+    if needs_stim:
+        ctrl_pool = _build_ctrl_pool(baseline_paths_kept, source)
+        if ctrl_pool is None:
+            logger.warning("[run][warn] no ctrl files for stim criterion; stim mask disabled")
+
+    if ctrl_pool is not None:
+        bl_rates, bl_rel_t = _load_rates(baseline_paths_kept[0], source)
+        for block in blocks:
+            if block.is_baseline:
+                continue
+            block.stim_mask = _compute_stim_mask(block.path, ctrl_pool, source, alpha=stim_alpha)
+
+    # Reorder blocks to match given condition order
+    if cond_order is not None:
+        order_map = {c: i for i, c in enumerate(cond_order)}
+
+        def _okey(block: Block):
+            c = "Baseline" if block.is_baseline or block.cond is None else block.cond
+            return order_map.get(c, len(order_map))
+
+        blocks = sorted(blocks, key=_okey)
+
+    # Crop all blocks to a common channel count
+    condition_ch_ct = [block.X.shape[1] for block in blocks]
+    if len(set(condition_ch_ct)) > 1:
+        min_dim = min(condition_ch_ct)
+        logger.warning(f"[run][warn] feature dimension mismatch {set(condition_ch_ct)} -> cropping all to {min_dim}")
+        for block in blocks:
+            block.X = block.X[:, :min_dim]
+            if block.stim_mask is not None:
+                block.stim_mask = block.stim_mask[:min_dim]
+        if move_mask is not None:
+            move_mask = move_mask[:min_dim]
+        condition_ch_ct = [min_dim] * len(blocks)
+
+    # z-score per channel then slice back into per-block chunks
+    X_all = np.vstack([block.X for block in blocks])
+    if Z_SCORE_FEATURES and X_all.size:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mu = np.nanmean(X_all, axis=0, keepdims=True)
+            sd = np.nanstd(X_all, axis=0, keepdims=True)
+            X_all = (X_all - mu) / np.where(sd > 0, sd, 1.0)
+
+    # drop any trials that are still NaNs post normalization (e.g. constant channels)
+    valid_rows = np.isfinite(X_all).all(axis=1)
+    if not valid_rows.all():
+        logger.info(f"[run][note] dropping {int((~valid_rows).sum())} trials post-normalization")
+        block_edge = 0
+        
+        # Remove NaN trials from each block and update block sizes
+        for block in blocks:
+            n = block.X.shape[0]
+            keep = valid_rows[block_edge:block_edge + n]
+            block.X = block.X[keep]
+            block_edge += n
+        X_all = X_all[valid_rows]
+        blocks = [block for block in blocks if block.n_trials > 0]
+        if not blocks:
+            raise SystemExit("[rsa] all blocks empty after final filtering")
+        
+    # Redistribute
+    block_edge = 0
+    for block in blocks:
+        n = block.X.shape[0]
+        block.X_z = X_all[block_edge:block_edge + n, :]
+        block_edge += n
+
+    # labels and title pieces that don't depend on channel_criterion -- computed once
+    target_disp = {"target_A": "Left reaches", "target_B": "Right reaches"}.get(target, target.replace("_", " "))
+
+    def _label_for_block(block: Block, cond_label_extras: dict) -> str:
+        if block.target == "at_rest":
+            return cond_label_extras.get("at_rest", "At rest")
+        if block.is_baseline:
+            return cond_label_extras.get("Baseline", "Baseline")
+        return cond_label_extras.get(block.cond, f"Cond {block.cond}")
+
+    block_labels_t = [_label_for_block(block, cond_label_extras) for block in blocks]
+
+    # Global union of channels that pass the stim criterion in *any* condition,
+    # used as a single fixed channel set for the "stim" criterion (instead of
+    # each block keeping its own per-condition stim_mask, which gave every
+    # condition a different channel selection).
+    stim_mask_union = None
+    if any(c == "stim" for c in criteria):
+        per_block_stim_masks = [b.stim_mask for b in blocks if b.stim_mask is not None]
+        if per_block_stim_masks:
+            stim_mask_union = np.zeros_like(per_block_stim_masks[0])
+            for m in per_block_stim_masks:
+                stim_mask_union |= m
+            logger.info(
+                f"[stim][union] {stim_mask_union.sum()}/{stim_mask_union.size} "
+                f"channels passing stim criterion"
+            )
+        else:
+            logger.info("[stim][union] no per-block stim masks available; falling back to all channels")
+
+    if debug_masks and stim_mask_union is not None:
+        stim_block = next(
+            (b for b in blocks if not b.is_baseline and b.target != "at_rest"),
+            None,
+        )
+        if stim_block is not None:
+            _plot_stim_mask_debug(
+                stim_block.path, stim_mask_union, source, target,
+                baseline_rates=bl_rates, baseline_rel_t=bl_rel_t,
+                alpha=stim_alpha,
+            )
+        
+    # Build and plot one RSM per criterion
+    for criterion in criteria:
+        # Determine channel mask for each criterion
+        for block in blocks:
+            n_ch = block.X_z.shape[1]
+            all_ch = np.ones(n_ch, bool)
+            
+            if criterion == "movement":
+                block.move_mask = move_mask if move_mask is not None else all_ch
+            elif criterion == "stim":
+                block.move_mask = stim_mask_union if stim_mask_union is not None else all_ch
+            elif criterion == "union":
+                move_mask_checked = move_mask if move_mask is not None else all_ch
+                block.move_mask = (move_mask_checked | stim_mask_union) if stim_mask_union is not None else move_mask_checked
+            elif criterion == "intersection":
+                move_mask_checked = move_mask if move_mask is not None else all_ch
+                block.move_mask = (move_mask_checked & stim_mask_union) if stim_mask_union is not None else move_mask_checked
+            else:
+                block.move_mask = all_ch
+        
+        # Blocks contain per condition data (condition x time_bin x channels) (Condition 1: blocks[1].X_z)
+        # should have 63 time bins
+        # Sliding window for 80 ms (4 time bins) with 20 ms (1 time bin) step
+        # Plot condition x time bin x channels, after correlating sliding window with control condition (Control: blocks[0].X_z)
+        
+    return 1
 
 # Do RSA
 def run_rsa(
@@ -831,6 +1166,9 @@ def run_rsa(
     move_alpha: float = 0.05,
     stim_alpha: float = 0.05,
     sil_vmax: float | None = None,
+    sil_n_perm: int = 1000,
+    sil_tail: str = "greater",
+    sil_seed: int | None = 0,
     debug_masks: bool = False,
 ):
     """
@@ -920,11 +1258,11 @@ def run_rsa(
     if not stim_files:
         raise SystemExit(f"[rsa] no PeriStim NPZs found in {stim_dir}")
     if baseline_paths:
-        logger.info(f"[run] baseline: {[rcp.short_npz_name(p) for p in baseline_paths]}")
+        logger.info(f"[run] baseline: {[short_npz_name(p) for p in baseline_paths]}")
     else:
         logger.warning(f"[run][warn] no control_reaches NPZs found in {baseline_dir}")
     if at_rest_files:
-        logger.info(f"[run] at_rest: {[rcp.short_npz_name(p) for p in at_rest_files]}")
+        logger.info(f"[run] at_rest: {[short_npz_name(p) for p in at_rest_files]}")
 
     # Collect conditions -- done once regardless of how many criteria are requested
     blocks, skipped = _collect_condition_blocks(
@@ -951,8 +1289,8 @@ def run_rsa(
     # file would still silently contribute to the movement/stim null distribution
     baseline_paths_kept = [block.path for block in blocks if block.is_baseline]
     if len(baseline_paths_kept) != len(baseline_paths):
-        dropped = sorted(set(rcp.short_npz_name(p) for p in baseline_paths) - set(rcp.short_npz_name(p) for p in baseline_paths_kept))
-        logger.info(f"[run] baseline (after skip_conds): {[rcp.short_npz_name(p) for p in baseline_paths_kept]}  (dropped: {dropped})")
+        dropped = sorted(set(short_npz_name(p) for p in baseline_paths) - set(short_npz_name(p) for p in baseline_paths_kept))
+        logger.info(f"[run] baseline (after skip_conds): {[short_npz_name(p) for p in baseline_paths_kept]}  (dropped: {dropped})")
 
     # Channel masks: computed from the raw baseline NPZs and build flags for the blocks
     move_mask = None
@@ -1091,13 +1429,16 @@ def run_rsa(
             else:
                 block.move_mask = all_ch
 
+
+
+
         RSM, sizes_t = _build_rsm_pairwise(blocks)
 
         kept_ch = blocks[0].move_mask.sum() if blocks else 0
 
         title = (
-            f"RSA\n{target_disp} ({source}, criterion={criterion or 'all-ch'})\n"
-            f"{int(poststim_win_ms[0])} to {int(poststim_win_ms[1])} ms post-stim, {kept_ch} channels\n"
+            f"RSA\n{target_disp} ({source}, criterion={criterion or 'all-ch'}, {kept_ch} channels)\n"
+            f"{int(poststim_win_ms[0])} to {int(poststim_win_ms[1])} ms post-stim\n"
             f"n={RSM.shape[0]}, {len(blocks)} conditions"
         )
 
@@ -1111,6 +1452,10 @@ def run_rsa(
             RSM, sizes_t, block_labels_t, title,
             out_svg=out_svg, vmin=vmin, vmax=vmax,
         )
+        S_pair, P_pair = _pairwise_silhouette(
+            RSM, sizes_t, n_perm=sil_n_perm, tail=sil_tail, rng=sil_seed,
+        )
+        Q_pair = _fdr_adjust_pairs(P_pair) if sil_n_perm > 0 else None
         cons_r, cons_n = _within_condition_consistency(RSM, sizes_t)
         logger.info(
             f"[within] {criterion or 'all-ch'}: " +
@@ -1118,8 +1463,14 @@ def run_rsa(
                       for lab, r, n in zip(block_labels_t, cons_r, cons_n)
                       if np.isfinite(r))
         )
-        S_pair = _pairwise_silhouette(RSM, sizes_t)
-        cons_r, cons_n = _within_condition_consistency(RSM, sizes_t)
+        if Q_pair is not None:
+            iu = np.triu_indices(len(sizes_t), 1)
+            q = Q_pair[iu]
+            tested = np.isfinite(q)
+            logger.info(
+                f"[sil-pair] {int((q[tested] < 0.05).sum())}/{int(tested.sum())} pairs significant "
+                f"(perm n={sil_n_perm}, tail={sil_tail}, BH q<0.05)"
+            )
         sil_rel = None
         if np.isfinite(S_pair).any():
             sil_svg = (
@@ -1127,12 +1478,15 @@ def run_rsa(
                         f"poststim{int(poststim_win_ms[0])}-{int(poststim_win_ms[1])}.png"
                 if SAVE_SVG else None
             )
+            star_note = ("  * - q<0.05 vs shuffle null (BH-corrected)"
+                if Q_pair is not None else "")
             sil_rel = _plot_pairwise_silhouette(
                 S_pair, block_labels_t,
-                f"Silhouette score matrix\n{target_disp} ({source}, criterion={criterion or 'all-ch'})\n"
-                f"{int(poststim_win_ms[0])} to {int(poststim_win_ms[1])} ms post-stim, {kept_ch} channels\n"
-                f"Diagonal = within-condition correlation",
-                vmax=sil_vmax, diag_values=cons_r, out_svg=sil_svg,
+                f"Silhouette score matrix\n{target_disp} ({source}, criterion={criterion or 'all-ch'}, {kept_ch} channels)\n"
+                f"{int(poststim_win_ms[0])} to {int(poststim_win_ms[1])} ms post-stim",
+                vmax=sil_vmax, diag_values=cons_r, qvals=Q_pair,
+                footnote=f"Diagonal = within-condition correlation{star_note}",
+                out_svg=sil_svg,
             )
         if sil_rel is not None:
             logger.info(f"[sil-pair]{'':<8} figure saved  {sil_rel}")
