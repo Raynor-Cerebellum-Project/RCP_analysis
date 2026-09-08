@@ -1,22 +1,14 @@
 Python API
 ==========
 
-Reference for the modules in ``RCP_analysis/python/functions``, one page per
-``.py`` file. These are the functions that the scripts in
-``preprocessing_scripts/`` and ``analysis_scripts/`` are built from.
+Reference for the modules in ``RCP_analysis/python/functions``. These are the functions used by scripts in ``preprocessing_scripts/`` and ``analysis_scripts/``.
 
-Most of the public names are re-exported at the package top level, so in
-practice you import them as::
+Most of the public names are re-exported at the package top level, so in practice you import them as::
 
    import RCP_analysis as rcp
 
    params = rcp.load_experiment_params(yaml_path, repo_root)
    stim   = rcp.load_stim_detection(stim_npz_path)
-
-Names that are **not** re-exported (private helpers, prefixed with ``_``, and a
-few module-level helpers) must be imported from their module directly::
-
-   from RCP_analysis.python.functions.utils import _butter_lowpass_ba
 
 Modules
 -------
@@ -32,23 +24,23 @@ Modules
    * - :doc:`api/config_loading`
      - Module-level constants: resolved ``PARAMS`` and all session directories.
    * - :doc:`api/utils`
-     - General helpers: OCR/DLC, sync, peri-stim segments, binning, smoothing.
+     - General helpers
    * - :doc:`api/intan_preproc`
-     - Intan stim-stream and aux-stream extraction, channel reordering.
+     - Intan data and aux extraction helpers, channel reordering.
    * - :doc:`api/br_preproc`
-     - Blackrock sessions, Utah array mapping, region assignment, aux streams.
+     - Blackrock data and aux extraction helpers, UA mapping, region assignment.
    * - :doc:`api/artifact_correction`
-     - Incremental-PCA stim artifact correction and SpikeInterface wrappers.
+     - Incremental-PCA stim artifact correction helpers.
    * - :doc:`api/artifact_correction_template_matching`
-     - Offline per-block PCA template subtraction for stim artifacts.
+     - Offline batch PCA template subtraction for stim artifacts.
    * - :doc:`api/subspace_detector`
-     - Subspace-CFAR spike detector (GPU-accelerated) and amplitude gating.
+     - Subspace-CFAR spike detector and amplitude gating.
    * - :doc:`api/reach_onset_detection`
      - Reach onset detection from kinematics, batch mode and trace alignment.
    * - :doc:`api/rsa_utils`
-     - RSA pipeline: features, channel masks, RSM, silhouette, figures.
+     - RSA pipeline: responses, channel masks, time domain plots, RSM construction, silhouette scores, figures.
    * - :doc:`api/impedance_utils`
-     - Parse Utah/Intan impedance files into bad-channel sets.
+     - Parse UA/NPRW impedance files
 
 .. toctree::
    :maxdepth: 1

@@ -4,7 +4,6 @@ from typing import Iterable, Optional
 import numpy as np
 from scipy import stats
 import matplotlib.pyplot as plt
-import RCP_analysis as rcp
 import os
 import logging
 
@@ -15,7 +14,8 @@ if not logger.handlers:
     handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)
 
-from RCP_analysis.python.functions.config_loading import *
+from .config_loading import *
+from .utils import short_npz_name
 
 # rsa params
 Z_SCORE_FEATURES = True          # z-score channels across trials before distances
@@ -320,7 +320,7 @@ def _compute_movement_mask(
             n_ch = n_ch_file
             ever_passes = np.zeros(n_ch, dtype=bool)
         if n_ch_file != n_ch:
-            logger.debug(f"[move] ch mismatch in {rcp.short_npz_name(path)}; skipping")
+            logger.debug(f"[move] ch mismatch in {short_npz_name(path)}; skipping")
             continue
 
         pvals = _movement_pvalues(rates, baseline_mask, response_mask)
@@ -382,7 +382,7 @@ def _compute_stim_mask(
         return None
     n_ch = rates.shape[1]
     if ctrl_pool.shape[0] != n_ch:
-        logger.debug(f"[stim] ch mismatch for {rcp.short_npz_name(stim_path)}; skipping stim mask")
+        logger.debug(f"[stim] ch mismatch for {short_npz_name(stim_path)}; skipping stim mask")
         return None
 
     stim_trial_mean = np.nanmean(rates[:, :, stim_mask], axis=2)  # (n_trials, n_ch)
@@ -401,7 +401,7 @@ def _compute_stim_mask(
         pvals[ch] = p
 
     passes = _fdr_pass_mask(pvals, alpha)
-    logger.info(f"[stim] {passes.sum()}/{n_ch} pass for {rcp.short_npz_name(stim_path)}")
+    logger.info(f"[stim] {passes.sum()}/{n_ch} pass for {short_npz_name(stim_path)}")
     return passes
 
 # Channel-mask for UA files
@@ -487,7 +487,7 @@ def _plot_movement_mask_debug(
                 region_arr=region_arr, region_names=region_names, ch_subset=ch_subset,
                 vlines=vlines,
             )
-        plt.suptitle(f"Movement mask  Wilcoxon signed-rank, FDR alpha={alpha}  {rcp.short_npz_name(path).removesuffix('.npz')}", fontsize=10)
+        plt.suptitle(f"Movement mask  Wilcoxon signed-rank, FDR alpha={alpha}  {short_npz_name(path).removesuffix('.npz')}", fontsize=10)
         plt.tight_layout()
         
         out_svg = (
@@ -549,7 +549,7 @@ def _plot_stim_mask_debug(
             vlines=vlines, vspans=vspans,
         )
     
-    plt.suptitle(f"Stim mask  Mann-Whitney U, FDR alpha={alpha}  {rcp.short_npz_name(stim_path).removesuffix('.npz')}", fontsize=10)
+    plt.suptitle(f"Stim mask  Mann-Whitney U, FDR alpha={alpha}  {short_npz_name(stim_path).removesuffix('.npz')}", fontsize=10)
     plt.tight_layout()
     
     out_svg = (
@@ -974,11 +974,11 @@ def run_time_domain_corr(
     if not stim_files:
         raise SystemExit(f"[rsa] no PeriStim NPZs found in {stim_dir}")
     if baseline_paths:
-        logger.info(f"[run] baseline: {[rcp.short_npz_name(p) for p in baseline_paths]}")
+        logger.info(f"[run] baseline: {[short_npz_name(p) for p in baseline_paths]}")
     else:
         logger.warning(f"[run][warn] no control_reaches NPZs found in {baseline_dir}")
     if at_rest_files:
-        logger.info(f"[run] at_rest: {[rcp.short_npz_name(p) for p in at_rest_files]}")
+        logger.info(f"[run] at_rest: {[short_npz_name(p) for p in at_rest_files]}")
 
     # Collect conditions -- done once regardless of how many criteria are requested
     blocks, skipped = _collect_condition_blocks(
@@ -1005,8 +1005,8 @@ def run_time_domain_corr(
     # file would still silently contribute to the movement/stim null distribution
     baseline_paths_kept = [block.path for block in blocks if block.is_baseline]
     if len(baseline_paths_kept) != len(baseline_paths):
-        dropped = sorted(set(rcp.short_npz_name(p) for p in baseline_paths) - set(rcp.short_npz_name(p) for p in baseline_paths_kept))
-        logger.info(f"[run] baseline (after skip_conds): {[rcp.short_npz_name(p) for p in baseline_paths_kept]}  (dropped: {dropped})")
+        dropped = sorted(set(short_npz_name(p) for p in baseline_paths) - set(short_npz_name(p) for p in baseline_paths_kept))
+        logger.info(f"[run] baseline (after skip_conds): {[short_npz_name(p) for p in baseline_paths_kept]}  (dropped: {dropped})")
 
     # Channel masks: computed from the raw baseline NPZs and build flags for the blocks
     move_mask = None
@@ -1258,11 +1258,11 @@ def run_rsa(
     if not stim_files:
         raise SystemExit(f"[rsa] no PeriStim NPZs found in {stim_dir}")
     if baseline_paths:
-        logger.info(f"[run] baseline: {[rcp.short_npz_name(p) for p in baseline_paths]}")
+        logger.info(f"[run] baseline: {[short_npz_name(p) for p in baseline_paths]}")
     else:
         logger.warning(f"[run][warn] no control_reaches NPZs found in {baseline_dir}")
     if at_rest_files:
-        logger.info(f"[run] at_rest: {[rcp.short_npz_name(p) for p in at_rest_files]}")
+        logger.info(f"[run] at_rest: {[short_npz_name(p) for p in at_rest_files]}")
 
     # Collect conditions -- done once regardless of how many criteria are requested
     blocks, skipped = _collect_condition_blocks(
@@ -1289,8 +1289,8 @@ def run_rsa(
     # file would still silently contribute to the movement/stim null distribution
     baseline_paths_kept = [block.path for block in blocks if block.is_baseline]
     if len(baseline_paths_kept) != len(baseline_paths):
-        dropped = sorted(set(rcp.short_npz_name(p) for p in baseline_paths) - set(rcp.short_npz_name(p) for p in baseline_paths_kept))
-        logger.info(f"[run] baseline (after skip_conds): {[rcp.short_npz_name(p) for p in baseline_paths_kept]}  (dropped: {dropped})")
+        dropped = sorted(set(short_npz_name(p) for p in baseline_paths) - set(short_npz_name(p) for p in baseline_paths_kept))
+        logger.info(f"[run] baseline (after skip_conds): {[short_npz_name(p) for p in baseline_paths_kept]}  (dropped: {dropped})")
 
     # Channel masks: computed from the raw baseline NPZs and build flags for the blocks
     move_mask = None

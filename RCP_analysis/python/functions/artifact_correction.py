@@ -1,6 +1,5 @@
 import numpy as np
 from sklearn.decomposition import IncrementalPCA
-import RCP_analysis as rcp
 from spikeinterface.core import BaseRecording, BaseRecordingSegment
 
 

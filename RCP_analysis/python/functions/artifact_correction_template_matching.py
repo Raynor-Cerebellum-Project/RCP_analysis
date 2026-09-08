@@ -10,7 +10,7 @@ from multiprocessing import Pool
 import spikeinterface as si
 from spikeinterface.core import NumpyRecording
 
-import RCP_analysis as rcp
+from .utils import load_stim_detection
 
 # ----------------------------- Params -----------------------------------------
 @dataclass
@@ -263,7 +263,7 @@ def remove_stim_pca_offline(
     clean = _global_drift_remove_pool(raw, fs, pca_params, n_jobs=8)
 
     # Load stim detection data
-    stim_data = rcp.load_stim_detection(stim_npz_path)
+    stim_data = load_stim_detection(stim_npz_path)
     trigger_pairs = stim_data["trigger_pairs"]        # (n_pulses, 2)
     block_bounds_samples  = stim_data["block_bounds_samples"] # (n_blocks, 2) in sample space
     # pulse_sizes  = stim_data["pulse_sizes"]         # not needed explicitly here
