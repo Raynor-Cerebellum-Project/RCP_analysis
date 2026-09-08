@@ -64,6 +64,39 @@ def add_ua_region_bar(
         ax.plot([x, x - 0.012], [y, y], transform=ax.transAxes,
                 color="k", lw=1.2, clip_on=False)
 
+
+def _centers_to_edges(t, widths=None):
+    t = np.asarray(t, float).ravel()
+
+    if t.size == 0:
+        return np.zeros(0, float)
+
+    if t.size == 1:
+        if widths is not None and np.size(widths):
+            w_arr = np.asarray(widths, float).ravel()
+            w = float(w_arr[0]) if w_arr.size else 1.0
+        else:
+            w = 1.0
+        return np.array([t[0] - w / 2.0, t[0] + w / 2.0], float)
+
+    edges = np.empty(t.size + 1, float)
+    edges[1:-1] = 0.5 * (t[:-1] + t[1:])
+
+    widths_ok = False
+    if widths is not None and np.size(widths):
+        w_arr = np.asarray(widths, float).ravel()
+        if w_arr.size == t.size and np.all(np.isfinite(w_arr)):
+            edges[0] = t[0] - w_arr[0] / 2.0
+            edges[-1] = t[-1] + w_arr[-1] / 2.0
+            widths_ok = True
+
+    if not widths_ok:
+        edges[0] = t[0] - (t[1] - t[0]) / 2.0
+        edges[-1] = t[-1] + (t[-1] - t[-2]) / 2.0
+
+    return edges
+
+
 # ---- Plotting FR for both ----
 def stacked_heatmaps_plus_behv(
     nprw_med, ua_med, t_nprw, t_ua, nprw_edges_ms, ua_edges_ms, out_svg,
@@ -420,14 +453,23 @@ def stacked_heatmaps_plus_behv(
         y_edges = np.arange(n_ch + 1)
 
         # 5) Replace imshow with pcolormesh
+        nprw_x_edges = _centers_to_edges(t_nprw, nprw_edges_ms)
+
+        if nprw_masked.shape[1] != len(nprw_x_edges) - 1:
+            raise ValueError(
+                f"NPRW pcolormesh mismatch: C={nprw_masked.shape}, "
+                f"len(t_nprw)={len(t_nprw)}, len(x_edges)={len(nprw_x_edges)}, "
+                f"len(nprw_edges_ms)={len(nprw_edges_ms)}"
+            )
+
         im0 = ax_nprw.pcolormesh(
-            nprw_edges_ms,          # x edges
-            y_edges,               # y edges
-            nprw_masked,           # C: (n_ch, T+1)
+            nprw_x_edges,
+            y_edges,
+            nprw_masked,
             cmap=cmap_local_nprw,
             vmin=vmin_nprw,
             vmax=vmax_nprw,
-            shading="auto",
+            shading="flat",
             antialiased=False,
             rasterized=True,
         )
@@ -510,14 +552,23 @@ def stacked_heatmaps_plus_behv(
             y_edges = np.arange(n_ch + 1)
 
             # 5) Replace imshow with pcolormesh
+            ua_x_edges = _centers_to_edges(t_ua, ua_edges_ms)
+
+            if ua_masked.shape[1] != len(ua_x_edges) - 1:
+                raise ValueError(
+                    f"UA pcolormesh mismatch: C={ua_masked.shape}, "
+                    f"len(t_ua)={len(t_ua)}, len(x_edges)={len(ua_x_edges)}, "
+                    f"len(ua_edges_ms)={len(ua_edges_ms)}"
+                )
+
             im1 = ax_ua.pcolormesh(
-                ua_edges_ms,          # x edges
-                y_edges,               # y edges
-                ua_masked,           # C: (n_ch, T+1)
+                ua_x_edges,
+                y_edges,
+                ua_masked,
                 cmap=cmap_local_ua,
                 vmin=vmin_ua_group,
                 vmax=vmax_ua_group,
-                shading="auto",
+                shading="flat",
                 antialiased=False,
                 rasterized=True,
             )

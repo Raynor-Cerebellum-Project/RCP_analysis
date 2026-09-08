@@ -382,7 +382,7 @@ def main():
         NPRW_med_counts   = peri_stim_npz["NPRW_med_counts"]
         NPRW_var          = peri_stim_npz["NPRW_var"]
         NPRW_rel_t        = peri_stim_npz["NPRW_rel_t"]
-        NPRW_edges_ms     = peri_stim_npz["NPRW_edges_ms"]
+        NPRW_width_ms     = peri_stim_npz["NPRW_width_ms"]
         
         n_nprw = int(peri_stim_npz["n_nprw"]) if "n_nprw" in peri_stim_npz.files else NPRW_med.shape[0]
 
@@ -395,7 +395,7 @@ def main():
         UA_var        = peri_stim_npz["UA_var"]
         UA_med_counts = peri_stim_npz["UA_med_counts"]
         UA_rel_t      = peri_stim_npz["UA_rel_t"]
-        UA_edges_ms   = peri_stim_npz["UA_edges_ms"]
+        UA_width_ms   = peri_stim_npz["UA_width_ms"]
         ua_ids_1based = peri_stim_npz["ua_ids_1based"] if "ua_ids_1based" in peri_stim_npz.files else None
 
         ts_state_segs = peri_stim_npz["ts_state_segs"]
@@ -461,8 +461,8 @@ def main():
             NPRW_med, UA_med,
             NPRW_rel_t if (NPRW_med.size and NPRW_rel_t.size) else None,
             UA_rel_t   if (UA_med.size   and UA_rel_t.size)   else None,
-            NPRW_edges_ms,
-            UA_edges_ms,
+            NPRW_width_ms,
+            UA_width_ms,
             out_path_1,
             base_kin_title,
             base_neural_title,
@@ -528,8 +528,8 @@ def main():
             NPRW_var, UA_var,
             NPRW_rel_t if (NPRW_var.size and NPRW_rel_t.size) else None,
             UA_rel_t   if (UA_var.size   and UA_rel_t.size)   else None,
-            NPRW_edges_ms,
-            UA_edges_ms,
+            NPRW_width_ms,
+            UA_width_ms,
             out_path_1b,
             base_kin_title,   # same behavior panel as median
             base_neural_var_title,
@@ -647,8 +647,8 @@ def main():
             NPRW_med, UA_med,          # same med heatmaps; metric is just for behavior here
             NPRW_rel_t if (NPRW_med.size and NPRW_rel_t.size) else None,
             UA_rel_t   if (UA_med.size   and UA_rel_t.size)   else None,
-            NPRW_edges_ms,
-            UA_edges_ms,
+            NPRW_width_ms,
+            UA_width_ms,
             out_path_2,
             title_MWT_kin,
             title_MWT_neural,
@@ -714,8 +714,8 @@ def main():
             NPRW_var, UA_var,
             NPRW_rel_t if (NPRW_var.size and NPRW_rel_t.size) else None,
             UA_rel_t   if (UA_var.size   and UA_rel_t.size)   else None,
-            NPRW_edges_ms,
-            UA_edges_ms,
+            NPRW_width_ms,
+            UA_width_ms,
             out_path_2b,
             title_MWT_kin,          # same behavior + labels as mean/STD figure
             title_MWT_neural_var,
@@ -781,8 +781,8 @@ def main():
             NPRW_med_counts, UA_med_counts,
             NPRW_rel_t if (NPRW_med_counts.size and NPRW_rel_t.size) else None,
             UA_rel_t   if (UA_med_counts.size   and UA_rel_t.size)   else None,
-            NPRW_edges_ms,
-            UA_edges_ms,
+            NPRW_width_ms,
+            UA_width_ms,
             out_path_counts_MWT,
             title_MWT_kin,              # MWT-only behavior panel (subset labels)
             title_MWT_neural_counts,
@@ -915,8 +915,8 @@ def main():
                     ua_single,
                     NPRW_rel_t if (nprw_single.size and NPRW_rel_t.size) else None,
                     UA_rel_t   if (ua_single.size   and UA_rel_t.size)   else None,
-                    NPRW_edges_ms,
-                    UA_edges_ms,
+                    NPRW_width_ms,
+                    UA_width_ms,
                     out_path_single,
                     title_single_kin,
                     title_single_neural,
