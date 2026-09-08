@@ -64,7 +64,12 @@ from .python.functions.br_preproc import (
     load_UA_mapping_from_excel,
     apply_ua_mapping_with_regions,
     extract_br_aux_streams_npz,
+    load_electrode_mapping,
+    get_region_grid,
+    get_region_from_group_name,
+    build_elec_to_data_idx,
 )
+
 # RSA
 from .python.functions.rsa_utils import (
     run_rsa,
@@ -145,6 +150,10 @@ __all__ = [
     "extract_br_aux_streams_npz",
     "apply_ua_mapping_with_regions",
     "load_UA_mapping_from_excel",
+    "load_electrode_mapping",
+    "get_region_grid",
+    "get_region_from_group_name",
+    "build_elec_to_data_idx",
     
     "stim_npz_path_from_br_idx",
     

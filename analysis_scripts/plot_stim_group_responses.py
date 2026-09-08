@@ -64,7 +64,7 @@ WIN_PLOT_MS = (-500.0, 500.0)
 
 # Simple analysis windows.
 # These are defaults. stim duration is read from the data when possible.
-PRE_WIN_MS = (-300.0, -50.0)
+PRE_WIN_MS = (-300.0, -100.0)
 POST_EARLY_LEN_MS = 100.0
 POST_LATE_LEN_MS = 200.0
 POST_LATE_GAP_MS = 100.0
