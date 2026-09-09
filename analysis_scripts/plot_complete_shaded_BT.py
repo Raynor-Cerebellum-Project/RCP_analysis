@@ -637,6 +637,7 @@ def main():
             probe_gap_ratio=PROBE_GAP_RATIO,
             probe_width_ratio=PROBE_WIDTH_RATIO,
             nprw_blank_ms=nprw_blank_ms,
+            stim_dur_ms=None if is_control else stim_dur_ms,
         )
         # -----------------------------------------------------------------
         # FIGURE 2: ALL VARIANCE TRACES (no shading, all keypoints)
@@ -706,6 +707,7 @@ def main():
             probe_gap_ratio=PROBE_GAP_RATIO,
             probe_width_ratio=PROBE_WIDTH_RATIO,
             nprw_blank_ms=nprw_blank_ms,
+            stim_dur_ms=None if is_control else stim_dur_ms,
         )
 
         # -----------------------------------------------------------------
@@ -851,6 +853,7 @@ def main():
             probe_gap_ratio=PROBE_GAP_RATIO,
             probe_width_ratio=PROBE_WIDTH_RATIO,
             nprw_blank_ms=nprw_blank_ms,
+            stim_dur_ms=None if is_control else stim_dur_ms,
         )
         # -----------------------------------------------------------------
         # FIGURE 4: MWT ONLY VARIANCE (same behavior subset)
@@ -920,6 +923,7 @@ def main():
             probe_gap_ratio=PROBE_GAP_RATIO,
             probe_width_ratio=PROBE_WIDTH_RATIO,
             nprw_blank_ms=nprw_blank_ms,
+            stim_dur_ms=None if is_control else stim_dur_ms,
         )
         # -----------------------------------------------------------------
         # FIGURE 5: MWT ONLY MEDIAN BIN COUNTS (same behavior subset as MWT fig)
@@ -991,6 +995,7 @@ def main():
             probe_gap_ratio=PROBE_GAP_RATIO,
             probe_width_ratio=PROBE_WIDTH_RATIO,
             nprw_blank_ms=nprw_blank_ms,
+            stim_dur_ms=None if is_control else stim_dur_ms,
         )
 
         # -----------------------------------------------------------------
@@ -1153,6 +1158,7 @@ def main():
                     probe_gap_ratio=PROBE_GAP_RATIO,
                     probe_width_ratio=PROBE_WIDTH_RATIO,
                     nprw_blank_ms=nprw_blank_ms,
+                    stim_dur_ms=None if is_control else stim_dur_ms,
                 )
 
 

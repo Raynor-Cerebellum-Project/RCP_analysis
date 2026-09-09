@@ -163,6 +163,7 @@ def stacked_heatmaps_plus_behv(
     cb_label_ua: str = "Δ FR (Hz)",
     nprw_blank_ms=None,
     ua_blank_ms=None,
+    stim_dur_ms: float | None = None,
 ):
     """
     s: session ID
@@ -399,7 +400,15 @@ def stacked_heatmaps_plus_behv(
             # ax.axhline(target[1], color="red", alpha=0.8, linewidth=1.2, ls="--")
             
         ax.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
-        ax.axvspan(0.0, 100.0, color="0.7", alpha=0.15, zorder=0)  # light, behind data
+        if stim_dur_ms is not None and np.isfinite(stim_dur_ms) and stim_dur_ms > 0:
+            ax.axvspan(
+                0.0,
+                float(stim_dur_ms),
+                color="0.7",
+                alpha=0.15,
+                zorder=0,
+            )
+
         ax._is_time_axis = True
         _ylabel_horizontal(ax, ylabel)
         if title:
