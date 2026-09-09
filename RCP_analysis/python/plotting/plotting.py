@@ -11,9 +11,10 @@ from probeinterface import Probe
 
 # ---- knobs: UA vmin/vmax per group/label ----
 UA_VRANGE_BY_LABEL = {
-    "M1i+M1s": (-30, 125),
-    "PMd":     (-30, 150),
-    "SMA":     (-10, 40),
+    "M1i": (-30, 125),
+    "M1s": (-30, 125),
+    "PMd": (-30, 150),
+    "SMA": (-10, 40),
     "UA (other)": (-50, 150),
 }
 UA_VRANGE_DEFAULT = (-50, 150)  # fallback
@@ -97,6 +98,35 @@ def _centers_to_edges(t, widths=None):
     return edges
 
 
+def _mask_time_window_by_edges(mat, x_edges, blank_ms):
+    """
+    Mask columns whose bin overlaps [blank_start, blank_end].
+    mat: (n_ch, T)
+    x_edges: (T+1,)
+    blank_ms: tuple(start_ms, end_ms) or None
+    """
+    if blank_ms is None:
+        return ma.masked_invalid(mat)
+
+    b0, b1 = map(float, blank_ms)
+    if b1 <= b0:
+        return ma.masked_invalid(mat)
+
+    mat_masked = ma.masked_invalid(mat)
+
+    # bin overlaps blanking window if right edge > b0 and left edge < b1
+    col_mask = (x_edges[1:] > b0) & (x_edges[:-1] < b1)
+
+    if col_mask.size != mat_masked.shape[1]:
+        raise ValueError(
+            f"Blank mask mismatch: mat has {mat_masked.shape[1]} columns, "
+            f"x_edges gives {col_mask.size} bins"
+        )
+
+    mat_masked[:, col_mask] = ma.masked
+    return mat_masked
+
+
 # ---- Plotting FR for both ----
 def stacked_heatmaps_plus_behv(
     nprw_med, ua_med, t_nprw, t_ua, nprw_edges_ms, ua_edges_ms, out_svg,
@@ -110,6 +140,7 @@ def stacked_heatmaps_plus_behv(
     ua_ids_1based=None, ua_sort="region_then_elec",
     beh_rel_time=None, beh_cam0_pos=None, beh_cam1_pos=None,
     beh_labels=None, beh_cam0_vel=None, beh_cam1_vel=None,
+    beh_pos_ylabel="Position Δ (z)",
     # Optional per-timepoint STD arrays for shaded plotting of position traces
     beh_cam0_pos_stds=None, beh_cam1_pos_stds=None,
     beh_cam0_vel_stds=None, beh_cam1_vel_stds=None,
@@ -130,6 +161,8 @@ def stacked_heatmaps_plus_behv(
     height_per_ratio_in: float = 4.0,
     cb_label_nprw: str = "Δ FR (Hz)",
     cb_label_ua: str = "Δ FR (Hz)",
+    nprw_blank_ms=None,
+    ua_blank_ms=None,
 ):
     """
     s: session ID
@@ -229,7 +262,8 @@ def stacked_heatmaps_plus_behv(
                         "label": label,
                     })
 
-            _append((regs == 2) | (regs == 3), "M1i+M1s")
+            _append((regs == 2), "M1i")
+            _append((regs == 3), "M1s")
             _append((regs == 1), "PMd")
             _append((regs == 0), "SMA")
 
@@ -371,9 +405,16 @@ def stacked_heatmaps_plus_behv(
         if title:
             ax.set_title(title)
         if place_legend and D:
-            ax.legend(loc="center left",
-                    bbox_to_anchor=(1.02, 0.5),  # was 1.02
-                    frameon=False, fontsize=8, ncols=1, borderaxespad=0.0)
+            handles, labels = ax.get_legend_handles_labels()
+            valid = [(h, l) for h, l in zip(handles, labels) if l and not l.startswith("_")]
+
+            if valid:
+                handles, labels = zip(*valid)
+                ax.legend(handles, labels,
+                        loc="center left",
+                        bbox_to_anchor=(1.02, 0.5),
+                        fontsize=8,
+                        frameon=False)
         # ax.grid(alpha=0.15, linestyle=":")
 
     row = 0
@@ -394,10 +435,10 @@ def stacked_heatmaps_plus_behv(
 
             if sub == "cam0_pos":
                 _plot_lines(ax, beh_rel_time, beh_cam0_pos, title_kinematics or "",
-                            "Cam-0\nPosition Δ (z)", sub, place_legend_now, stds=beh_cam0_pos_stds, ylim=beh_ylim, target=target_pos_cam0)
+                            f"Cam-0\n{beh_pos_ylabel}", sub, place_legend_now, stds=beh_cam0_pos_stds, ylim=beh_ylim, target=target_pos_cam0)
             elif sub == "cam1_pos":
                 _plot_lines(ax, beh_rel_time, beh_cam1_pos, title_cam1 or "",
-                            "Cam-1\nPosition Δ (z)", sub, place_legend_now, stds=beh_cam1_pos_stds, ylim=beh_ylim, target=target_pos_cam1)
+                            f"Cam-1\n{beh_pos_ylabel}", sub, place_legend_now, stds=beh_cam1_pos_stds, ylim=beh_ylim, target=target_pos_cam1)
             elif sub == "cam0_vel":
                 _plot_lines(ax, beh_rel_time, beh_cam0_vel, title_cam0_vel or "",
                             "Cam-0\nVelocity (z/ms)", sub, place_legend_now, stds=beh_cam0_vel_stds, ylim = tuple(np.array(beh_ylim) / 200.0))
@@ -426,28 +467,20 @@ def stacked_heatmaps_plus_behv(
         ax_nprw     = fig.add_subplot(gs[row, 0])
         ax_nprw_cax = fig.add_subplot(gs[row, 1])
         # Mask NaNs
-        nprw_masked = ma.masked_invalid(nprw_med)
+        nprw_x_edges = _centers_to_edges(t_nprw, nprw_edges_ms)
+
+        nprw_masked = _mask_time_window_by_edges(
+            nprw_med,
+            nprw_x_edges,
+            nprw_blank_ms,
+        )
 
         # Make a copy of the cmap and set NaN color to gray
         cmap_local_nprw = cm.get_cmap(cmap).copy()
-        cmap_local_nprw.set_bad(color="gray")
+        cmap_local_nprw.set_bad(color="0.9")
         
         # nprw_masked: (n_ch, T)
         n_ch, T = nprw_masked.shape
-
-        if nprw_edges_ms.size > T + 1:
-            i = int(np.searchsorted(nprw_edges_ms, 0.0, side="right") - 1)
-            i = np.clip(i, 0, T - 1)
-
-            if not (nprw_edges_ms[i] <= 0.0 <= nprw_edges_ms[i + 1]):
-                print(
-                    f"[warn] 0 ms not within edges range "
-                    f"[{nprw_edges_ms[0]:.3f}, {nprw_edges_ms[-1]:.3f}] – inserting anyway at bin {i}"
-                )
-                
-            # 2) Insert a zero column in the data at column index i+1
-            #    (this new column will live *between* bins i and i+1)
-            nprw_masked = np.insert(nprw_masked, i, np.nan, axis=1)  # (n_ch, T+1)
 
         # 4) Build channel edges (0..n_ch)
         y_edges = np.arange(n_ch + 1)
@@ -651,10 +684,7 @@ def stacked_heatmaps_plus_behv(
         ax_probe.set_box_aspect(None)      # let the grid cell dictate height
         ax_probe.margins(x=0.05,y=0.05)   # small padding
 
-        # ax_probe.set_xticks([])
-        # ax_probe.set_yticks([])
 
-    # ---------- Sync x-lims ----------
     x_ranges = []
     if has_nprw: x_ranges.append((t_nprw[0], t_nprw[-1]))
     if has_ua:    x_ranges.append((t_ua[0],    t_ua[-1]))
@@ -678,10 +708,6 @@ def stacked_heatmaps_plus_behv(
     plt.close(fig)
 
 
-        # ax_probe.set_xticks([])
-        # ax_probe.set_yticks([])
-
-    # ---------- Sync x-lims ----------
     x_ranges = []
     if has_nprw: x_ranges.append((t_nprw[0], t_nprw[-1]))
     if has_ua:    x_ranges.append((t_ua[0],    t_ua[-1]))

@@ -14,7 +14,7 @@
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
       <script src="_static/documentation_options.js?v=f2a433a1"></script>
-      <script src="_static/doctools.js?v=9bcbadda"></script>
+      <script src="_static/doctools.js?v=9a2dae69"></script>
       <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
@@ -93,20 +93,12 @@
              
   <section id="python-api">
 <h1>Python API<a class="headerlink" href="#python-api" title="Link to this heading"></a></h1>
-<p>Reference for the modules in <code class="docutils literal notranslate"><span class="pre">RCP_analysis/python/functions</span></code>, one page per
-<code class="docutils literal notranslate"><span class="pre">.py</span></code> file. These are the functions that the scripts in
-<code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/</span></code> and <code class="docutils literal notranslate"><span class="pre">analysis_scripts/</span></code> are built from.</p>
-<p>Most of the public names are re-exported at the package top level, so in
-practice you import them as:</p>
+<p>Reference for the modules in <code class="docutils literal notranslate"><span class="pre">RCP_analysis/python/functions</span></code>. These are the functions used by scripts in <code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/</span></code> and <code class="docutils literal notranslate"><span class="pre">analysis_scripts/</span></code>.</p>
+<p>Most of the public names are re-exported at the package top level, so in practice you import them as:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">RCP_analysis</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">rcp</span>
 
 <span class="n">params</span> <span class="o">=</span> <span class="n">rcp</span><span class="o">.</span><span class="n">load_experiment_params</span><span class="p">(</span><span class="n">yaml_path</span><span class="p">,</span> <span class="n">repo_root</span><span class="p">)</span>
 <span class="n">stim</span>   <span class="o">=</span> <span class="n">rcp</span><span class="o">.</span><span class="n">load_stim_detection</span><span class="p">(</span><span class="n">stim_npz_path</span><span class="p">)</span>
-</pre></div>
-</div>
-<p>Names that are <strong>not</strong> re-exported (private helpers, prefixed with <code class="docutils literal notranslate"><span class="pre">_</span></code>, and a
-few module-level helpers) must be imported from their module directly:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">RCP_analysis.python.functions.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">_butter_lowpass_ba</span>
 </pre></div>
 </div>
 <section id="modules">
@@ -129,31 +121,31 @@ few module-level helpers) must be imported from their module directly:</p>
 <td><p>Module-level constants: resolved <code class="docutils literal notranslate"><span class="pre">PARAMS</span></code> and all session directories.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="api/utils.html"><span class="doc">utils.py</span></a></p></td>
-<td><p>General helpers: OCR/DLC, sync, peri-stim segments, binning, smoothing.</p></td>
+<td><p>General helpers</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="api/intan_preproc.html"><span class="doc">intan_preproc.py</span></a></p></td>
-<td><p>Intan stim-stream and aux-stream extraction, channel reordering.</p></td>
+<td><p>Intan data and aux extraction helpers, channel reordering.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="api/br_preproc.html"><span class="doc">br_preproc.py</span></a></p></td>
-<td><p>Blackrock sessions, Utah array mapping, region assignment, aux streams.</p></td>
+<td><p>Blackrock data and aux extraction helpers, UA mapping, region assignment.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="api/artifact_correction.html"><span class="doc">artifact_correction.py</span></a></p></td>
-<td><p>Incremental-PCA stim artifact correction and SpikeInterface wrappers.</p></td>
+<td><p>Incremental-PCA stim artifact correction helpers.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="api/artifact_correction_template_matching.html"><span class="doc">artifact_correction_template_matching.py</span></a></p></td>
-<td><p>Offline per-block PCA template subtraction for stim artifacts.</p></td>
+<td><p>Offline batch PCA template subtraction for stim artifacts.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="api/subspace_detector.html"><span class="doc">subspace_detector.py</span></a></p></td>
-<td><p>Subspace-CFAR spike detector (GPU-accelerated) and amplitude gating.</p></td>
+<td><p>Subspace-CFAR spike detector and amplitude gating.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="api/reach_onset_detection.html"><span class="doc">reach_onset_detection.py</span></a></p></td>
 <td><p>Reach onset detection from kinematics, batch mode and trace alignment.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="api/rsa_utils.html"><span class="doc">rsa_utils.py</span></a></p></td>
-<td><p>RSA pipeline: features, channel masks, RSM, silhouette, figures.</p></td>
+<td><p>RSA pipeline: responses, channel masks, time domain plots, RSM construction, silhouette scores, figures.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="api/impedance_utils.html"><span class="doc">impedance_utils.py</span></a></p></td>
-<td><p>Parse Utah/Intan impedance files into bad-channel sets.</p></td>
+<td><p>Parse UA/NPRW impedance files</p></td>
 </tr>
 </tbody>
 </table>

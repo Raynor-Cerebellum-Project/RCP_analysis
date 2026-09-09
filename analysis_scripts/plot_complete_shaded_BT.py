@@ -10,7 +10,6 @@ Steps:
 from types import SimpleNamespace
 import numpy as np
 import matplotlib
-import matplotlib.pyplot as plt
 
 from scipy.io import loadmat
 from probeinterface import Probe
@@ -20,6 +19,8 @@ from RCP_analysis.python.functions.config_loading import *
 
 PROCESS_ONLY = PARAMS.preprocessing.get("process_only")
 Z_SCORE_FR   = PARAMS.preprocessing.get("z_score_firing_rate", False)
+NPRW_BLANK_BEFORE_MS = float(PARAMS.NPRW_rate_est.get("remove_ms_before", 20.0))
+NPRW_BLANK_AFTER_MS  = float(PARAMS.NPRW_rate_est.get("remove_tail_ms_after", 20.0))
 
 # Local plotting settings
 matplotlib.rcParams["svg.fonttype"] = "none"
@@ -27,7 +28,6 @@ matplotlib.rcParams["svg.fonttype"] = "none"
 # ---------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------
-WIN_MS             = (-600.0, 600.0)
 NORMALIZE_FIRST_MS = 150.0
 
 # Neural heatmap vmin/vmax for median
@@ -51,7 +51,21 @@ COLORMAP = "RdBu_r"
 
 # Kinematics
 KINEMATICS_YLIM = (-4, 4)    # fixed y-limits for all figures
-GAUSS_SMOOTH_MS = 0          # 0 → no extra smoothing here
+KINEMATICS_YLIM_NORMDIST = (-0.1, 1.1)
+
+KIN_KEYPOINT_INCLUDE = ("middle",) #, "wrist", "ALL")
+
+NORMALIZED_DISTANCE = True # False if we want individual x and y positions plotted instead
+NORMALIZED_DISTANCE_KEYPOINT = "middle"
+NORMALIZED_DISTANCE_REF_TIME_MS = -600.0 # -600 used in plot_plateau_analysis.py
+
+# "max_abs"   : divide by max(abs(distance)) over time/trial.
+# "final_abs" : divide by abs(distance at final valid time).
+# "none"      : no scaling; plots distance-from-reference in original z/pixel units.
+NORMALIZED_DISTANCE_MODE = "max_abs"
+
+PLOT_POSITION = True
+PLOT_VELOCITY = False
 
 # Layout knobs (passed into stacked_heatmaps_plus_behv)
 BEH_RATIO = 0.6               # height ratio for behavior rows (position/velocity); adjust as needed
@@ -180,38 +194,6 @@ def _compute_target_means_for_cam(
 
     return idx_mask, mean_xy, mean_xy_per_trial
 
-def _strip_cam_prefix(n: str) -> str:
-    """Turn 'cam0_wrist_x' → 'wrist_x', etc."""
-    n = str(n)
-    if n.startswith("cam0_"):
-        return n[len("cam0_"):]
-    if n.startswith("cam1_"):
-        return n[len("cam1_"):]
-    return n
-
-def _simple_beh_labels(names: list[str],
-                       keypoints: tuple[str, ...] = KEYPOINTS_ORDER) -> list[str]:
-    """
-    Map raw DLC-style names like:
-      'DLC_Resnet50_..._wrist_x'  -> 'Wrist X'
-      'cam0_elbow_y'              -> 'Elbow Y'
-    If a keypoint/axis can’t be found, fall back to the original name.
-    """
-    out: list[str] = []
-    kps_lc = tuple(kp.lower() for kp in keypoints)
-    for n in names:
-        s = str(n).lower()
-        kp = next((kp for kp in kps_lc if kp in s), None)
-        axis = "x" if ("_x" in s or s.endswith("x")) else (
-               "y" if ("_y" in s or s.endswith("y")) else None)
-        if kp and axis:
-            # Capitalize nicely: "wrist_x" -> "Wrist X"
-            base = kp.replace("_", " ").title()
-            ax   = axis.upper()
-            out.append(f"{base} {ax}")
-        else:
-            out.append(str(n))
-    return out
 
 def _compute_mean_and_sd(segs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -234,17 +216,81 @@ def _compute_mean_and_sd(segs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     mean[cnt == 0] = np.nan
     return mean, sd
 
-def _get_subset_indices(labels: list[str], mode: str = "MWT") -> list[int]:
-    """
-    For "MWT" mode, keep only Middle, Wrist keypoints.
-    labels : list of pretty labels ("Wrist X", "Middle Finger Y", ...)
-    """
-    if mode.upper() == "ALL":
-        return list(range(len(labels)))
 
-    keys = ("middle", "wrist")
-    idxs = [i for i, lab in enumerate(labels) if any(k in lab.lower() for k in keys)]
-    return idxs
+def _select_kinematics_for_plot(
+    beh_labels_display,
+    beh_cam0_pos=None,
+    beh_cam1_pos=None,
+    beh_cam0_vel=None,
+    beh_cam1_vel=None,
+    beh_cam0_pos_stds=None,
+    beh_cam1_pos_stds=None,
+    beh_cam0_vel_stds=None,
+    beh_cam1_vel_stds=None,
+    keypoint_include=KIN_KEYPOINT_INCLUDE,
+    plot_position=PLOT_POSITION,
+    plot_velocity=PLOT_VELOCITY,
+):
+    idx_subset = rcp.get_subset_indices(
+        beh_labels_display,
+        keys=keypoint_include,
+    )
+
+    if not idx_subset:
+        return {
+            "beh_labels": [],
+            "beh_cam0_pos": None,
+            "beh_cam1_pos": None,
+            "beh_cam0_vel": None,
+            "beh_cam1_vel": None,
+            "beh_cam0_pos_stds": None,
+            "beh_cam1_pos_stds": None,
+            "beh_cam0_vel_stds": None,
+            "beh_cam1_vel_stds": None,
+        }
+
+    beh_labels_subset = [beh_labels_display[i] for i in idx_subset]
+
+    def _slice(arr):
+        if arr is None:
+            return None
+
+        arr = np.asarray(arr)
+
+        if arr.size == 0:
+            return None
+
+        # Case 1: mean/median traces, shape: (K, T)
+        if arr.ndim == 2:
+            valid = [i for i in idx_subset if 0 <= i < arr.shape[0]]
+            if not valid:
+                return None
+            return arr[valid, :]
+
+        # Case 2: trial traces, shape: (n_trials, K, T)
+        if arr.ndim == 3:
+            valid = [i for i in idx_subset if 0 <= i < arr.shape[1]]
+            if not valid:
+                return None
+            return arr[:, valid, :]
+
+        raise ValueError(f"Unexpected behavior array shape: {arr.shape}")
+
+    return {
+        "beh_labels": beh_labels_subset,
+
+        "beh_cam0_pos": _slice(beh_cam0_pos) if plot_position else None,
+        "beh_cam1_pos": _slice(beh_cam1_pos) if plot_position else None,
+        "beh_cam0_vel": _slice(beh_cam0_vel) if plot_velocity else None,
+        "beh_cam1_vel": _slice(beh_cam1_vel) if plot_velocity else None,
+
+        "beh_cam0_pos_stds": _slice(beh_cam0_pos_stds) if plot_position else None,
+        "beh_cam1_pos_stds": _slice(beh_cam1_pos_stds) if plot_position else None,
+        "beh_cam0_vel_stds": _slice(beh_cam0_vel_stds) if plot_velocity else None,
+        "beh_cam1_vel_stds": _slice(beh_cam1_vel_stds) if plot_velocity else None,
+    }
+
+
 
 # ---------------------------------------------------------------------
 # MAIN PERI-STIM PLOTTING
@@ -329,6 +375,21 @@ def main():
         sess         = str(peri_stim_npz["sess"])
         br_idx       = int(peri_stim_npz["br_idx"])
 
+        meta_raw = peri_stim_npz["meta"].item() if "meta" in peri_stim_npz.files else {}
+
+        stim_dur_ms = (
+            float(meta_raw.get("recording_stim_dur", 0.0))
+            if isinstance(meta_raw, dict)
+            else 0.0
+        )
+
+        is_control = "control_reaches" in target_label.lower()
+
+        nprw_blank_ms = None if is_control else (
+            -NPRW_BLANK_BEFORE_MS,
+            stim_dur_ms + NPRW_BLANK_AFTER_MS,
+        )
+
         if PROCESS_ONLY and br_idx not in PROCESS_ONLY:
             continue
         overall_title_raw = peri_stim_npz["overall_title"]
@@ -366,10 +427,10 @@ def main():
         else:
             target_suffix = ""
             
-        idx0_mask, cam0_mean_xy, cam0_mean_xy_per_trial = _compute_target_means_for_cam(
+        _, cam0_mean_xy, _ = _compute_target_means_for_cam(
             cam0_pos_segs, cam0_names, beh_rel_t, ts_state_segs, ts_state_rel_t, target_suffix
         )
-        idx1_mask, cam1_mean_xy, cam1_mean_xy_per_trial = _compute_target_means_for_cam(
+        _, cam1_mean_xy, _ = _compute_target_means_for_cam(
             cam1_pos_segs, cam1_names, beh_rel_t, ts_state_segs, ts_state_rel_t, target_suffix
         )
 
@@ -398,7 +459,6 @@ def main():
         UA_width_ms   = peri_stim_npz["UA_width_ms"]
         ua_ids_1based = peri_stim_npz["ua_ids_1based"] if "ua_ids_1based" in peri_stim_npz.files else None
 
-        ts_state_segs = peri_stim_npz["ts_state_segs"]
 
         # --- Optional z-score normalization ---
         if Z_SCORE_FR:
@@ -415,14 +475,73 @@ def main():
         # Labels
         # -----------------------------------------------------------------
         if cam0_names:
-            beh_labels_raw = [_strip_cam_prefix(n) for n in cam0_names]
+            beh_labels_raw = [rcp.strip_cam_prefix(n) for n in cam0_names]
         elif cam1_names:
-            beh_labels_raw = [_strip_cam_prefix(n) for n in cam1_names]
+            beh_labels_raw = [rcp.strip_cam_prefix(n) for n in cam1_names]
         else:
             beh_labels_raw = []
 
-        beh_labels_display = _simple_beh_labels(beh_labels_raw, KEYPOINTS_ORDER)
+        beh_labels_display = rcp.simple_beh_labels(beh_labels_raw, KEYPOINTS_ORDER)
         beh_time_for_both = beh_rel_t
+
+        if NORMALIZED_DISTANCE:
+            cam0_dist_trials = rcp.compute_normalized_distance_from_xy_3d(
+                cam0_pos_segs,
+                beh_labels_display,
+                beh_rel_t,
+                keypoint=NORMALIZED_DISTANCE_KEYPOINT,
+                ref_time_ms=NORMALIZED_DISTANCE_REF_TIME_MS,
+                mode=NORMALIZED_DISTANCE_MODE,
+            )
+
+            cam1_dist_trials = rcp.compute_normalized_distance_from_xy_3d(
+                cam1_pos_segs,
+                beh_labels_display,
+                beh_rel_t,
+                keypoint=NORMALIZED_DISTANCE_KEYPOINT,
+                ref_time_ms=NORMALIZED_DISTANCE_REF_TIME_MS,
+                mode=NORMALIZED_DISTANCE_MODE,
+            )
+
+            beh_cam0_pos_for_plot = rcp.median_from_trial_traces(cam0_dist_trials)
+            beh_cam1_pos_for_plot = rcp.median_from_trial_traces(cam1_dist_trials)
+
+
+            kin_med_plot = _select_kinematics_for_plot(
+                beh_labels_display=[""],
+                beh_cam0_pos=beh_cam0_pos_for_plot,
+                beh_cam1_pos=beh_cam1_pos_for_plot,
+                beh_cam0_vel=None,
+                beh_cam1_vel=None,
+                keypoint_include="ALL",
+            )
+
+            # Target x/y coordinates do not make sense on a normalized-distance axis.
+            target_pos_cam0_for_plot = None
+            target_pos_cam1_for_plot = None
+
+        else:
+            cam0_dist_trials = None
+            cam1_dist_trials = None
+
+            kin_med_plot = _select_kinematics_for_plot(
+                beh_labels_display=beh_labels_display,
+                beh_cam0_pos=beh_cam0_pos_med,
+                beh_cam1_pos=beh_cam1_pos_med,
+                beh_cam0_vel=beh_cam0_vel_med,
+                beh_cam1_vel=beh_cam1_vel_med,
+            )
+
+            target_pos_cam0_for_plot = target_pos_cam0
+            target_pos_cam1_for_plot = target_pos_cam1
+
+        beh_ylim_for_plot = KINEMATICS_YLIM_NORMDIST if NORMALIZED_DISTANCE else KINEMATICS_YLIM
+
+        beh_pos_ylabel_for_plot = (
+            "Normalized distance"
+            if NORMALIZED_DISTANCE
+            else "Position Δ (z)"
+        )
 
         # Titles
         base_kin_title = f"Kinematics / n={n_nprw} events"
@@ -466,19 +585,22 @@ def main():
             out_path_1,
             base_kin_title,
             base_neural_title,
+            beh_pos_ylabel=beh_pos_ylabel_for_plot,
             cmap=COLORMAP,
             cb_label_nprw=cb_label,
             cb_label_ua=cb_label,
             vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
             vmin_ua={
-                "M1i+M1s": VMIN_UA,
-                "PMd":     VMIN_UA,
-                "SMA":     VMIN_UA,
+                "M1i": VMIN_UA,
+                "M1s": VMIN_UA,
+                "PMd": VMIN_UA,
+                "SMA": VMIN_UA,
             },
             vmax_ua={
-                "M1i+M1s": VMAX_UA,
-                "PMd":     VMAX_UA,
-                "SMA":     VMAX_UA,
+                "M1i": VMAX_UA,
+                "M1s": VMAX_UA,
+                "PMd": VMAX_UA,
+                "SMA": VMAX_UA,
             },
             probe=nprw_probe,
             probe_locs=locs,
@@ -487,23 +609,23 @@ def main():
             ua_ids_1based=ua_ids_1based,
             ua_sort="region_then_elec",
             beh_rel_time=beh_time_for_both,
-            beh_cam0_pos=beh_cam0_pos_med,
-            beh_cam1_pos=beh_cam1_pos_med,
-            beh_cam0_vel=beh_cam0_vel_med,
-            beh_cam1_vel=beh_cam1_vel_med,
+            beh_cam0_pos=kin_med_plot["beh_cam0_pos"],
+            beh_cam1_pos=kin_med_plot["beh_cam1_pos"],
+            beh_cam0_vel=kin_med_plot["beh_cam0_vel"],
+            beh_cam1_vel=kin_med_plot["beh_cam1_vel"],
             beh_cam0_pos_stds=None,  # no shading for median figure
             beh_cam1_pos_stds=None,
             beh_cam0_vel_stds=None,
             beh_cam1_vel_stds=None,
-            target_pos_cam0=target_pos_cam0,
-            target_pos_cam1=target_pos_cam1,
-            beh_labels=beh_labels_display,
+            target_pos_cam0=target_pos_cam0_for_plot,
+            target_pos_cam1=target_pos_cam1_for_plot,
+            beh_labels=kin_med_plot["beh_labels"],
             title_cam1="",
             title_cam0_vel="",
             title_cam1_vel="",
             sess=sess,
             overall_title=full_overall_title,
-            beh_ylim=KINEMATICS_YLIM,
+            beh_ylim=beh_ylim_for_plot,
             beh_ratio=BEH_RATIO,
             ch_ratio_per_row=CH_RATIO_PER_ROW,
             min_heatmap_ratio=MIN_HEATMAP_RATIO,
@@ -514,6 +636,7 @@ def main():
             height_per_ratio_in=HEIGHT_PER_RATIO_IN,
             probe_gap_ratio=PROBE_GAP_RATIO,
             probe_width_ratio=PROBE_WIDTH_RATIO,
+            nprw_blank_ms=nprw_blank_ms,
         )
         # -----------------------------------------------------------------
         # FIGURE 2: ALL VARIANCE TRACES (no shading, all keypoints)
@@ -533,17 +656,20 @@ def main():
             out_path_1b,
             base_kin_title,   # same behavior panel as median
             base_neural_var_title,
+            beh_pos_ylabel=beh_pos_ylabel_for_plot,
             cmap=COLORMAP,
             vmin_nprw=VMIN_NPRW_VAR, vmax_nprw=VMAX_NPRW_VAR,
             vmin_ua={
-                "M1i+M1s": VMIN_UA_VAR,
-                "PMd":     VMIN_UA_VAR,
-                "SMA":     VMIN_UA_VAR,
+                "M1i": VMIN_UA_VAR,
+                "M1s": VMIN_UA_VAR,
+                "PMd": VMIN_UA_VAR,
+                "SMA": VMIN_UA_VAR,
             },
             vmax_ua={
-                "M1i+M1s": VMAX_UA_VAR,
-                "PMd":     VMAX_UA_VAR,
-                "SMA":     VMAX_SMA_VAR,  # use tighter cap for SMA if you like
+                "M1i": VMAX_UA_VAR,
+                "M1s": VMAX_UA_VAR,
+                "PMd": VMAX_UA_VAR,
+                "SMA": VMAX_SMA_VAR,
             },
             probe=nprw_probe,
             probe_locs=locs,
@@ -552,23 +678,23 @@ def main():
             ua_ids_1based=ua_ids_1based,
             ua_sort="region_then_elec",
             beh_rel_time=beh_time_for_both,
-            beh_cam0_pos=beh_cam0_pos_med,
-            beh_cam1_pos=beh_cam1_pos_med,
-            beh_cam0_vel=beh_cam0_vel_med,
-            beh_cam1_vel=beh_cam1_vel_med,
+            beh_cam0_pos=kin_med_plot["beh_cam0_pos"],
+            beh_cam1_pos=kin_med_plot["beh_cam1_pos"],
+            beh_cam0_vel=kin_med_plot["beh_cam0_vel"],
+            beh_cam1_vel=kin_med_plot["beh_cam1_vel"],
             beh_cam0_pos_stds=None,
             beh_cam1_pos_stds=None,
             beh_cam0_vel_stds=None,
             beh_cam1_vel_stds=None,
-            target_pos_cam0=target_pos_cam0,
-            target_pos_cam1=target_pos_cam1,
-            beh_labels=beh_labels_display,
+            target_pos_cam0=target_pos_cam0_for_plot,
+            target_pos_cam1=target_pos_cam1_for_plot,
+            beh_labels=kin_med_plot["beh_labels"],
             title_cam1="",
             title_cam0_vel="",
             title_cam1_vel="",
             sess=sess,
             overall_title=full_overall_title,
-            beh_ylim=KINEMATICS_YLIM,
+            beh_ylim=beh_ylim_for_plot,
             beh_ratio=BEH_RATIO,
             ch_ratio_per_row=CH_RATIO_PER_ROW,
             min_heatmap_ratio=MIN_HEATMAP_RATIO,
@@ -579,6 +705,7 @@ def main():
             height_per_ratio_in=HEIGHT_PER_RATIO_IN,
             probe_gap_ratio=PROBE_GAP_RATIO,
             probe_width_ratio=PROBE_WIDTH_RATIO,
+            nprw_blank_ms=nprw_blank_ms,
         )
 
         # -----------------------------------------------------------------
@@ -589,7 +716,7 @@ def main():
         out_path_2 = out_dir_2_parent / f"{file_name}__mean_MWT.svg"
 
         # Select MWT indices
-        idx_subset = _get_subset_indices(beh_labels_display, mode="MWT")
+        idx_subset = rcp.get_subset_indices(beh_labels_display, keys=KIN_KEYPOINT_INCLUDE)
 
         def _select_dims(segs, idxs):
             # Always return (subset, labels) – possibly (None, None)
@@ -640,7 +767,27 @@ def main():
             c0_pos_sd   = None
             c1_pos_sd   = None
 
-        title_MWT_kin = (f"Kinematics (mean ± std) / n={n_nprw} events")
+        if NORMALIZED_DISTANCE:
+            c0_pos_mean, c0_pos_sd = rcp.mean_ci95_from_trial_traces(cam0_dist_trials)
+            c1_pos_mean, c1_pos_sd = rcp.mean_ci95_from_trial_traces(cam1_dist_trials)
+
+            labels_sel = [""]
+
+        # Apply position/velocity display toggles
+        if not PLOT_POSITION:
+            c0_pos_mean = None
+            c1_pos_mean = None
+            c0_pos_sd = None
+            c1_pos_sd = None
+
+        if not PLOT_VELOCITY:
+            c0_vel_mean = None
+            c1_vel_mean = None
+            c0_vel_sd = None
+            c1_vel_sd = None
+
+        band_label = "95% CI" if NORMALIZED_DISTANCE else "std"
+        title_MWT_kin = f"Kinematics (mean ± {band_label}) / n={n_nprw} events"
         title_MWT_neural = f"Neural Activity (mean Δ) / Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
 
         rcp.stacked_heatmaps_plus_behv(
@@ -652,19 +799,22 @@ def main():
             out_path_2,
             title_MWT_kin,
             title_MWT_neural,
+            beh_pos_ylabel=beh_pos_ylabel_for_plot,
             cmap=COLORMAP,
             cb_label_nprw=cb_label,
             cb_label_ua=cb_label,
             vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
             vmin_ua={
-                "M1i+M1s": VMIN_UA,
-                "PMd":     VMIN_UA,
-                "SMA":     VMIN_UA,
+                "M1i": VMIN_UA,
+                "M1s": VMIN_UA,
+                "PMd": VMIN_UA,
+                "SMA": VMIN_UA,
             },
             vmax_ua={
-                "M1i+M1s": VMAX_UA,
-                "PMd":     VMAX_UA,
-                "SMA":     VMAX_UA,
+                "M1i": VMAX_UA,
+                "M1s": VMAX_UA,
+                "PMd": VMAX_UA,
+                "SMA": VMAX_UA,
             },
             probe=nprw_probe,
             probe_locs=locs,
@@ -681,15 +831,15 @@ def main():
             beh_cam1_pos_stds=c1_pos_sd,
             beh_cam0_vel_stds=c0_vel_sd,
             beh_cam1_vel_stds=c1_vel_sd,
-            target_pos_cam0=target_pos_cam0,
-            target_pos_cam1=target_pos_cam1,
+            target_pos_cam0=target_pos_cam0_for_plot,
+            target_pos_cam1=target_pos_cam1_for_plot,
             beh_labels=labels_sel,
             title_cam1="",
             title_cam0_vel="",
             title_cam1_vel="",
             sess=sess,
             overall_title=full_overall_title,
-            beh_ylim=KINEMATICS_YLIM,
+            beh_ylim=beh_ylim_for_plot,
             beh_ratio=BEH_RATIO,
             ch_ratio_per_row=CH_RATIO_PER_ROW,
             min_heatmap_ratio=MIN_HEATMAP_RATIO,
@@ -700,6 +850,7 @@ def main():
             height_per_ratio_in=HEIGHT_PER_RATIO_IN,
             probe_gap_ratio=PROBE_GAP_RATIO,
             probe_width_ratio=PROBE_WIDTH_RATIO,
+            nprw_blank_ms=nprw_blank_ms,
         )
         # -----------------------------------------------------------------
         # FIGURE 4: MWT ONLY VARIANCE (same behavior subset)
@@ -719,17 +870,20 @@ def main():
             out_path_2b,
             title_MWT_kin,          # same behavior + labels as mean/STD figure
             title_MWT_neural_var,
+            beh_pos_ylabel=beh_pos_ylabel_for_plot,
             cmap=COLORMAP,
             vmin_nprw=VMIN_NPRW_VAR, vmax_nprw=VMAX_NPRW_VAR,
             vmin_ua={
-                "M1i+M1s": VMIN_UA_VAR,
-                "PMd":     VMIN_UA_VAR,
-                "SMA":     VMIN_UA_VAR,
+                "M1i": VMIN_UA_VAR,
+                "M1s": VMIN_UA_VAR,
+                "PMd": VMIN_UA_VAR,
+                "SMA": VMIN_UA_VAR,
             },
             vmax_ua={
-                "M1i+M1s": VMAX_UA_VAR,
-                "PMd":     VMAX_UA_VAR,
-                "SMA":     VMAX_SMA_VAR,
+                "M1i": VMAX_UA_VAR,
+                "M1s": VMAX_UA_VAR,
+                "PMd": VMAX_UA_VAR,
+                "SMA": VMAX_SMA_VAR,
             },
             probe=nprw_probe,
             probe_locs=locs,
@@ -746,15 +900,15 @@ def main():
             beh_cam1_pos_stds=c1_pos_sd,
             beh_cam0_vel_stds=c0_vel_sd,
             beh_cam1_vel_stds=c1_vel_sd,
-            target_pos_cam0=target_pos_cam0,
-            target_pos_cam1=target_pos_cam1,
+            target_pos_cam0=target_pos_cam0_for_plot,
+            target_pos_cam1=target_pos_cam1_for_plot,
             beh_labels=labels_sel,
             title_cam1="",
             title_cam0_vel="",
             title_cam1_vel="",
             sess=sess,
             overall_title=full_overall_title,
-            beh_ylim=KINEMATICS_YLIM,
+            beh_ylim=beh_ylim_for_plot,
             beh_ratio=BEH_RATIO,
             ch_ratio_per_row=CH_RATIO_PER_ROW,
             min_heatmap_ratio=MIN_HEATMAP_RATIO,
@@ -765,6 +919,7 @@ def main():
             height_per_ratio_in=HEIGHT_PER_RATIO_IN,
             probe_gap_ratio=PROBE_GAP_RATIO,
             probe_width_ratio=PROBE_WIDTH_RATIO,
+            nprw_blank_ms=nprw_blank_ms,
         )
         # -----------------------------------------------------------------
         # FIGURE 5: MWT ONLY MEDIAN BIN COUNTS (same behavior subset as MWT fig)
@@ -786,17 +941,20 @@ def main():
             out_path_counts_MWT,
             title_MWT_kin,              # MWT-only behavior panel (subset labels)
             title_MWT_neural_counts,
+            beh_pos_ylabel=beh_pos_ylabel_for_plot,
             cmap=COLORMAP,
             vmin_nprw=VMIN_NPRW_COUNTS, vmax_nprw=VMAX_NPRW_COUNTS,
             vmin_ua={
-                "M1i+M1s": VMIN_UA_COUNTS,
-                "PMd":     VMIN_UA_COUNTS,
-                "SMA":     VMIN_UA_COUNTS,
+                "M1i": VMIN_UA_COUNTS,
+                "M1s": VMIN_UA_COUNTS,
+                "PMd": VMIN_UA_COUNTS,
+                "SMA": VMIN_UA_COUNTS,
             },
             vmax_ua={
-                "M1i+M1s": VMAX_UA_COUNTS,
-                "PMd":     VMAX_UA_COUNTS,
-                "SMA":     VMAX_UA_COUNTS,
+                "M1i": VMAX_UA_COUNTS,
+                "M1s": VMAX_UA_COUNTS,
+                "PMd": VMAX_UA_COUNTS,
+                "SMA": VMAX_UA_COUNTS,
             },
             probe=nprw_probe,
             probe_locs=locs,
@@ -813,15 +971,15 @@ def main():
             beh_cam1_pos_stds=c1_pos_sd,
             beh_cam0_vel_stds=c0_vel_sd,
             beh_cam1_vel_stds=c1_vel_sd,
-            target_pos_cam0=target_pos_cam0,
-            target_pos_cam1=target_pos_cam1,
+            target_pos_cam0=target_pos_cam0_for_plot,
+            target_pos_cam1=target_pos_cam1_for_plot,
             beh_labels=labels_sel,      # MWT-only labels
             title_cam1="",
             title_cam0_vel="",
             title_cam1_vel="",
             sess=sess,
             overall_title=full_overall_title,
-            beh_ylim=KINEMATICS_YLIM,
+            beh_ylim=beh_ylim_for_plot,
             beh_ratio=BEH_RATIO,
             ch_ratio_per_row=CH_RATIO_PER_ROW,
             min_heatmap_ratio=MIN_HEATMAP_RATIO,
@@ -832,6 +990,7 @@ def main():
             height_per_ratio_in=HEIGHT_PER_RATIO_IN,
             probe_gap_ratio=PROBE_GAP_RATIO,
             probe_width_ratio=PROBE_WIDTH_RATIO,
+            nprw_blank_ms=nprw_blank_ms,
         )
 
         # -----------------------------------------------------------------
@@ -842,7 +1001,7 @@ def main():
             n_single = min(4, n_trials)
 
             # MWT subset (Middle + Wrist); fall back to ALL if nothing found
-            idx_subset = _get_subset_indices(beh_labels_display, mode="MWT")
+            idx_subset = rcp.get_subset_indices(beh_labels_display, keys=KIN_KEYPOINT_INCLUDE)
             if idx_subset:
                 labels_MWT = [beh_labels_display[i] for i in idx_subset
                               if 0 <= i < len(beh_labels_display)]
@@ -897,6 +1056,30 @@ def main():
                 c1_pos_single = _select_single_trial(c1_pos_single, idx_subset)
                 c1_vel_single = _select_single_trial(c1_vel_single, idx_subset)
 
+                if NORMALIZED_DISTANCE:
+                    c0_pos_single = (
+                        cam0_dist_trials[i_trial, :][None, :]
+                        if cam0_dist_trials is not None and i_trial < cam0_dist_trials.shape[0]
+                        else None
+                    )
+                    c1_pos_single = (
+                        cam1_dist_trials[i_trial, :][None, :]
+                        if cam1_dist_trials is not None and i_trial < cam1_dist_trials.shape[0]
+                        else None
+                    )
+
+                    labels_single = [""]
+                else:
+                    labels_single = labels_MWT
+
+                if not PLOT_POSITION:
+                    c0_pos_single = None
+                    c1_pos_single = None
+
+                if not PLOT_VELOCITY:
+                    c0_vel_single = None
+                    c1_vel_single = None
+
                 title_single_kin = f"Kinematics (MWT, single trial {i_trial+1})"
                 title_single_neural = (
                     f"Neural Activity (single trial {i_trial+1}) / "
@@ -920,17 +1103,20 @@ def main():
                     out_path_single,
                     title_single_kin,
                     title_single_neural,
+                    beh_pos_ylabel=beh_pos_ylabel_for_plot,
                     cmap=COLORMAP,
                     vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
                     vmin_ua={
-                        "M1i+M1s": VMIN_UA,
-                        "PMd":     VMIN_UA,
-                        "SMA":     VMIN_UA,
+                        "M1i": VMIN_UA,
+                        "M1s": VMIN_UA,
+                        "PMd": VMIN_UA,
+                        "SMA": VMIN_UA,
                     },
                     vmax_ua={
-                        "M1i+M1s": VMAX_UA,
-                        "PMd":     VMAX_UA,
-                        "SMA":     VMAX_UA,
+                        "M1i": VMAX_UA,
+                        "M1s": VMAX_UA,
+                        "PMd": VMAX_UA,
+                        "SMA": VMAX_UA,
                     },
                     probe=nprw_probe,
                     probe_locs=locs,
@@ -947,15 +1133,15 @@ def main():
                     beh_cam1_pos_stds=None,
                     beh_cam0_vel_stds=None,
                     beh_cam1_vel_stds=None,
-                    target_pos_cam0=target_pos_cam0,
-                    target_pos_cam1=target_pos_cam1,
-                    beh_labels=labels_MWT,
+                    target_pos_cam0=target_pos_cam0_for_plot,
+                    target_pos_cam1=target_pos_cam1_for_plot,
+                    beh_labels=labels_single,
                     title_cam1="",
                     title_cam0_vel="",
                     title_cam1_vel="",
                     sess=sess,
                     overall_title=full_overall_title,
-                    beh_ylim=KINEMATICS_YLIM,
+                    beh_ylim=beh_ylim_for_plot,
                     beh_ratio=BEH_RATIO,
                     ch_ratio_per_row=CH_RATIO_PER_ROW,
                     min_heatmap_ratio=MIN_HEATMAP_RATIO,
@@ -966,6 +1152,7 @@ def main():
                     height_per_ratio_in=HEIGHT_PER_RATIO_IN,
                     probe_gap_ratio=PROBE_GAP_RATIO,
                     probe_width_ratio=PROBE_WIDTH_RATIO,
+                    nprw_blank_ms=nprw_blank_ms,
                 )
 
 

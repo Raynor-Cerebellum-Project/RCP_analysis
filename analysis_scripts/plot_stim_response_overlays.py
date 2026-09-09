@@ -81,6 +81,8 @@ GENERATE_ZOOM_VIEW = False
 GENERATE_STIM_FIGURES = True
 GENERATE_CTRL_FIGURES = True
 GENERATE_REST_FIGURES = True
+GENERATE_CONTSTIM_FIGURES = True
+GENERATE_OTHER_FIGURES = False
 
 # Reference matching options
 REST_MATCH_MODE = "pulse_count"  # Options: "freq_dur", "pulse_count"
@@ -188,9 +190,32 @@ def should_generate_figures_for_condition(cond_type: str) -> bool:
         return GENERATE_CTRL_FIGURES
     if cond_type == "REST":
         return GENERATE_REST_FIGURES
+    if cond_type == "CONTSTIM":
+        return GENERATE_CONTSTIM_FIGURES
+    if cond_type == "OTHER":
+        return GENERATE_OTHER_FIGURES
 
-    return True
+    # don't generate figures for unknown types
+    return False
 
+
+def get_n_trials_from_prepared_counts(counts_arr) -> Optional[int]:
+    """Return number of trials from channels x trials x bins counts."""
+    if counts_arr is None:
+        return None
+
+    arr = np.asarray(counts_arr)
+    if arr.ndim != 3:
+        return None
+
+    return int(arr.shape[1])
+
+
+def format_trial_label(condition_name: str, n_trials: Optional[int]) -> str:
+    """Format a condition label for titles/legends."""
+    if n_trials is None:
+        return f"{condition_name} (n=NA)"
+    return f"{condition_name} (n={n_trials})"
 
 def rebin_counts_and_axis(
     counts_3d: Optional[np.ndarray],
@@ -317,6 +342,8 @@ def get_base_folder(npz_path: Path) -> str:
         return "control_reaches"
     if "stim_reaches" in path_str:
         return "stim_reaches"
+    if "continuous_stim" in path_str:
+        return "continuous_stim"
     if "at_rest" in path_str:
         return "at_rest"
     return "other"
@@ -328,6 +355,8 @@ def get_cond_type(npz_path: Path) -> str:
         return "CTRL"
     if "stim_reaches" in path_str:
         return "STIM"
+    if "continuous_stim" in path_str:
+        return "CONTSTIM"
     if "at_rest" in path_str:
         return "REST"
     return "OTHER"
@@ -2467,6 +2496,16 @@ def plot_nprw_overlay_grid(
                 target_edges_ms=display_edges,
             )
 
+    cond_type = str(stim_meta.get("cond_type", "CURRENT")).upper()
+
+    n_trials_current = get_n_trials_from_prepared_counts(stim_counts)
+    n_trials_ctrl = get_n_trials_from_prepared_counts(ctrl_counts)
+    n_trials_rest = get_n_trials_from_prepared_counts(rest_counts)
+
+    current_trial_label = format_trial_label(cond_type, n_trials_current)
+    ctrl_trial_label = format_trial_label("CTRL", n_trials_ctrl)
+    rest_trial_label = format_trial_label("REST", n_trials_rest)
+
     # -------------------------------------------------------------------------
     # NPRW-only peak timing table and low/high activity panel ordering.
     # Peaks are computed from the same display-binned PSTHs used for plotting.
@@ -2506,7 +2545,6 @@ def plot_nprw_overlay_grid(
     fig, axes = plt.subplots(n_rows, n_cols, figsize=FIG_SIZE_NPRW, squeeze=False)
     axes_flat = axes.reshape(-1)
 
-    cond_type = str(stim_meta.get("cond_type", "CURRENT")).upper()
     current_label = f"current {cond_type.lower()} file"
 
     for panel_idx, ch in enumerate(plot_order):
@@ -2664,7 +2702,9 @@ def plot_nprw_overlay_grid(
         f"Current File ({cond_type}) | Target: {target_val or 'N/A'} | BR: {br_val} | {ref_str}\n"
         f"NPRW peak window: {NPRW_PEAK_WIN_MS[0]:.0f}-{NPRW_PEAK_WIN_MS[1]:.0f} ms | "
         f"Low activity panels first: n={n_low}; high activity panels second: n={n_high}, sorted by control peak rate\n"
-        f"[Grey Bars = Current File ({cond_type}) | Orange Line = Matched CTRL | Green Line = Matched REST | "
+        f"[Grey Bars = Current File ({current_trial_label}) | "
+        f"Orange Line = Matched {ctrl_trial_label} | "
+        f"Green Line = Matched {rest_trial_label} | "
         f"Vertical Lines = condition-specific peak times]",
         fontsize=14,
     )
@@ -2791,6 +2831,16 @@ def plot_ua_region_overlay_grid(
                 target_edges_ms=display_edges,
             )
 
+    cond_type = str(stim_meta.get("cond_type", "CURRENT")).upper()
+
+    n_trials_current = get_n_trials_from_prepared_counts(stim_counts)
+    n_trials_ctrl = get_n_trials_from_prepared_counts(ctrl_counts)
+    n_trials_rest = get_n_trials_from_prepared_counts(rest_counts)
+
+    current_trial_label = format_trial_label(cond_type, n_trials_current)
+    ctrl_trial_label = format_trial_label("CTRL", n_trials_ctrl)
+    rest_trial_label = format_trial_label("REST", n_trials_rest)
+
     # -------------------------------------------------------------------------
     # Utah-array per-electrode mean firing-rate table.
     #
@@ -2825,7 +2875,6 @@ def plot_ua_region_overlay_grid(
 
     fig, axes = plt.subplots(8, 8, figsize=FIG_SIZE_UA, squeeze=False)
 
-    cond_type = str(stim_meta.get("cond_type", "CURRENT")).upper()
     current_label = f"current {cond_type.lower()} file"
 
     for rr in range(8):
@@ -2995,7 +3044,9 @@ def plot_ua_region_overlay_grid(
     fig.suptitle(
         f"{title_base} | Utah Array - {region} (Port {recording_port or 'A'}) | Overlay PSTH (Trial-Averaged Firing Rate, Hz)\n"
         f"Current File ({cond_type}) | Target: {target_val or 'N/A'} | BR: {br_val} | {ref_str}\n"
-        f"[Grey Bars = Current File ({cond_type}) | Orange Line = Matched CTRL | Green Line = Matched REST]",
+        f"[Grey Bars = Current File ({current_trial_label}) | "
+        f"Orange Line = Matched {ctrl_trial_label} | "
+        f"Green Line = Matched {rest_trial_label}]",
         fontsize=14,
     )
 
@@ -3198,6 +3249,7 @@ def process_file(
                 rest_data.close()
             if data is not None:
                 data.close()
+
 def compute_nprw_metrics_for_file(
     stim_data,
     stim_path: Path,
@@ -3566,6 +3618,8 @@ def save_outputs(
     nprw_saved = stats_summary.get("nprw_figs_saved", 0)
     ua_saved = stats_summary.get("ua_figs_saved", 0)
     skipped_rest = stats_summary.get("skipped_unmatched_rest", 0)
+    contstim_proc = stats_summary.get("contstim_processed", 0)
+    other_proc = stats_summary.get("other_processed", 0)
 
     print("\n============================================================")
     print("Run summary:")
@@ -3582,6 +3636,8 @@ def save_outputs(
     print(f"      STIM files processed:        {stim_proc}")
     print(f"      CTRL files processed:        {ctrl_proc}")
     print(f"      REST files processed:        {rest_proc}")
+    print(f"      Contstim files processed:    {contstim_proc}")
+    print(f"      Other files processed:       {other_proc}")
     print("  Outputs Generated:")
     print(f"    NPRW figures saved:            {nprw_saved}")
     print(f"    UA figures saved:              {ua_saved}")
@@ -3597,7 +3653,8 @@ def save_outputs(
         print("  - No STIM files found or processed")
         print("  - Missing *_counts in STIM files")
         print("  - Missing *_rel_t or *_edges_ms time axis keys in STIM files")
-        print("  - All STIM files skipped by PROCESS_ONLY filter or missing rest requirement")
+        print("  - All STIM files skipped by PROCESS_ONLY filter")
+        print("  - Or STIM files were skipped because matched at-rest references exist but no matching at-rest file was found")
         print("============================================================")
         return
 
@@ -3645,11 +3702,13 @@ def main():
     stim_files = [f for f in all_files if "stim_reaches" in str(f).lower()]
     control_files = [f for f in all_files if "control_reaches" in str(f).lower()]
     rest_files = [f for f in all_files if "at_rest" in str(f).lower()]
+    continuous_stim_files = [f for f in all_files if "continuous_stim" in str(f).lower()]
 
     print(f"Found {len(all_files)} peristim files.")
     print(f"Found {len(stim_files)} stim files.")
     print(f"Found {len(control_files)} control files.")
     print(f"Found {len(rest_files)} at-rest files.")
+    print(f"Found {len(continuous_stim_files)} continuous stim files.")
 
     metadata_df = load_metadata_csv()
 
@@ -3689,22 +3748,34 @@ def main():
         files_to_process = filtered
 
     n_skipped_unmatched_rest = 0
-    if REQUIRE_MATCHED_REST_FOR_STIM:
+
+    has_any_rest_refs = len(refs.get("rest_by_key", {})) > 0
+
+    if REQUIRE_MATCHED_REST_FOR_STIM and has_any_rest_refs:
         filtered = []
         for f in files_to_process:
             if get_cond_type(f) == "STIM":
                 try:
                     with np.load(f, allow_pickle=True) as d:
                         rest_f = get_matched_rest_file(d, f, refs, metadata_df)
+
                     if rest_f is not None:
                         filtered.append(f)
                     else:
                         n_skipped_unmatched_rest += 1
+
                 except Exception:
                     filtered.append(f)
             else:
                 filtered.append(f)
+
         files_to_process = filtered
+
+    elif REQUIRE_MATCHED_REST_FOR_STIM and not has_any_rest_refs:
+        print(
+            "No at-rest reference files were loaded for this session; "
+            "STIM files will be processed without matched-rest comparisons."
+        )
 
     if len(files_to_process) == 0:
         print("No peristim files to process.")
@@ -3780,6 +3851,8 @@ def main():
         "nprw_figs_saved": nprw_figs_count,
         "ua_figs_saved": ua_figs_count,
         "skipped_unmatched_rest": n_skipped_unmatched_rest,
+        "contstim_processed": contstim_count,
+        "other_processed": other_count,
     }
 
     save_outputs(all_rows, stats_summary)
