@@ -44,7 +44,6 @@ IR_STREAM = NPRW_CFG.get("ir_stream")
 IR_CHANNEL = "DIGITAL-IN-01"
 PROCESS_ONLY = PARAMS.preprocessing.get("process_only")  # list of BR indices to process; empty = all, need to map from BR indices to Intan indices using METADATA
 
-# Local reference params, both floats
 RADII = (PARAMS.probes.get("NPRW").get("local_radius_inner"), PARAMS.probes.get("NPRW").get("local_radius_outer"))
 RATES = PARAMS.NPRW_rate_est
 BIN_MS     = RATES.get("bin_ms")
@@ -58,7 +57,7 @@ global_job_kwargs = dict(n_jobs=PARAMS.parallel_jobs, chunk_duration=PARAMS.chun
 si.set_global_job_kwargs(**global_job_kwargs)
 
 def main():
-    # 1) Load geometry & mapping
+    # Load geometry & mapping
     mat_probe = loadmat(Path(GEOM_PATH))
     intan_geom = {}
     intan_geom["x"] = mat_probe["xcoords"].ravel()
@@ -76,7 +75,7 @@ def main():
     nprw_probe.set_contacts(positions=np.c_[intan_geom["x"], intan_geom["y"]], shapes="square", shape_params={"width": 12.0})
     nprw_probe.set_device_channel_indices(intan_probe_mapping) # Apply mapping
     
-    # 2) Find sessions and load data from each Intan folder
+    # Find sessions and load data from each Intan folder
     sess_folders = rcp.list_intan_sessions(INTAN_ROOT)
     print(f"Found Intan sessions: {len(sess_folders)}")
 
@@ -115,7 +114,7 @@ def main():
     nbefore = np.argmin(control_template)
     
     for sess in sess_folders:
-        # 3) Extract stim sessions and aux channels
+        # Extract stim sessions
         print(f"[RUN] session {sess.name}")
 
         out_dir = NPRW_CKPT_ROOT / f"pp_local_{int(RADII[0])}_{int(RADII[1])}__interp_{sess.name}"
@@ -124,13 +123,13 @@ def main():
         #     print(f"[SKIP] Both outputs already exist for {sess.name}")
         #     continue
 
-        # aux streams (sync channels etc.)
+        # Extract aux streams (sync channels etc.)
         rcp.extract_intan_aux_streams_npz(sess=sess, out_dir=NPRW_AUX_DATA, aux_streams=AUX_STREAM)
         
         stim_ext_arrays = rcp.extract_stim_npz(sess=sess, out_dir=NPRW_AUX_DATA, stim_stream_name=STIM_STREAM, chanmap_perm=intan_probe_mapping)
         # stim_ext_arrays = rcp.load_stim_detection(NPRW_AUX_DATA / f"{sess.name}_Intan_streams" / "stim_stream.npz") - skip to speed up when debugging
 
-        # 4) Load Intan IR stream
+        # Load Intan IR stream
         rec_ir = se.read_split_intan_files(
             sess,
             mode="concatenate",

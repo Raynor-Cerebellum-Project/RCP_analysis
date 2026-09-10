@@ -68,8 +68,11 @@
 </li>
 </ul>
 </li>
+<<<<<<< HEAD
 <li class="toctree-l1"><a class="reference internal" href="../../lfp_analysis.html">LFP band analysis</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../outputs.html">Outputs and other plots</a></li>
+=======
+>>>>>>> 35092b9 (Editing docs)
 <li class="toctree-l1"><a class="reference internal" href="../../api.html">Python API</a></li>
 </ul>
 
@@ -103,15 +106,78 @@
 <h1>OCR Frame Correction<a class="headerlink" href="#ocr-frame-correction" title="Link to this heading"></a></h1>
 <p>Script: <code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/OCR_frame_correction.py</span></code></p>
 <p>Because FLIR cameras could drop frames, OCR is used to get a mapping of the frames to the actual times.</p>
+<p>Each frame carries a text band burned in by the camera, holding its own frame
+counter and the time since the previous captured frame. Reading that band back
+recovers which frames went missing, so a position in the <code class="docutils literal notranslate"><span class="pre">.avi</span></code> file can be
+mapped to a position on the true recording timeline.</p>
+<section id="steps">
+<h2>Steps<a class="headerlink" href="#steps" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Get the text band and crop at the top of the frame, convert to grayscale, threshold,
+and dilate so EasyOCR reads it reliably.</p></li>
+<li><p>Read the text. We expect three fields: the frame counter, a <code class="docutils literal notranslate"><span class="pre">dt:</span> <span class="pre">...</span> <span class="pre">msec</span></code> interval, and trailing text.</p></li>
+<li><p>Derive the dropped-frame count from <code class="docutils literal notranslate"><span class="pre">delta_t</span></code>, taking one  frame as 10 ms (100 fps)</p></li>
+<li><p>Accumulate the running total of dropped frames and add it to the absolute <code class="docutils literal notranslate"><span class="pre">.avi</span></code> frame index to get the corrected frame number <code class="docutils literal notranslate"><span class="pre">CORRECTED_framenum</span> <span class="pre">=</span> <span class="pre">AVI_framenum</span> <span class="pre">+</span> <span class="pre">total_missing</span></code>.</p></li>
+<li><p>Write one row per frame to the output <code class="docutils literal notranslate"><span class="pre">.csv</span></code>.</p></li>
+</ol>
+</section>
 <section id="inputs">
 <h2>Inputs<a class="headerlink" href="#inputs" title="Link to this heading"></a></h2>
 <ol class="arabic simple">
-<li><p>Two camera <code class="docutils literal notranslate"><span class="pre">.avi</span></code> files</p></li>
+<li><p>Two camera <code class="docutils literal notranslate"><span class="pre">.avi</span></code> files</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/Video/</span></code></p></li>
+</ul>
+</li>
 </ol>
 </section>
 <section id="outputs">
 <h2>Outputs<a class="headerlink" href="#outputs" title="Link to this heading"></a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">.csv</span></code> files containing the mapping of frames to correct frames/times.</p>
+<p><code class="docutils literal notranslate"><span class="pre">.csv</span></code> files containing the mapping of frames to correct frames/times, one per
+video, mirroring the input subdirectory structure:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/Video/OCR/&lt;subfolders&gt;/&lt;video</span> <span class="pre">stem&gt;_ocr.csv</span></code></p></li>
+</ul>
+<section id="columns">
+<h3>Columns<a class="headerlink" href="#columns" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 75.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">AVI_framenum</span></code></p></td>
+<td><p>Absolute frame number in the video.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">OCR_framenum</span></code></p></td>
+<td><p>Frame number read by OCR, which skips over dropped frames.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CORRECTED_framenum</span></code></p></td>
+<td><p>Corrected frame number (<code class="docutils literal notranslate"><span class="pre">AVI_framenum</span> <span class="pre">+</span> <span class="pre">total_missing</span></code>).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">delta_t</span></code></p></td>
+<td><p>Difference in time between previous frame and current frame in ms.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">n_missing</span></code></p></td>
+<td><p>Frames dropped immediately before current frame.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">total_missing</span></code></p></td>
+<td><p>Cumulative frames dropped.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">n_chunks_missing</span></code></p></td>
+<td><p>Number of separate “drop events” so far.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">all_text</span></code></p></td>
+<td><p>Raw OCR text, kept for debugging.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
 </section>
 </section>
 

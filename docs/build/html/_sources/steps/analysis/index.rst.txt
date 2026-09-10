@@ -10,3 +10,4 @@ Analysis
    plot_peri_stim_raster
    plot_bin_counts
    rsa_calculation
+   lfp_analysis

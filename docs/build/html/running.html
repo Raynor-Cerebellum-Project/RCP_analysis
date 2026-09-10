@@ -47,11 +47,15 @@
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Running the pipeline</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#inputs">Inputs</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#outputs">Outputs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#final-outputs">Final outputs</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="steps/index.html">Steps of the pipeline</a></li>
+<<<<<<< HEAD
 <li class="toctree-l1"><a class="reference internal" href="lfp_analysis.html">LFP band analysis</a></li>
 <li class="toctree-l1"><a class="reference internal" href="outputs.html">Outputs and other plots</a></li>
+=======
+>>>>>>> 35092b9 (Editing docs)
 <li class="toctree-l1"><a class="reference internal" href="api.html">Python API</a></li>
 </ul>
 
@@ -82,30 +86,64 @@
   <section id="running-the-pipeline">
 <h1>Running the pipeline<a class="headerlink" href="#running-the-pipeline" title="Link to this heading"></a></h1>
 <ol class="arabic simple">
-<li><p>Set <code class="docutils literal notranslate"><span class="pre">data_root</span></code> in <code class="docutils literal notranslate"><span class="pre">config/params.yaml</span></code>.</p></li>
 <li><p>Add an entry to <code class="docutils literal notranslate"><span class="pre">config/machines.yaml</span></code> if you are using a new workspace.</p></li>
+<li><p>Set <code class="docutils literal notranslate"><span class="pre">data_root</span></code> in <code class="docutils literal notranslate"><span class="pre">config/params.yaml</span></code>. In the documentation this will be referred to as <code class="docutils literal notranslate"><span class="pre">DATA_ROOT</span></code></p></li>
 <li><p>Run <code class="docutils literal notranslate"><span class="pre">scripts/run_pipeline.py</span></code>.</p></li>
 </ol>
+<p>Inside <code class="docutils literal notranslate"><span class="pre">scripts/run_pipeline.py</span></code>, you can specify which sessions and which steps to run.</p>
 <section id="inputs">
 <h2>Inputs<a class="headerlink" href="#inputs" title="Link to this heading"></a></h2>
 <ol class="arabic simple">
-<li><p>Raw neural signals (NPRW, UA)</p></li>
-<li><p>Metadata from handwritten notes</p></li>
-<li><p>Mapping and geometry</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">config/params.yaml</span></code></p></li>
-<li><p>Impedances for both NPRW and UA</p></li>
+<li><p>Raw neural signals (NPRW, UA) <code class="docutils literal notranslate"><span class="pre">DATA_ROOT/Intan/</span></code> and <code class="docutils literal notranslate"><span class="pre">DATA_ROOT/Blackrock/</span></code></p></li>
+<li><p>Videos <code class="docutils literal notranslate"><span class="pre">DATA_ROOT/Video/</span></code></p></li>
+<li><p>Metadata from handwritten notes <code class="docutils literal notranslate"><span class="pre">DATA_ROOT/Metadata/</span></code></p></li>
+<li><p>Impedances for both NPRW and UA <code class="docutils literal notranslate"><span class="pre">DATA_ROOT/Impedances/</span></code></p></li>
+<li><p>Mapping and geometry <code class="docutils literal notranslate"><span class="pre">config/../</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">config/params.yaml</span></code> and <code class="docutils literal notranslate"><span class="pre">config/machine.yaml</span></code></p></li>
 </ol>
 </section>
 <section id="outputs">
 <h2>Outputs<a class="headerlink" href="#outputs" title="Link to this heading"></a></h2>
-<dl class="simple">
-<dt><code class="docutils literal notranslate"><span class="pre">data/results/checkpoints/.../aligned_*.npz</span></code></dt><dd><p>Aligned spike times, behavioral traces, event timings, and metadata, one file per condition and target.</p>
-</dd>
-<dt><code class="docutils literal notranslate"><span class="pre">data/results/checkpoints/.../peristim_*.npz</span></code></dt><dd><p>Peri-stim (event) tensors, one file per condition and target.</p>
-</dd>
-<dt><code class="docutils literal notranslate"><span class="pre">data_status_reaching.csv</span></code></dt><dd><p>Timestamps that keep track of when each step was run.</p>
-</dd>
-</dl>
+<ol class="arabic simple">
+<li><p>Aligned spike times, behavioral traces, event timings, and metadata, one file per condition and target.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/checkpoints/Aligned/.../aligned_*.npz</span></code></p></li>
+</ul>
+</li>
+<li><p>Peri-stim (event) tensors, one file per condition and target.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/checkpoints/PeriStim/.../peristim_*.npz</span></code></p></li>
+</ul>
+</li>
+<li><p>Timestamps that keep track of when each step was run.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/data_status_reaching.csv</span></code></p></li>
+</ul>
+</li>
+</ol>
+</section>
+<section id="final-outputs">
+<h2>Final outputs<a class="headerlink" href="#final-outputs" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Kinematic plots</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/figures/kinematics_trajectories/.../</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/figures/plateau_analysis/</span></code></p></li>
+</ul>
+</li>
+<li><p>Neural data plots</p>
+<ul class="simple">
+<li><p>Firing rate: <code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/figures/shaded_BT_svg/</span></code></p></li>
+<li><p>Raster: <code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/figures/peristim_raster/.../</span></code></p></li>
+</ul>
+</li>
+<li><p>RSA plots</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/figures/rsa_from_peristim/</span></code></p></li>
+</ul>
+</li>
+</ol>
+<p><a class="reference external" href="https://docs.google.com/presentation/d/1L_EA5BOvmqIdInJ0WPRp5rtgeDXCOmu6qmt2yeqPC-s/edit?slide=id.g3afc5261748_0_102#slide=id.g3afc5261748_0_102">Example final figures: Nike’s plots for reaching</a></p>
 </section>
 </section>
 
