@@ -131,8 +131,8 @@ def subspace_detect_cfar(recording, basis, *, cfar_alpha=1e-4, peak_sign="neg",
     w_tot = torch.ones(1, 1, N, dtype=torch.float32, device=dev)               # (1,1,N)
 
     chunk = int(chunk_s * fs)
-    margin = 2 * N + w_snap                                   # 重疊: 接縫 peak 保完整窗 + snap
-
+    
+    margin = 2 * N + w_snap                                  
     samp_parts, chan_parts, seg_parts, amp_parts = [], [], [], []
     for seg_idx in range(n_seg):
         seg_len = recording.get_num_samples(segment_index=seg_idx)
