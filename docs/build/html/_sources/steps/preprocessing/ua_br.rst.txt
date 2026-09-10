@@ -132,7 +132,3 @@ Diagnostic figures
 - ``DATA_ROOT/results/figures/artifact_alignment/artifact_alignment_br<br_idx>.png``
 - ``DATA_ROOT/results/figures/IPCA_debug/debug_MACRO_UA_br<br_idx>_ch<electrode>.png``
 - ``DATA_ROOT/results/figures/classification/``
-
-.. note::
-   ``aligned_*.npz`` files are produced later, by
-   ``make_aligned_npz_and_mat.py``, not by this step.
