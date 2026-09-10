@@ -14,7 +14,7 @@
       <script src="../../_static/jquery.js?v=5d32c60e"></script>
       <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
       <script src="../../_static/documentation_options.js?v=f2a433a1"></script>
-      <script src="../../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../../_static/doctools.js?v=9bcbadda"></script>
       <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
@@ -49,11 +49,13 @@
 <li class="toctree-l2"><a class="reference internal" href="../index.html#preprocessing">Preprocessing</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../index.html#analysis">Analysis</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../index.html#artifact-correction-schematic">Artifact correction schematic</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#intermediate-outputs">Intermediate outputs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#other-plots">Other plots</a></li>
 <li class="toctree-l2 current"><a class="reference internal" href="../index.html#detailed-pages">Detailed pages</a><ul class="current">
 <li class="toctree-l3 current"><a class="reference internal" href="index.html">Preprocessing</a><ul class="current">
 <li class="toctree-l4"><a class="reference internal" href="ocr_frame_correction.html">OCR Frame Correction</a></li>
-<li class="toctree-l4"><a class="reference internal" href="align_dlc.html">DeepLabCut Two-Camera Alignment</a></li>
-<li class="toctree-l4"><a class="reference internal" href="align_vog.html">VOG to Blackrock Alignment</a></li>
+<li class="toctree-l4"><a class="reference internal" href="align_dlc.html">DLC to BR Alignment</a></li>
+<li class="toctree-l4"><a class="reference internal" href="align_vog.html">VOG to BR Alignment</a></li>
 <li class="toctree-l4"><a class="reference internal" href="intan.html">Intan (NPRW) Preprocessing</a></li>
 <li class="toctree-l4"><a class="reference internal" href="compute_shifts.html">Compute BR-to-Intan Shifts</a></li>
 <li class="toctree-l4"><a class="reference internal" href="ua_br.html">Utah Array (Blackrock) Preprocessing</a></li>
@@ -68,11 +70,6 @@
 </li>
 </ul>
 </li>
-<<<<<<< HEAD
-<li class="toctree-l1"><a class="reference internal" href="../../lfp_analysis.html">LFP band analysis</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../outputs.html">Outputs and other plots</a></li>
-=======
->>>>>>> 35092b9 (Editing docs)
 <li class="toctree-l1"><a class="reference internal" href="../../api.html">Python API</a></li>
 </ul>
 
@@ -115,6 +112,43 @@
 </ul>
 </li>
 </ul>
+<section id="inputs">
+<h2>Inputs<a class="headerlink" href="#inputs" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Peri-stim tensors from <a class="reference internal" href="extract_peri_stim.html"><span class="doc">Extract Peri-Stimulus Data</span></a></p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/checkpoints/PeriStim/stim_reaches/target_{A,B}/*.npz</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/checkpoints/PeriStim/control_reaches/target_{A,B}/*.npz</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/checkpoints/PeriStim/continuous_stim/*.npz</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/checkpoints/PeriStim/at_rest/*.npz</span></code></p></li>
+</ul>
+</li>
+</ol>
+</section>
+<section id="outputs">
+<h2>Outputs<a class="headerlink" href="#outputs" title="Link to this heading"></a></h2>
+<p>One X-Y trajectory grid per peri-stim file, laid out in a
+<code class="docutils literal notranslate"><span class="pre">N_COLS</span></code>-wide grid of subplots with a shared colorbar for time:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/figures/kinematics_trajectories/&lt;condition&gt;/&lt;target&gt;/BR_&lt;br_idx&gt;_xy.jpg</span></code></p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">&lt;condition&gt;</span></code> is one of <code class="docutils literal notranslate"><span class="pre">stim</span></code>, <code class="docutils literal notranslate"><span class="pre">control</span></code>, <code class="docutils literal notranslate"><span class="pre">continuous_stim</span></code>, or
+<code class="docutils literal notranslate"><span class="pre">at_rest</span></code>; <code class="docutils literal notranslate"><span class="pre">&lt;target&gt;</span></code> is <code class="docutils literal notranslate"><span class="pre">target_A</span></code>/<code class="docutils literal notranslate"><span class="pre">target_B</span></code> for the reach conditions
+and repeats the condition name for the others. Files without a BR index fall
+back to <code class="docutils literal notranslate"><span class="pre">&lt;npz</span> <span class="pre">stem&gt;_xy.jpg</span></code>.</p>
+<p>Plots use the <code class="docutils literal notranslate"><span class="pre">middle</span></code> keypoint from <code class="docutils literal notranslate"><span class="pre">cam1</span></code> by default, set by <code class="docutils literal notranslate"><span class="pre">KEYPOINT</span></code>
+and <code class="docutils literal notranslate"><span class="pre">CAMERA</span></code> at the top of the script.</p>
+</section>
+<section id="manual-curation">
+<h2>Manual curation<a class="headerlink" href="#manual-curation" title="Link to this heading"></a></h2>
+<p>This step exists to decide which trials to drop. Record the raw index <code class="docutils literal notranslate"><span class="pre">R</span></code> from
+each subplot title in:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">config/manual_trial_remove.csv</span></code></p></li>
+</ul>
+<p>Then re-run <a class="reference internal" href="extract_peri_stim.html"><span class="doc">Extract Peri-Stimulus Data</span></a>, which reads that file and gates the listed
+trials out.</p>
+</section>
 </section>
 
 

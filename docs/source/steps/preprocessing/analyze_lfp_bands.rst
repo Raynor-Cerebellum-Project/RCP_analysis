@@ -18,20 +18,97 @@ Pipeline
    - No baseline correction or exponential/template subtraction.
    - Bad channels rejected based on impedance thresholds (Intan > 7000 kOhm, Utah > 1000 kOhm).
 
-Associated Scripts
-------------------
+Frequency bands
+---------------
 
-``debug_lfp_pipeline_plots.py``
-   Visualizes the pipeline steps.
+``LFP_BANDS`` defines six bands: delta (1-4 Hz), theta (4-8), alpha (8-12),
+beta (12-25), low gamma (25-58), and high gamma (62-120), filtered with a
+4th-order Butterworth.
 
-``plot_lfp_check.py``
-   General quality check of aligned LFP.
+.. warning::
+   The per-band filtering is currently commented out in the script, so the
+   saved files contain **broadband only** (``broadband_full``). The band
+   definitions above are in place but not applied.
+
+Inputs
+------
+
+#. Peri-stim tensors from :doc:`extract_peri_stim`, for event times
+
+   - ``DATA_ROOT/results/checkpoints/PeriStim/<condition>/**/*.npz``
+
+#. Aligned files from :doc:`make_aligned`
+
+   - ``DATA_ROOT/results/checkpoints/Aligned/<condition>/aligned__*.npz``
+
+#. BR-to-Intan shifts and the session metadata table
+
+   - ``DATA_ROOT/Metadata/br_to_intan_shifts.csv``
+
+#. UA channel mapping spreadsheet
+
+   - ``config/probes/`` (set by ``mapping_mat_rel`` in ``config/params.yaml``)
 
 Outputs
 -------
 
-``results/checkpoints/NPRW_LFP/aligned_lfp__{session_name}.npz``
-   NPRW (Intan) windowed LFP traces for each band.
+All outputs go under ``UA_LFP``, sorted by condition and target the same way
+the peri-stim files are:
 
-``results/checkpoints/UA_LFP/aligned_lfp__{session_name}.npz``
-   Utah Array (Blackrock) windowed LFP traces for each band.
+- ``DATA_ROOT/results/checkpoints/UA_LFP/<condition>/[target_<A|B>/]aligned_lfp__<session>_<condition>[_target_<A|B>].npz``
+
+The aggregated baseline files use a different name, grouped by depth and port
+rather than by session:
+
+- ``DATA_ROOT/results/checkpoints/UA_LFP/control_reaches/[target_<A|B>/]aligned_lfp__baseline__Depth_<depth>_port_<port>[_target_<A|B>].npz``
+
+Contents
+^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 65
+
+   * - Key
+     - Contents
+   * - ``broadband_full``
+     - Windowed LFP traces, trials x channels x time. Broadband only, see the
+       warning above.
+   * - ``fs_lfp``
+     - Sampling rate after resampling (``TARGET_FS``, 1000 Hz).
+   * - ``t_full_ms``, ``rel_time_pre``, ``rel_time_post``
+     - Time base for the full window, and for the pre- and post-stim windows
+       that exclude the blanked region.
+   * - ``ua_ids_1based``
+     - UA channel ids for the channel axis.
+   * - ``category``, ``target``
+     - Which condition and target this file holds.
+   * - ``session``, ``stim_ms``
+     - Session name and the stim times the epochs were cut around.
+       Per-session files only.
+   * - ``sessions``, ``br_indices``, ``n_trials``, ``group_port``,
+       ``group_depth``
+     - Which sessions were pooled, and the port and depth they were grouped
+       by. Aggregated baseline files only.
+
+Key parameters
+--------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 65
+
+   * - Parameter
+     - Value
+   * - ``TARGET_FS``
+     - 1000 Hz, the rate everything is resampled to.
+   * - ``EPOCH_PRE_MS``, ``EPOCH_POST_MS``
+     - 1000 ms either side of the event.
+   * - ``PAD_MS``
+     - 1000 ms of extra padding, carried through filtering and trimmed after,
+       so zero-phase filtering has no edge effects in the window of interest.
+   * - ``BLANK_PRE_MS``, ``BLANK_POST_MS``
+     - -5 ms to +101 ms, replaced by ``copy_baseline`` blanking.
+   * - ``SKIP_EXISTING``
+     - When true, sessions whose outputs already exist are skipped before
+       Blackrock data is loaded.

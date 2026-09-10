@@ -47,17 +47,17 @@ Alignment summary
       * - Column
         - Meaning
       * - ``intan_filename``, ``intan_idx``
-        - Intan session name and its numeric index.
+        - Intan session name and its index.
       * - ``br_filename``, ``br_idx``
-        - Paired BR file name and its numeric index.
+        - Paired BR file name and its index.
       * - ``is_control``, ``is_at_rest``, ``is_continuous_stim``
-        - Condition flags carried over from the metadata table.
+        - Condition flags from the metadata table.
       * - ``notes``
-        - Free-text note for the pair, from the metadata table.
+        - Notes from the metadata table.
       * - ``fs_intan``, ``fs_br``
-        - Sampling rates of the two systems.
+        - Sampling rates.
       * - ``shift_sample``
-        - The refined shift, in Intan samples. This is the value to apply.
+        - The shift in Intan samples.
       * - ``shift_seconds``, ``shift_ms``
         - The same shift in seconds and milliseconds
           (``shift_sample / fs_intan``).
@@ -72,7 +72,7 @@ Alignment summary
       * - ``n_locs``
         - Number of template blocks found in the Intan ADC signal.
       * - ``adc_npz``, ``locs_csv``
-        - Paths to the inputs and per-block output this row was derived from.
+        - Paths to the inputs and per-block output.
 
 Per-block detail
 ^^^^^^^^^^^^^^^^
@@ -98,7 +98,4 @@ Per-block detail
 
 .. note::
    Every block is refined and written to the per-block CSV, but the summary row
-   currently takes its shift from **block 0 only** (see the ``TODO Just using
-   the first one now`` in the script). The remaining blocks are useful for
-   checking that the shift is stable across the recording — the script prints
-   the min, median, and max of ``delta_samples`` for that purpose.
+   currently takes its shift from **block 0 only**. The remaining blocks are useful if we have multiple BR condition per Intan condition.

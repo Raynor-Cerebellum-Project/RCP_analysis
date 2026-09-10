@@ -171,7 +171,7 @@ def _to_mat(x) -> np.ndarray | dict:
         except Exception:
             return json.dumps(x, default=str)
     return json.dumps(x, default=str)
-            
+
 def main():
     br2video = rcp.get_metadata_mapping(METADATA_CSV, "BR_File", "Video_File")
     br2vog = rcp.get_metadata_mapping(METADATA_CSV, "BR_File", "VOG_File")

@@ -14,7 +14,7 @@
       <script src="../../_static/jquery.js?v=5d32c60e"></script>
       <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
       <script src="../../_static/documentation_options.js?v=f2a433a1"></script>
-      <script src="../../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../../_static/doctools.js?v=9bcbadda"></script>
       <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
@@ -70,11 +70,6 @@
 </li>
 </ul>
 </li>
-<<<<<<< HEAD
-<li class="toctree-l1"><a class="reference internal" href="../../lfp_analysis.html">LFP band analysis</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../outputs.html">Outputs and other plots</a></li>
-=======
->>>>>>> 35092b9 (Editing docs)
 <li class="toctree-l1"><a class="reference internal" href="../../api.html">Python API</a></li>
 </ul>
 
@@ -157,22 +152,22 @@ Intan and BR on a common clock.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">intan_filename</span></code>, <code class="docutils literal notranslate"><span class="pre">intan_idx</span></code></p></td>
-<td><p>Intan session name and its numeric index.</p></td>
+<td><p>Intan session name and its index.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">br_filename</span></code>, <code class="docutils literal notranslate"><span class="pre">br_idx</span></code></p></td>
-<td><p>Paired BR file name and its numeric index.</p></td>
+<td><p>Paired BR file name and its index.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">is_control</span></code>, <code class="docutils literal notranslate"><span class="pre">is_at_rest</span></code>, <code class="docutils literal notranslate"><span class="pre">is_continuous_stim</span></code></p></td>
-<td><p>Condition flags carried over from the metadata table.</p></td>
+<td><p>Condition flags from the metadata table.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">notes</span></code></p></td>
-<td><p>Free-text note for the pair, from the metadata table.</p></td>
+<td><p>Notes from the metadata table.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fs_intan</span></code>, <code class="docutils literal notranslate"><span class="pre">fs_br</span></code></p></td>
-<td><p>Sampling rates of the two systems.</p></td>
+<td><p>Sampling rates.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">shift_sample</span></code></p></td>
-<td><p>The refined shift, in Intan samples. This is the value to apply.</p></td>
+<td><p>The shift in Intan samples.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">shift_seconds</span></code>, <code class="docutils literal notranslate"><span class="pre">shift_ms</span></code></p></td>
 <td><p>The same shift in seconds and milliseconds
@@ -193,7 +188,7 @@ really are the same session.</p></td>
 <td><p>Number of template blocks found in the Intan ADC signal.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">adc_npz</span></code>, <code class="docutils literal notranslate"><span class="pre">locs_csv</span></code></p></td>
-<td><p>Paths to the inputs and per-block output this row was derived from.</p></td>
+<td><p>Paths to the inputs and per-block output.</p></td>
 </tr>
 </tbody>
 </table>
@@ -235,10 +230,7 @@ really are the same session.</p></td>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Every block is refined and written to the per-block CSV, but the summary row
-currently takes its shift from <strong>block 0 only</strong> (see the <code class="docutils literal notranslate"><span class="pre">TODO</span> <span class="pre">Just</span> <span class="pre">using</span>
-<span class="pre">the</span> <span class="pre">first</span> <span class="pre">one</span> <span class="pre">now</span></code> in the script). The remaining blocks are useful for
-checking that the shift is stable across the recording — the script prints
-the min, median, and max of <code class="docutils literal notranslate"><span class="pre">delta_samples</span></code> for that purpose.</p>
+currently takes its shift from <strong>block 0 only</strong>. The remaining blocks are useful if we have multiple BR condition per Intan condition.</p>
 </div>
 </section>
 </section>
