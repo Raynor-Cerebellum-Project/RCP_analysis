@@ -19,7 +19,6 @@
 import gc
 import numpy as np
 from scipy.io import loadmat
-import numpy as np
 
 # SpikeInterface
 from probeinterface import Probe
