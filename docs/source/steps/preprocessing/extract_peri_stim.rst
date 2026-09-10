@@ -85,23 +85,21 @@ Times are relative to the alignment event, in milliseconds.
    * - ``sess``, ``br_idx``, ``n_trials``, ``overall_title``
      - Session, BR file index, number of trials kept, and plot title.
    * - ``event_ms``
-     - Event time for each trial in ``aligned_*.npz''
+     - Event time for each trial in ``aligned_*.npz``.
    * - ``trial_labels``
      - Target label (``A``/``B``/``N``) per trial, matching ``event_ms``.
    * - ``trial_labels_all``
-     - Labels for every trial that survived behavior gating, before the
-       target split.
+     - Labels for trials that survived kinematics filtering before target splitting
    * - ``raw_trial_indices``
-     - Stable raw stim-pulse index per trial. This is the ``R`` shown in the
+     - Raw stim-pulse index per trial. This is the ``R`` shown in the
        :doc:`inspect_kinematics` subplot titles and recorded in
        ``manual_trial_remove.csv``.
    * - ``meta``, ``nprw_meta``, ``ua_meta``
-     - Settings and provenance. Each also has a ``*_json`` twin holding the
-       same content as a JSON string, for readers that cannot unpickle.
+     - Metadata, needs pickling, use ``.*_meta.json`` for the same content
    * - ``align_meta_raw``
-     - The ``align_meta`` block carried over from the aligned file.
+     - ``align_meta`` from the aligned file.
 
-Neural, per probe. The ``UA_*`` keys mirror the ``NPRW_*`` ones:
+Neural data per probe. The ``UA_*`` keys mirror the ``NPRW_*`` ones:
 
 .. list-table::
    :header-rows: 1
@@ -110,25 +108,23 @@ Neural, per probe. The ``UA_*`` keys mirror the ``NPRW_*`` ones:
    * - Key
      - Contents
    * - ``NPRW_rel_t``, ``NPRW_width_ms``
-     - Time base for the binned arrays, and the bin width.
+     - Relative time for the trial aligned binned arrays, and the bin width.
    * - ``NPRW_counts``, ``NPRW_rates_hz``
      - Per-trial binned spike counts, and the Gaussian-smoothed firing rate.
    * - ``NPRW_rates_zeroed``
      - The same rates after baseline correction (mean of the first 150 ms
        subtracted).
    * - ``NPRW_med``, ``NPRW_var``, ``NPRW_med_counts``
-     - Median, variance, and median counts across trials.
+     - Median and variance of firing rates, and median counts across trials.
    * - ``NPRW_peak_ms_dedup``, ``NPRW_amps_ms_dedup``
      - Deduplicated MUA peak times and amplitudes, keyed by channel.
    * - ``HAS_BR``
-     - Whether UA data was present. When false the ``UA_*`` keys are still
-       written, but zero-sized.
+     - Flag for whether UA data was present.
    * - ``ua_ids_1based``, ``ua_region``, ``ua_region_names``, ``ua_port``,
        ``ua_nsp``, ``ua_idx_rows``
-     - UA channel identity and region labels, carried over from the aligned
-       file.
+     - UA channel and region labels, carried over from the aligned file.
 
-Behavior and auxiliary streams:
+Kinematics and auxiliary streams:
 
 .. list-table::
    :header-rows: 1
@@ -137,7 +133,7 @@ Behavior and auxiliary streams:
    * - Key
      - Contents
    * - ``beh_rel_t``, ``n_beh``
-     - Time base for the behavior traces, and the number of behavior trials.
+     - Relative time for the trial aligned kinematics arrays, and the number of trials.
    * - ``beh_cam0_segs``, ``beh_cam1_segs``
      - Per-trial position traces, z-scored, with NaN gaps of 4 samples or
        fewer interpolated.
@@ -145,17 +141,16 @@ Behavior and auxiliary streams:
      - Per-trial velocity traces.
    * - ``beh_cam0_pos_med``, ``beh_cam1_pos_med``,
        ``beh_cam0_vel_med``, ``beh_cam1_vel_med``
-     - Median position and velocity across trials.
+     - Median position and velocity.
    * - ``beh_cam0_names``, ``beh_cam1_names``
      - Column names for the behavior arrays.
    * - ``ts_state_segs``, ``ts_state_char_segs``, ``ts_state_rel_t``,
        ``n_ts_state_trials``
-     - Per-trial touchscreen state, numerically and as character codes, with
-       its own time base.
+     - Per-trial touchscreen state, numeric or as character codes.
    * - ``ts_state_num``, ``ts_state_char``
-     - The full touchscreen state series, not cut into trials.
+     - The full touchscreen state series, same as in ``aligned.npz``.
    * - ``hr_sig``, ``vog_sig``
-     - Heart rate and VOG signals, when recorded.
+     - Heart rate and VOG signals.
 
 .. note::
    Unlike the aligned files, the ``UA_*`` keys are always written here. When

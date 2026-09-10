@@ -115,7 +115,7 @@
 <section id="inputs">
 <h2>Inputs<a class="headerlink" href="#inputs" title="Link to this heading"></a></h2>
 <ol class="arabic simple">
-<li><p>Peri-stim tensors from <a class="reference internal" href="extract_peri_stim.html"><span class="doc">Extract Peri-Stimulus Data</span></a></p>
+<li><p>Any control and stim trials from <a class="reference internal" href="extract_peri_stim.html"><span class="doc">Extract Peri-Stimulus Data</span></a></p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/checkpoints/PeriStim/stim_reaches/target_{A,B}/*.npz</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/checkpoints/PeriStim/control_reaches/target_{A,B}/*.npz</span></code></p></li>
@@ -134,8 +134,7 @@
 </ul>
 <p><code class="docutils literal notranslate"><span class="pre">&lt;condition&gt;</span></code> is one of <code class="docutils literal notranslate"><span class="pre">stim</span></code>, <code class="docutils literal notranslate"><span class="pre">control</span></code>, <code class="docutils literal notranslate"><span class="pre">continuous_stim</span></code>, or
 <code class="docutils literal notranslate"><span class="pre">at_rest</span></code>; <code class="docutils literal notranslate"><span class="pre">&lt;target&gt;</span></code> is <code class="docutils literal notranslate"><span class="pre">target_A</span></code>/<code class="docutils literal notranslate"><span class="pre">target_B</span></code> for the reach conditions
-and repeats the condition name for the others. Files without a BR index fall
-back to <code class="docutils literal notranslate"><span class="pre">&lt;npz</span> <span class="pre">stem&gt;_xy.jpg</span></code>.</p>
+and repeats the condition name for the others.</p>
 <p>Plots use the <code class="docutils literal notranslate"><span class="pre">middle</span></code> keypoint from <code class="docutils literal notranslate"><span class="pre">cam1</span></code> by default, set by <code class="docutils literal notranslate"><span class="pre">KEYPOINT</span></code>
 and <code class="docutils literal notranslate"><span class="pre">CAMERA</span></code> at the top of the script.</p>
 </section>

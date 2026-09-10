@@ -9,9 +9,8 @@ Pipeline
 --------
 
 #. **Extraction** — Load stimulation events and extract epochs (−1000 ms to +1000 ms) with padding.
-#. **Blanking** — Apply ``copy_baseline`` blanking to remove stim artifacts (−5 ms to +101 ms).
-#. **Local CMR (Intan)** — Subtract common median within local radius (loaded from config).
-#. **Utah CMR** — DISABLED.
+#. **Artifact Correction** — Apply IPCA_artifact_correction to remove stimulation artifacts from UA data.
+#. **Resampling** — Resample to 1000 Hz (if not already at that rate).
 #. **Filtering** — Zero-phase bandpass filtering in specific frequency bands (using padded epochs).
 #. **Cleaning/Rejection:**
 

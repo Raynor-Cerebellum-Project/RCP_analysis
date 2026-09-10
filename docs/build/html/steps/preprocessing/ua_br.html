@@ -117,16 +117,19 @@ Two spike detection methods are available.</p>
 <li><p><strong>Artifact Correction:</strong></p>
 <ul class="simple">
 <li><p>Per-channel lag calibration using CSV lookup.</p></li>
-<li><p>Region-wise Incremental PCA (IPCA) artifact subtraction (rank 7 by default).</p></li>
+<li><p>Region-wise Incremental PCA (IPCA) artifact subtraction (rank 10 by default,
+set by <code class="docutils literal notranslate"><span class="pre">IPCA_Params.rank</span></code> in <code class="docutils literal notranslate"><span class="pre">config/params.yaml</span></code>).</p></li>
 <li><p>Generates diagnostic alignment plots.</p></li>
 </ul>
 </li>
 <li><p>High-pass filter cleaned data.</p></li>
 <li><p><strong>Spike Detection via Subspace Matched Filtering:</strong></p>
 <ul class="simple">
-<li><p>Uses pre-computed extremum templates (<code class="docutils literal notranslate"><span class="pre">median_extremum_basis_norm_UA_PortA_r3.npy</span></code>).</p></li>
+<li><p>Uses pre-computed extremum templates (<code class="docutils literal notranslate"><span class="pre">config/median_extremum_basis_norm_UA_PortA_r3.npy</span></code>).</p></li>
 </ul>
 </li>
+<li><p>Clean spikes based on SNR (min 2.5) and max voltage (500µV)</p></li>
+<li><p>Detect and save touch-screen target. If lacking, fall back to DLC kinematics.</p></li>
 <li><p>Save <code class="docutils literal notranslate"><span class="pre">.npz</span></code> file per session with peaks, noise levels, and metadata.</p></li>
 </ol>
 </section>
@@ -140,16 +143,125 @@ method if matched filtering fails.</p>
 </section>
 <section id="inputs">
 <h2>Inputs<a class="headerlink" href="#inputs" title="Link to this heading"></a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">.ns6</span></code> files from Blackrock.</p>
+<ol class="arabic simple">
+<li><p>Blackrock recordings</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/Blackrock/*.ns6</span></code> (neural)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/Blackrock/*.ns5</span></code>, <code class="docutils literal notranslate"><span class="pre">*.ns2</span></code> (sync, HR, touchscreen, VOG)</p></li>
+</ul>
+</li>
+<li><p>UA channel mapping spreadsheet</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">config/probes/</span></code> (set by <code class="docutils literal notranslate"><span class="pre">mapping_mat_rel</span></code> in <code class="docutils literal notranslate"><span class="pre">config/params.yaml</span></code>)</p></li>
+</ul>
+</li>
+<li><p>Per-channel lag calibration</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">config/channel_lag_calibration/channel_lags_port&lt;A|B&gt;.csv</span></code></p></li>
+</ul>
+</li>
+<li><p>Spike detection basis or template</p>
+<ul class="simple">
+<li><p>Subspace: <code class="docutils literal notranslate"><span class="pre">config/median_extremum_basis_norm_UA_PortA_r3.npy</span></code></p></li>
+<li><p>Matched filter: <code class="docutils literal notranslate"><span class="pre">config/waveform_templates/median_extremum_templates_norm_UA_PortB.npy</span></code></p></li>
+</ul>
+</li>
+<li><p>BR-to-Intan shifts and the session metadata table</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/Metadata/br_to_intan_shifts.csv</span></code></p></li>
+</ul>
+</li>
+</ol>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The subspace script falls back to building a rank-3 basis on the fly from
+the matched-filter template if no pre-built basis is found, and errors out
+if neither exists.</p>
+</div>
 </section>
 <section id="outputs">
 <h2>Outputs<a class="headerlink" href="#outputs" title="Link to this heading"></a></h2>
+<section id="auxiliary-streams">
+<h3>Auxiliary streams<a class="headerlink" href="#auxiliary-streams" title="Link to this heading"></a></h3>
 <dl class="simple">
-<dt><code class="docutils literal notranslate"><span class="pre">pp_*.npz</span></code></dt><dd><p>Preprocessed files.</p>
-</dd>
-<dt><code class="docutils literal notranslate"><span class="pre">aligned_*.npz</span></code></dt><dd><p>Per-condition files with spike times.</p>
+<dt><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/aux_data/UA/&lt;session&gt;__BR_aux_data.npz</span></code></dt><dd><p>Sync pulses, HR, touchscreen, and VOG signals pulled from the <code class="docutils literal notranslate"><span class="pre">.ns5</span></code> and
+<code class="docutils literal notranslate"><span class="pre">.ns2</span></code> files.</p>
 </dd>
 </dl>
+</section>
+<section id="preprocessed-recording">
+<h3>Preprocessed recording<a class="headerlink" href="#preprocessed-recording" title="Link to this heading"></a></h3>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/checkpoints/UA/pp__&lt;session&gt;__NS6/</span></code></dt><dd><p>The artifact-corrected, high-pass filtered recording, written as a
+SpikeInterface folder rather than a single file.</p>
+</dd>
+</dl>
+</section>
+<section id="detected-peaks">
+<h3>Detected peaks<a class="headerlink" href="#detected-peaks" title="Link to this heading"></a></h3>
+<dl>
+<dt><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/checkpoints/UA/rates__&lt;session&gt;__bin&lt;bin&gt;ms_sigma&lt;sigma&gt;ms.npz</span></code></dt><dd><p>Both scripts write the same layout, so downstream code does not care which
+detection method was used.</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 40.0%" />
+<col style="width: 60.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Key</p></th>
+<th class="head"><p>Contents</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">peaks</span></code></p></td>
+<td><p>Detected peaks (MUA).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">noise_levels</span></code></p></td>
+<td><p>Per-channel noise estimate used to set the detection threshold.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ua_index</span></code>, <code class="docutils literal notranslate"><span class="pre">ua_elec</span></code>, <code class="docutils literal notranslate"><span class="pre">ua_nsp</span></code>, <code class="docutils literal notranslate"><span class="pre">ua_port</span></code></p></td>
+<td><p>UA channel identity: row index, electrode number, NSP, and port.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ua_region</span></code>, <code class="docutils literal notranslate"><span class="pre">ua_region_names</span></code></p></td>
+<td><p>Region label per channel, and the name for each label.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ts_state_num</span></code>, <code class="docutils literal notranslate"><span class="pre">ts_state_char</span></code></p></td>
+<td><p>Touchscreen state, as a number and as a character code.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hr_sig</span></code>, <code class="docutils literal notranslate"><span class="pre">vog_sig</span></code></p></td>
+<td><p>Heart rate and VOG signals.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">meta</span></code></p></td>
+<td><p>Settings and recording info:</p>
+<ul class="simple">
+<li><p>Detection: <code class="docutils literal notranslate"><span class="pre">detect_threshold</span></code>, <code class="docutils literal notranslate"><span class="pre">peak_sign</span></code>, <code class="docutils literal notranslate"><span class="pre">bin_ms</span></code>,
+<code class="docutils literal notranslate"><span class="pre">sigma_ms</span></code></p></li>
+<li><p>Sampling rates: <code class="docutils literal notranslate"><span class="pre">fs_ua</span></code>, <code class="docutils literal notranslate"><span class="pre">fs_hr</span></code>, <code class="docutils literal notranslate"><span class="pre">fs_vog</span></code>, <code class="docutils literal notranslate"><span class="pre">fs_ts</span></code></p></li>
+<li><p>Recording: <code class="docutils literal notranslate"><span class="pre">n_channels</span></code>, <code class="docutils literal notranslate"><span class="pre">n_samples</span></code>, <code class="docutils literal notranslate"><span class="pre">n_segs</span></code></p></li>
+<li><p>Timing: <code class="docutils literal notranslate"><span class="pre">rec_dur</span></code>, <code class="docutils literal notranslate"><span class="pre">rec_start_ms</span></code>, <code class="docutils literal notranslate"><span class="pre">rec_end_ms</span></code></p></li>
+<li><p>Source headers: <code class="docutils literal notranslate"><span class="pre">meta_ns5</span></code>, <code class="docutils literal notranslate"><span class="pre">meta_ns2</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">session</span></code>: the session name</p></li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd>
+</dl>
+</section>
+<section id="diagnostic-figures">
+<h3>Diagnostic figures<a class="headerlink" href="#diagnostic-figures" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/figures/artifact_alignment/artifact_alignment_br&lt;br_idx&gt;.png</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/figures/IPCA_debug/debug_MACRO_UA_br&lt;br_idx&gt;_ch&lt;electrode&gt;.png</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">DATA_ROOT/results/figures/classification/</span></code></p></li>
+</ul>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><code class="docutils literal notranslate"><span class="pre">aligned_*.npz</span></code> files are produced later, by
+<code class="docutils literal notranslate"><span class="pre">make_aligned_npz_and_mat.py</span></code>, not by this step.</p>
+</div>
+</section>
 </section>
 </section>
 

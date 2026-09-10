@@ -107,9 +107,8 @@
 <h2>Pipeline<a class="headerlink" href="#pipeline" title="Link to this heading"></a></h2>
 <ol class="arabic simple">
 <li><p><strong>Extraction</strong> — Load stimulation events and extract epochs (−1000 ms to +1000 ms) with padding.</p></li>
-<li><p><strong>Blanking</strong> — Apply <code class="docutils literal notranslate"><span class="pre">copy_baseline</span></code> blanking to remove stim artifacts (−5 ms to +101 ms).</p></li>
-<li><p><strong>Local CMR (Intan)</strong> — Subtract common median within local radius (loaded from config).</p></li>
-<li><p><strong>Utah CMR</strong> — DISABLED.</p></li>
+<li><p><strong>Artifact Correction</strong> — Apply IPCA_artifact_correction to remove stimulation artifacts from UA data.</p></li>
+<li><p><strong>Resampling</strong> — Resample to 1000 Hz (if not already at that rate).</p></li>
 <li><p><strong>Filtering</strong> — Zero-phase bandpass filtering in specific frequency bands (using padded epochs).</p></li>
 <li><p><strong>Cleaning/Rejection:</strong></p>
 <ul class="simple">

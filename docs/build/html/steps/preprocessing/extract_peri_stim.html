@@ -188,30 +188,28 @@
 <td><p>Session, BR file index, number of trials kept, and plot title.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">event_ms</span></code></p></td>
-<td><p>Event time for each trial in <a href="#id1"><span class="problematic" id="id2">``</span></a>aligned_*.npz’’</p></td>
+<td><p>Event time for each trial in <code class="docutils literal notranslate"><span class="pre">aligned_*.npz</span></code>.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">trial_labels</span></code></p></td>
 <td><p>Target label (<code class="docutils literal notranslate"><span class="pre">A</span></code>/<code class="docutils literal notranslate"><span class="pre">B</span></code>/<code class="docutils literal notranslate"><span class="pre">N</span></code>) per trial, matching <code class="docutils literal notranslate"><span class="pre">event_ms</span></code>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">trial_labels_all</span></code></p></td>
-<td><p>Labels for every trial that survived behavior gating, before the
-target split.</p></td>
+<td><p>Labels for trials that survived kinematics filtering before target splitting</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">raw_trial_indices</span></code></p></td>
-<td><p>Stable raw stim-pulse index per trial. This is the <code class="docutils literal notranslate"><span class="pre">R</span></code> shown in the
+<td><p>Raw stim-pulse index per trial. This is the <code class="docutils literal notranslate"><span class="pre">R</span></code> shown in the
 <a class="reference internal" href="inspect_kinematics.html"><span class="doc">Inspect Kinematics Trajectories</span></a> subplot titles and recorded in
 <code class="docutils literal notranslate"><span class="pre">manual_trial_remove.csv</span></code>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">meta</span></code>, <code class="docutils literal notranslate"><span class="pre">nprw_meta</span></code>, <code class="docutils literal notranslate"><span class="pre">ua_meta</span></code></p></td>
-<td><p>Settings and provenance. Each also has a <code class="docutils literal notranslate"><span class="pre">*_json</span></code> twin holding the
-same content as a JSON string, for readers that cannot unpickle.</p></td>
+<td><p>Metadata, needs pickling, use <code class="docutils literal notranslate"><span class="pre">.*_meta.json</span></code> for the same content</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">align_meta_raw</span></code></p></td>
-<td><p>The <code class="docutils literal notranslate"><span class="pre">align_meta</span></code> block carried over from the aligned file.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">align_meta</span></code> from the aligned file.</p></td>
 </tr>
 </tbody>
 </table>
-<p>Neural, per probe. The <code class="docutils literal notranslate"><span class="pre">UA_*</span></code> keys mirror the <code class="docutils literal notranslate"><span class="pre">NPRW_*</span></code> ones:</p>
+<p>Neural data per probe. The <code class="docutils literal notranslate"><span class="pre">UA_*</span></code> keys mirror the <code class="docutils literal notranslate"><span class="pre">NPRW_*</span></code> ones:</p>
 <table class="docutils align-default">
 <colgroup>
 <col style="width: 35.0%" />
@@ -224,7 +222,7 @@ same content as a JSON string, for readers that cannot unpickle.</p></td>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">NPRW_rel_t</span></code>, <code class="docutils literal notranslate"><span class="pre">NPRW_width_ms</span></code></p></td>
-<td><p>Time base for the binned arrays, and the bin width.</p></td>
+<td><p>Relative time for the trial aligned binned arrays, and the bin width.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">NPRW_counts</span></code>, <code class="docutils literal notranslate"><span class="pre">NPRW_rates_hz</span></code></p></td>
 <td><p>Per-trial binned spike counts, and the Gaussian-smoothed firing rate.</p></td>
@@ -234,23 +232,21 @@ same content as a JSON string, for readers that cannot unpickle.</p></td>
 subtracted).</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">NPRW_med</span></code>, <code class="docutils literal notranslate"><span class="pre">NPRW_var</span></code>, <code class="docutils literal notranslate"><span class="pre">NPRW_med_counts</span></code></p></td>
-<td><p>Median, variance, and median counts across trials.</p></td>
+<td><p>Median and variance of firing rates, and median counts across trials.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">NPRW_peak_ms_dedup</span></code>, <code class="docutils literal notranslate"><span class="pre">NPRW_amps_ms_dedup</span></code></p></td>
 <td><p>Deduplicated MUA peak times and amplitudes, keyed by channel.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">HAS_BR</span></code></p></td>
-<td><p>Whether UA data was present. When false the <code class="docutils literal notranslate"><span class="pre">UA_*</span></code> keys are still
-written, but zero-sized.</p></td>
+<td><p>Flag for whether UA data was present.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ua_ids_1based</span></code>, <code class="docutils literal notranslate"><span class="pre">ua_region</span></code>, <code class="docutils literal notranslate"><span class="pre">ua_region_names</span></code>, <code class="docutils literal notranslate"><span class="pre">ua_port</span></code>,
 <code class="docutils literal notranslate"><span class="pre">ua_nsp</span></code>, <code class="docutils literal notranslate"><span class="pre">ua_idx_rows</span></code></p></td>
-<td><p>UA channel identity and region labels, carried over from the aligned
-file.</p></td>
+<td><p>UA channel and region labels, carried over from the aligned file.</p></td>
 </tr>
 </tbody>
 </table>
-<p>Behavior and auxiliary streams:</p>
+<p>Kinematics and auxiliary streams:</p>
 <table class="docutils align-default">
 <colgroup>
 <col style="width: 35.0%" />
@@ -263,7 +259,7 @@ file.</p></td>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">beh_rel_t</span></code>, <code class="docutils literal notranslate"><span class="pre">n_beh</span></code></p></td>
-<td><p>Time base for the behavior traces, and the number of behavior trials.</p></td>
+<td><p>Relative time for the trial aligned kinematics arrays, and the number of trials.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">beh_cam0_segs</span></code>, <code class="docutils literal notranslate"><span class="pre">beh_cam1_segs</span></code></p></td>
 <td><p>Per-trial position traces, z-scored, with NaN gaps of 4 samples or
@@ -274,21 +270,20 @@ fewer interpolated.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">beh_cam0_pos_med</span></code>, <code class="docutils literal notranslate"><span class="pre">beh_cam1_pos_med</span></code>,
 <code class="docutils literal notranslate"><span class="pre">beh_cam0_vel_med</span></code>, <code class="docutils literal notranslate"><span class="pre">beh_cam1_vel_med</span></code></p></td>
-<td><p>Median position and velocity across trials.</p></td>
+<td><p>Median position and velocity.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">beh_cam0_names</span></code>, <code class="docutils literal notranslate"><span class="pre">beh_cam1_names</span></code></p></td>
 <td><p>Column names for the behavior arrays.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ts_state_segs</span></code>, <code class="docutils literal notranslate"><span class="pre">ts_state_char_segs</span></code>, <code class="docutils literal notranslate"><span class="pre">ts_state_rel_t</span></code>,
 <code class="docutils literal notranslate"><span class="pre">n_ts_state_trials</span></code></p></td>
-<td><p>Per-trial touchscreen state, numerically and as character codes, with
-its own time base.</p></td>
+<td><p>Per-trial touchscreen state, numeric or as character codes.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ts_state_num</span></code>, <code class="docutils literal notranslate"><span class="pre">ts_state_char</span></code></p></td>
-<td><p>The full touchscreen state series, not cut into trials.</p></td>
+<td><p>The full touchscreen state series, same as in <code class="docutils literal notranslate"><span class="pre">aligned.npz</span></code>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hr_sig</span></code>, <code class="docutils literal notranslate"><span class="pre">vog_sig</span></code></p></td>
-<td><p>Heart rate and VOG signals, when recorded.</p></td>
+<td><p>Heart rate and VOG signals.</p></td>
 </tr>
 </tbody>
 </table>

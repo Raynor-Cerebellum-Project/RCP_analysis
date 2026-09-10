@@ -15,7 +15,7 @@ Each subplot title shows:
 Inputs
 ------
 
-#. Peri-stim tensors from :doc:`extract_peri_stim`
+#. Any control and stim trials from :doc:`extract_peri_stim`
 
    - ``DATA_ROOT/results/checkpoints/PeriStim/stim_reaches/target_{A,B}/*.npz``
    - ``DATA_ROOT/results/checkpoints/PeriStim/control_reaches/target_{A,B}/*.npz``
@@ -32,8 +32,7 @@ One X-Y trajectory grid per peri-stim file, laid out in a
 
 ``<condition>`` is one of ``stim``, ``control``, ``continuous_stim``, or
 ``at_rest``; ``<target>`` is ``target_A``/``target_B`` for the reach conditions
-and repeats the condition name for the others. Files without a BR index fall
-back to ``<npz stem>_xy.jpg``.
+and repeats the condition name for the others.
 
 Plots use the ``middle`` keypoint from ``cam1`` by default, set by ``KEYPOINT``
 and ``CAMERA`` at the top of the script.
