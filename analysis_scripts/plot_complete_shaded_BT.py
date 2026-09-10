@@ -445,7 +445,15 @@ def main():
         NPRW_rel_t        = peri_stim_npz["NPRW_rel_t"]
         NPRW_width_ms     = peri_stim_npz["NPRW_width_ms"]
         
-        n_nprw = int(peri_stim_npz["n_nprw"]) if "n_nprw" in peri_stim_npz.files else NPRW_med.shape[0]
+        n_events = (
+            int(peri_stim_npz["n_trials"])
+            if "n_trials" in peri_stim_npz.files
+            else int(np.asarray(peri_stim_npz["event_ms"]).size)
+            if "event_ms" in peri_stim_npz.files
+            else int(NPRW_rates_zeroed.shape[0])
+            if NPRW_rates_zeroed.ndim == 3
+            else 0
+        )
 
         UA_rates_zeroed = (
             peri_stim_npz["UA_rates_zeroed"]
@@ -544,7 +552,7 @@ def main():
         )
 
         # Titles
-        base_kin_title = f"Kinematics / n={n_nprw} events"
+        base_kin_title = f"Kinematics / n={n_events} events"
         neural_type = "z-scored" if Z_SCORE_FR else "median"
         base_neural_title = f"Neural Activity ({neural_type} Δ) / Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
         full_overall_title = f"{overall_title} {target_label.replace('_', ' ').replace('/', ' - ')}"
@@ -646,7 +654,7 @@ def main():
         out_dir_1b_parent.mkdir(parents=True, exist_ok=True)
         out_path_1b = out_dir_1b_parent / f"{file_name}__var_ALL.svg"
 
-        base_neural_var_title = f"Neural Variance (across {n_nprw} events)"
+        base_neural_var_title = f"Neural Variance (across {n_events} events)"
 
         rcp.stacked_heatmaps_plus_behv(
             NPRW_var, UA_var,
@@ -789,7 +797,7 @@ def main():
             c1_vel_sd = None
 
         band_label = "95% CI" if NORMALIZED_DISTANCE else "std"
-        title_MWT_kin = f"Kinematics (mean ± {band_label}) / n={n_nprw} events"
+        title_MWT_kin = f"Kinematics (mean ± {band_label}) / n={n_events} events"
         title_MWT_neural = f"Neural Activity (mean Δ) / Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
 
         rcp.stacked_heatmaps_plus_behv(
@@ -862,7 +870,7 @@ def main():
         out_dir_2b_parent.mkdir(parents=True, exist_ok=True)
         out_path_2b = out_dir_2b_parent / f"{file_name}__var_MWT.svg"
 
-        title_MWT_neural_var = f"Neural Variance (across {n_nprw} events)"
+        title_MWT_neural_var = f"Neural Variance (across {n_events} events)"
 
         rcp.stacked_heatmaps_plus_behv(
             NPRW_var, UA_var,
@@ -933,7 +941,7 @@ def main():
         out_path_counts_MWT = out_dir_counts_MWT_parent / f"{file_name}__counts_MWT.svg"
 
         title_MWT_neural_counts = (
-            f"Median spike counts per bin (across {n_nprw} events)"
+            f"Median spike counts per bin (across {n_events} events)"
         )
 
         rcp.stacked_heatmaps_plus_behv(
