@@ -18,8 +18,8 @@ SESSIONS_TO_RUN = [
     # "NRR_RW032",
     # "NRR_RW029",
     # "NRR_RW026",
-    "NRR_RW022",
-    # "NRR_RW019",
+    # "NRR_RW022",
+    "NRR_RW019",
     # "NRR_RW018",
     # "NRR_RW017",
     # "NRR_RW016",
@@ -48,14 +48,14 @@ SCRIPTS = [
 
     # "analysis_scripts/plot_plateau_analysis.py",
     # "analysis_scripts/RSA_calculation.py",
-    "analysis_scripts/plot_complete_shaded_BT.py",
+    # "analysis_scripts/plot_complete_shaded_BT.py",
     # "analysis_scripts/plot_peri_stim_raster.py",
     # "analysis_scripts/plot_stim_group_responses.py",
     # "analysis_scripts/plot_stim_response_overlays.py",
     # "analysis_scripts/plot_peak_csv_summaries.py",
 
 
-    # "preprocessing_scripts/analyze_lfp_bands.py",
+    "preprocessing_scripts/analyze_lfp_bands.py",
     # "scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py",
     # "scripts/nikita_scripts/plotting_scripts/combine_UA_gifs.py",
 ]
