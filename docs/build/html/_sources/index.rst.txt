@@ -55,8 +55,6 @@ Contents
    install
    running
    steps/index
-   lfp_analysis
-   outputs
    api
 
 

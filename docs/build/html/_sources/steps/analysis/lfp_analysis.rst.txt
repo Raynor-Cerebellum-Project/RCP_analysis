@@ -83,19 +83,9 @@ Dependencies
 * Per-channel lag calibration files in ``config/channel_lag_calibration/``.
 * Peristim files from preprocessing step 6, for event timing.
 
-Visualization
--------------
-
-``scripts/plot_lfp_all.py``
-   Comprehensive plots (traces, heatmaps, PSDs) for all frequency bands.
-
-``scripts/debug_lfp_pipeline_plots.py``
-   Step-by-step pipeline visualizations (raw → blanked → filtered) for
-   debugging.
-
 .. Kinematics quantification -- commented out, kept for reference.
 
-   ``preprocessing_scripts/quantify_stim_kinematics.py`` analyzes reach kinematics
+   ``analysis_scripts/plot_plateau_analysis.py`` analyzes reach kinematics
    (duration, peak speed) comparing stimulation conditions to baseline:
    speed-based reach endpoint detection; statistical analysis (Welch's t-test
    vs baseline) with significance clustering; violin/box plots with
@@ -103,6 +93,6 @@ Visualization
    dataset scanning. Output: stats summary CSVs and figures in
    ``results/figures/quantify_kinematics``.
 
-   ``scripts/plot_individual_kinematics.py`` plots individual kinematic traces
-   for every trial in a grid layout, to allow visual inspection and outlier
-   identification. Output: ``results/figures/individual_trials``.
+   ``scripts/nikita_scripts/plotting_scripts/plot_individual_kinematics.py``
+   plots individual kinematic traces for every trial in a grid layout, to allow
+   visual inspection and outlier identification. Output: ``results/figures/individual_trials``.

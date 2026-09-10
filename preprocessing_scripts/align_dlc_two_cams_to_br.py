@@ -1,8 +1,3 @@
-import sys
-import RCP_analysis as rcp
-from RCP_analysis.python.functions.config_loading import *
-import numpy as np
-import pandas as pd
 
 """ 
     This script aligns two camera perspectives to the Blackrock recording. It scans through all paired cam-0 and cam-1 .csv files and outputs aligned timing based on frame mappings identified from OCR_frame_mapping_BT_edit.py script.
@@ -14,13 +9,13 @@ import pandas as pd
         Aligned .csv file for both perspective
 """
 
+import sys
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 import numpy as np
 import pandas as pd
 
-# ---------- Config ----------
-# Config loaded from config_loading
+# Config loading
 
 def filter_low_likelihood(df, threshold=0.4):
     """
@@ -28,7 +23,6 @@ def filter_low_likelihood(df, threshold=0.4):
     If col < threshold, set corresponding _x and _y to NaN.
     """
     count = 0 
-    # Pass 1: Mask all low-likelihood points
     xy_cols_to_interp = []
     
     for col in df.columns:
@@ -39,21 +33,19 @@ def filter_low_likelihood(df, threshold=0.4):
              col_y = base + "y"
              
              if col_x in df.columns and col_y in df.columns:
-                 mask = df[col] < threshold
+                 mask = df[col] < threshold # mask as NaN if low likelihood
                  if mask.any():
                      df.loc[mask, col_x] = np.nan
                      df.loc[mask, col_y] = np.nan
                      count += mask.sum()
                  
-                 # Add to list for Pass 2
                  xy_cols_to_interp.extend([col_x, col_y])
                  
-    # Pass 2: Interpolate only the coordinate columns we checked
+    # Interpolate linearly for values we set as NaNs
     if xy_cols_to_interp:
-        # Interpolate linear throughout
         df[xy_cols_to_interp] = df[xy_cols_to_interp].interpolate(method='linear')
 
-    if count > 0:
+    if count > 0: # Report how many points are interpolated
         print(f"  [filter] masked {count} points (likelihood < {threshold}) and interpolated.")
     return df
 
@@ -66,7 +58,7 @@ def main():
         return
     print(f"[info] Found {len(per_cond)} trials")
 
-    try: # Check if csv file exists
+    try: # Check if csv file exists and get mapping
         VIDEO_TO_BR = rcp.get_metadata_mapping(METADATA_CSV, "Video_File", "BR_File")
     except Exception as e:
         print(f"[warn] Could not load metadata map ({METADATA_CSV.name}): {e}")
@@ -74,18 +66,22 @@ def main():
         
     for cond, d in sorted(per_cond.items()):
         print(f"\n=== Condition: {cond} ===")
-        # Load OCR and DLC
-        ocr0 = rcp.load_ocr_map(d['ocr'][0]); ocr1 = rcp.load_ocr_map(d['ocr'][1])
-        dlc0 = rcp.load_dlc(d['dlc'][0]);     dlc1 = rcp.load_dlc(d['dlc'][1])
         
-        # Filter likelihood
+        # Load OCR and DLC
+        ocr0 = rcp.load_ocr_map(d['ocr'][0])
+        ocr1 = rcp.load_ocr_map(d['ocr'][1])
+        dlc0 = rcp.load_dlc(d['dlc'][0])
+        dlc1 = rcp.load_dlc(d['dlc'][1])
+        
+        # Filter likelihood. Outputs are pd dataframes
         dlc0 = filter_low_likelihood(dlc0)
         dlc1 = filter_low_likelihood(dlc1)
 
-        # Align OCR -- eventually remove?
+        # Align OCR, eventually remove? Outputs are pd dataframes
         aligned_dlc0 = rcp.align_dlc_to_corrected(dlc0, ocr0)
         aligned_dlc1 = rcp.align_dlc_to_corrected(dlc1, ocr1)
 
+        # Get video index vid_idx
         try:
             vid_idx = int(cond.split("_")[2])  # split into NRR, RW###, ###
         except Exception:
@@ -105,7 +101,7 @@ def main():
                 if ns5_path is None:
                     print(f"[warn] BR_File {br_idx:03d} not found by index; fallback to condition-name search.")
 
-        # If nothing weird with mapping vid_idx to br path, start outputting
+        # If nothing weird with mapping vid_idx to br path load ns5 path
         if ns5_path is not None:
             try:
                 frames_corrected = max(len(aligned_dlc0.index), len(aligned_dlc1.index))
@@ -124,9 +120,11 @@ def main():
                         f"because NS5 sync has fewer pulses."
                     )
 
+                # Pad so that both share the corrected frame index as row index
                 aligned_dlc0 = aligned_dlc0.reindex(range(frames_corrected)).iloc[:n_use].copy()
                 aligned_dlc1 = aligned_dlc1.reindex(range(frames_corrected)).iloc[:n_use].copy()
 
+                # Attach ns5_sample to both cameras
                 aligned_dlc0.insert(0, "ns5_sample", ns5_samples)
                 aligned_dlc1.insert(0, "ns5_sample", ns5_samples)
 
@@ -135,10 +133,12 @@ def main():
             except Exception as e:
                 print(f"[warn] Could not attach NS5 time for {cond}: {e}")
 
-        # Save combined CSV (side-by-side)
+        # Combine cameras and make two rows for headers
         aligned_samps_dlc0 = pd.concat({"cam0": aligned_dlc0}, axis=1)
         aligned_samps_dlc1 = pd.concat({"cam1": aligned_dlc1}, axis=1)
         both_samps_aligned = pd.concat([aligned_samps_dlc0, aligned_samps_dlc1], axis=1)
+        
+        # Save combined CSV
         both_csv = BEHV_CKPT_ROOT / f"{cond}_both_cams_aligned.csv"
         both_samps_aligned.to_csv(both_csv, index_label="CORRECTED_framenum")
         print(f"[write] {both_csv}")

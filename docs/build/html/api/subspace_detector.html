@@ -14,7 +14,7 @@
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
       <script src="../_static/documentation_options.js?v=f2a433a1"></script>
-      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
       <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
@@ -46,8 +46,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../install.html">Installing the pipeline</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../running.html">Running the pipeline</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../steps/index.html">Steps of the pipeline</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../lfp_analysis.html">LFP band analysis</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../outputs.html">Outputs and other plots</a></li>
 <li class="toctree-l1 current"><a class="reference internal" href="../api.html">Python API</a><ul class="current">
 <li class="toctree-l2 current"><a class="reference internal" href="../api.html#modules">Modules</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="params_loading.html">params_loading.py</a></li>
@@ -58,8 +56,13 @@
 <li class="toctree-l3"><a class="reference internal" href="artifact_correction.html">artifact_correction.py</a></li>
 <li class="toctree-l3"><a class="reference internal" href="artifact_correction_template_matching.html">artifact_correction_template_matching.py</a></li>
 <li class="toctree-l3 current"><a class="current reference internal" href="#">subspace_detector.py</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#functions">Functions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#private-helpers">Private helpers</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#pipeline-overview">Pipeline overview</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#stage-1-build-the-subspace-basis">Stage 1 — Build the subspace basis</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#stage-2-detect-with-a-cfar-f-threshold">Stage 2 — Detect with a CFAR-F threshold</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#stage-3-local-sigma-amplitude-gate">Stage 3 — Local-sigma amplitude gate</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#why-it-runs-fast">Why it runs fast</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#failure-modes">Failure modes</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#parameter-reference">Parameter reference</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="reach_onset_detection.html">reach_onset_detection.py</a></li>
@@ -98,118 +101,692 @@
              
   <section id="subspace-detector-py">
 <h1>subspace_detector.py<a class="headerlink" href="#subspace-detector-py" title="Link to this heading"></a></h1>
-<p><code class="docutils literal notranslate"><span class="pre">RCP_analysis/python/functions/subspace_detector.py</span></code></p>
-<p>Standalone subspace-CFAR spike detector. A low-rank signal subspace is built
-from aligned waveforms or unit templates, and the detector scores every sample
-by the ratio of in-subspace to out-of-subspace energy — an F statistic whose
-threshold gives a constant false-alarm rate independent of the local noise
-level.</p>
-<p>Reference: Kraut &amp; Scharf 1999, CFAR-F subspace detector.</p>
-<p>Requires <code class="docutils literal notranslate"><span class="pre">numpy</span></code>, <code class="docutils literal notranslate"><span class="pre">scipy</span></code>, <code class="docutils literal notranslate"><span class="pre">tqdm</span></code>, <code class="docutils literal notranslate"><span class="pre">numba</span></code>, <code class="docutils literal notranslate"><span class="pre">torch</span></code>, and a
-SpikeInterface recording. Used by
+<p>Workflow reference for the subspace-CFAR detector used by
 <code class="docutils literal notranslate"><span class="pre">preprocessing_scripts/UA_BR_analysis_ssmf.py</span></code>.</p>
-<p>Typical use:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">basis</span> <span class="o">=</span> <span class="n">rcp</span><span class="o">.</span><span class="n">build_subspace_basis</span><span class="p">(</span><span class="n">my_templates</span><span class="p">,</span> <span class="n">rank</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
-<span class="n">peaks</span> <span class="o">=</span> <span class="n">rcp</span><span class="o">.</span><span class="n">subspace_detect_cfar</span><span class="p">(</span><span class="n">recording</span><span class="p">,</span> <span class="n">basis</span><span class="p">,</span> <span class="n">cfar_alpha</span><span class="o">=</span><span class="mf">1e-4</span><span class="p">)</span>
-
-<span class="c1"># optional: suppress chewing-band bursts</span>
-<span class="n">peaks</span> <span class="o">=</span> <span class="n">rcp</span><span class="o">.</span><span class="n">filter_peaks_by_local_sigma</span><span class="p">(</span><span class="n">peaks</span><span class="p">,</span> <span class="n">recording</span><span class="p">,</span> <span class="n">k_amp</span><span class="o">=</span><span class="mf">3.5</span><span class="p">)</span>
+<p>This page explains <strong>how the method works and how to run it</strong>. For parameter
+signatures and return types see <a class="reference internal" href="#"><span class="doc">subspace_detector.py</span></a>.</p>
+<p>Implementation: <code class="docutils literal notranslate"><span class="pre">RCP_analysis/python/functions/subspace_detector.py</span></code> (219 lines).
+The module is deliberately standalone — it needs only <code class="docutils literal notranslate"><span class="pre">numpy</span></code>, <code class="docutils literal notranslate"><span class="pre">scipy</span></code>,
+<code class="docutils literal notranslate"><span class="pre">tqdm</span></code>, <code class="docutils literal notranslate"><span class="pre">numba</span></code>, <code class="docutils literal notranslate"><span class="pre">torch</span></code> and a SpikeInterface recording, so the same file
+is shared with the walking-analysis pipeline without either project depending
+on the other.</p>
+<p>Reference: Kraut &amp; Scharf 1999, CFAR-F subspace detector.</p>
+<section id="pipeline-overview">
+<h2>Pipeline overview<a class="headerlink" href="#pipeline-overview" title="Link to this heading"></a></h2>
+<p>Three stages. Stage 1 runs once, offline. Stages 2 and 3 run per session.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>aligned waveforms / unit templates        (n_wave, N)
+     |
+     |  STAGE 1   build_subspace_basis(waveforms, rank=3)      offline, once
+     v
+basis U                                   (N, r) orthonormal columns
+     |                                    saved as .npy, reused for every session
+     |
+     |                 highpass-filtered recording   (n_samples, n_ch)
+     |                        |
+     +------------------------+
+                              |
+                              |  STAGE 2   subspace_detect_cfar(recording, U)
+                              v
+                         peaks            structured array, 4 fields
+                              |
+                              |  STAGE 3   filter_peaks_by_local_sigma(peaks, recording)
+                              v
+                         peaks (pruned)
 </pre></div>
 </div>
-<section id="functions">
-<h2>Functions<a class="headerlink" href="#functions" title="Link to this heading"></a></h2>
-<dl class="py function">
-<dt class="sig sig-object py" id="RCP_analysis.python.functions.subspace_detector.build_subspace_basis">
-<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.subspace_detector.</span></span><span class="sig-name descname"><span class="pre">build_subspace_basis</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">waveforms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.subspace_detector.build_subspace_basis" title="Link to this definition"></a></dt>
-<dd><p>Truncated-SVD signal subspace from aligned spike waveforms or per-unit
-templates.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>waveforms</strong> – <code class="docutils literal notranslate"><span class="pre">(n_wave,</span> <span class="pre">N)</span></code> — rows are trough-aligned snippets or
-templates, all of length <code class="docutils literal notranslate"><span class="pre">N</span></code>. <strong>Alignment matters</strong>: every row must have
-its trough at the same sample.</p></li>
-<li><p><strong>rank</strong> (<em>int</em>) – number of components to keep.</p></li>
-</ul>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p><code class="docutils literal notranslate"><span class="pre">(N,</span> <span class="pre">rank)</span></code> <code class="docutils literal notranslate"><span class="pre">float32</span></code> with orthonormal columns.</p>
-</dd>
-</dl>
-<p>The basis is deliberately <strong>not</strong> mean-centered, so the first component is
-the dominant spike shape itself. Prints the cumulative variance captured.</p>
-</dd></dl>
-
-<dl class="py function">
-<dt class="sig sig-object py" id="RCP_analysis.python.functions.subspace_detector.subspace_detect_cfar">
-<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.subspace_detector.</span></span><span class="sig-name descname"><span class="pre">subspace_detect_cfar</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">recording</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">basis</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cfar_alpha</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-4</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">peak_sign</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'neg'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">refractory_ms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.5</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">snap_ms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.6</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">chunk_s</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">30.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">progress_bar</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.subspace_detector.subspace_detect_cfar" title="Link to this definition"></a></dt>
-<dd><p>Subspace matched detector with a CFAR-F threshold.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>recording</strong> – SpikeInterface recording (multi-segment supported).</p></li>
-<li><p><strong>basis</strong> – <code class="docutils literal notranslate"><span class="pre">(N,</span> <span class="pre">r)</span></code> orthonormal-column basis from
-<a class="reference internal" href="#RCP_analysis.python.functions.subspace_detector.build_subspace_basis" title="RCP_analysis.python.functions.subspace_detector.build_subspace_basis"><code class="xref py py-func docutils literal notranslate"><span class="pre">build_subspace_basis()</span></code></a>.</p></li>
-<li><p><strong>cfar_alpha</strong> (<em>float</em>) – false-alarm rate; the threshold is
-<code class="docutils literal notranslate"><span class="pre">F.ppf(1</span> <span class="pre">-</span> <span class="pre">alpha,</span> <span class="pre">r,</span> <span class="pre">N</span> <span class="pre">-</span> <span class="pre">r)</span> <span class="pre">*</span> <span class="pre">r</span> <span class="pre">/</span> <span class="pre">(N</span> <span class="pre">-</span> <span class="pre">r)</span></code>.</p></li>
-<li><p><strong>peak_sign</strong> (<em>str</em>) – <code class="docutils literal notranslate"><span class="pre">&quot;neg&quot;</span></code> snaps to the local minimum, anything else to
-the maximum.</p></li>
-<li><p><strong>refractory_ms</strong> (<em>float</em>) – minimum separation between kept peaks, per channel.</p></li>
-<li><p><strong>snap_ms</strong> (<em>float</em>) – half-width of the window searched when snapping the
-detection to the true trough.</p></li>
-<li><p><strong>chunk_s</strong> (<em>float</em>) – seconds per chunk — the VRAM knob.</p></li>
-<li><p><strong>progress_bar</strong> (<em>bool</em>) – show the per-chunk tqdm bar.</p></li>
-</ul>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>structured array with fields <code class="docutils literal notranslate"><span class="pre">sample_index</span></code> (int64),
-<code class="docutils literal notranslate"><span class="pre">channel_index</span></code> (int64), <code class="docutils literal notranslate"><span class="pre">segment_index</span></code> (int64) and <code class="docutils literal notranslate"><span class="pre">amplitude</span></code>
-(float32), sorted by segment then sample.</p>
-</dd>
-</dl>
-<p>The two convolutions (signal energy and total energy) run through
-<code class="docutils literal notranslate"><span class="pre">torch.nn.functional.conv1d</span></code> on CUDA when available and on CPU otherwise —
-the CPU path is a fallback, not a different algorithm. All channels in a
-time chunk go through one convolution, so runtime is I/O-bound rather than
-compute-bound. Chunks overlap by <code class="docutils literal notranslate"><span class="pre">2N</span> <span class="pre">+</span> <span class="pre">snap</span></code> samples and each channel
-carries its refractory state across the seam, so peaks at chunk boundaries
-are neither missed nor double-counted.</p>
-</dd></dl>
-
-<dl class="py function">
-<dt class="sig sig-object py" id="RCP_analysis.python.functions.subspace_detector.filter_peaks_by_local_sigma">
-<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.subspace_detector.</span></span><span class="sig-name descname"><span class="pre">filter_peaks_by_local_sigma</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">peaks</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">recording</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">k_amp</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3.5</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">w_ms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">peak_sign</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'neg'</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.subspace_detector.filter_peaks_by_local_sigma" title="Link to this definition"></a></dt>
-<dd><p>Amplitude gate against the <em>local</em> noise level: keep a peak only if
-<code class="docutils literal notranslate"><span class="pre">|trough</span> <span class="pre">voltage|</span> <span class="pre">&gt;</span> <span class="pre">k_amp</span> <span class="pre">*</span> <span class="pre">sigma_local</span></code>. Useful for suppressing
-chewing-band bursts, which raise the noise floor without being spikes.</p>
-<p><code class="docutils literal notranslate"><span class="pre">sigma_local</span></code> is estimated block-wise (<code class="docutils literal notranslate"><span class="pre">1.4826</span> <span class="pre">×</span> <span class="pre">MAD</span></code> on a <code class="docutils literal notranslate"><span class="pre">w_ms</span></code> grid)
-and interpolated to the peak positions, since sigma is a slow envelope. The
-trough voltage is read from the trace in the same pass, so the test is exact
-and detector-agnostic — it does not reuse <code class="docutils literal notranslate"><span class="pre">peaks[&quot;amplitude&quot;]</span></code>, which is
-filter output for a matched filter.</p>
-<p>Single-segment only. Prints how many peaks survived.</p>
-</dd></dl>
-
+<p>The contract between stages is the <code class="docutils literal notranslate"><span class="pre">peaks</span></code> structured array:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">np</span><span class="o">.</span><span class="n">dtype</span><span class="p">([(</span><span class="s2">&quot;sample_index&quot;</span><span class="p">,</span>  <span class="n">np</span><span class="o">.</span><span class="n">int64</span><span class="p">),</span>     <span class="c1"># sample within its segment</span>
+          <span class="p">(</span><span class="s2">&quot;channel_index&quot;</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">int64</span><span class="p">),</span>     <span class="c1"># row index, not electrode ID</span>
+          <span class="p">(</span><span class="s2">&quot;segment_index&quot;</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">int64</span><span class="p">),</span>
+          <span class="p">(</span><span class="s2">&quot;amplitude&quot;</span><span class="p">,</span>     <span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)])</span>  <span class="c1"># true trough voltage in uV</span>
+</pre></div>
+</div>
+<p>This is the same dtype SpikeInterface’s <code class="docutils literal notranslate"><span class="pre">detect_peaks</span></code> returns, so the
+detector can be swapped without touching anything downstream.</p>
 </section>
-<section id="private-helpers">
-<h2>Private helpers<a class="headerlink" href="#private-helpers" title="Link to this heading"></a></h2>
-<dl class="py function">
-<dt class="sig sig-object py" id="RCP_analysis.python.functions.subspace_detector._subspace_pick_channel">
-<span class="sig-prename descclassname"><span class="pre">RCP_analysis.python.functions.subspace_detector.</span></span><span class="sig-name descname"><span class="pre">_subspace_pick_channel</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">Fc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">thr</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lag</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">w_snap</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">min_sep</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">a</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">t0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">t1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">seg_len</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">last_kept</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">neg</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RCP_analysis.python.functions.subspace_detector._subspace_pick_channel" title="Link to this definition"></a></dt>
-<dd><p>Numba-compiled per-channel peak picker used inside
-<a class="reference internal" href="#RCP_analysis.python.functions.subspace_detector.subspace_detect_cfar" title="RCP_analysis.python.functions.subspace_detector.subspace_detect_cfar"><code class="xref py py-func docutils literal notranslate"><span class="pre">subspace_detect_cfar()</span></code></a>. For each contiguous region where the F
-statistic exceeds the threshold it takes the argmax, snaps to the trough (or
-peak) within <code class="docutils literal notranslate"><span class="pre">±w_snap</span></code>, converts to a global sample index, discards
-anything outside the chunk’s committed window, then enforces the refractory
-period.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Returns<span class="colon">:</span></dt>
-<dd class="field-odd"><p><code class="docutils literal notranslate"><span class="pre">(kept_sample_indices,</span> <span class="pre">last_kept)</span></code> — <code class="docutils literal notranslate"><span class="pre">last_kept</span></code> is carried into
-the next chunk so the refractory period spans the seam.</p>
+<section id="stage-1-build-the-subspace-basis">
+<h2>Stage 1 — Build the subspace basis<a class="headerlink" href="#stage-1-build-the-subspace-basis" title="Link to this heading"></a></h2>
+<section id="concept">
+<h3>Concept<a class="headerlink" href="#concept" title="Link to this heading"></a></h3>
+<p>A classical matched filter correlates the signal against <strong>one</strong> template and
+thresholds the result. Real spikes are not one shape: different units,
+different electrode distances and different moments all produce slightly
+different waveforms, and a single template misses the ones that do not match.</p>
+<p>A subspace detector replaces the single template with a <strong>low-dimensional
+subspace</strong>. Take r orthonormal vectors of length N; any waveform that can be
+written as a linear combination of those r vectors counts as spike-like. The
+test becomes membership of a family rather than similarity to one template.</p>
+<p>Stage 1 constructs that family from data, by truncated SVD of a set of aligned
+waveforms.</p>
+</section>
+<section id="in-plain-terms">
+<h3>In plain terms<a class="headerlink" href="#in-plain-terms" title="Link to this heading"></a></h3>
+<p>Stack a few hundred known-good spike snippets (or per-unit templates) as rows
+of a matrix. Ask the SVD which directions in the N-sample waveform space carry
+the most energy. Keep the top r. Those r directions are the basis.</p>
+<p>Two properties make this different from ordinary PCA:</p>
+<ol class="arabic simple">
+<li><p>The data are <strong>not mean-centered</strong>. Ordinary PCA subtracts the mean to study
+variation around it; here the mean <em>is</em> the dominant spike shape, and it is
+exactly what we want to detect. Subtracting it would throw away the signal.</p></li>
+<li><p><strong>Alignment dominates quality.</strong> Every input row must have its trough at the
+same sample. If the rows are jittered, the leading singular vectors describe
+time-shift rather than shape, and rank 3 is consumed by jitter instead of by
+waveform variability. Misalignment is the most common cause of a bad basis.</p></li>
+</ol>
+</section>
+<section id="inputs">
+<h3>Inputs<a class="headerlink" href="#inputs" title="Link to this heading"></a></h3>
+<dl>
+<dt><code class="docutils literal notranslate"><span class="pre">waveforms</span></code><span class="classifier"><code class="docutils literal notranslate"><span class="pre">(n_wave,</span> <span class="pre">N)</span></code> float array</span></dt><dd><p>Rows are trough-aligned spike snippets or per-unit templates, all of length
+N. Sources in practice: per-unit mean waveforms from a Kilosort or
+SpikeInterface sorting, or manually selected high-SNR snippets.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">rank</span></code><span class="classifier">int, default 3</span></dt><dd><p>Number of components to keep. Must be no larger than <code class="docutils literal notranslate"><span class="pre">n_wave</span></code> — see
+<a class="reference internal" href="#failure-rank"><span class="std std-ref">A single template silently produces rank 1</span></a>.</p>
 </dd>
 </dl>
-</dd></dl>
+</section>
+<section id="key-code">
+<h3>Key code<a class="headerlink" href="#key-code" title="Link to this heading"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">subspace_detector.py</span></code> lines 95-98:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">X</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">waveforms</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="s2">&quot;float64&quot;</span><span class="p">)</span>            <span class="c1"># (n_wave, N)</span>
+<span class="n">_</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">Vt</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">svd</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">full_matrices</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>      <span class="c1"># Vt rows span the N-sample space</span>
+<span class="n">basis</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">Vt</span><span class="p">[:</span><span class="n">rank</span><span class="p">]</span><span class="o">.</span><span class="n">T</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="s2">&quot;float32&quot;</span><span class="p">)</span>   <span class="c1"># (N, rank), orthonormal cols</span>
+<span class="n">var</span> <span class="o">=</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">svd</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">compute_uv</span><span class="o">=</span><span class="kc">False</span><span class="p">)[:</span><span class="n">rank</span><span class="p">]</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span> <span class="o">/</span> <span class="p">(</span><span class="n">X</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>The SVD factorises <code class="docutils literal notranslate"><span class="pre">X</span> <span class="pre">=</span> <span class="pre">U</span> <span class="pre">S</span> <span class="pre">Vt</span></code>. Only <code class="docutils literal notranslate"><span class="pre">Vt</span></code> is used, because its rows live
+in the N-sample waveform space, whereas the columns of <code class="docutils literal notranslate"><span class="pre">U</span></code> index <em>which
+waveform</em> — irrelevant here. <code class="docutils literal notranslate"><span class="pre">full_matrices=False</span></code> makes <code class="docutils literal notranslate"><span class="pre">Vt</span></code> have shape
+<code class="docutils literal notranslate"><span class="pre">(min(n_wave,</span> <span class="pre">N),</span> <span class="pre">N)</span></code> instead of <code class="docutils literal notranslate"><span class="pre">(N,</span> <span class="pre">N)</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">var</span></code> is the fraction of total waveform energy captured by the first <code class="docutils literal notranslate"><span class="pre">rank</span></code>
+components, printed as <code class="docutils literal notranslate"><span class="pre">cum-var</span></code>. It is the only diagnostic for choosing the
+rank. Note the SVD is computed twice — the singular values from line 96 could
+be reused; for a matrix this small the waste is negligible.</p>
+</section>
+<section id="outputs">
+<h3>Outputs<a class="headerlink" href="#outputs" title="Link to this heading"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">(N,</span> <span class="pre">rank)</span></code> <code class="docutils literal notranslate"><span class="pre">float32</span></code> array with orthonormal columns, plus a printed line:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">[</span><span class="n">build_basis</span><span class="p">]</span> <span class="n">N</span><span class="o">=</span><span class="mi">48</span> <span class="n">rank</span><span class="o">=</span><span class="mi">3</span>  <span class="n">cum</span><span class="o">-</span><span class="n">var</span><span class="o">=</span><span class="mf">0.912</span>
+</pre></div>
+</div>
+<p>Save it as <code class="docutils literal notranslate"><span class="pre">.npy</span></code> and reuse it. The basis shipped with this repo is
+<code class="docutils literal notranslate"><span class="pre">config/median_extremum_basis_norm_UA_PortA_r3.npy</span></code>, shape <code class="docutils literal notranslate"><span class="pre">(48,</span> <span class="pre">3)</span></code> — that
+is 48 samples, or 1.6 ms at 30 kHz, and 3 components.</p>
+<p>Verify a basis before trusting it:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">np</span><span class="o">.</span><span class="n">allclose</span><span class="p">(</span><span class="n">basis</span><span class="o">.</span><span class="n">T</span> <span class="o">@</span> <span class="n">basis</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="n">basis</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]),</span> <span class="n">atol</span><span class="o">=</span><span class="mf">1e-5</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="stage-2-detect-with-a-cfar-f-threshold">
+<h2>Stage 2 — Detect with a CFAR-F threshold<a class="headerlink" href="#stage-2-detect-with-a-cfar-f-threshold" title="Link to this heading"></a></h2>
+<section id="id1">
+<h3>Concept<a class="headerlink" href="#id1" title="Link to this heading"></a></h3>
+<p>Split the N-dimensional waveform space into the signal subspace spanned by the
+basis (r dimensions) and everything left over (N-r dimensions). Every sliding
+window <strong>x</strong> decomposes uniquely into a part inside the subspace and a part
+orthogonal to it. The detector scores each window by the ratio of those two
+energies:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>s_sig = ‖Uᵀx‖²                    energy inside the signal subspace
+s_tot = ‖x‖²                      total energy
+F     = s_sig / (s_tot − s_sig)   in-subspace energy / residual energy
+</pre></div>
+</div>
+<p>Because U has orthonormal columns, ‖Uᵀx‖² is already the projection energy, so
+no projection matrix ever has to be formed — two convolutions give everything.</p>
+<p>This F is the generalised likelihood ratio for the hypothesis test:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">H0</span> <span class="p">(</span><span class="n">no</span> <span class="n">spike</span><span class="p">):</span>   <span class="n">x</span> <span class="o">=</span> <span class="n">n</span>
+<span class="n">H1</span> <span class="p">(</span><span class="n">spike</span><span class="p">):</span>      <span class="n">x</span> <span class="o">=</span> <span class="n">Uθ</span> <span class="o">+</span> <span class="n">n</span>
+</pre></div>
+</div>
+<p>with both the waveform coefficients θ and the noise level σ² unknown. Solving
+for θ and maximising eliminates σ² entirely.</p>
+</section>
+<section id="id2">
+<h3>In plain terms<a class="headerlink" href="#id2" title="Link to this heading"></a></h3>
+<p><strong>F is a ratio of two energies measured in the same window.</strong> Scale the window
+by any constant c and both numerator and denominator gain c², so F is
+unchanged. Double the noise and F does not move.</p>
+<p>That scale invariance is the whole point. It means the threshold never has to
+track the noise level, and the false-alarm rate stays fixed at α — hence
+<em>constant false alarm rate</em>, CFAR. A plain <code class="docutils literal notranslate"><span class="pre">|x|</span> <span class="pre">&gt;</span> <span class="pre">3.5</span> <span class="pre">σ</span></code> rule has to estimate
+σ somewhere and apply it somewhere else; when the noise floor rises between
+those two moments, false detections explode.</p>
+<p><strong>Where the threshold comes from.</strong> Under H0 with white Gaussian noise, the two
+projected energies are independent chi-square variables:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>‖P_U x‖² / σ²   ~  χ²(r)
+‖P_⊥ x‖² / σ²   ~  χ²(N−r)
+</pre></div>
+</div>
+<p>Their ratio, each divided by its degrees of freedom, is F-distributed with
+<code class="docutils literal notranslate"><span class="pre">(r,</span> <span class="pre">N−r)</span></code>. The code omits the degrees-of-freedom division, so the critical
+value is scaled back by <code class="docutils literal notranslate"><span class="pre">r/(N−r)</span></code>. For N=48, r=3, α=1e-4:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>F_crit = F.ppf(0.9999, 3, 45) = 8.8598
+thr    = 8.8598 × 3/45        = 0.5907
+</pre></div>
+</div>
+<p><strong>A third reading of the same number.</strong> Since <code class="docutils literal notranslate"><span class="pre">cos²θ</span> <span class="pre">=</span> <span class="pre">F/(1+F)</span></code>, the
+threshold is equivalent to an angle:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>cos²θ = 0.5907 / 1.5907 = 0.371   -&gt;   θ = 52.5 degrees
+</pre></div>
+</div>
+<p>The window’s waveform must lie within 52.5 degrees of the signal subspace.
+Purely a shape test; amplitude does not enter.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The chi-square result assumes <strong>white</strong> Gaussian noise. Neural noise after a
+300 Hz highpass is not white, and this rig additionally carries a common-mode
+interference component around 9.5 kHz. Coloured noise breaks the exact
+F distribution, so the realised false-alarm rate is not guaranteed to equal
+α. The standard remedy is whitening, which this implementation does not do.
+Treat α as a relative dial, not an absolute promise, and verify the realised
+rate empirically.</p>
+</div>
+</section>
+<section id="id3">
+<h3>Inputs<a class="headerlink" href="#id3" title="Link to this heading"></a></h3>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">recording</span></code></dt><dd><p>SpikeInterface recording, already artifact-corrected and highpass filtered.
+Multi-segment is supported; segments are processed independently.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">basis</span></code></dt><dd><p><code class="docutils literal notranslate"><span class="pre">(N,</span> <span class="pre">r)</span></code> orthonormal-column array from Stage 1. <strong>The rank is read from
+this array, not passed as an argument</strong> — swapping the basis file silently
+changes both r and the threshold.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">cfar_alpha</span></code></dt><dd><p>Per-sample false-alarm probability. Default 1e-4.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">peak_sign</span></code></dt><dd><p><code class="docutils literal notranslate"><span class="pre">&quot;neg&quot;</span></code> snaps to the local minimum. Any other value snaps to the maximum.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">refractory_ms</span></code>, <code class="docutils literal notranslate"><span class="pre">snap_ms</span></code></dt><dd><p>Minimum separation between kept peaks, and the half-width searched when
+aligning a detection to the true extremum. Defaults 0.5 and 0.6 ms.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">chunk_s</span></code></dt><dd><p>Seconds read per chunk. This is the memory knob; see
+<a class="reference internal" href="#why-fast"><span class="std std-ref">Why it runs fast</span></a>.</p>
+</dd>
+</dl>
+</section>
+<section id="id4">
+<h3>Key code<a class="headerlink" href="#id4" title="Link to this heading"></a></h3>
+<p><strong>Setup</strong> (lines 121-131). Threshold, index offsets and the two convolution
+kernels:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">U</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">basis</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="s2">&quot;float32&quot;</span><span class="p">)</span>          <span class="c1"># (N, r)</span>
+<span class="n">N</span><span class="p">,</span> <span class="n">r</span> <span class="o">=</span> <span class="n">U</span><span class="o">.</span><span class="n">shape</span>
+<span class="n">thr</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">_f</span><span class="o">.</span><span class="n">ppf</span><span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">cfar_alpha</span><span class="p">,</span> <span class="n">r</span><span class="p">,</span> <span class="n">N</span> <span class="o">-</span> <span class="n">r</span><span class="p">)</span> <span class="o">*</span> <span class="n">r</span> <span class="o">/</span> <span class="p">(</span><span class="n">N</span> <span class="o">-</span> <span class="n">r</span><span class="p">))</span>
+<span class="n">lag</span> <span class="o">=</span> <span class="n">N</span> <span class="o">//</span> <span class="mi">2</span>
+<span class="n">w_snap</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">snap_ms</span> <span class="o">*</span> <span class="mf">1e-3</span> <span class="o">*</span> <span class="n">fs</span><span class="p">)</span>
+<span class="n">min_sep</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">refractory_ms</span> <span class="o">*</span> <span class="mf">1e-3</span> <span class="o">*</span> <span class="n">fs</span><span class="p">)</span>
+<span class="n">neg</span> <span class="o">=</span> <span class="n">peak_sign</span> <span class="o">==</span> <span class="s2">&quot;neg&quot;</span>
 
+<span class="n">dev</span> <span class="o">=</span> <span class="s2">&quot;cuda&quot;</span> <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">is_available</span><span class="p">()</span> <span class="k">else</span> <span class="s2">&quot;cpu&quot;</span>
+<span class="n">w_sig</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">U</span><span class="o">.</span><span class="n">T</span><span class="p">))</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">dev</span><span class="p">)</span>   <span class="c1"># (r,1,N)</span>
+<span class="n">w_tot</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">N</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">dev</span><span class="p">)</span>               <span class="c1"># (1,1,N)</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">lag</span> <span class="pre">=</span> <span class="pre">N</span> <span class="pre">//</span> <span class="pre">2</span></code> converts a filter-output index back to a signal index:
+<code class="docutils literal notranslate"><span class="pre">conv1d</span></code> without padding maps output index i to the input window <code class="docutils literal notranslate"><span class="pre">[i,</span> <span class="pre">i+N)</span></code>,
+whose centre is <code class="docutils literal notranslate"><span class="pre">i</span> <span class="pre">+</span> <span class="pre">N//2</span></code>. With N even the true centre falls half a sample
+off; the snap step absorbs that.</p>
+<p><strong>Chunk geometry</strong> (lines 133-134, 142-143). Two windows, not one:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">chunk</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">chunk_s</span> <span class="o">*</span> <span class="n">fs</span><span class="p">)</span>
+<span class="n">margin</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">N</span> <span class="o">+</span> <span class="n">w_snap</span>
+<span class="o">...</span>
+<span class="n">t1</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">t0</span> <span class="o">+</span> <span class="n">chunk</span><span class="p">,</span> <span class="n">seg_len</span><span class="p">)</span>                              <span class="c1"># commit window [t0, t1)</span>
+<span class="n">a</span><span class="p">,</span> <span class="n">b</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">t0</span> <span class="o">-</span> <span class="n">margin</span><span class="p">),</span> <span class="nb">min</span><span class="p">(</span><span class="n">seg_len</span><span class="p">,</span> <span class="n">t1</span> <span class="o">+</span> <span class="n">margin</span><span class="p">)</span>      <span class="c1"># read window   [a, b)</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">a</span>              <span class="n">t0</span>                            <span class="n">t1</span>              <span class="n">b</span>
+<span class="o">|---</span><span class="n">margin</span><span class="o">-----|===========</span> <span class="n">commit</span> <span class="o">==========|----</span><span class="n">margin</span><span class="o">-----|</span>
+<span class="o">&lt;----------------------</span> <span class="n">data</span> <span class="n">actually</span> <span class="n">read</span> <span class="o">------------------&gt;</span>
+               <span class="o">&lt;-----</span> <span class="n">only</span> <span class="n">peaks</span> <span class="n">here</span> <span class="n">are</span> <span class="n">kept</span> <span class="o">-----&gt;</span>
+</pre></div>
+</div>
+<p>The extra margin gives a spike sitting on a seam a complete N-sample window to
+be scored in. The duplicates that overlap creates are removed by the
+<code class="docutils literal notranslate"><span class="pre">t0</span> <span class="pre">&lt;=</span> <span class="pre">g</span> <span class="pre">&lt;</span> <span class="pre">t1</span></code> test inside the picker.</p>
+<p><strong>The two convolutions</strong> (lines 144-150):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">blk</span> <span class="o">=</span> <span class="n">recording</span><span class="o">.</span><span class="n">get_traces</span><span class="p">(</span><span class="n">start_frame</span><span class="o">=</span><span class="n">a</span><span class="p">,</span> <span class="n">end_frame</span><span class="o">=</span><span class="n">b</span><span class="p">,</span> <span class="n">segment_index</span><span class="o">=</span><span class="n">seg_idx</span><span class="p">,</span>
+                           <span class="n">return_in_uV</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="s2">&quot;float32&quot;</span><span class="p">)</span>   <span class="c1"># (L, n_ch)</span>
+<span class="n">blkT</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">blk</span><span class="o">.</span><span class="n">T</span><span class="p">)</span>                                <span class="c1"># (n_ch, L)</span>
+<span class="n">x</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">blkT</span><span class="p">)</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">dev</span><span class="p">)</span>
+<span class="n">s_sig</span> <span class="o">=</span> <span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">functional</span><span class="o">.</span><span class="n">conv1d</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">w_sig</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>        <span class="c1"># ‖Uᵀx‖²</span>
+<span class="n">s_tot</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">functional</span><span class="o">.</span><span class="n">conv1d</span><span class="p">(</span><span class="n">x</span> <span class="o">**</span> <span class="mi">2</span><span class="p">,</span> <span class="n">w_tot</span><span class="p">)</span><span class="o">.</span><span class="n">squeeze</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>      <span class="c1"># ‖x‖²</span>
+<span class="n">F</span> <span class="o">=</span> <span class="p">(</span><span class="n">s_sig</span> <span class="o">/</span> <span class="n">torch</span><span class="o">.</span><span class="n">clamp</span><span class="p">(</span><span class="n">s_tot</span> <span class="o">-</span> <span class="n">s_sig</span><span class="p">,</span> <span class="nb">min</span><span class="o">=</span><span class="mf">1e-9</span><span class="p">))</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>  <span class="c1"># (n_ch, L-N+1)</span>
+</pre></div>
+</div>
+<p>Tensor shapes:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">x</span>      <span class="p">(</span><span class="n">n_ch</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">L</span><span class="p">)</span>          <span class="n">electrode</span> <span class="n">channels</span> <span class="n">occupy</span> <span class="n">the</span> <span class="n">BATCH</span> <span class="n">axis</span>
+<span class="n">w_sig</span>  <span class="p">(</span><span class="n">r</span><span class="p">,</span>    <span class="mi">1</span><span class="p">,</span> <span class="n">N</span><span class="p">)</span>          <span class="n">basis</span> <span class="n">vectors</span> <span class="n">occupy</span> <span class="n">the</span> <span class="n">OUTPUT</span><span class="o">-</span><span class="n">CHANNEL</span> <span class="n">axis</span>
+<span class="n">out</span>    <span class="p">(</span><span class="n">n_ch</span><span class="p">,</span> <span class="n">r</span><span class="p">,</span> <span class="n">L</span><span class="o">-</span><span class="n">N</span><span class="o">+</span><span class="mi">1</span><span class="p">)</span>      <span class="n">every</span> <span class="n">channel</span> <span class="n">x</span> <span class="n">every</span> <span class="n">basis</span> <span class="n">vector</span><span class="p">,</span> <span class="n">one</span> <span class="n">call</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">s_tot</span></code> convolves <code class="docutils literal notranslate"><span class="pre">x**2</span></code> with an all-ones kernel — a moving sum of squares,
+i.e. ‖x‖² per window. Using <code class="docutils literal notranslate"><span class="pre">conv1d</span></code> rather than <code class="docutils literal notranslate"><span class="pre">cumsum</span></code> makes its output
+index align with <code class="docutils literal notranslate"><span class="pre">s_sig</span></code> automatically.</p>
+<p><code class="docutils literal notranslate"><span class="pre">torch.clamp(...,</span> <span class="pre">min=1e-9)</span></code> guards the division where a window lies entirely
+inside the subspace. The case that matters in practice is a blanked region of
+exact zeros: there <code class="docutils literal notranslate"><span class="pre">s_sig</span></code> is also zero, so <code class="docutils literal notranslate"><span class="pre">0</span> <span class="pre">/</span> <span class="pre">1e-9</span> <span class="pre">=</span> <span class="pre">0</span></code> passes through
+safely instead of producing a spurious detection.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>PyTorch’s <code class="docutils literal notranslate"><span class="pre">conv1d</span></code> performs cross-correlation — it does not flip the
+kernel. For a true convolution that would be wrong; here the sliding inner
+product <code class="docutils literal notranslate"><span class="pre">Uᵀx</span></code> is exactly what is wanted.</p>
+</div>
+<p><strong>The peak picker</strong> (lines 19-84, called at 151-159). One Numba-compiled call
+per channel per chunk:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">ci</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_ch</span><span class="p">):</span>
+    <span class="n">g</span><span class="p">,</span> <span class="n">last_kept</span><span class="p">[</span><span class="n">ci</span><span class="p">]</span> <span class="o">=</span> <span class="n">_subspace_pick_channel</span><span class="p">(</span>
+        <span class="n">F</span><span class="p">[</span><span class="n">ci</span><span class="p">],</span> <span class="n">blkT</span><span class="p">[</span><span class="n">ci</span><span class="p">],</span> <span class="n">thr</span><span class="p">,</span> <span class="n">lag</span><span class="p">,</span> <span class="n">w_snap</span><span class="p">,</span> <span class="n">min_sep</span><span class="p">,</span> <span class="n">a</span><span class="p">,</span> <span class="n">t0</span><span class="p">,</span> <span class="n">t1</span><span class="p">,</span> <span class="n">seg_len</span><span class="p">,</span>
+        <span class="n">last_kept</span><span class="p">[</span><span class="n">ci</span><span class="p">],</span> <span class="n">neg</span><span class="p">)</span>
+    <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">g</span><span class="p">):</span>
+        <span class="n">samp_parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">g</span><span class="p">)</span>
+        <span class="o">...</span>
+        <span class="n">amp_parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">blkT</span><span class="p">[</span><span class="n">ci</span><span class="p">][</span><span class="n">g</span> <span class="o">-</span> <span class="n">a</span><span class="p">])</span>
+</pre></div>
+</div>
+<p>Four stages inside the picker:</p>
+<ol class="arabic simple">
+<li><p><strong>Run detection with argmax</strong> (line 29 onward). Scan F once; each contiguous
+region above threshold yields exactly one candidate, at its maximum. A real
+spike keeps F above threshold for tens of samples as the sliding window
+crosses it, so without this collapse one spike would produce dozens of
+detections. This is the first of two de-duplication mechanisms.</p></li>
+<li><p><strong>Index conversion and snap</strong> (lines 41-56). <code class="docutils literal notranslate"><span class="pre">p</span> <span class="pre">=</span> <span class="pre">best</span> <span class="pre">+</span> <span class="pre">lag</span></code> moves from
+filter index to trace index; the code then searches <code class="docutils literal notranslate"><span class="pre">p</span> <span class="pre">±</span> <span class="pre">w_snap</span></code> for the
+true extremum of the trace. The maximum of F does not necessarily coincide
+with the trough, and without snapping every spike would be timestamped a few
+samples off, blurring any downstream waveform average.</p></li>
+<li><p><strong>Commit test</strong> (lines 57-59). <code class="docutils literal notranslate"><span class="pre">g</span> <span class="pre">=</span> <span class="pre">sidx</span> <span class="pre">+</span> <span class="pre">a</span></code> converts to a segment-global
+index; <code class="docutils literal notranslate"><span class="pre">t0</span> <span class="pre">&lt;=</span> <span class="pre">g</span> <span class="pre">&lt;</span> <span class="pre">t1</span></code> discards anything found in the margin, which belongs
+to a neighbouring chunk.</p></li>
+<li><p><strong>Sort, then greedy refractory</strong> (line 70 onward). Snapping can move a
+candidate by up to <code class="docutils literal notranslate"><span class="pre">w_snap</span></code>, which can reorder two nearby candidates, so
+the list is sorted before the greedy pass. The refractory rule is
+<strong>first-wins</strong>, not largest-wins — worth noting, because the walking
+pipeline’s <code class="docutils literal notranslate"><span class="pre">_dedup_peaks</span></code> keeps the largest-amplitude peak in a cluster
+instead.</p></li>
+</ol>
+<p><code class="docutils literal notranslate"><span class="pre">last_kept</span></code> is an <code class="docutils literal notranslate"><span class="pre">(n_ch,)</span></code> array holding, per channel, the last accepted
+sample index. It goes into the picker and comes back out, so the refractory
+period holds across a chunk seam as well as within a chunk. It is reset at the
+start of each segment (line 139), initialised to <code class="docutils literal notranslate"><span class="pre">-1e12</span></code> so the first peak
+always passes.</p>
+<p>Seam correctness rests on exactly three mechanisms:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Risk</p></th>
+<th class="head"><p>Mechanism</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Spike on a seam has no complete N-sample window</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">margin</span> <span class="pre">=</span> <span class="pre">2N</span> <span class="pre">+</span> <span class="pre">w_snap</span></code> over-read</p></td>
+</tr>
+<tr class="row-odd"><td><p>Margin peak found by both neighbouring chunks</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">t0</span> <span class="pre">&lt;=</span> <span class="pre">g</span> <span class="pre">&lt;</span> <span class="pre">t1</span></code> commit test</p></td>
+</tr>
+<tr class="row-even"><td><p>Peaks either side of a seam closer than refractory</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">last_kept</span></code> carried across chunks</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="id5">
+<h3>Outputs<a class="headerlink" href="#id5" title="Link to this heading"></a></h3>
+<p>Structured array, sorted by segment then sample (line 170). An empty result
+still returns the correct dtype, so downstream length checks never break.</p>
+<p><code class="docutils literal notranslate"><span class="pre">amplitude</span></code> holds the <strong>true trace voltage</strong> at the snapped extremum, read
+back with <code class="docutils literal notranslate"><span class="pre">blkT[ci][g</span> <span class="pre">-</span> <span class="pre">a]</span></code> — not the F statistic and not a filter output.
+This matters because SpikeInterface’s <code class="docutils literal notranslate"><span class="pre">matched_filtering</span></code> fills the same
+field with filter output, a different physical quantity.</p>
+</section>
+</section>
+<section id="stage-3-local-sigma-amplitude-gate">
+<h2>Stage 3 — Local-sigma amplitude gate<a class="headerlink" href="#stage-3-local-sigma-amplitude-gate" title="Link to this heading"></a></h2>
+<section id="id6">
+<h3>Concept<a class="headerlink" href="#id6" title="Link to this heading"></a></h3>
+<p>Scale invariance is Stage 2’s strength and its blind spot. F measures only the
+angle between the window and the subspace, so a low-amplitude wobble whose
+shape happens to align with the subspace scores exactly as well as a large
+spike. During chewing or movement bursts the noise floor rises, and some of
+that noise lands near the subspace.</p>
+<p>Stage 3 adds the missing dimension: <strong>absolute amplitude must beat the local
+noise level.</strong> The two stages combine as AND — the shape must match <em>and</em> the
+amplitude must be sufficient relative to noise at that moment.</p>
+</section>
+<section id="id7">
+<h3>In plain terms<a class="headerlink" href="#id7" title="Link to this heading"></a></h3>
+<p>Chop the recording into 100 ms blocks. In each block, on each channel, estimate
+the noise level with a median absolute deviation, converted to a
+Gaussian-equivalent sigma by the factor 1.4826. That gives a coarse sigma
+surface over (channel, time). Interpolate it to each peak’s exact position and
+keep the peak only if its trough voltage exceeds <code class="docutils literal notranslate"><span class="pre">k_amp</span></code> times the local
+sigma.</p>
+<p>Two design points:</p>
+<ul class="simple">
+<li><p><strong>MAD, not standard deviation.</strong> Spikes are outliers; a standard deviation
+computed over data containing spikes is inflated by the very events being
+detected, which raises the gate against itself. MAD is insensitive to
+outliers.</p></li>
+<li><p><strong>A 100 ms grid with interpolation, not a rolling median.</strong> The noise level
+is a slow envelope — chewing lasts hundreds of milliseconds, posture changes
+last seconds. Per-sample rolling statistics would cost orders of magnitude
+more for resolution that is never used.</p></li>
+</ul>
+</section>
+<section id="id8">
+<h3>Inputs<a class="headerlink" href="#id8" title="Link to this heading"></a></h3>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">peaks</span></code>, <code class="docutils literal notranslate"><span class="pre">recording</span></code></dt><dd><p>Output of Stage 2 and the same recording it ran on.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">k_amp</span></code><span class="classifier">float, default 3.5</span></dt><dd><p>Multiplier on the local sigma.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">w_ms</span></code><span class="classifier">float, default 100.0</span></dt><dd><p>Block width for the sigma grid.</p>
+</dd>
+</dl>
+</section>
+<section id="id9">
+<h3>Key code<a class="headerlink" href="#id9" title="Link to this heading"></a></h3>
+<p><strong>Grid setup</strong> (lines 184-192):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">blk</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">w_ms</span> <span class="o">*</span> <span class="mf">1e-3</span> <span class="o">*</span> <span class="n">fs</span><span class="p">))</span>       <span class="c1"># 100 ms -&gt; 3000 samples at 30 kHz</span>
+<span class="n">n_blk</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">ceil</span><span class="p">(</span><span class="n">N</span> <span class="o">/</span> <span class="n">blk</span><span class="p">))</span>
+<span class="n">sigma_grid</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="n">n_ch</span><span class="p">,</span> <span class="n">n_blk</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+<span class="o">...</span>
+<span class="n">chunk</span> <span class="o">=</span> <span class="n">blk</span> <span class="o">*</span> <span class="mi">300</span>                          <span class="c1"># multiple of blk -&gt; grid aligns</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">chunk</span></code> being an exact multiple of <code class="docutils literal notranslate"><span class="pre">blk</span></code> is a hard requirement, not a
+tuning choice: the write index is computed as <code class="docutils literal notranslate"><span class="pre">c0</span> <span class="pre">//</span> <span class="pre">blk</span></code>, so a chunk
+boundary falling inside a block would misalign the grid.</p>
+<p><strong>Voltage read and MAD, in one pass</strong> (lines 197-206):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">in_chunk</span> <span class="o">=</span> <span class="p">(</span><span class="n">samp</span> <span class="o">&gt;=</span> <span class="n">c0</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">samp</span> <span class="o">&lt;</span> <span class="n">c1</span><span class="p">)</span>
+<span class="k">if</span> <span class="n">in_chunk</span><span class="o">.</span><span class="n">any</span><span class="p">():</span>
+    <span class="n">amp</span><span class="p">[</span><span class="n">in_chunk</span><span class="p">]</span> <span class="o">=</span> <span class="n">tr</span><span class="p">[</span><span class="n">samp</span><span class="p">[</span><span class="n">in_chunk</span><span class="p">]</span> <span class="o">-</span> <span class="n">c0</span><span class="p">,</span> <span class="n">chan</span><span class="p">[</span><span class="n">in_chunk</span><span class="p">]]</span>
+<span class="o">...</span>
+<span class="n">b</span> <span class="o">=</span> <span class="n">trp</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">nb</span><span class="p">,</span> <span class="n">blk</span><span class="p">,</span> <span class="n">n_ch</span><span class="p">)</span>
+<span class="n">med</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">nanmedian</span><span class="p">(</span><span class="n">b</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">mad</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">nanmedian</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">b</span> <span class="o">-</span> <span class="n">med</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">,</span> <span class="p">:]),</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">sigma_grid</span><span class="p">[:,</span> <span class="n">c0</span> <span class="o">//</span> <span class="n">blk</span><span class="p">:</span><span class="n">c0</span> <span class="o">//</span> <span class="n">blk</span> <span class="o">+</span> <span class="n">nb</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mf">1.4826</span> <span class="o">*</span> <span class="n">mad</span><span class="p">)</span><span class="o">.</span><span class="n">T</span>
+</pre></div>
+</div>
+<p>The amplitude read is two-dimensional fancy indexing — every peak in the chunk
+in one vectorised expression, no loop. The reshape to <code class="docutils literal notranslate"><span class="pre">(nb,</span> <span class="pre">blk,</span> <span class="pre">n_ch)</span></code> is a
+view, not a copy. The trailing partial block is NaN-padded so <code class="docutils literal notranslate"><span class="pre">nanmedian</span></code>
+ignores the padding rather than being diluted by zeros.</p>
+<p>The trough voltage is deliberately re-read from the trace rather than taken
+from <code class="docutils literal notranslate"><span class="pre">peaks[&quot;amplitude&quot;]</span></code>, which keeps this gate detector-agnostic: it
+applies the same physical test whether the upstream detector was subspace,
+matched filter or threshold crossing.</p>
+<p><strong>Interpolate and test</strong> (lines 208-217):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">centers</span> <span class="o">=</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">n_blk</span><span class="p">)</span> <span class="o">+</span> <span class="mf">0.5</span><span class="p">)</span> <span class="o">*</span> <span class="n">blk</span>
+<span class="o">...</span>
+<span class="n">sig_at</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">interp</span><span class="p">(</span><span class="n">samp</span><span class="p">[</span><span class="n">m</span><span class="p">],</span> <span class="n">centers</span><span class="p">[</span><span class="n">good</span><span class="p">],</span> <span class="n">sg</span><span class="p">[</span><span class="n">good</span><span class="p">])</span>
+<span class="n">keep</span><span class="p">[</span><span class="n">m</span><span class="p">]</span> <span class="o">=</span> <span class="n">amp</span><span class="p">[</span><span class="n">m</span><span class="p">]</span> <span class="o">&gt;</span> <span class="n">k_amp</span> <span class="o">*</span> <span class="n">sig_at</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">centers</span></code> are block centres, not starts. <code class="docutils literal notranslate"><span class="pre">good</span></code> masks out NaN and zero
+blocks so interpolation uses only valid estimates.</p>
+</section>
+<section id="id10">
+<h3>Outputs<a class="headerlink" href="#id10" title="Link to this heading"></a></h3>
+<p>The surviving subset of <code class="docutils literal notranslate"><span class="pre">peaks</span></code>, same dtype, plus a printed summary:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">[</span><span class="n">local</span><span class="o">-</span><span class="n">σ</span> <span class="n">gate</span><span class="p">]</span> <span class="n">kept</span> <span class="mi">412</span><span class="p">,</span><span class="mi">338</span><span class="o">/</span><span class="mi">1</span><span class="p">,</span><span class="mi">204</span><span class="p">,</span><span class="mi">551</span> <span class="p">(</span><span class="n">k</span><span class="o">=</span><span class="mf">3.5</span><span class="p">,</span> <span class="n">w</span><span class="o">=</span><span class="mf">100.0</span><span class="n">ms</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Two behaviours to be aware of:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">keep</span></code> is initialised to all-False, so a channel whose sigma grid is
+entirely NaN or zero — a dead channel, or one blanked to zeros — loses <strong>all</strong>
+its peaks, silently. If a channel unexpectedly has no spikes, check here
+first.</p></li>
+<li><p>The function is <strong>single-segment</strong>. It calls <code class="docutils literal notranslate"><span class="pre">get_num_samples()</span></code> and
+<code class="docutils literal notranslate"><span class="pre">get_traces()</span></code> without a <code class="docutils literal notranslate"><span class="pre">segment_index</span></code> and ignores
+<code class="docutils literal notranslate"><span class="pre">peaks[&quot;segment_index&quot;]</span></code>. Multi-packet <code class="docutils literal notranslate"><span class="pre">.ns6</span></code> recordings are concatenated
+and run as one segment in practice, so this is not currently exercised, but
+it would produce wrong results on a genuinely multi-segment recording.</p></li>
+</ul>
+</section>
+</section>
+<section id="why-it-runs-fast">
+<span id="why-fast"></span><h2>Why it runs fast<a class="headerlink" href="#why-it-runs-fast" title="Link to this heading"></a></h2>
+<p>Two very different bottlenecks, handled by two very different tools. The split
+happens at the F array: everything before it is dense uniform arithmetic,
+everything after it is irregular sequential logic.</p>
+<section id="batching-channels-through-one-convolution">
+<h3>Batching channels through one convolution<a class="headerlink" href="#batching-channels-through-one-convolution" title="Link to this heading"></a></h3>
+<p>The arithmetic per chunk is r+1 sliding inner products per channel. The naive
+shape for that is a Python loop over channels calling <code class="docutils literal notranslate"><span class="pre">scipy.signal.correlate</span></code>
+once per channel per basis vector — for 256 channels and r=3, that is over a
+thousand separate library calls per chunk, each paying its own interpreter
+round-trip, argument validation, transform planning and buffer allocation.</p>
+<p>Placing the electrode axis in <code class="docutils literal notranslate"><span class="pre">conv1d</span></code>’s batch dimension collapses all of
+that into <strong>one call per chunk</strong>:</p>
+<ul class="simple">
+<li><p>Per-call overhead is paid once instead of a thousand times.</p></li>
+<li><p>Inside the call, the backend (oneDNN/MKL on CPU, cuDNN on GPU) chooses a
+blocked schedule, keeps the r short kernels resident in cache or registers,
+and reuses each loaded input sample across all r outputs. The input is
+streamed once and contributes to r results.</p></li>
+<li><p>On GPU the same call expands to thousands of concurrent threads over a dense
+small-kernel convolution — precisely the workload cuDNN is tuned for.</p></li>
+<li><p>The code path is device-agnostic. CUDA when available, CPU otherwise; the CPU
+branch is a fallback, not a different algorithm, so results are identical
+either way.</p></li>
+</ul>
+<p>The consequence is qualitative but important: with N=48 and r=3, the arithmetic
+performed per loaded sample is small, so once call overhead is removed the
+limiting resource becomes memory and disk bandwidth rather than arithmetic.
+That is what the docstring means by <em>the F statistic is compute-negligible and
+runtime is I/O-bound</em> — and it is why enlarging the chunk helps only until the
+storage read rate saturates.</p>
+<p>The transfer back to host also benefits from the batching. <code class="docutils literal notranslate"><span class="pre">F</span></code> is moved to
+CPU once per chunk, not once per channel, because the picker that consumes it
+is a CPU function. Coarse transfer granularity keeps that boundary cheap.</p>
+<p><strong>The cost of the batching</strong> is the extra r axis on the convolution output. The
+intermediate <code class="docutils literal notranslate"><span class="pre">(n_ch,</span> <span class="pre">r,</span> <span class="pre">L-N+1)</span></code> tensor is r times the size of the input
+block, and it is the largest single allocation in the function. At
+<code class="docutils literal notranslate"><span class="pre">chunk_s=30</span></code>, 256 channels and 30 kHz, the peak footprint across the input
+block, its transposed copy, the device tensor, the convolution output and F is
+roughly 7 GB, of which the convolution output alone is about 2.6 GB. That is
+the entire reason <code class="docutils literal notranslate"><span class="pre">chunk_s</span></code> exists as a parameter. Halving it halves the
+footprint and, because of the margin and commit-window machinery, changes
+nothing about the result.</p>
+</section>
+<section id="the-peak-picker-cannot-be-vectorised">
+<h3>The peak picker cannot be vectorised<a class="headerlink" href="#the-peak-picker-cannot-be-vectorised" title="Link to this heading"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">_subspace_pick_channel</span></code> walks the F trace one sample at a time, and what it
+does at sample i depends on state accumulated from every sample before it:
+whether it is currently inside a supra-threshold run, the best value seen so far
+within that run, and when the last accepted peak occurred.</p>
+<p>Both of its core operations resist array programming:</p>
+<ul class="simple">
+<li><p><strong>Run detection with argmax.</strong> Run boundaries are data-dependent and unknown
+in advance. A NumPy formulation needs a boolean mask, a run-labelling pass, a
+boundary extraction and a segmented argmax — several full-length temporaries
+and several passes over the array, allocated per channel per chunk.</p></li>
+<li><p><strong>Greedy refractory.</strong> Whether peak i survives depends on which earlier peaks
+survived. That is a genuine loop-carried dependency; no amount of array
+reformulation removes it.</p></li>
+</ul>
+<p>Written in pure Python the loop body is only a handful of comparisons, but the
+interpreter overhead per sample dominates completely, and the loop runs once per
+channel per chunk over roughly 900,000 samples at the default chunk size.</p>
+<p><code class="docutils literal notranslate"><span class="pre">&#64;njit</span></code> compiles it to machine code: comparisons on unboxed <code class="docutils literal notranslate"><span class="pre">float32</span></code> and
+<code class="docutils literal notranslate"><span class="pre">int64</span></code>, no per-element object allocation, branches the CPU can predict, and
+the array left as a flat typed buffer. The algorithm is unchanged — only the
+execution model is.</p>
+<p>Two supporting details:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">cache=True</span></code> writes the compiled artefact into <code class="docutils literal notranslate"><span class="pre">__pycache__</span></code>, so only the
+very first run on a machine pays JIT compilation. Subsequent runs load it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">buf</span> <span class="pre">=</span> <span class="pre">np.empty(Lc,</span> <span class="pre">np.int64)</span></code> preallocates the worst case (one peak per F
+sample) and the function returns <code class="docutils literal notranslate"><span class="pre">buf[:m]</span></code>. Numba works best with
+fixed-size allocations, so this is the idiomatic pattern rather than a
+growing list.</p></li>
+</ul>
+</section>
+</section>
+<section id="failure-modes">
+<h2>Failure modes<a class="headerlink" href="#failure-modes" title="Link to this heading"></a></h2>
+<p>All three fail silently. None raises.</p>
+<section id="basis-orthonormality-is-never-checked">
+<h3>Basis orthonormality is never checked<a class="headerlink" href="#basis-orthonormality-is-never-checked" title="Link to this heading"></a></h3>
+<p>Line 121 accepts whatever array is passed. If the columns are not orthonormal,
+<code class="docutils literal notranslate"><span class="pre">‖Uᵀx‖²</span></code> is no longer the projection energy, the F statistic loses its
+meaning and the threshold no longer corresponds to α. The run completes and
+produces plausible-looking numbers.</p>
+<p>Check before use:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">np</span><span class="o">.</span><span class="n">allclose</span><span class="p">(</span><span class="n">basis</span><span class="o">.</span><span class="n">T</span> <span class="o">@</span> <span class="n">basis</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="n">basis</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]),</span> <span class="n">atol</span><span class="o">=</span><span class="mf">1e-5</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="a-single-template-silently-produces-rank-1">
+<span id="failure-rank"></span><h3>A single template silently produces rank 1<a class="headerlink" href="#a-single-template-silently-produces-rank-1" title="Link to this heading"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">UA_BR_analysis_ssmf.py</span></code> has a fallback path that builds a basis from one
+matched-filter template:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ua_basis</span> <span class="o">=</span> <span class="n">rcp</span><span class="o">.</span><span class="n">build_subspace_basis</span><span class="p">(</span><span class="n">_tpl</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">newaxis</span><span class="p">,</span> <span class="p">:],</span> <span class="n">rank</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>With <code class="docutils literal notranslate"><span class="pre">full_matrices=False</span></code>, an input of shape <code class="docutils literal notranslate"><span class="pre">(1,</span> <span class="pre">N)</span></code> yields <code class="docutils literal notranslate"><span class="pre">Vt</span></code> of
+shape <code class="docutils literal notranslate"><span class="pre">(1,</span> <span class="pre">N)</span></code> — a single row. Slicing <code class="docutils literal notranslate"><span class="pre">Vt[:3]</span></code> still returns one row, so
+the basis is <code class="docutils literal notranslate"><span class="pre">(N,</span> <span class="pre">1)</span></code>: <strong>rank 1, not 3</strong>, with no warning.</p>
+<p>Because <code class="docutils literal notranslate"><span class="pre">N,</span> <span class="pre">r</span> <span class="pre">=</span> <span class="pre">U.shape</span></code> reads the rank from the array, the threshold changes
+with it. At N=48, α=1e-4:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">r</span> <span class="o">=</span> <span class="mi">3</span>   <span class="o">-&gt;</span>   <span class="n">thr</span> <span class="o">=</span> <span class="mf">0.5907</span>   <span class="p">(</span><span class="mf">52.5</span> <span class="n">degrees</span><span class="p">)</span>
+<span class="n">r</span> <span class="o">=</span> <span class="mi">1</span>   <span class="o">-&gt;</span>   <span class="n">thr</span> <span class="o">=</span> <span class="mf">0.3846</span>   <span class="p">(</span><span class="mf">58.2</span> <span class="n">degrees</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The gate is looser than intended and false positives increase. Building a
+rank-r basis requires at least r linearly independent waveforms.</p>
+</section>
+<section id="peak-sign-recognises-only-neg">
+<h3><code class="docutils literal notranslate"><span class="pre">peak_sign</span></code> recognises only <code class="docutils literal notranslate"><span class="pre">&quot;neg&quot;</span></code><a class="headerlink" href="#peak-sign-recognises-only-neg" title="Link to this heading"></a></h3>
+<p>Line 127 is <code class="docutils literal notranslate"><span class="pre">neg</span> <span class="pre">=</span> <span class="pre">peak_sign</span> <span class="pre">==</span> <span class="pre">&quot;neg&quot;</span></code>. Anything else — <code class="docutils literal notranslate"><span class="pre">&quot;NEG&quot;</span></code>,
+<code class="docutils literal notranslate"><span class="pre">&quot;negative&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;both&quot;</span></code>, a typo — evaluates False and the detector snaps to
+the local <em>maximum</em>. Extracellular spikes are negative-going, so this searches
+noise. There is no validation.</p>
+</section>
+</section>
+<section id="parameter-reference">
+<h2>Parameter reference<a class="headerlink" href="#parameter-reference" title="Link to this heading"></a></h2>
+<p>Values in the third column assume fs = 30 kHz and the shipped
+<code class="docutils literal notranslate"><span class="pre">(48,</span> <span class="pre">3)</span></code> basis.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Effect at 30 kHz</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cfar_alpha</span></code></p></td>
+<td><p>1e-4</p></td>
+<td><p>threshold 0.5907; subspace angle 52.5 degrees</p></td>
+</tr>
+<tr class="row-odd"><td><p>rank (from basis)</p></td>
+<td><p>3</p></td>
+<td><p>fixes N-r = 45 degrees of freedom in the F distribution</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">refractory_ms</span></code></p></td>
+<td><p>0.5</p></td>
+<td><p>15 samples minimum separation, per channel</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">snap_ms</span></code></p></td>
+<td><p>0.6</p></td>
+<td><p>18 samples searched either side for the true extremum</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">chunk_s</span></code></p></td>
+<td><p>30.0</p></td>
+<td><p>900,000 samples read per chunk; memory knob</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">k_amp</span></code></p></td>
+<td><p>3.5</p></td>
+<td><p>local-sigma multiplier in Stage 3</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">w_ms</span></code></p></td>
+<td><p>100.0</p></td>
+<td><p>3,000-sample blocks for the sigma grid</p></td>
+</tr>
+</tbody>
+</table>
+<p>Derived constants, not parameters:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Constant</p></th>
+<th class="head"><p>Value</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">N</span></code></p></td>
+<td><p>48</p></td>
+<td><p>basis length, 1.60 ms — read from the basis array</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">lag</span></code></p></td>
+<td><p>24</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">N</span> <span class="pre">//</span> <span class="pre">2</span></code>, filter index to signal index</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">margin</span></code></p></td>
+<td><p>114</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">2N</span> <span class="pre">+</span> <span class="pre">w_snap</span></code>, chunk overlap</p></td>
+</tr>
+<tr class="row-odd"><td><p>1.4826</p></td>
+<td><p>–</p></td>
+<td><p>MAD to Gaussian-equivalent sigma</p></td>
+</tr>
+</tbody>
+</table>
+<p>Threshold sensitivity, for reference when changing α or rank:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>thr</p></th>
+<th class="head"><p>cos²θ</p></th>
+<th class="head"><p>subspace angle</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>α = 1e-3</p></td>
+<td><p>0.4300</p></td>
+<td><p>0.301</p></td>
+<td><p>56.7 degrees</p></td>
+</tr>
+<tr class="row-odd"><td><p>α = 1e-4</p></td>
+<td><p>0.5907</p></td>
+<td><p>0.371</p></td>
+<td><p>52.5 degrees</p></td>
+</tr>
+<tr class="row-even"><td><p>α = 1e-5</p></td>
+<td><p>0.7676</p></td>
+<td><p>0.434</p></td>
+<td><p>48.8 degrees</p></td>
+</tr>
+<tr class="row-odd"><td><p>α = 1e-6</p></td>
+<td><p>0.9629</p></td>
+<td><p>0.491</p></td>
+<td><p>45.5 degrees</p></td>
+</tr>
+<tr class="row-even"><td><p>r = 1</p></td>
+<td><p>0.3846</p></td>
+<td><p>0.278</p></td>
+<td><p>58.2 degrees</p></td>
+</tr>
+<tr class="row-odd"><td><p>r = 3</p></td>
+<td><p>0.5907</p></td>
+<td><p>0.371</p></td>
+<td><p>52.5 degrees</p></td>
+</tr>
+<tr class="row-even"><td><p>r = 8</p></td>
+<td><p>1.1051</p></td>
+<td><p>0.525</p></td>
+<td><p>43.6 degrees</p></td>
+</tr>
+</tbody>
+</table>
+<p>Raising the rank enlarges the subspace but simultaneously tightens the angle
+the F distribution demands. The compensation is automatic, not hand-tuned.</p>
 </section>
 </section>
 
