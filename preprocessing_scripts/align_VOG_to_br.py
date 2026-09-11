@@ -12,7 +12,6 @@ from RCP_analysis.python.functions.config_loading import *
 # Base paths from config_loading
 VOG_SYNC = int(UA_CFG.get("VOG_sync_ch", 135))  # BR ns2 sync channel for VOG
 
-
 def main():
     print(f"[scan] VOG_ROOT={VOG_ROOT}")
     print(f"[scan] BR_ROOT={BR_ROOT}")

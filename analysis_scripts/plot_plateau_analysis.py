@@ -39,6 +39,8 @@ from matplotlib.collections import LineCollection
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
 
+from RCP_analysis.python.functions.kinematics_utils import mean_ci95_trace_summary
+
 
 # =============================================================================
 # Configuration
@@ -801,10 +803,19 @@ def process_condition(
     if n_valid > 0:
         dist_median = np.nanmedian(valid_dist, axis=0)
         dist_mean = np.nanmean(valid_dist, axis=0)
-        dist_std = np.nanstd(valid_dist, axis=0)
-        dist_sem = dist_std / np.sqrt(max(1, n_valid))
-        dist_ci_lower = dist_median - 1.96 * dist_sem
-        dist_ci_upper = dist_median + 1.96 * dist_sem
+        dist_std = np.nanstd(valid_dist, axis=0, ddof=1)
+
+        n_time_valid = np.sum(np.isfinite(valid_dist), axis=0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            dist_sem = dist_std / np.sqrt(n_time_valid)
+
+        ci_summary = mean_ci95_trace_summary(valid_dist, time=aligned_time)
+        if ci_summary is not None:
+            dist_ci_lower = ci_summary["ci_lower"]
+            dist_ci_upper = ci_summary["ci_upper"]
+        else:
+            dist_ci_lower = np.full(T_aligned, np.nan)
+            dist_ci_upper = np.full(T_aligned, np.nan)
     else:
         dist_median = np.full(T_aligned, np.nan)
         dist_mean = np.full(T_aligned, np.nan)
@@ -2131,26 +2142,31 @@ def compare_conditions_by_target(
         color = colors[i]
 
         if isinstance(dist_norm, np.ndarray) and dist_norm.ndim == 2:
-            n_trials, n_timepoints = dist_norm.shape
-
-            mean_dist = np.nanmean(dist_norm, axis=0)
-            std_dist = np.nanstd(dist_norm, axis=0, ddof=1)
-            n_valid = np.sum(~np.isnan(dist_norm), axis=0)
-            sem_dist = std_dist / np.sqrt(np.maximum(n_valid, 1))
-
-            t_crit = stats.t.ppf(0.975, df=max(n_trials - 1, 1))
-            ci95_dist = t_crit * sem_dist
-
-            time_ms = aligned_time if aligned_time is not None else np.arange(n_timepoints)
-
-            ax4.plot(time_ms, mean_dist, color=color, linewidth=2, label=d["label"])
-            ax4.fill_between(
-                time_ms,
-                mean_dist - ci95_dist,
-                mean_dist + ci95_dist,
-                color=color,
-                alpha=0.2,
+            trace = mean_ci95_trace_summary(
+                arr_nt=dist_norm,
+                time=aligned_time,
             )
+
+            if trace is not None:
+                time_ms = trace["time"]
+                mean_dist = trace["mean"]
+                ci_lower = trace["ci_lower"]
+                ci_upper = trace["ci_upper"]
+
+                ax4.plot(
+                    time_ms,
+                    mean_dist,
+                    color=color,
+                    linewidth=2,
+                    label=d["label"],
+                )
+                ax4.fill_between(
+                    time_ms,
+                    ci_lower,
+                    ci_upper,
+                    color=color,
+                    alpha=0.2,
+                )
 
     ax4.set_xlabel("Time (ms)")
     ax4.set_ylabel("Normalized Distance")
@@ -2275,26 +2291,31 @@ def analyze_selected_conditions(
         aligned_time = d["aligned_time"]
 
         if isinstance(dist_norm, np.ndarray) and dist_norm.ndim == 2:
-            n_trials, n_timepoints = dist_norm.shape
-
-            mean_dist = np.nanmean(dist_norm, axis=0)
-            std_dist = np.nanstd(dist_norm, axis=0, ddof=1)
-            n_valid = np.sum(~np.isnan(dist_norm), axis=0)
-            sem_dist = std_dist / np.sqrt(np.maximum(n_valid, 1))
-
-            t_crit = stats.t.ppf(0.975, df=max(n_trials - 1, 1))
-            ci95_dist = t_crit * sem_dist
-
-            time_ms = aligned_time if aligned_time is not None else np.arange(n_timepoints)
-
-            ax2.plot(time_ms, mean_dist, color=colors[i], linewidth=2, label=d["label"])
-            ax2.fill_between(
-                time_ms,
-                mean_dist - ci95_dist,
-                mean_dist + ci95_dist,
-                color=colors[i],
-                alpha=0.2,
+            trace = mean_ci95_trace_summary(
+                arr_nt=dist_norm,
+                time=aligned_time,
             )
+
+            if trace is not None:
+                time_ms = trace["time"]
+                mean_dist = trace["mean"]
+                ci_lower = trace["ci_lower"]
+                ci_upper = trace["ci_upper"]
+
+                ax2.plot(
+                    time_ms,
+                    mean_dist,
+                    color=colors[i],
+                    linewidth=2,
+                    label=d["label"],
+                )
+                ax2.fill_between(
+                    time_ms,
+                    ci_lower,
+                    ci_upper,
+                    color=colors[i],
+                    alpha=0.2,
+                )
 
     ax2.set_xlabel("Time (ms)")
     ax2.set_ylabel("Normalized Distance")
@@ -2579,77 +2600,6 @@ def build_trajectory_variability_stats_table(
 # GIF generation: mean normalized distance ± 95% CI
 # =============================================================================
 
-def compute_mean_distance_ci_from_dist_norm(
-    dist_norm: np.ndarray,
-    aligned_time: Optional[np.ndarray] = None) -> Optional[Dict[str, np.ndarray]]:
-    """
-    Compute mean normalized distance and 95% CI across trials.
-
-    Parameters
-    ----------
-    dist_norm:
-        Trial x time array of normalized distances.
-    aligned_time:
-        Time vector in ms. If None, sample indices are used.
-
-    Returns
-    -------
-    Dictionary containing:
-        time_ms, mean, ci_lower, ci_upper, ci95, n_valid
-    """
-
-    if not isinstance(dist_norm, np.ndarray):
-        return None
-
-    if dist_norm.ndim != 2:
-        return None
-
-    n_trials, n_timepoints = dist_norm.shape
-
-    if n_trials == 0 or n_timepoints == 0:
-        return None
-
-    if aligned_time is None:
-        time_ms = np.arange(n_timepoints, dtype=float)
-    else:
-        time_ms = np.asarray(aligned_time, dtype=float)
-
-    if time_ms.ndim != 1 or len(time_ms) != n_timepoints:
-        warnings.warn(
-            "aligned_time length does not match dist_norm time dimension. "
-            "Using sample indices instead."
-        )
-        time_ms = np.arange(n_timepoints, dtype=float)
-
-    with np.errstate(invalid="ignore"):
-        mean_dist = np.nanmean(dist_norm, axis=0)
-
-    n_valid = np.sum(~np.isnan(dist_norm), axis=0)
-
-    with np.errstate(invalid="ignore", divide="ignore"):
-        std_dist = np.nanstd(dist_norm, axis=0, ddof=1)
-        sem_dist = std_dist / np.sqrt(np.maximum(n_valid, 1))
-
-    t_crit = np.full(n_timepoints, np.nan, dtype=float)
-    valid_df = n_valid > 1
-
-    if np.any(valid_df):
-        t_crit[valid_df] = stats.t.ppf(0.975, df=n_valid[valid_df] - 1)
-
-    ci95 = t_crit * sem_dist
-    ci_lower = mean_dist - ci95
-    ci_upper = mean_dist + ci95
-
-    return {
-        "time_ms": time_ms,
-        "mean": mean_dist,
-        "ci_lower": ci_lower,
-        "ci_upper": ci_upper,
-        "ci95": ci95,
-        "n_valid": n_valid,
-    }
-
-
 def interpolate_trace_to_grid(
     source_time: np.ndarray,
     source_values: np.ndarray,
@@ -2741,7 +2691,7 @@ def generate_mean_distance_ci_gif(
         dist_norm = d.get("dist_norm", None)
         aligned_time = d.get("aligned_time", None)
 
-        trace = compute_mean_distance_ci_from_dist_norm(
+        trace = mean_ci95_trace_summary(
             dist_norm=dist_norm,
             aligned_time=aligned_time,
         )
@@ -2749,7 +2699,7 @@ def generate_mean_distance_ci_gif(
         if trace is None:
             continue
 
-        time_ms = trace["time_ms"]
+        time_ms = trace["time"]
         mean_dist = trace["mean"]
         ci_lower = trace["ci_lower"]
         ci_upper = trace["ci_upper"]

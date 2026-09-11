@@ -47,7 +47,7 @@ def process_video(path: Path, reader: easyocr.Reader, out_csv: Path):
         n_chunks_missing = 0
 
         while True:
-            avi_fnum += 1
+            avi_fnum += 1 # Indexing the frame in the .avi file, counting dropped frames as absent
             ret, frame = V.read()
             if not ret:
                 break
@@ -62,24 +62,24 @@ def process_video(path: Path, reader: easyocr.Reader, out_csv: Path):
 
             if len(results) == 3:
                 # Parse fields robustly
-                ocr_fnum = ZEROS(results[0][1]).strip()
+                ocr_fnum = ZEROS(results[0][1]).strip() # Frame counter read by OCR, which skips over dropped frames
 
                 delta_t = ''
                 delta_t_str = results[1][1].strip()
                 if delta_t_str[:3].lower() == 'dt:' and delta_t_str[-4:].lower() == 'msec':
-                    delta_t = ZEROS(delta_t_str[3:-4]).strip()
+                    delta_t = ZEROS(delta_t_str[3:-4]).strip() # Difference in time between previous frame and current frame in MS
 
                 try:
-                    n_missing = round(float(delta_t) / 10.0 - 1.0) if delta_t else 0
+                    n_missing = round(float(delta_t) / 10.0 - 1.0) if delta_t else 0 # Frames dropped immediately before this one
                 except Exception:
                     n_missing = 0
 
                 if n_missing > 0:
-                    n_chunks_missing += 1
-                total_missing += n_missing
+                    n_chunks_missing += 1 # Number of separate drop events so far, however many frames each one swallowed
+                total_missing += n_missing # Cumulative frames dropped
 
-                corrected_fnum = avi_fnum + total_missing
-                text = ZEROS(' '.join(r[1] for r in results))
+                corrected_fnum = avi_fnum + total_missing # Corrected frame number
+                text = ZEROS(' '.join(r[1] for r in results)) # Raw OCR text of the whole band, kept so bad reads can be checked by hand
 
                 w.writerow([
                     avi_fnum, ocr_fnum, corrected_fnum,
@@ -105,9 +105,7 @@ def get_pipeline_video_root() -> Path:
     """
     Get current session's Video folder from your pipeline config.
 
-    This uses config_loading.py, where you already have:
-
-        VIDEO_ROOT = SESSION_LOC / "Video"
+    This uses config_loading.py, to get VIDEO_ROOT = SESSION_LOC / "Video"
 
     This function is only used when no command-line path is provided.
     """
@@ -134,19 +132,11 @@ def get_pipeline_video_root() -> Path:
 
 
 def main():
-    # OLD behavior:
-    #   python FlirSync_EasyOCR_folder.py /path/to/video-or-folder
-    #
-    # NEW pipeline behavior:
-    #   python FlirSync_EasyOCR_folder.py
-    #
-    # If no argument is passed, use VIDEO_ROOT from config_loading.py.
-
     if len(sys.argv) >= 2:
         target = Path(sys.argv[1])
         print(f"[info] Using command-line target: {target}", file=sys.stderr)
     else:
-        target = get_pipeline_video_root()
+        target = get_pipeline_video_root() # Get VIDEO_ROOT from config_loading.py
         print(f"[info] Using pipeline VIDEO_ROOT: {target}", file=sys.stderr)
 
     print('Initializing OCR...\r', file=sys.stderr, end='', flush=True)
@@ -158,7 +148,7 @@ def main():
     print('OCR ready.                                      ', file=sys.stderr)
 
     if target.is_file():
-        ocr_root = target.parent / "OCR"
+        ocr_root = target.parent / "OCR" # OCR folder
         ocr_root.mkdir(parents=True, exist_ok=True)
         out_csv = ocr_root / f"{target.stem}_ocr.csv"
 
@@ -166,7 +156,7 @@ def main():
         if out_csv.exists():
             print(f"[skip] Output already exists: {out_csv}", file=sys.stderr)
         else:
-            process_video(target, READER, out_csv)
+            process_video(target, READER, out_csv) # process one video file
 
     elif target.is_dir():
         files = sorted(

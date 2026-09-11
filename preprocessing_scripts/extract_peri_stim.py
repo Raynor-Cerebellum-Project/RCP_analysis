@@ -121,9 +121,8 @@ MIN_TRIALS        = 1
 MIN_BIN_COVERAGE_FRAC = 0.9  # require at least x% of trials finite per bin
 
 
-# ============================================================================
-# KINEMATIC TRIAL FILTERING PARAMETERS
-# ============================================================================
+# Kinematics trial filtering params
+# This is automatic kinematics filtering, for manual filtering use inspect_kinematic_trajectories.py
 
 CAMERA_FOR_POSITION_FILTER = "cam1"  # "cam0" or "cam1"
 
@@ -202,14 +201,12 @@ def plot_filtering_diagnostic(segs: np.ndarray, valid_mask: np.ndarray, rejectio
     plt.close(fig)
     print(f"[extract] saved filtering diagnostic")
 
-
 def _find_keypoint_index(kp_names: list[str], pattern: str) -> int | None:
     pattern_lower = pattern.lower()
     for i, name in enumerate(kp_names):
         if pattern_lower in str(name).lower():
             return i
     return None
-
 
 def _compute_distance_from_start(
     x: np.ndarray,
@@ -265,7 +262,6 @@ def _compute_distance_from_start(
 
     dist = np.sqrt((x - x0) ** 2 + (y - y0) ** 2)
     return dist[0] if is_1d else dist
-
 
 def validate_kinematic_trials(
     cam_segs: np.ndarray,
@@ -412,10 +408,6 @@ def _as_list(x):
         return x.tolist()
     return list(x)
 
-def _last(x):
-    x = np.asarray(x)
-    return float(x.reshape(-1)[-1]) if x.size else float("nan")
-
 def _median_lines_for_columns(
     behv_t,
     data_cols,
@@ -507,7 +499,6 @@ def _median_lines_for_columns(
 
     return lines_arr, rel_t, n_kept, segs_all
 
-
 # Behavior
 def _ordered_xy_indices(cam_cols: list[str],
                         keypoints: tuple[str, ...] = KEYPOINTS_ORDER
@@ -541,6 +532,16 @@ def _ordered_xy_indices(cam_cols: list[str],
 def _select_matrix(cam: np.ndarray, cols: list[str],
                    keypoints: tuple[str, ...] = KEYPOINTS_ORDER
                    ) -> tuple[np.ndarray, list[str]]:
+    """_summary_
+
+    Args:
+        cam (np.ndarray): _description_
+        cols (list[str]): _description_
+        keypoints (tuple[str, ...], optional): _description_. Defaults to KEYPOINTS_ORDER.
+
+    Returns:
+        tuple[np.ndarray, list[str]]: _description_
+    """
     idx, names = _ordered_xy_indices(cols or [], keypoints=keypoints)
 
     if cam is None or cam.size == 0:
@@ -1155,8 +1156,6 @@ def _save_peristim(
         }
         savemat(out_mat, mat, do_compression=True)
 
-
-
 def _safe_nanmedian(arr: np.ndarray, axis=0) -> np.ndarray:
     arr = np.asarray(arr, float)
     if arr.size == 0:
@@ -1171,7 +1170,6 @@ def _safe_nanmedian(arr: np.ndarray, axis=0) -> np.ndarray:
     med = np.asarray(med, float)
     med[~valid_any] = np.nan
     return med
-
 
 def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False, split_targets: bool = True, 
                                             is_control: bool = False, apply_kinematic_filter: bool = True,) -> None:
@@ -1207,10 +1205,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         
     raw_trial_indices = np.arange(event_ms.size)
 
-    # --- MANUAL REMOVAL: applied immediately using stable absolute stim-pulse indices ---
-    # The indices in manual_trial_remove.csv always refer to the absolute position
-    # of the stim pulse in this recording (0 = first stim pulse, 1 = second, etc.),
-    # regardless of how many other trials get removed by automated filters.
+    # This part removes trials we labeled as bad from inspect_kinematic_trajectories.py. The indices refer to the index of stim blocks
     if not MANUAL_REMOVE_DF.empty:
         csv_filenames = MANUAL_REMOVE_DF['intan_filename'].astype(str).str.strip()
         actual_filename = str(intan_filename).strip()
@@ -1238,9 +1233,8 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                 print(f"[extract] {aligned_path.name}: manually dropping {n_dropped} trials (raw indices: {sorted(drop_set)}).")
                 event_ms = event_ms[manual_mask]
                 raw_trial_indices = raw_trial_indices[manual_mask]
-    # ---------------------------------------------------------------------------------
 
-    # ---- metadata for titles ----
+    # Metadata for titles
     behv_t = np.arange(0.0)
     behavior_gate_z = np.zeros((0, 0), float)
 
@@ -1260,7 +1254,6 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         fs_ua           = ua_meta['fs_ua']
         fs_ts           = ua_meta['fs_ts']
         ua_samples      = ua_meta['n_samples']
-        UA_t            = ua_rec_ms[0] + np.arange(ua_samples) * (1000.0 / fs_ua)
         
         # UA ids
         ua_ids_1based = aligned_npz["ua_elec"]
@@ -1286,22 +1279,25 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         beh_cam1_cols   = [str(x) for x in _as_list(raw1)]
         behv_t          = aligned_npz["beh_t_ms"].astype(float) if "beh_t_ms" in aligned_npz.files else np.arange(0.0)
 
-        # ---- basic behavior checks ----
+        # basic behavior checks
         if behv_t.size == 0:
             print(f"[extract] {aligned_path.name}: no behavior time axis; skipping behavior.")
-        # interpolate small NaN gaps
+            
+        # interpolate small NaN gaps TODO: Is this repeated? because we interpolate in align_dlc.py
         if beh_cam0.size:
             beh_cam0 = _interp_nans_2d_by_col(beh_cam0, max_gap=4)
         if beh_cam1.size:
             beh_cam1 = _interp_nans_2d_by_col(beh_cam1, max_gap=4)
 
+        # TODO clean this up
         cam0_M, beh_cam0_names = _select_matrix(beh_cam0, beh_cam0_cols)
         cam1_M, beh_cam1_names = _select_matrix(beh_cam1, beh_cam1_cols)
 
+        # Z score kinematics
         cam0_z = _z_per_column(cam0_M) if cam0_M.size else cam0_M
         cam1_z = _z_per_column(cam1_M) if cam1_M.size else cam1_M
 
-        # ---- behavior-based stim gating: drop bad behavior trials everywhere ----
+        # Behavior-based stim gating: drop bad behavior trials everywhere
         if CAMERA_FOR_POSITION_FILTER == "cam1":
             behavior_gate_z = cam1_z
         else:
@@ -1328,13 +1324,10 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                 if "trial_labels" in locals() and trial_labels is not None and np.size(trial_labels) == beh_mask.size:
                     trial_labels = np.asarray(trial_labels)[beh_mask]
         
+        # Get velocity
         cam0_pos_filt, cam0_vel, _ = rcp.butter_lowpass_pos_and_vel(cam0_z, behv_t, cutoff_hz=10.0, order=3)
         cam1_pos_filt, cam1_vel, _ = rcp.butter_lowpass_pos_and_vel(cam1_z, behv_t, cutoff_hz=10.0, order=3)
     
-    behv_dur = _last(behv_t) if ("behv_t" in locals() and np.size(behv_t)) else float("nan")
-    nprw_dur = float(nprw_rec_dur) if ("nprw_rec_dur" in locals() and nprw_rec_dur is not None) else float("nan")
-    ua_dur   = float(ua_rec_dur)   if ("ua_rec_dur"   in locals() and ua_rec_dur   is not None) else float("nan")
-
     print(f"[extract] processing {aligned_path.name}")
     # print(
     #     f"[debug] {aligned_path.name}: "
@@ -1343,7 +1336,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
     #     f"UA rec duration={ua_dur:.3f} ms"
     # )
         
-    # VOG
+    # VOG TODO make sure we can check if VOG is present in the aligned_npz
     # if HAS_VOG:
     #     vog_cols      = aligned_npz["vog_cols"]
     #     vog_t_ms      = aligned_npz["vog_t_ms"]
@@ -1365,16 +1358,17 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
     #         vog_segs      = np.zeros((0, 0, 0), float)
     #         n_vog_trials  = 0
     
-    # labels corresponding to the original behavior-gated event_ms
+    # If labels are not present in aligned npz, replace with "N"
     if "trial_labels" not in locals():
         trial_labels = np.full(event_ms.shape, "N", dtype="U1")
 
-    # Mask valid trials
+    # Mask valid trials to make sure the window of reach around the event is within the recording
     if HAS_BR:
         mask_valid = _get_valid_events(event_ms, ua_rec_ms, WIN_MS)
     else:
         mask_valid = _get_valid_events(event_ms, nprw_rec_ms, WIN_MS)
 
+    # Remove invalid events
     event_ms = np.asarray(event_ms[mask_valid], float)
     raw_trial_indices = raw_trial_indices[mask_valid]
     trial_labels = np.asarray(trial_labels[mask_valid], dtype="U1")  # aligns with events_valid
@@ -1412,20 +1406,8 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                 win_ms=(0.0, 1000.0),
                 num_to_label={1: "A", 2: "B"},
             )
-
-            # print(f"\n[DEBUG] Trial-by-trial label breakdown for {aligned_path.name}:")
-            # print(f"{'Trial':>6} {'Raw_Idx':>8} {'Label':>6} {'Stim_ms':>12}")
-            # print("-" * 40)
-            for i, (lbl, stim_t) in enumerate(zip(trial_labels, event_ms)):
-                raw_idx = raw_trial_indices[i] if i < len(raw_trial_indices) else -1
-                # print(f"{i:>6} {raw_idx:>8} {lbl:>6} {stim_t:>12.1f}")
-            # print("-" * 40)
-            vals, cnts = np.unique(trial_labels, return_counts=True)
-            # print(f"Summary: {dict(zip(vals, cnts))}\n")
         else:
             trial_labels = np.full(event_ms.shape, "N", dtype="U1") 
-
-        vals, cnts = np.unique(trial_labels, return_counts=True)
 
         # extract ts_state peristim segments
         if ts_state_num_full is not None and ns2_t_ms.size and event_ms.size:
@@ -1462,6 +1444,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                 ts_state_char_segs = np.zeros((0, 0), dtype="U1")
                 n_ts_state_trls = 0
 
+        # Counting number of trials for each touch screen state ("target")
         if ts_state_segs.size and ts_state_char_arr is not None and ts_state_num_full is not None:
             mapping: dict[int, str] = {}
             if ts_state_char_arr.size == ts_state_num_full.size:
@@ -1525,7 +1508,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
     nprw_rates_hz = rcp.smooth_counts_gauss(nprw_counts, nprw_widths_ms, nprw_rel_t, NPRW_SIGMA_MS, nprw_left_bins)
     nprw_rates_hz_baselined = rcp.baseline_zero_each_trial(nprw_rates_hz, nprw_rel_t, normalize_first_ms=NORMALIZE_FIRST_MS)
 
-    # 2) Define subsets: A/B or all-events
+    # Define subsets for each target A/B or all-events
     if split_targets and HAS_BR:
         if np.any((trial_labels == "A") | (trial_labels == "B")):
             subsets = [
@@ -1538,7 +1521,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
     else:
         subsets = [(None, np.arange(event_ms.size))]
 
-    # 4) Loop subsets and save
+    # Loop subsets and save
     for target_name, idx in subsets:
         idx = np.asarray(idx, int)
         if idx.size == 0:
@@ -1548,9 +1531,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         raw_trial_indices_sub = raw_trial_indices[idx]
         labels_sub   = trial_labels[idx]
 
-        # ---- subset ts_state segments (if you already computed ts_state_segs_A/B) ----
-        # If split_targets: use your precomputed *_A/*_B (preferred)
-        # Else: keep full ts_state_segs (valid subset), or empty if you didn’t compute it.
+        # Use your precomputed *_A/*_B (preferred), otherwise keep full ts_state_segs
         if split_targets:
             if target_name == "A":
                 ts_state_segs_sub = ts_state_segs_A
@@ -1561,12 +1542,12 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
                 ts_state_char_segs_sub = ts_state_char_segs_B
                 n_ts_state_trials_sub = int(n_ts_state_trls_B)
         else:
-            # AtRest: easiest is to NOT split ts_state; store the overall (already computed) ts_state_segs
+            # AtRest
             ts_state_segs_sub = ts_state_segs
             ts_state_char_segs_sub = ts_state_char_segs
             n_ts_state_trials_sub = int(n_ts_state_trls)
 
-        # ---- subset UA/NPRW trials ----
+        # Subset NPRW and UA data
         NPRW_rates_hz_sub     = nprw_rates_hz[idx]
         NPRW_rates_zeroed_sub = nprw_rates_hz_baselined[idx]
         NPRW_counts_sub       = nprw_counts[idx]
@@ -1575,7 +1556,6 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         NPRW_med_sub = _safe_nanmedian(NPRW_rates_zeroed_sub, axis=0)
         NPRW_var_sub = np.nanvar(NPRW_rates_zeroed_sub, axis=0)
 
-        # UA (if present): same logic
         if HAS_BR:
             UA_rates_hz_sub     = ua_rates_hz[idx]
             UA_rates_zeroed_sub = ua_rates_hz_baselined[idx]
@@ -1591,7 +1571,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
             UA_med_sub = None
             UA_var_sub = None
 
-        # ---- behavior medians recomputed directly from event_ms_sub ----
+        # Calculate median kinematics
         if HAS_KINEMATICS and behv_t.size and behavior_gate_z.size:
             beh_cam0_pos_med_sub, beh_rel_t_sub, n_beh_sub, beh_cam0_segs_sub = _median_lines_for_columns(
                 behv_t,
@@ -1640,7 +1620,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
             beh_cam1_vel_segs_sub = np.zeros((0, 0, 0), float)
             n_beh_sub = 0
 
-        # ---- Position direction check: discard trials not moving correctly ----
+        # Position direction check: discard trials not moving correctly
         if apply_kinematic_filter and HAS_KINEMATICS and beh_rel_t_sub.size:
 
             # Choose which camera to use for the kinematic position filter
@@ -1649,7 +1629,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
 
             if filter_segs.size:
 
-                # === Ensure matching trial counts before computing mask ===
+                # Ensure matching trial counts before computing mask
                 n_common = min(
                     beh_cam0_segs_sub.shape[0],
                     beh_cam1_segs_sub.shape[0],
@@ -1884,18 +1864,18 @@ def main():
 
     # grasp & imu: per-file processing (like at_rest, no A/B)
     for file in grasp_files:
-        extract_one_file(file, out_dir = GRASP_PERI_ROOT, use_ir_ms=False, split_targets=False, apply_kinematic_filter=False,)
+        extract_one_file(file, out_dir = GRASP_PERI_ROOT, use_ir_ms=False, split_targets=False, apply_kinematic_filter=False)
         
     for file in imu_files:
-        extract_one_file(file, out_dir = IMU_PERI_ROOT, use_ir_ms=False, split_targets=False, apply_kinematic_filter=False,)
+        extract_one_file(file, out_dir = IMU_PERI_ROOT, use_ir_ms=False, split_targets=False, apply_kinematic_filter=False)
 
     # continuous_stim: per-file processing (align to ir_ms, no A/B)
     for file in continuous_stim_files:
-        extract_one_file(file, out_dir = CONTINUOUS_STIM_PERI_ROOT, use_ir_ms=True, split_targets=False)
+        extract_one_file(file, out_dir = CONTINUOUS_STIM_PERI_ROOT, use_ir_ms=True, split_targets=True)
 
     # at_rest: per-file processing (no A/B)
     for file in at_rest_files:
-        extract_one_file(file, out_dir = AT_REST_PERI_ROOT, use_ir_ms=False, split_targets=False, apply_kinematic_filter=False,)
+        extract_one_file(file, out_dir = AT_REST_PERI_ROOT, use_ir_ms=False, split_targets=False, apply_kinematic_filter=False)
 
 if __name__ == "__main__":
     main()

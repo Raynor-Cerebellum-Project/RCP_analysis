@@ -91,6 +91,20 @@ from .python.functions.subspace_detector import (
     filter_peaks_by_local_sigma,
 )
 
+from .python.functions.kinematics_utils import (
+    strip_cam_prefix,
+    simple_beh_labels,
+    get_subset_indices,
+    find_xy_indices_for_keypoint,
+    value_at_ref_time,
+    normalize_distance_trace,
+    compute_normalized_distance_from_xy_3d,
+    median_from_trial_traces,
+    mean_sd_from_trial_traces,
+    mean_ci95_from_trial_traces,
+    mean_ci95_trace_summary,
+)
+
 
 __all__ = [
     # params
@@ -173,4 +187,17 @@ __all__ = [
     
     # RSA
     "run_rsa",
+
+    # kinematics utils
+    "strip_cam_prefix",
+    "simple_beh_labels",
+    "get_subset_indices",
+    "find_xy_indices_for_keypoint",
+    "value_at_ref_time",
+    "normalize_distance_trace",
+    "compute_normalized_distance_from_xy_3d",
+    "median_from_trial_traces",
+    "mean_sd_from_trial_traces",
+    "mean_ci95_from_trial_traces",
+    "mean_ci95_trace_summary",
 ]

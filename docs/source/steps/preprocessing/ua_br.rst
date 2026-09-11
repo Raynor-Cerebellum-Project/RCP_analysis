@@ -20,15 +20,19 @@ Steps
 #. **Artifact Correction:**
 
    - Per-channel lag calibration using CSV lookup.
-   - Region-wise Incremental PCA (IPCA) artifact subtraction (rank 7 by default).
+   - Region-wise Incremental PCA (IPCA) artifact subtraction (rank 10 by default,
+     set by ``IPCA_Params.rank`` in ``config/params.yaml``).
    - Generates diagnostic alignment plots.
 
 #. High-pass filter cleaned data.
 #. **Spike Detection via Subspace Matched Filtering:**
 
-   - Uses pre-computed extremum templates (``median_extremum_basis_norm_UA_PortA_r3.npy``).
+   - Uses pre-computed extremum templates (``config/median_extremum_basis_norm_UA_PortA_r3.npy``).
 
+#. Clean spikes based on SNR (min 2.5) and max voltage (500µV)
+#. Detect and save touch-screen target. If lacking, fall back to DLC kinematics.
 #. Save ``.npz`` file per session with peaks, noise levels, and metadata.
+
 
 Matched Filter (alternative)
 ------------------------------
@@ -42,13 +46,89 @@ method if matched filtering fails.
 Inputs
 ------
 
-``.ns6`` files from Blackrock.
+#. Blackrock recordings
+
+   - ``DATA_ROOT/Blackrock/*.ns6`` (neural)
+   - ``DATA_ROOT/Blackrock/*.ns5``, ``*.ns2`` (sync, HR, touchscreen, VOG)
+
+#. UA channel mapping spreadsheet
+
+   - ``config/probes/`` (set by ``mapping_mat_rel`` in ``config/params.yaml``)
+
+#. Per-channel lag calibration
+
+   - ``config/channel_lag_calibration/channel_lags_port<A|B>.csv``
+
+#. Spike detection basis or template
+
+   - Subspace: ``config/median_extremum_basis_norm_UA_PortA_r3.npy``
+   - Matched filter: ``config/waveform_templates/median_extremum_templates_norm_UA_PortB.npy``
+
+#. BR-to-Intan shifts and the session metadata table
+
+   - ``DATA_ROOT/Metadata/br_to_intan_shifts.csv``
+
+.. note::
+   The subspace script falls back to building a rank-3 basis on the fly from
+   the matched-filter template if no pre-built basis is found, and errors out
+   if neither exists.
 
 Outputs
 -------
 
-``pp_*.npz``
-   Preprocessed files.
+Auxiliary streams
+^^^^^^^^^^^^^^^^^
 
-``aligned_*.npz``
-   Per-condition files with spike times.
+``DATA_ROOT/results/aux_data/UA/<session>__BR_aux_data.npz``
+   Sync pulses, HR, touchscreen, and VOG signals pulled from the ``.ns5`` and
+   ``.ns2`` files.
+
+Preprocessed recording
+^^^^^^^^^^^^^^^^^^^^^^
+
+``DATA_ROOT/results/checkpoints/UA/pp__<session>__NS6/``
+   The artifact-corrected, high-pass filtered recording, written as a
+   SpikeInterface folder rather than a single file.
+
+Detected peaks
+^^^^^^^^^^^^^^
+
+``DATA_ROOT/results/checkpoints/UA/rates__<session>__bin<bin>ms_sigma<sigma>ms.npz``
+   Both scripts write the same layout, so downstream code does not care which
+   detection method was used.
+
+   .. list-table::
+      :header-rows: 1
+      :widths: 40 60
+
+      * - Key
+        - Contents
+      * - ``peaks``
+        - Detected peaks (MUA).
+      * - ``noise_levels``
+        - Per-channel noise estimate used to set the detection threshold.
+      * - ``ua_index``, ``ua_elec``, ``ua_nsp``, ``ua_port``
+        - UA channel identity: row index, electrode number, NSP, and port.
+      * - ``ua_region``, ``ua_region_names``
+        - Region label per channel, and the name for each label.
+      * - ``ts_state_num``, ``ts_state_char``
+        - Touchscreen state, as a number and as a character code.
+      * - ``hr_sig``, ``vog_sig``
+        - Heart rate and VOG signals.
+      * - ``meta``
+        - Settings and recording info:
+
+          - Detection: ``detect_threshold``, ``peak_sign``, ``bin_ms``,
+            ``sigma_ms``
+          - Sampling rates: ``fs_ua``, ``fs_hr``, ``fs_vog``, ``fs_ts``
+          - Recording: ``n_channels``, ``n_samples``, ``n_segs``
+          - Timing: ``rec_dur``, ``rec_start_ms``, ``rec_end_ms``
+          - Source headers: ``meta_ns5``, ``meta_ns2``
+          - ``session``: the session name
+
+Diagnostic figures
+^^^^^^^^^^^^^^^^^^
+
+- ``DATA_ROOT/results/figures/artifact_alignment/artifact_alignment_br<br_idx>.png``
+- ``DATA_ROOT/results/figures/IPCA_debug/debug_MACRO_UA_br<br_idx>_ch<electrode>.png``
+- ``DATA_ROOT/results/figures/classification/``

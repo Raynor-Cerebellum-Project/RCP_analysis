@@ -21,4 +21,7 @@ __pycache__/
 .~$*
 ~$*
 
+# build files
+docs/build/
+
 comparison_results/

@@ -7,7 +7,7 @@
         4. Load neural data (.ns6) and config (location to data, geometry, and mapping)
         5. **Artifact Correction:**
         - Per-channel lag calibration using CSV lookup
-        - Region-wise Incremental PCA (IPCA) artifact subtraction (rank 7 by default)
+        - Region-wise Incremental PCA (IPCA) artifact subtraction (rank 10 by default)
         - Generates diagnostic alignment plots
         6. High-pass filtering clean data
         7. **Spike Detection via Matched Filtering:**
