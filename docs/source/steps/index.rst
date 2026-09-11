@@ -25,7 +25,7 @@ Preprocessing
 
 #. **Create aligned files**: ``make_aligned_npz_and_mat.py``
 
-   * One file per condition, per side.
+   * One file per condition.
    * Output: ``DATA_ROOT/results/checkpoints/Aligned/.../aligned_*.npz``
 
 #. **Extract peri-stim tensors** based on event timing (IR or stim): ``extract_peri_stim.py``

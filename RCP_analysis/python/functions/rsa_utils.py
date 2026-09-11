@@ -36,11 +36,14 @@ def _prepare_rsa_fig_dir(fig_dir: Path | str, target: str) -> Path:
 # Block: one condition's worth of trials, carried through the pipeline
 @dataclass
 class Block:
-    X: np.ndarray                       # (n_trials, n_features) raw features
+    X: np.ndarray                       # (n_trials, n_ch * n_t) flattened (channel, timebin) features
     cond: object                        # "Baseline" or BR_File index (int) or None
     target: str                         # "target_A" / "target_B"
     is_baseline: bool
     path: Path
+    n_ch: int = 0                       # channels, so X can be reshaped back to 3D
+    n_t: int = 0                        # timebins in the feature window
+    bin_ms: float = 0.0                 # bin width, must agree across blocks
     labels: list = field(default_factory=list)
     stim_mask: Optional[np.ndarray] = None   # set by compute_stim_mask, if channel_criterion uses it
     move_mask: Optional[np.ndarray] = None   # effective channel mask used for RSM construction
@@ -176,14 +179,22 @@ def _trial_features_from_peristim_npz(
 
     _, n_ch, _ = rates.shape
 
-    # collapse the time dimension: one scalar feature per channel per trial
-    X = np.nanmean(rates[:, :, mask_t], axis=2)
+    # keep the time dimension: one feature per (channel, timebin), flattened
+    # channel-major so X[:, c * n_t + k] is channel c at timebin k
+    W = rates[:, :, mask_t]                       # (n_trials, n_ch, n_t)
+    n_t = int(W.shape[2])
+    bin_ms = float(np.median(np.diff(rel_t))) if rel_t.size > 1 else 0.0
+    X = W.reshape(W.shape[0], n_ch * n_t)
 
-    # ---- drop trials with too few finite features (e.g. mostly NaN channels) ----
-    valid_trials = np.isfinite(X).sum(axis=1) >= MIN_VALID_FEATURES
+    # ---- drop trials with too few usable channels (e.g. mostly NaN channels) ----
+    # A channel counts only if every timebin in the window is finite, matching
+    # what the RSM builder needs from a trial's selected features.
+    ch_ok = np.isfinite(W).all(axis=2)            # (n_trials, n_ch)
+    valid_trials = ch_ok.sum(axis=1) >= MIN_VALID_FEATURES
     if not valid_trials.any():
         return np.zeros((0, 0), float), [], {
-            "cond": cond_label, "n_trials": 0, "n_ch": X.shape[1] if X.ndim == 2 else 0,
+            "cond": cond_label, "n_trials": 0, "n_ch": n_ch, "n_t": n_t,
+            "bin_ms": bin_ms,
         }
     X = X[valid_trials, :]
 
@@ -199,7 +210,9 @@ def _trial_features_from_peristim_npz(
         "target": target,
         "is_baseline": bool(is_baseline),
         "n_trials": n_final,
-        "n_ch": X.shape[1],
+        "n_ch": n_ch,
+        "n_t": n_t,
+        "bin_ms": bin_ms,
         "file": npz_path.name,
     }
     return X, labels, info
@@ -249,9 +262,37 @@ def _collect_condition_blocks(
                 skipped["missing_or_empty"].append(path.name)
             continue
 
-        blocks.append(Block(X=X, cond=cond, target=target, is_baseline=is_baseline, path=path, labels=labels))
+        blocks.append(Block(
+            X=X, cond=cond, target=target, is_baseline=is_baseline, path=path,
+            n_ch=int(info.get("n_ch", 0)), n_t=int(info.get("n_t", 0)),
+            bin_ms=float(info.get("bin_ms", 0.0)), labels=labels,
+        ))
 
     return blocks, skipped
+
+def _assert_uniform_bin_width(blocks: list[Block], tol_ms: float = 1e-6) -> None:
+    """
+    Every block must share a bin width.
+
+    Features are (channel, timebin) pairs, so feature k only means the same
+    elapsed time in every block if the bins are the same duration. Mixing widths
+    would silently correlate, say, a 5 ms bin against a 20 ms one.
+    """
+    widths = sorted({round(block.bin_ms, 6) for block in blocks if block.bin_ms > 0})
+    if len(widths) <= 1:
+        return
+
+    by_width: dict[float, list[str]] = {}
+    for block in blocks:
+        by_width.setdefault(round(block.bin_ms, 6), []).append(short_npz_name(block.path))
+    detail = "\n".join(
+        f"  {w:g} ms: {', '.join(sorted(names))}" for w, names in sorted(by_width.items())
+    )
+    raise ValueError(
+        f"[rsa] peri-stim files disagree on bin width ({', '.join(f'{w:g}' for w in widths)} ms).\n"
+        f"{detail}\n"
+        "Re-run extract_peri_stim with one bin_ms, or restrict this run to files that match."
+    )
 
 # Multiple comparison correction
 def _fdr_pass_mask(pvals: np.ndarray, alpha: float) -> np.ndarray:
@@ -574,7 +615,8 @@ def _plot_stim_mask_debug(
 def _build_rsm_pairwise(blocks: list[Block]) -> tuple[np.ndarray, list[int]]:
     """
     Build the full trial x trial similarity matrix across blocks.
-    The correlation is computed over union of their two channel masks (base_mask).
+    The correlation is computed over the union of their two channel masks, expanded
+    across timebins since each feature is one (channel, timebin) pair.
     Within-block and cross-block similarities use a consistent channel set.
     
     Pearson correlation between two trials only depends on those two trials' features.
@@ -589,7 +631,9 @@ def _build_rsm_pairwise(blocks: list[Block]) -> tuple[np.ndarray, list[int]]:
         for block_j in range(block_i, n_blocks):
             pair_mask = blocks[block_i].move_mask | blocks[block_j].move_mask
             if not pair_mask.any():
-                pair_mask = np.ones(blocks[block_i].X_z.shape[1], bool)
+                pair_mask = np.ones(blocks[block_i].n_ch, bool)
+            # masks are per channel; features are (channel, timebin) flattened
+            pair_mask = np.repeat(pair_mask, blocks[block_i].n_t)
 
             response_i = np.arange(offsets[block_i], offsets[block_i + 1])
             response_j = np.arange(offsets[block_j], offsets[block_j + 1])
@@ -1014,6 +1058,7 @@ def run_time_domain_corr(
         baseline_paths + stim_files + at_rest_files, source=source, poststim_win_ms=poststim_win_ms,
         skip_conds=skip_conds, min_trials=MIN_TRIALS_PER_COND,
     )
+    _assert_uniform_bin_width(blocks)
 
     # Report skipped files
     parts = []
@@ -1075,17 +1120,27 @@ def run_time_domain_corr(
         blocks = sorted(blocks, key=_okey)
 
     # Crop all blocks to a common channel count
-    condition_ch_ct = [block.X.shape[1] for block in blocks]
-    if len(set(condition_ch_ct)) > 1:
-        min_dim = min(condition_ch_ct)
-        logger.warning(f"[run][warn] feature dimension mismatch {set(condition_ch_ct)} -> cropping all to {min_dim}")
+    ch_cts = [block.n_ch for block in blocks]
+    t_cts = [block.n_t for block in blocks]
+    if len(set(ch_cts)) > 1 or len(set(t_cts)) > 1:
+        # Crop on the 3D view so channels stay aligned; a flat crop would mix
+        # one block's channel c with another's channel c+1.
+        min_ch, min_t = min(ch_cts), min(t_cts)
+        logger.warning(
+            f"[run][warn] feature shape mismatch channels={set(ch_cts)} timebins={set(t_cts)}"
+            f" -> cropping all to {min_ch} x {min_t}"
+            " (bin widths already checked, so timebin k is the same elapsed time"
+            " into each file's own window)"
+        )
         for block in blocks:
-            block.X = block.X[:, :min_dim]
+            n_trials = block.X.shape[0]
+            W = block.X.reshape(n_trials, block.n_ch, block.n_t)
+            block.X = W[:, :min_ch, :min_t].reshape(n_trials, min_ch * min_t)
+            block.n_ch, block.n_t = min_ch, min_t
             if block.stim_mask is not None:
-                block.stim_mask = block.stim_mask[:min_dim]
+                block.stim_mask = block.stim_mask[:min_ch]
         if move_mask is not None:
-            move_mask = move_mask[:min_dim]
-        condition_ch_ct = [min_dim] * len(blocks)
+            move_mask = move_mask[:min_ch]
 
     # z-score per channel then slice back into per-block chunks
     X_all = np.vstack([block.X for block in blocks])
@@ -1171,8 +1226,7 @@ def run_time_domain_corr(
     for criterion in criteria:
         # Determine channel mask for each criterion
         for block in blocks:
-            n_ch = block.X_z.shape[1]
-            all_ch = np.ones(n_ch, bool)
+            all_ch = np.ones(block.n_ch, bool)  # masks live at channel resolution
             
             if criterion == "movement":
                 block.move_mask = move_mask if move_mask is not None else all_ch
@@ -1330,6 +1384,7 @@ def run_rsa(
         baseline_paths + stim_files + at_rest_files, source=source, poststim_win_ms=poststim_win_ms,
         skip_conds=skip_conds, min_trials=MIN_TRIALS_PER_COND,
     )
+    _assert_uniform_bin_width(blocks)
 
     # Report skipped files
     parts = []
@@ -1391,17 +1446,27 @@ def run_rsa(
         blocks = sorted(blocks, key=_okey)
 
     # Crop all blocks to a common channel count
-    condition_ch_ct = [block.X.shape[1] for block in blocks]
-    if len(set(condition_ch_ct)) > 1:
-        min_dim = min(condition_ch_ct)
-        logger.warning(f"[run][warn] feature dimension mismatch {set(condition_ch_ct)} -> cropping all to {min_dim}")
+    ch_cts = [block.n_ch for block in blocks]
+    t_cts = [block.n_t for block in blocks]
+    if len(set(ch_cts)) > 1 or len(set(t_cts)) > 1:
+        # Crop on the 3D view so channels stay aligned; a flat crop would mix
+        # one block's channel c with another's channel c+1.
+        min_ch, min_t = min(ch_cts), min(t_cts)
+        logger.warning(
+            f"[run][warn] feature shape mismatch channels={set(ch_cts)} timebins={set(t_cts)}"
+            f" -> cropping all to {min_ch} x {min_t}"
+            " (bin widths already checked, so timebin k is the same elapsed time"
+            " into each file's own window)"
+        )
         for block in blocks:
-            block.X = block.X[:, :min_dim]
+            n_trials = block.X.shape[0]
+            W = block.X.reshape(n_trials, block.n_ch, block.n_t)
+            block.X = W[:, :min_ch, :min_t].reshape(n_trials, min_ch * min_t)
+            block.n_ch, block.n_t = min_ch, min_t
             if block.stim_mask is not None:
-                block.stim_mask = block.stim_mask[:min_dim]
+                block.stim_mask = block.stim_mask[:min_ch]
         if move_mask is not None:
-            move_mask = move_mask[:min_dim]
-        condition_ch_ct = [min_dim] * len(blocks)
+            move_mask = move_mask[:min_ch]
 
     # z-score per channel then slice back into per-block chunks
     X_all = np.vstack([block.X for block in blocks])
@@ -1487,8 +1552,7 @@ def run_rsa(
     for criterion in criteria:
         # Determine channel mask for each criterion
         for block in blocks:
-            n_ch = block.X_z.shape[1]
-            all_ch = np.ones(n_ch, bool)
+            all_ch = np.ones(block.n_ch, bool)  # masks live at channel resolution
             
             if criterion == "movement":
                 block.move_mask = move_mask if move_mask is not None else all_ch
