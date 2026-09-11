@@ -1,6 +1,5 @@
 """
-Run scripts in order across multiple sessions.
-Automatically updates params.yaml for each session (preserves comments).
+THE ONE SCRIPT to run them all.
 """
 
 import subprocess
@@ -12,14 +11,24 @@ from RCP_analysis.python.functions.params_loading import load_experiment_params
 import os
 import json
 
+"""
+CHOOSE THE MONKEY + SESSION(s) + SCRIPT(s) via Commenting/Uncommenting
+"""
+
+
+# MONKEY = "Ada"
+# MONKEY = "Bert"
+MONKEY = "Nike"
+
+
 SESSIONS_TO_RUN = [
     # "NRR_RW035",
     # "NRR_RW034",
     # "NRR_RW032",
     # "NRR_RW029",
     # "NRR_RW026",
-    # "NRR_RW022",
-    "NRR_RW019",
+    "NRR_RW022",
+    # "NRR_RW019",
     # "NRR_RW018",
     # "NRR_RW017",
     # "NRR_RW016",
@@ -30,7 +39,7 @@ SESSIONS_TO_RUN = [
     # "NRR_RW011",
 ]
 
-PROCESS_ONLY = []
+PROCESS_ONLY = [17]
 
 SCRIPTS = [
     # "preprocessing_scripts/OCR_frame_correction.py",
@@ -48,14 +57,14 @@ SCRIPTS = [
 
     # "analysis_scripts/plot_plateau_analysis.py",
     # "analysis_scripts/RSA_calculation.py",
-    # "analysis_scripts/plot_complete_shaded_BT.py",
+    "analysis_scripts/plot_firing_rates.py",
     # "analysis_scripts/plot_peri_stim_raster.py",
     # "analysis_scripts/plot_stim_group_responses.py",
     # "analysis_scripts/plot_stim_response_overlays.py",
     # "analysis_scripts/plot_peak_csv_summaries.py",
 
 
-    "preprocessing_scripts/analyze_lfp_bands.py",
+    # "preprocessing_scripts/analyze_lfp_bands.py",
     # "scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py",
     # "scripts/nikita_scripts/plotting_scripts/combine_UA_gifs.py",
 ]
@@ -75,6 +84,8 @@ SCRIPT_STATUS_COLUMNS = {
     "inspect_kinematics_trajectories.py": "manual_inspection",
     "plot_plateau_analysis.py": "plateau",
     "RSA_calculation.py": "rsa",
+    "plot_firing_rates.py": "plot_FRs",
+    "plot_stim_response_overlays.py": "plot_PSTH_overlays",
 }
 
 
@@ -251,7 +262,7 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
 
     # Load params once so we can get the machine-specific data_root.
     PARAMS = load_experiment_params(params_path, repo_root=base_dir, first_run=True)
-    data_root = PARAMS.data_root
+    data_root = f"{PARAMS.data_root}/{MONKEY}"
 
     print("\nRunning Across Sessions = RAS")
     print(f"{'=' * 60}")
@@ -268,11 +279,12 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
         # Per-subprocess session context.
         # This is private to scripts launched by this run_pipeline.py process.
         env = os.environ.copy()
+        env["RCP_MONKEY"] = MONKEY
         env["RCP_SESSION"] = session
         env["RCP_LOCATION"] = location
         env["RCP_PROCESS_ONLY"] = json.dumps(PROCESS_ONLY)
 
-        print(f"[RAS] Session context: RCP_SESSION={session}, RCP_LOCATION={location}, RCP_PROCESS_ONLY={PROCESS_ONLY}")
+        print(f"[RAS] Session context: RCP_MONKEY={MONKEY}, RCP_SESSION={session}, RCP_LOCATION={location}, RCP_PROCESS_ONLY={PROCESS_ONLY}")
 
         # Run all scripts for this session
         for script in SCRIPTS:

@@ -14,7 +14,6 @@ if not logger.handlers:
     handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)
 
-from .config_loading import *
 from .utils import short_npz_name
 
 # rsa params
@@ -23,11 +22,16 @@ SAVE_SVG = True                  # save under figures/rsa_from_peristim/
 MIN_TRIALS_PER_COND = 4          # drop conditions (NPZ files) with fewer trials
 MIN_VALID_FEATURES = 2           # trial must have at least this many channels
 
-# Paths
-FIG_DIR = OUT_BASE / "figures" / "rsa_from_peristim"
-FIG_DIR.mkdir(parents=True, exist_ok=True)
-(FIG_DIR / "target_A").mkdir(parents=True, exist_ok=True)
-(FIG_DIR / "target_B").mkdir(parents=True, exist_ok=True)
+def _prepare_rsa_fig_dir(fig_dir: Path | str, target: str) -> Path:
+    """
+    Create and return the target-specific RSA figure directory.
+
+    This is intentionally runtime-only. Do not create FIG_DIR at import time.
+    """
+    fig_dir = Path(fig_dir)
+    target_fig_dir = fig_dir / target
+    target_fig_dir.mkdir(parents=True, exist_ok=True)
+    return target_fig_dir
 
 # Block: one condition's worth of trials, carried through the pipeline
 @dataclass
@@ -449,6 +453,8 @@ def _plot_movement_mask_debug(
     baseline_paths: list[Path],
     source: str,
     target: str,
+    target_fig_dir: Path,
+    out_base: Path,
     base_win: tuple[float, float] = (-800.0, -500.0),
     resp_win: tuple[float, float] = (0.0, 300.0),
     alpha: float = 0.05,
@@ -491,14 +497,14 @@ def _plot_movement_mask_debug(
         plt.tight_layout()
         
         out_svg = (
-                    FIG_DIR / target /f"debug_{source}_movement_criterion_"
-                              f"baseline{int(base_win[0])}-{int(base_win[1])}"
-                              f"movement{int(resp_win[0])}-{int(resp_win[1])}.png"
-                    if SAVE_SVG else None
-                )
+            target_fig_dir / f"debug_{source}_movement_criterion_"
+            f"baseline{int(base_win[0])}-{int(base_win[1])}"
+            f"movement{int(resp_win[0])}-{int(resp_win[1])}.png"
+            if SAVE_SVG else None
+        )
 
         fig.savefig(out_svg, dpi=300)
-        logger.info(f"[move][debug-plot] wrote {os.path.relpath(out_svg, OUT_BASE)}")
+        logger.info(f"[move][debug-plot] wrote {os.path.relpath(out_svg, out_base)}")
         plt.close(fig)
 
 def _plot_stim_mask_debug(
@@ -506,7 +512,9 @@ def _plot_stim_mask_debug(
     passes: np.ndarray,
     source: str,
     target: str,
-    stim_win: tuple[float, float] = (105.0,  150.0),
+    target_fig_dir: Path,
+    out_base: Path,
+    stim_win: tuple[float, float] = (105.0, 150.0),
     alpha: float = 0.05,
     baseline_rates: np.ndarray | None = None,
     baseline_rel_t: np.ndarray | None = None,
@@ -553,13 +561,13 @@ def _plot_stim_mask_debug(
     plt.tight_layout()
     
     out_svg = (
-                FIG_DIR / target /f"debug_{source}_stim_criterion_"
-                            f"poststim{int(stim_win[0])}-{int(stim_win[1])}.png"
-                if SAVE_SVG else None
-            )
+        target_fig_dir / f"debug_{source}_stim_criterion_"
+        f"poststim{int(stim_win[0])}-{int(stim_win[1])}.png"
+        if SAVE_SVG else None
+    )
 
     fig.savefig(out_svg, dpi=300)
-    logger.info(f"[stim][debug-plot] saved {os.path.relpath(out_svg, OUT_BASE)}")
+    logger.info(f"[stim][debug-plot] saved {os.path.relpath(out_svg, out_base)}")
     plt.close(fig)
 
 # RSM construction
@@ -617,11 +625,12 @@ def _plot_rdm_with_block_ticks(
     block_labels: list[str],
     title: str,
     out_svg: Path | None,
+    out_base: Path | None = None,
     ax: plt.Axes | None = None,
     vmin: float = -1.0,
     vmax: float = 1.0,
 ):
-    """
+    """fos.path.relpath(out_svg
     Plot *similarity* matrix (correlation r in [-1, 1]) with:
       - small ticks BETWEEN conditions at block boundaries (no labels)
       - text labels centered on each block (no ticks at the centers),
@@ -668,7 +677,7 @@ def _plot_rdm_with_block_ticks(
         fig.tight_layout()
         if out_svg is not None:
             fig.savefig(out_svg, dpi=300, bbox_inches="tight")
-            out_svg_rel = os.path.relpath(out_svg, OUT_BASE)
+            out_svg_rel = os.path.relpath(out_svg, out_base) if out_base is not None else str(out_svg)
             plt.close(fig)
             return out_svg_rel
         else:
@@ -835,6 +844,7 @@ def _plot_pairwise_silhouette(
     block_labels: list[str],
     title: str,
     out_svg: Path | None,
+    out_base: Path | None = None,
     vmax: float | None = None,
     annotate: bool = True,
     diag_values: np.ndarray | None = None,
@@ -918,7 +928,7 @@ def _plot_pairwise_silhouette(
         fig.tight_layout()
         if out_svg is not None:
             fig.savefig(out_svg, dpi=300, bbox_inches="tight")
-            out_svg_rel = os.path.relpath(out_svg, OUT_BASE)
+            out_svg_rel = os.path.relpath(out_svg, out_base) if out_base is not None else str(out_svg)
             plt.close(fig)
             return out_svg_rel
         plt.close(fig)
@@ -937,11 +947,30 @@ def run_time_domain_corr(
     move_alpha: float = 0.05,
     stim_alpha: float = 0.05,
     debug_masks: bool = False,
+    peri_root: Path | str | None = None,
+    out_base: Path | str | None = None,
+    fig_dir: Path | str | None = None,
 ):
     """
     """
     cond_label_extras = cond_label_extras or {}
     skip_conds = set(skip_conds or [])
+
+    if peri_root is None:
+        raise ValueError("run_time_domain_corr requires peri_root. Pass PERI_ROOT from config_loading.")
+
+    if out_base is None:
+        raise ValueError("run_time_domain_corr requires out_base. Pass OUT_BASE from config_loading.")
+
+    peri_root = Path(peri_root)
+    out_base = Path(out_base)
+
+    if fig_dir is None:
+        fig_dir = out_base / "figures" / "rsa_from_peristim"
+    else:
+        fig_dir = Path(fig_dir)
+
+    target_fig_dir = _prepare_rsa_fig_dir(fig_dir, target)
 
     # normalize channel_criterion to a list of criteria to build/plot; a bare
     # string or None means "just one", anything else is treated as an iterable
@@ -961,9 +990,9 @@ def run_time_domain_corr(
 
     # 1. Gather NPZ files: stim + control + at_rest given a target
     #   at_rest NPZs have no target subfolder
-    stim_dir = PERI_ROOT / "stim_reaches" / target
-    baseline_dir = PERI_ROOT / "control_reaches" / target
-    at_rest_dir = PERI_ROOT / "at_rest"
+    stim_dir = peri_root / "stim_reaches" / target
+    baseline_dir = peri_root / "control_reaches" / target
+    at_rest_dir = peri_root / "at_rest"
 
     # List folders
     stim_files = sorted(stim_dir.glob("*.npz")) if stim_dir.exists() else []
@@ -1013,7 +1042,14 @@ def run_time_domain_corr(
     if needs_movement:
         move_mask = _compute_movement_mask(baseline_paths_kept, source, alpha=move_alpha)
         if debug_masks:
-            _plot_movement_mask_debug(baseline_paths_kept, source, target, alpha=move_alpha)
+            _plot_movement_mask_debug(
+                baseline_paths_kept,
+                source,
+                target,
+                target_fig_dir=target_fig_dir,
+                out_base=out_base,
+                alpha=move_alpha,
+            )
 
     ctrl_pool = None
     if needs_stim:
@@ -1120,8 +1156,14 @@ def run_time_domain_corr(
         )
         if stim_block is not None:
             _plot_stim_mask_debug(
-                stim_block.path, stim_mask_union, source, target,
-                baseline_rates=bl_rates, baseline_rel_t=bl_rel_t,
+                stim_block.path,
+                stim_mask_union,
+                source,
+                target,
+                target_fig_dir=target_fig_dir,
+                out_base=out_base,
+                baseline_rates=bl_rates,
+                baseline_rel_t=bl_rel_t,
                 alpha=stim_alpha,
             )
         
@@ -1170,6 +1212,9 @@ def run_rsa(
     sil_tail: str = "greater",
     sil_seed: int | None = 0,
     debug_masks: bool = False,
+    peri_root: Path | str | None = None,
+    out_base: Path | str | None = None,
+    fig_dir: Path | str | None = None,
 ):
     """
     Build a trial x trial RDM/RSM for one reach target from peri-stim NPZs.
@@ -1227,6 +1272,22 @@ def run_rsa(
     cond_label_extras = cond_label_extras or {}
     skip_conds = set(skip_conds or [])
 
+    if peri_root is None:
+        raise ValueError("run_rsa requires peri_root. Pass PERI_ROOT from config_loading.")
+
+    if out_base is None:
+        raise ValueError("run_rsa requires out_base. Pass OUT_BASE from config_loading.")
+
+    peri_root = Path(peri_root)
+    out_base = Path(out_base)
+
+    if fig_dir is None:
+        fig_dir = out_base / "figures" / "rsa_from_peristim"
+    else:
+        fig_dir = Path(fig_dir)
+
+    target_fig_dir = _prepare_rsa_fig_dir(fig_dir, target)
+
     # normalize channel_criterion to a list of criteria to build/plot; a bare
     # string or None means "just one", anything else is treated as an iterable
     if channel_criterion is None or isinstance(channel_criterion, str):
@@ -1245,9 +1306,9 @@ def run_rsa(
 
     # 1. Gather NPZ files: stim + control + at_rest given a target
     #   at_rest NPZs have no target subfolder
-    stim_dir = PERI_ROOT / "stim_reaches" / target
-    baseline_dir = PERI_ROOT / "control_reaches" / target
-    at_rest_dir = PERI_ROOT / "at_rest"
+    stim_dir = peri_root / "stim_reaches" / target
+    baseline_dir = peri_root / "control_reaches" / target
+    at_rest_dir = peri_root / "at_rest"
 
     # List folders
     stim_files = sorted(stim_dir.glob("*.npz")) if stim_dir.exists() else []
@@ -1297,7 +1358,14 @@ def run_rsa(
     if needs_movement:
         move_mask = _compute_movement_mask(baseline_paths_kept, source, alpha=move_alpha)
         if debug_masks:
-            _plot_movement_mask_debug(baseline_paths_kept, source, target, alpha=move_alpha)
+            _plot_movement_mask_debug(
+                baseline_paths_kept,
+                source,
+                target,
+                target_fig_dir=target_fig_dir,
+                out_base=out_base,
+                alpha=move_alpha,
+            )
 
     ctrl_pool = None
     if needs_stim:
@@ -1404,8 +1472,14 @@ def run_rsa(
         )
         if stim_block is not None:
             _plot_stim_mask_debug(
-                stim_block.path, stim_mask_union, source, target,
-                baseline_rates=bl_rates, baseline_rel_t=bl_rel_t,
+                stim_block.path,
+                stim_mask_union,
+                source,
+                target,
+                target_fig_dir=target_fig_dir,
+                out_base=out_base,
+                baseline_rates=bl_rates,
+                baseline_rel_t=bl_rel_t,
                 alpha=stim_alpha,
             )
         
@@ -1443,14 +1517,20 @@ def run_rsa(
         )
 
         out_svg = (
-            FIG_DIR / target /f"RSA_{source}_{criterion or 'all-ch'}_criterion_"
-                      f"poststim{int(poststim_win_ms[0])}-{int(poststim_win_ms[1])}.png"
+            target_fig_dir / f"RSA_{source}_{criterion or 'all-ch'}_criterion_"
+            f"poststim{int(poststim_win_ms[0])}-{int(poststim_win_ms[1])}.png"
             if SAVE_SVG else None
         )
 
         out_svg_rel = _plot_rdm_with_block_ticks(
-            RSM, sizes_t, block_labels_t, title,
-            out_svg=out_svg, vmin=vmin, vmax=vmax,
+            RSM,
+            sizes_t,
+            block_labels_t,
+            title,
+            out_svg=out_svg,
+            out_base=out_base,
+            vmin=vmin,
+            vmax=vmax,
         )
         S_pair, P_pair = _pairwise_silhouette(
             RSM, sizes_t, n_perm=sil_n_perm, tail=sil_tail, rng=sil_seed,
@@ -1474,19 +1554,23 @@ def run_rsa(
         sil_rel = None
         if np.isfinite(S_pair).any():
             sil_svg = (
-                FIG_DIR / target / f"silhouette_{source}_{criterion or 'all-ch'}_criterion_"
-                        f"poststim{int(poststim_win_ms[0])}-{int(poststim_win_ms[1])}.png"
+                target_fig_dir / f"silhouette_{source}_{criterion or 'all-ch'}_criterion_"
+                f"poststim{int(poststim_win_ms[0])}-{int(poststim_win_ms[1])}.png"
                 if SAVE_SVG else None
             )
             star_note = ("  * - q<0.05 vs shuffle null (BH-corrected)"
                 if Q_pair is not None else "")
             sil_rel = _plot_pairwise_silhouette(
-                S_pair, block_labels_t,
+                S_pair,
+                block_labels_t,
                 f"Silhouette score matrix\n{target_disp} ({source}, criterion={criterion or 'all-ch'}, {kept_ch} channels)\n"
                 f"{int(poststim_win_ms[0])} to {int(poststim_win_ms[1])} ms post-stim",
-                vmax=sil_vmax, diag_values=cons_r, qvals=Q_pair,
+                vmax=sil_vmax,
+                diag_values=cons_r,
+                qvals=Q_pair,
                 footnote=f"Diagonal = within-condition correlation{star_note}",
                 out_svg=sil_svg,
+                out_base=out_base,
             )
         if sil_rel is not None:
             logger.info(f"[sil-pair]{'':<8} figure saved  {sil_rel}")

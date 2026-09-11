@@ -1,5 +1,5 @@
 paths:
-  data_root: "Current Project Databases - NHP/2025 Cerebellum prosthesis/Nike"
+  data_root: "Current Project Databases - NHP/2025 Cerebellum prosthesis/"
   geom_mat_rel: "config/probes/ImecPrimateStimRec128_BT_corrected_091525.mat"
   process_fastigial: False
 kinematics:
