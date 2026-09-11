@@ -1,6 +1,5 @@
 subspace_detector.py
-
-**=========================**
+========================
 
 ``RCP_analysis/python/functions/subspace_detector.py``
 
