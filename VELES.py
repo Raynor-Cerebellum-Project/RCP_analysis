@@ -37,7 +37,7 @@ SESSIONS_TO_RUN = [
 PROCESS_ONLY = [17]
 
 SCRIPTS = [
-    # "preprocessing_scripts/OCR_frame_correction.py",
+    "preprocessing_scripts/OCR_frame_correction.py",
     # "preprocessing_scripts/align_dlc_two_cams_to_br.py",
     # "preprocessing_scripts/align_VOG_to_br.py",
     "preprocessing_scripts/NPRW_Intan_analysis_mf.py",
@@ -231,6 +231,7 @@ def run_scripts(
     scripts: list[str] | None = None,
     process_only: list[int] | None = None,
     log: Callable[[str], None] = print,
+    on_session_complete: Callable[[str, bool], None] | None = None,
 ) -> dict[str, bool]:
     sessions = SESSIONS_TO_RUN if sessions is None else sessions
     scripts = SCRIPTS if scripts is None else scripts
@@ -359,6 +360,9 @@ def run_scripts(
         else:
             if results[session]:
                 log(f"\n[VELES: SUCCESS] Completed all scripts for {session}")
+
+        if on_session_complete is not None:
+            on_session_complete(session, results[session])
 
     log(f"\n{'=' * 60}")
     log("[VELES] All sessions completed!")
