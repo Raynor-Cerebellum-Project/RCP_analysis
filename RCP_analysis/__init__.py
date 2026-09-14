@@ -43,6 +43,7 @@ from .python.functions.utils import (
     dedup_peaks,
     bin_counts_around_stim,
     smooth_counts_gauss,
+    parse_session_metadata_from_csv,
 )
 # artifact correction
 from .python.functions.artifact_correction import (

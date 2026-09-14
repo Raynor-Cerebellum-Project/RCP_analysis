@@ -254,15 +254,30 @@ def main():
 
             ir_ms = nprw_npz["ir_ms"] - shift_ms
 
-            # ir_ms_br = ir_sec * 1000.0 - shift_ms
+            # Parse structured session metadata from METADATA_CSV
+            sess_meta = rcp.parse_session_metadata_from_csv(METADATA_CSV, sess=intan_filename, br_file=br_idx)
+            stim_freq_hz = float(sess_meta["stim_freq_hz"])
+            stim_current_ua = float(sess_meta["stim_current_ua"])
+            stim_depth_mm = float(sess_meta["stim_depth_mm"])
+            stim_dur_nominal_ms = float(sess_meta["stim_dur_nominal_ms"])
+            stim_delay_ms = float(sess_meta["stim_delay_ms"])
+
             # Stim times (absolute Intan ms)
-            stim_dur = nprw_meta['stim_dur']
-            recording_stim_dur = float(np.median(stim_dur))
+            stim_dur = nprw_meta.get('stim_dur', 0.0)
+            recording_stim_dur = float(np.median(stim_dur)) if hasattr(stim_dur, '__len__') and len(stim_dur) > 0 else float(stim_dur)
             stim_npz_path, _ = rcp.stim_npz_path_from_br_idx(br_idx, METADATA_CSV, NPRW_AUX_DATA)
             stim_ms = np.array([], dtype=np.float32)
+            stim_block_bounds_ms = np.zeros((0, 2), dtype=np.float32)
+            stim_dur_measured_ms = np.array([], dtype=np.float32)
+            stim_pulses_per_block = np.array([], dtype=np.int32)
             if stim_npz_path is not None and Path(stim_npz_path).exists():
                 stim = rcp.load_stim_detection(stim_npz_path)
-                stim_ms = stim["block_bounds_samples"][:, 0] * 1000.0 / fs_nprw - shift_ms
+                bounds_samps = stim["block_bounds_samples"]
+                if bounds_samps.size:
+                    stim_ms = (bounds_samps[:, 0] * 1000.0 / fs_nprw - shift_ms).astype(np.float32)
+                    stim_block_bounds_ms = (bounds_samps * 1000.0 / fs_nprw - shift_ms).astype(np.float32)
+                    stim_dur_measured_ms = ((bounds_samps[:, 1] - bounds_samps[:, 0]) * 1000.0 / fs_nprw).astype(np.float32)
+                stim_pulses_per_block = np.asarray(stim.get("pulses_per_block", []), dtype=np.int32)
             else:
                 print(f"[warn] stim npz not found for BR {br_idx:03d}: {stim_npz_path}")
                 
@@ -429,6 +444,11 @@ def main():
                 is_at_rest=is_at_rest,
                 is_continuous=is_continuous,
                 recording_stim_dur=recording_stim_dur,
+                stim_freq_hz=stim_freq_hz,
+                stim_current_ua=stim_current_ua,
+                stim_depth_mm=stim_depth_mm,
+                stim_dur_nominal_ms=stim_dur_nominal_ms,
+                stim_delay_ms=stim_delay_ms,
 
                 behavior_csv=str(beh_csv) if HAS_KINEMATICS else None,
                 behavior_rows=int(beh_ns5_sample.size) if HAS_KINEMATICS else None,
@@ -462,6 +482,14 @@ def main():
                 nprw_peak_amps=nprw_peak_amps,
                 ir_ms=(ir_ms.astype(np.float32) if ir_ms is not None else np.array([], dtype=np.float32)),
                 stim_ms=(stim_ms.astype(np.float32) if stim_ms is not None else np.array([], dtype=np.float32)),
+                stim_block_bounds_ms=stim_block_bounds_ms,
+                stim_dur_measured_ms=stim_dur_measured_ms,
+                stim_pulses_per_block=stim_pulses_per_block,
+                stim_dur_nominal_ms=stim_dur_nominal_ms,
+                stim_freq_hz=stim_freq_hz,
+                stim_current_ua=stim_current_ua,
+                stim_depth_mm=stim_depth_mm,
+                stim_delay_ms=stim_delay_ms,
                 shift_ms=np.float32(shift_ms),
                 
                 align_meta=aligned_meta,

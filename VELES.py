@@ -1,5 +1,12 @@
 """
-THE ONE SCRIPT to run them all.
+VELES - Versatile Electrophysiology and Limb-motion Evaluation Suite
+
+Veles: a slavic diety of magic, knowledge, divination, and poetry, 
+        providing wisdom and guidance to his shamans, 
+        governing the world outside the fences of human dwellings.
+
+Like the god Veles, may this script provide us a view into the unknown!
+
 """
 
 import subprocess
@@ -35,29 +42,29 @@ SESSIONS_TO_RUN = [
     # "NRR_RW015",
     # "NRR_RW014",
     # "NRR_RW013",
-    # "NRR_RW012",
+    "NRR_RW012",
     # "NRR_RW011",
 ]
 
-PROCESS_ONLY = [17]
+PROCESS_ONLY = []
 
 SCRIPTS = [
     # "preprocessing_scripts/OCR_frame_correction.py",
     # "preprocessing_scripts/align_dlc_two_cams_to_br.py",
     # "preprocessing_scripts/align_VOG_to_br.py",
-    # "preprocessing_scripts/NPRW_Intan_analysis_mf.py",
-    # "preprocessing_scripts/compute_br_to_intan_shifts.py",
+    "preprocessing_scripts/NPRW_Intan_analysis_mf.py",
+    "preprocessing_scripts/compute_br_to_intan_shifts.py",
     # "preprocessing_scripts/UA_BR_analysis_mf.py", 
-    # "preprocessing_scripts/UA_BR_analysis_ssmf.py",
-    # "preprocessing_scripts/make_aligned_npz_and_mat.py",
-    # "preprocessing_scripts/extract_peri_stim.py",
+    "preprocessing_scripts/UA_BR_analysis_ssmf.py",
+    "preprocessing_scripts/make_aligned_npz_and_mat.py",
+    "preprocessing_scripts/extract_peri_stim.py",
     # "preprocessing_scripts/inspect_kinematics_trajectories.py",
     ### RUN ^ inspect_kinematics_trajectories.py to check for remaining bad traces -> add bad traces to /config/manual_trial_remove.csv
     ### RERUN extract_peri_stim.py
 
     # "analysis_scripts/plot_plateau_analysis.py",
     # "analysis_scripts/RSA_calculation.py",
-    "analysis_scripts/plot_firing_rates.py",
+    # "analysis_scripts/plot_firing_rates.py",
     # "analysis_scripts/plot_peri_stim_raster.py",
     # "analysis_scripts/plot_stim_group_responses.py",
     # "analysis_scripts/plot_stim_response_overlays.py",
@@ -149,58 +156,8 @@ def _update_script_status_for_session(data_root: str, session: str, status_colum
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"[RAS] Updated {status_column} for session {target_session}: {value}")
+    print(f"[VELES] Updated {status_column} for session {target_session}: {value}")
 
-def _set_process_which_for_session(data_root: str, session: str) -> None:
-    """
-    Read data_root/data_status_reaching.csv, find the row whose 'Session'
-    matches `session`, set that row's 'Process Session?' to 'Yes', and set all
-    other rows' 'Process Session?' values to 'No'.
-
-    This modifies the CSV file in place.
-    """
-    status_csv = Path(data_root)  / "data_status_reaching.csv"
-
-    if not status_csv.exists():
-        raise FileNotFoundError(f"data_status_reaching.csv not found: {status_csv}")
-
-    with status_csv.open("r", newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames
-
-        if fieldnames is None:
-            raise ValueError(f"{status_csv} appears to be empty or has no header row.")
-
-        required_cols = {"Process Session?", "Session"}
-        missing = required_cols - set(fieldnames)
-        if missing:
-            raise KeyError(
-                f"Missing required column(s) in {status_csv}: {sorted(missing)}"
-            )
-
-        rows = list(reader)
-
-    target_session = str(session).strip()
-    found = False
-
-    for row in rows:
-        row_session = str(row.get("Session", "")).strip()
-
-        if row_session == target_session:
-            row["Process Session?"] = "Yes"
-            found = True
-        else:
-            row["Process Session?"] = "No"
-
-    if not found:
-        raise ValueError(
-            f"Session '{target_session}' was not found in {status_csv}"
-        )
-
-    with status_csv.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
 
 def _get_location_for_session(data_root: str, session: str) -> str:
     """
@@ -264,13 +221,11 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
     PARAMS = load_experiment_params(params_path, repo_root=base_dir, first_run=True)
     data_root = f"{PARAMS.data_root}/{MONKEY}"
 
-    print("\nRunning Across Sessions = RAS")
-    print(f"{'=' * 60}")
 
     for session in SESSIONS_TO_RUN:
 
         print(f"\n{'=' * 60}")
-        print(f"[RAS] Processing session: {session}")
+        print(f"[VELES] Processing session: {session}")
         print(f"{'=' * 60}")
 
         # Look up this session's location without modifying "Process Session?"
@@ -284,17 +239,17 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
         env["RCP_LOCATION"] = location
         env["RCP_PROCESS_ONLY"] = json.dumps(PROCESS_ONLY)
 
-        print(f"[RAS] Session context: RCP_MONKEY={MONKEY}, RCP_SESSION={session}, RCP_LOCATION={location}, RCP_PROCESS_ONLY={PROCESS_ONLY}")
+        print(f"[VELES] Session context: RCP_MONKEY={MONKEY}, RCP_SESSION={session}, RCP_LOCATION={location}, RCP_PROCESS_ONLY={PROCESS_ONLY}")
 
         # Run all scripts for this session
         for script in SCRIPTS:
             script_path = scripts_folder / script
 
             if not script_path.exists():
-                print(f"[RAS: ERROR] Script not found: {script_path}")
+                print(f"[VELES: ERROR] Script not found: {script_path}")
                 break
 
-            print(f"\n[RAS] Running {script_path}\n")
+            print(f"\n[VELES] Running {script_path}\n")
 
             status_column = SCRIPT_STATUS_COLUMNS.get(Path(script).name)
 
@@ -317,7 +272,7 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
                     )
 
             except subprocess.CalledProcessError as e:
-                print(f"[RAS: ERROR] Script failed for {session} with exit code {e.returncode}")
+                print(f"[VELES: ERROR] Script failed for {session} with exit code {e.returncode}")
 
                 # If this script has a corresponding CSV status column, write FAIL
                 if status_column is not None:
@@ -328,18 +283,18 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
                         value="FAIL",
                     )
 
-                print("[RAS] Skipping to next session...")
+                print("[VELES] Skipping to next session...")
                 break
         else:
-            print(f"\n[RAS: SUCCESS] Completed all scripts for {session}")
+            print(f"\n[VELES: SUCCESS] Completed all scripts for {session}")
 
     print(f"\n{'=' * 60}")
-    print("[RAS] All sessions completed!")
+    print("[VELES] All sessions completed!")
     print(f"{'=' * 60}")
 
 
 def main():
-    BASE = Path(__file__).resolve().parents[1]
+    BASE = Path(__file__).resolve().parents[0]
     SCRIPTS_FOLDER = BASE
     run_scripts(BASE, SCRIPTS_FOLDER)
     

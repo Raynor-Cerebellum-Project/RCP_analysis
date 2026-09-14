@@ -687,11 +687,22 @@ def load_stim_detection(npz_path: Path) -> dict[str, np.ndarray]:
         block_bounds_samples = np.asarray(z["block_bounds_samples"], dtype=np.int64)
         pulse_sizes = np.asarray(z["pulse_sizes"], dtype=np.int32)
 
+        if "pulses_per_block" in z.files:
+            pulses_per_block = np.asarray(z["pulses_per_block"], dtype=np.int32)
+        elif block_bounds_samples.size and trigger_pairs.size:
+            t_starts = trigger_pairs[:, 0]
+            b_starts = block_bounds_samples[:, 0]
+            b_ends = block_bounds_samples[:, 1]
+            pulses_per_block = np.array([np.sum((t_starts >= s) & (t_starts <= e)) for s, e in zip(b_starts, b_ends)], dtype=np.int32)
+        else:
+            pulses_per_block = np.empty(0, dtype=np.int32)
+
     return {
         "active_channels": active_channels,
         "trigger_pairs": trigger_pairs,
         "block_bounds_samples": block_bounds_samples,
         "pulse_sizes": pulse_sizes,
+        "pulses_per_block": pulses_per_block,
     }
 
 def stim_npz_path_from_br_idx(
@@ -1155,3 +1166,205 @@ def smooth_counts_gauss(
     out[:, :, :gap_bin] = left_sm
     out[:, :, gap_bin:] = right_sm
     return out
+
+
+def parse_session_metadata_from_csv(
+    csv_path: Path,
+    *,
+    sess: str | None = None,
+    br_file: int | None = None,
+) -> dict:
+    """
+    Parse structured metadata fields from session metadata CSV.
+    Returns dictionary with:
+      - stim_freq_hz: float
+      - stim_current_ua: float
+      - stim_depth_mm: float
+      - stim_dur_nominal_ms: float
+      - stim_delay_ms: float
+      - ua_port: str
+      - video_file: int | None
+      - condition: str
+      - overall_title: str
+    """
+    csv_path = Path(csv_path)
+    if not csv_path.exists():
+        return {
+            "stim_freq_hz": np.nan,
+            "stim_current_ua": np.nan,
+            "stim_depth_mm": np.nan,
+            "stim_dur_nominal_ms": np.nan,
+            "stim_delay_ms": 0.0,
+            "ua_port": "",
+            "video_file": None,
+            "condition": "n/a",
+            "overall_title": "Condition: n/a, n/a Hz, n/a µA, n/a mm, n/a ms, Delay: 0 ms",
+        }
+
+    # read robustly
+    df = None
+    for enc in ("utf-8-sig", "latin-1", "cp1252", "utf-8"):
+        try:
+            df = pd.read_csv(csv_path, encoding=enc, engine="python", on_bad_lines="skip")
+            break
+        except Exception:
+            continue
+    if df is None or df.empty:
+        return {
+            "stim_freq_hz": np.nan,
+            "stim_current_ua": np.nan,
+            "stim_depth_mm": np.nan,
+            "stim_dur_nominal_ms": np.nan,
+            "stim_delay_ms": 0.0,
+            "ua_port": "",
+            "video_file": None,
+            "condition": "n/a",
+            "overall_title": "Condition: n/a, n/a Hz, n/a µA, n/a mm, n/a ms, Delay: 0 ms",
+        }
+
+    def _norm_col(c):
+        return str(c).strip().lower().replace(" ", "_")
+
+    df = df.copy()
+    df.columns = [_norm_col(c) for c in df.columns]
+
+    if len(df) > 0:
+        first = df.iloc[0].astype(str).str.strip().str.lower()
+        header_like_count = sum(col in first.values for col in df.columns)
+        if header_like_count >= max(2, len(df.columns) // 2):
+            df_data = df.iloc[1:].reset_index(drop=True)
+        else:
+            df_data = df.reset_index(drop=True)
+    else:
+        df_data = df.copy()
+
+    def _find_col(df, *names):
+        norm_map = {_norm_col(c): c for c in df.columns}
+        for name in names:
+            key = _norm_col(name)
+            if key in norm_map:
+                return norm_map[key]
+        return None
+
+    session_col = _find_col(df_data, "session", "sess", "intan_session", "intan_filename")
+    br_col = _find_col(df_data, "br_file", "br", "br_idx")
+    video_col = _find_col(df_data, "video_file", "video", "video_idx")
+
+    freq_col = _find_col(df_data, "stim_frequency_hz", "frequency_hz", "freq_hz", "freq")
+    current_col = _find_col(df_data, "current_ua", "current_u_a", "current", "current_microamps")
+    depth_col = _find_col(df_data, "depth_mm", "depth")
+    duration_col = _find_col(df_data, "stim_duration_ms", "duration_ms", "stim_duration", "duration")
+    ua_col = _find_col(df_data, "ua_port", "port")
+    delay_col = _find_col(df_data, "delay", "delay_ms")
+    movement_col = _find_col(df_data, "movement_trigger", "trigger")
+
+    mask = pd.Series(True, index=df_data.index)
+    if br_file is not None and br_col is not None:
+        br_numeric = pd.to_numeric(df_data[br_col], errors="coerce")
+        br_mask = br_numeric.eq(int(br_file))
+        if br_mask.any():
+            mask &= br_mask
+
+    if sess is not None and session_col is not None:
+        sess_mask = df_data[session_col].astype(str).str.strip().eq(str(sess).strip())
+        if sess_mask.any():
+            mask &= sess_mask
+
+    if movement_col is not None:
+        non_velocity_mask = ~df_data[movement_col].astype(str).str.lower().str.contains("velocity", na=False)
+        if (mask & non_velocity_mask).any():
+            mask &= non_velocity_mask
+
+    if not mask.any():
+        return {
+            "stim_freq_hz": np.nan,
+            "stim_current_ua": np.nan,
+            "stim_depth_mm": np.nan,
+            "stim_dur_nominal_ms": np.nan,
+            "stim_delay_ms": 0.0,
+            "ua_port": "",
+            "video_file": None,
+            "condition": str(br_file) if br_file is not None else "n/a",
+            "overall_title": f"Condition: {br_file if br_file is not None else 'n/a'}, n/a Hz, n/a µA, n/a mm, n/a ms, Delay: 0 ms",
+        }
+
+    row = df_data.loc[mask].iloc[0]
+
+    def _safe_float(val):
+        if pd.isna(val):
+            return np.nan
+        try:
+            return float(val)
+        except Exception:
+            return np.nan
+
+    def _parse_delay_ms(x):
+        if pd.isna(x):
+            return 0.0
+        s = str(x).strip()
+        if s == "":
+            return 0.0
+        try:
+            return float(s)
+        except Exception:
+            pass
+        s_low = s.lower()
+        m = re.search(r"([-+]?\d*\.?\d+)\s*ms", s_low)
+        if m:
+            return float(m.group(1))
+        m = re.search(r"([-+]?\d*\.?\d+)\s*s", s_low)
+        if m:
+            return float(m.group(1)) * 1000.0
+        return 0.0
+
+    freq = _safe_float(row[freq_col]) if freq_col is not None else np.nan
+    current = _safe_float(row[current_col]) if current_col is not None else np.nan
+    depth = _safe_float(row[depth_col]) if depth_col is not None else np.nan
+    duration = _safe_float(row[duration_col]) if duration_col is not None else np.nan
+    delay_ms = _parse_delay_ms(row[delay_col]) if delay_col is not None else 0.0
+    ua_port = str(row[ua_col]).strip() if (ua_col is not None and pd.notna(row[ua_col])) else ""
+
+    video_file = None
+    if video_col is not None and not pd.isna(row[video_col]):
+        try:
+            video_file = int(float(row[video_col]))
+        except Exception:
+            video_file = None
+
+    if br_file is not None:
+        condition = str(br_file)
+    elif video_file is not None:
+        condition = str(video_file)
+    else:
+        condition = "n/a"
+
+    def _fmt_num(x):
+        if np.isnan(x):
+            return "n/a"
+        if float(x).is_integer():
+            return str(int(x))
+        return str(x)
+
+    overall_title = (
+        f"Condition: {condition}, "
+        f"{_fmt_num(freq)} Hz, "
+        f"{_fmt_num(current)} µA, "
+        f"{_fmt_num(depth)} mm, "
+        f"{_fmt_num(duration)} ms, "
+        f"Delay: {int(delay_ms) if delay_ms.is_integer() else delay_ms} ms"
+    )
+    if ua_port:
+        overall_title += f", UA Port: {ua_port}"
+
+    return {
+        "stim_freq_hz": freq,
+        "stim_current_ua": current,
+        "stim_depth_mm": depth,
+        "stim_dur_nominal_ms": duration,
+        "stim_delay_ms": delay_ms,
+        "ua_port": ua_port,
+        "video_file": video_file,
+        "condition": condition,
+        "overall_title": overall_title,
+    }
+
