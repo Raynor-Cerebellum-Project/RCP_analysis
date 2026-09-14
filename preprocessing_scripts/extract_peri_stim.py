@@ -31,7 +31,7 @@ Outputs:
     5. `PeriStim/IMU/`
     6. `PeriStim/continuous_stim/`
 """
-import re, json
+import re, json, os
 import pandas as pd
 import numpy as np
 from scipy.io import savemat
@@ -632,160 +632,8 @@ def _read_csv_robust(path: Path) -> pd.DataFrame:
         raise last_err or RuntimeError(f"Could not read CSV: {path}")
 
 def build_title_from_csv(csv_path: Path, *, sess: str | None = None, br_file: int | None = None) -> tuple[str, int | None]:
-
-    csv_path = Path(csv_path)
-    df = _read_csv_robust(csv_path)
-
-    if df.empty:
-        raise RuntimeError(f"Metadata CSV read but dataframe is empty: {csv_path}")
-
-    # normalize dataframe column names
-    def _norm_col(c):
-        return str(c).strip().lower().replace(" ", "_")
-    df = df.copy()
-    df.columns = [_norm_col(c) for c in df.columns]
-
-    # drop first row if it looks like a duplicated header row accidentally read as data
-    if len(df) > 0:
-        first = df.iloc[0].astype(str).str.strip().str.lower()
-        header_like_count = 0
-
-        for col in df.columns:
-            if col in first.values:
-                header_like_count += 1
-
-        if header_like_count >= max(2, len(df.columns) // 2):
-            df_data = df.iloc[1:].reset_index(drop=True)
-        else:
-            df_data = df.reset_index(drop=True)
-    else:
-        df_data = df.copy()
-
-
-    def _find_col(df, *names):
-        norm_map = {_norm_col(c): c for c in df.columns}
-        for name in names:
-            key = _norm_col(name)
-            if key in norm_map:
-                return norm_map[key]
-        return None
-
-    session_col = _find_col(df_data, "session", "sess", "intan_session", "intan_filename")
-    br_col = _find_col(df_data, "br_file", "br", "br_idx")
-    video_col = _find_col(df_data, "video_file", "video", "video_idx")
-
-    freq_col = _find_col(df_data, "stim_frequency_hz", "frequency_hz", "freq_hz", "freq")
-    current_col = _find_col(df_data, "current_ua", "current", "current_microamps")
-    depth_col = _find_col(df_data, "depth_mm", "depth")
-    duration_col = _find_col(df_data, "stim_duration_ms", "duration_ms", "stim_duration", "duration")
-    ua_col = _find_col(df_data, "ua_port", "port")
-    delay_col = _find_col(df_data, "delay", "delay_ms")
-    movement_col = _find_col(df_data, "movement_trigger", "trigger")
-
-    mask = pd.Series(True, index=df_data.index)
-
-
-    if br_file is not None and br_col is not None:
-        br_numeric = pd.to_numeric(df_data[br_col], errors="coerce")
-        br_mask = br_numeric.eq(int(br_file))
-
-        if br_mask.any():
-            mask &= br_mask
-
-    if sess is not None and session_col is not None:
-        sess_mask = df_data[session_col].astype(str).str.strip().eq(str(sess).strip())
-
-        if sess_mask.any():
-            mask &= sess_mask
-
-    if movement_col is not None:
-        non_velocity_mask = ~df_data[movement_col].astype(str).str.lower().str.contains("velocity", na=False)
-
-        if (mask & non_velocity_mask).any():
-            mask &= non_velocity_mask
-
-    if not mask.any():
-        raise RuntimeError(f"No matching metadata row found in {csv_path} for sess={sess!r}, br_file={br_file!r}")
-
-    row = df_data.loc[mask].iloc[0]
-
-    # Extract metadata fields
-    freq = row[freq_col] if freq_col is not None else pd.NA
-    current = row[current_col] if current_col is not None else pd.NA
-    depth = row[depth_col] if depth_col is not None else pd.NA
-    duration = row[duration_col] if duration_col is not None else pd.NA
-    ua_port = row[ua_col] if ua_col is not None else pd.NA
-    delay = row[delay_col] if delay_col is not None else pd.NA
-
-    def _parse_delay_ms(x):
-        if pd.isna(x):
-            return 0
-
-        s = str(x).strip()
-        if s == "":
-            return 0
-
-        # numeric delay already in ms
-        try:
-            return int(float(s))
-        except Exception:
-            pass
-
-        s_low = s.lower()
-
-        # examples: "20 ms", "20ms"
-        m = re.search(r"([-+]?\d*\.?\d+)\s*ms", s_low)
-        if m:
-            return int(float(m.group(1)))
-
-        # examples: "0.2 s", "0.2s"
-        m = re.search(r"([-+]?\d*\.?\d+)\s*s", s_low)
-        if m:
-            return int(float(m.group(1)) * 1000)
-
-        return 0
-    delay_ms = _parse_delay_ms(delay)
-
-    # Condition: use BR file if present, otherwise video_file, otherwise n/a
-    video_file = None
-
-    if video_col is not None and not pd.isna(row[video_col]):
-        try:
-            video_file = int(float(row[video_col]))
-        except Exception:
-            video_file = None
-
-    if br_file is not None:
-        condition = str(br_file)
-    elif video_file is not None:
-        condition = str(video_file)
-    else:
-        condition = "n/a"
-
-    def _fmt_num(x):
-        if pd.isna(x):
-            return "n/a"
-        try:
-            xf = float(x)
-            if xf.is_integer():
-                return str(int(xf))
-            return str(xf)
-        except Exception:
-            return str(x)
-
-    overall_title = (
-        f"Condition: {condition}, "
-        f"{_fmt_num(freq)} Hz, "
-        f"{_fmt_num(current)} µA, "
-        f"{_fmt_num(depth)} mm, "
-        f"{_fmt_num(duration)} ms, "
-        f"Delay: {delay_ms} ms"
-    )
-
-    if ua_col is not None and not pd.isna(ua_port):
-        overall_title += f", UA Port: {ua_port}"
-
-    return overall_title, video_file
+    meta = rcp.parse_session_metadata_from_csv(csv_path, sess=sess, br_file=br_file)
+    return meta["overall_title"], meta["video_file"]
 
 def _compute_trial_labels(
     event_ms: np.ndarray,
@@ -937,6 +785,17 @@ def _save_peristim(
     labels_all: np.ndarray,
     raw_trial_indices_sub: np.ndarray,
 
+    # Structured stimulation
+    stim_pulse_counts: np.ndarray,
+    stim_dur_measured_ms: np.ndarray,
+    stim_dur_nominal_ms: float = np.nan,
+    stim_freq_hz: float = np.nan,
+    stim_current_ua: float = np.nan,
+    stim_depth_mm: float = np.nan,
+    stim_delay_ms: float = 0.0,
+    fs_nprw: float | None = None,
+    fs_ua: float | None = None,
+
     # NPRW
     NPRW_med_sub: np.ndarray,
     NPRW_var_sub: np.ndarray,
@@ -1030,6 +889,17 @@ def _save_peristim(
         trial_labels_all=np.asarray(labels_all, dtype="U1"),    # full labels after behavior gating
         raw_trial_indices=np.asarray(raw_trial_indices_sub, int),
 
+        # Structured stimulation fields
+        stim_pulse_counts=np.asarray(stim_pulse_counts, int),
+        stim_dur_measured_ms=np.asarray(stim_dur_measured_ms, float),
+        stim_dur_nominal_ms=float(stim_dur_nominal_ms),
+        stim_freq_hz=float(stim_freq_hz),
+        stim_current_ua=float(stim_current_ua),
+        stim_depth_mm=float(stim_depth_mm),
+        stim_delay_ms=float(stim_delay_ms),
+        fs_nprw=float(fs_nprw) if fs_nprw is not None else np.nan,
+        fs_ua=float(fs_ua) if (HAS_BR and fs_ua is not None) else np.nan,
+
         # behavior
         n_beh=int(n_beh_sub),
         beh_rel_t=np.asarray(beh_rel_t_sub, float),
@@ -1098,6 +968,16 @@ def _save_peristim(
             "trial_labels": np.asarray(labels_sub, dtype="U1"),
             "trial_labels_all": np.asarray(labels_all, dtype="U1"),
             "raw_trial_indices": np.asarray(raw_trial_indices_sub, int),
+
+            "stim_pulse_counts": np.asarray(stim_pulse_counts, int),
+            "stim_dur_measured_ms": np.asarray(stim_dur_measured_ms, float),
+            "stim_dur_nominal_ms": float(stim_dur_nominal_ms),
+            "stim_freq_hz": float(stim_freq_hz),
+            "stim_current_ua": float(stim_current_ua),
+            "stim_depth_mm": float(stim_depth_mm),
+            "stim_delay_ms": float(stim_delay_ms),
+            "fs_nprw": float(fs_nprw) if fs_nprw is not None else np.nan,
+            "fs_ua": float(fs_ua) if (HAS_BR and fs_ua is not None) else np.nan,
 
             "ua_meta": ua_meta if ua_meta is not None else {},
             "nprw_meta": nprw_meta,
@@ -1194,6 +1074,7 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
     nprw_peak_amps  = aligned_npz["nprw_peak_amps"].reshape(-1)[0]
     nprw_rec_ms     = (float(nprw_meta["rec_start_ms_aligned"]), float(nprw_meta["rec_end_ms_aligned"]))
     nprw_rec_dur    = nprw_meta['rec_dur']
+    fs_nprw         = float(meta.get("fs_nprw", nprw_meta.get("fs", 30000.0)))
     
     if use_ir_ms == True:
         event_ms = aligned_npz["ir_ms"]
@@ -1204,6 +1085,41 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         return
         
     raw_trial_indices = np.arange(event_ms.size)
+
+    # Structured stim metadata
+    stim_freq_hz = float(aligned_npz.get("stim_freq_hz", np.nan)) if "stim_freq_hz" in aligned_npz.files else np.nan
+    stim_current_ua = float(aligned_npz.get("stim_current_ua", np.nan)) if "stim_current_ua" in aligned_npz.files else np.nan
+    stim_depth_mm = float(aligned_npz.get("stim_depth_mm", np.nan)) if "stim_depth_mm" in aligned_npz.files else np.nan
+    stim_dur_nominal_ms = float(aligned_npz.get("stim_dur_nominal_ms", np.nan)) if "stim_dur_nominal_ms" in aligned_npz.files else np.nan
+    stim_delay_ms = float(aligned_npz.get("stim_delay_ms", 0.0)) if "stim_delay_ms" in aligned_npz.files else 0.0
+
+    try:
+        sess_parsed = rcp.parse_session_metadata_from_csv(METADATA_CSV, sess=intan_filename, br_file=br_idx)
+        overall_title = sess_parsed["overall_title"]
+        if np.isnan(stim_freq_hz): stim_freq_hz = float(sess_parsed["stim_freq_hz"])
+        if np.isnan(stim_current_ua): stim_current_ua = float(sess_parsed["stim_current_ua"])
+        if np.isnan(stim_depth_mm): stim_depth_mm = float(sess_parsed["stim_depth_mm"])
+        if np.isnan(stim_dur_nominal_ms): stim_dur_nominal_ms = float(sess_parsed["stim_dur_nominal_ms"])
+        if stim_delay_ms == 0.0: stim_delay_ms = float(sess_parsed["stim_delay_ms"])
+    except Exception as e:
+        print(f"[warn] metadata parse failed for BR {br_idx}: {e}")
+        overall_title = "Condition: n/a, n/a Hz, n/a µA, n/a mm, n/a ms, Delay: 0 ms"
+
+    # Stim pulses and measured durations per block
+    stim_pulses_per_block = aligned_npz.get("stim_pulses_per_block", None) if "stim_pulses_per_block" in aligned_npz.files else None
+    if stim_pulses_per_block is None:
+        stim_pulses_per_block = nprw_meta.get("stim_pulses_per_block", np.empty(0, dtype=np.int32))
+    stim_pulses_per_block = np.asarray(stim_pulses_per_block, dtype=np.int32)
+    if stim_pulses_per_block.size == 0 and not use_ir_ms:
+        stim_npz_path, _ = rcp.stim_npz_path_from_br_idx(br_idx, METADATA_CSV, NPRW_AUX_DATA)
+        if stim_npz_path is not None and Path(stim_npz_path).exists():
+            stim_det = rcp.load_stim_detection(stim_npz_path)
+            stim_pulses_per_block = np.asarray(stim_det.get("pulses_per_block", []), dtype=np.int32)
+
+    stim_dur_measured_ms_full = aligned_npz.get("stim_dur_measured_ms", None) if "stim_dur_measured_ms" in aligned_npz.files else None
+    if stim_dur_measured_ms_full is None:
+        stim_dur_measured_ms_full = nprw_meta.get("stim_dur", np.empty(0, dtype=np.float32))
+    stim_dur_measured_ms_full = np.asarray(stim_dur_measured_ms_full, dtype=np.float32)
 
     # This part removes trials we labeled as bad from inspect_kinematic_trajectories.py. The indices refer to the index of stim blocks
     if not MANUAL_REMOVE_DF.empty:
@@ -1237,12 +1153,6 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
     # Metadata for titles
     behv_t = np.arange(0.0)
     behavior_gate_z = np.zeros((0, 0), float)
-
-    try:
-        overall_title, _ = build_title_from_csv(METADATA_CSV, sess=intan_filename, br_file=br_idx)
-    except Exception as e:
-        print(f"[warn] metadata parse failed for BR {br_idx}: {e}")
-        overall_title = "Condition: n/a, n/a Hz, n/a µA, n/a mm, n/a ms, Delay: 0 ms"
     
     if HAS_BR:
         ua_meta         = aligned_npz["ua_meta"].item()
@@ -1760,6 +1670,17 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         else:
             current_out_dir = out_dir
 
+        # Slice per-trial stim pulses and measured duration
+        if stim_pulses_per_block is not None and stim_pulses_per_block.size and not use_ir_ms:
+            stim_pulse_counts_sub = np.array([stim_pulses_per_block[i] if i < len(stim_pulses_per_block) else 0 for i in raw_trial_indices_sub], dtype=np.int32)
+        else:
+            stim_pulse_counts_sub = np.zeros(len(raw_trial_indices_sub), dtype=np.int32)
+
+        if stim_dur_measured_ms_full is not None and stim_dur_measured_ms_full.size and not use_ir_ms:
+            stim_dur_measured_sub = np.array([stim_dur_measured_ms_full[i] if i < len(stim_dur_measured_ms_full) else 0.0 for i in raw_trial_indices_sub], dtype=np.float32)
+        else:
+            stim_dur_measured_sub = np.zeros(len(raw_trial_indices_sub), dtype=np.float32)
+
         # save NPZ + MAT
         _save_peristim(
             out_dir=current_out_dir,
@@ -1772,6 +1693,21 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
             align_meta_raw=aligned_npz["align_meta"].item() if "align_meta" in aligned_npz.files else "{}",
             nprw_meta=nprw_meta,
             ua_meta=ua_meta if HAS_BR else None,
+
+            event_ms_sub=event_ms_sub,
+            labels_sub=labels_sub,
+            labels_all=np.asarray(trial_labels, dtype="U1"),
+            raw_trial_indices_sub=raw_trial_indices_sub,
+
+            stim_pulse_counts=stim_pulse_counts_sub,
+            stim_dur_measured_ms=stim_dur_measured_sub,
+            stim_dur_nominal_ms=stim_dur_nominal_ms if not use_ir_ms else 0.0,
+            stim_freq_hz=stim_freq_hz if not use_ir_ms else 0.0,
+            stim_current_ua=stim_current_ua if not use_ir_ms else 0.0,
+            stim_depth_mm=stim_depth_mm if not use_ir_ms else 0.0,
+            stim_delay_ms=stim_delay_ms if not use_ir_ms else 0.0,
+            fs_nprw=fs_nprw,
+            fs_ua=fs_ua if HAS_BR else None,
 
             NPRW_med_sub=NPRW_med_sub,
             NPRW_var_sub=NPRW_var_sub,
@@ -1813,11 +1749,6 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
             ts_state_num_full=ts_state_num_full if ts_state_num_full is not None else np.array([], int),
             n_ts_state_trials_sub=int(n_ts_state_trials_sub),
 
-            event_ms_sub=event_ms_sub,
-            labels_sub=labels_sub,
-            labels_all=np.asarray(trial_labels, dtype="U1"),
-            raw_trial_indices_sub=raw_trial_indices_sub,
-
             n_beh_sub=int(n_beh_sub),
             beh_rel_t_sub=beh_rel_t_sub,
             beh_cam0_pos_med_sub=beh_cam0_pos_med_sub,
@@ -1835,6 +1766,13 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
     print(f"[extract] wrote peristim__{intan_filename}__BR_{int(br_idx)}")
     
 def main():
+    if os.environ.get("RCP_VELES_RUN") != "1":
+        from RCP_analysis.python.functions.pipeline_hierarchy import check_and_confirm_dependencies
+        data_root = f"{PARAMS.data_root}/{PARAMS.monkey}"
+        if not check_and_confirm_dependencies(Path(__file__).name, PARAMS.session, data_root):
+            print("[extract_peri_stim] Aborted by user due to dependency discrepancy.")
+            return
+
     control_files = sorted(CONTROL_ROOT.glob("aligned__*.npz"))
     stim_files = sorted(STIM_ROOT.glob("aligned__*.npz"))
     at_rest_files = sorted(AT_REST_ROOT.glob("aligned__*.npz"))

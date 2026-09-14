@@ -1,5 +1,7 @@
-import RCP_analysis as rcp
-from RCP_analysis.python.functions.config_loading import PARAMS
+from pathlib import Path
+
+from RCP_analysis.python.functions.config_loading import PARAMS, OUT_BASE, PERI_ROOT
+from RCP_analysis.python.functions.rsa_utils import run_rsa
 
 # Config
 def main():
@@ -16,7 +18,7 @@ def main():
     # Loop over NPRW and UA, Target A and Target B
     for probe in probes:
         for target in targets:
-            rcp.run_rsa(
+            run_rsa(
                 source=probe,
                 target=target,
                 poststim_win_ms=poststim_win_ms,
@@ -29,7 +31,10 @@ def main():
                 move_alpha=move_alpha,
                 stim_alpha=stim_alpha,
                 debug_masks=True,
-            )     
+                peri_root=Path(PERI_ROOT),
+                out_base=Path(OUT_BASE),
+                fig_dir=Path(OUT_BASE) / "figures" / "rsa_from_peristim",
+            )   
             
 if __name__ == "__main__":
     main()

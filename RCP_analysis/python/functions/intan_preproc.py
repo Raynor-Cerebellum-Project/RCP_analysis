@@ -2,7 +2,7 @@ from tqdm import tqdm
 from pathlib import Path
 import json
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import spikeinterface as si
 import spikeinterface.preprocessing as spre
 import spikeinterface.extractors as se
@@ -43,6 +43,7 @@ class StimTriggerResult:
     trigger_pairs: np.ndarray              # (n_pulses, 2) [start_sample, end_sample]
     block_bounds_samples: np.ndarray       # (n_blocks, 2) [block_start_sample, block_end_sample]
     pulse_sizes: np.ndarray                # (n_pulses,)
+    pulses_per_block: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
 
 def _extract_stim_triggers_and_blocks(
     stim_data: np.ndarray,   # (n_channels, n_samples)
@@ -68,6 +69,7 @@ def _extract_stim_triggers_and_blocks(
             trigger_pairs=np.empty((0, 2), dtype=np.int32),
             block_bounds_samples=np.empty((0, 2), dtype=np.int32),
             pulse_sizes=np.array([], dtype=int),
+            pulses_per_block=np.empty(0, dtype=np.int32),
         )
     det_ch = int(active_channels[0])
 
@@ -78,6 +80,7 @@ def _extract_stim_triggers_and_blocks(
             trigger_pairs=np.empty((0, 2), dtype=np.int32),
             block_bounds_samples=np.empty((0, 2), dtype=np.int32),
             pulse_sizes=np.array([], dtype=int),
+            pulses_per_block=np.empty(0, dtype=np.int32),
         )
 
     # 2) edge detection
@@ -110,6 +113,7 @@ def _extract_stim_triggers_and_blocks(
     # --- 3) block (repeat) boundaries
     if trigger_pairs.shape[0] == 0:
         block_bounds_samples = np.empty((0, 2), dtype=np.int32)
+        pulses_per_block = np.empty(0, dtype=np.int32)
     else:
         pulse_size_ref = int(np.median(pulse_sizes))
         repeat_gap_threshold = 50 * pulse_size_ref #TODO This right now categorizes everything higher than 10Hz stim as a "block"
@@ -124,13 +128,15 @@ def _extract_stim_triggers_and_blocks(
         block_starts = starts[block_boundaries_idx[:-1]]
         block_ends   = ends[block_boundaries_idx[1:] - 1]
         block_bounds_samples = np.column_stack([block_starts, block_ends]).astype(np.int32)
+        pulses_per_block = np.diff(block_boundaries_idx).astype(np.int32)
 
     return StimTriggerResult(
         active_channels=active_channels,
         trigger_pairs=trigger_pairs,
         block_bounds_samples=block_bounds_samples,
         pulse_sizes=pulse_sizes,
-)
+        pulses_per_block=pulses_per_block,
+    )
 
 STIM_CHUNK_S = 30.0
 
@@ -191,6 +197,7 @@ def _extract_stim_triggers_and_blocks_1d(stim_signal, active_channels_0based):
         trigger_pairs=np.empty((0, 2), dtype=np.int32),
         block_bounds_samples=np.empty((0, 2), dtype=np.int32),
         pulse_sizes=np.array([], dtype=int),
+        pulses_per_block=np.empty(0, dtype=np.int32),
     )
     if stim_signal.size < 2:
         return empty
@@ -226,12 +233,14 @@ def _extract_stim_triggers_and_blocks_1d(stim_signal, active_channels_0based):
     cut_points = np.flatnonzero(np.diff(starts) > repeat_gap_threshold) + 1
     idx = np.concatenate([[0], cut_points, [trigger_pairs.shape[0]]]).astype(int)
     block_bounds_samples = np.column_stack([starts[idx[:-1]], ends[idx[1:] - 1]]).astype(np.int32)
+    pulses_per_block = np.diff(idx).astype(np.int32)
 
     return StimTriggerResult(
         active_channels=active_0 + 1,
         trigger_pairs=trigger_pairs,
         block_bounds_samples=block_bounds_samples,
         pulse_sizes=pulse_sizes,
+        pulses_per_block=pulses_per_block,
     )
     
 def extract_stim_npz(
@@ -285,6 +294,7 @@ def extract_stim_npz(
         "trigger_pairs": stim_ext.trigger_pairs,
         "block_bounds_samples": stim_ext.block_bounds_samples,
         "pulse_sizes": stim_ext.pulse_sizes.astype(np.int32),
+        "pulses_per_block": stim_ext.pulses_per_block.astype(np.int32),
     }
 
     if save_traces:

@@ -43,6 +43,10 @@ from .python.functions.utils import (
     dedup_peaks,
     bin_counts_around_stim,
     smooth_counts_gauss,
+    parse_session_metadata_from_csv,
+    intan_samples_to_br_ms,
+    intan_samples_to_br_samples,
+    intan_ms_to_br_ms,
 )
 # artifact correction
 from .python.functions.artifact_correction import (
@@ -105,6 +109,19 @@ from .python.functions.kinematics_utils import (
     mean_ci95_trace_summary,
 )
 
+# pipeline hierarchy
+from .python.functions.pipeline_hierarchy import (
+    SCRIPT_STATUS_COLUMNS,
+    COLUMN_DEPENDENCIES,
+    get_script_column,
+    parse_status_timestamp,
+    get_all_ancestor_columns,
+    load_session_status_row,
+    validate_script_dependencies,
+    prompt_dependency_warning,
+    check_and_confirm_dependencies,
+)
+
 
 __all__ = [
     # params
@@ -149,6 +166,9 @@ __all__ = [
     "dedup_peaks",
     "bin_counts_around_stim",
     "smooth_counts_gauss",
+    "intan_samples_to_br_ms",
+    "intan_samples_to_br_samples",
+    "intan_ms_to_br_ms",
     
     # Impedance utils
     "get_session_impedances",
@@ -200,4 +220,15 @@ __all__ = [
     "mean_sd_from_trial_traces",
     "mean_ci95_from_trial_traces",
     "mean_ci95_trace_summary",
+
+    # pipeline hierarchy
+    "SCRIPT_STATUS_COLUMNS",
+    "COLUMN_DEPENDENCIES",
+    "get_script_column",
+    "parse_status_timestamp",
+    "get_all_ancestor_columns",
+    "load_session_status_row",
+    "validate_script_dependencies",
+    "prompt_dependency_warning",
+    "check_and_confirm_dependencies",
 ]

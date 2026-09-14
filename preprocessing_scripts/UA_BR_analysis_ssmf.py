@@ -295,6 +295,13 @@ def filter_peaks_by_amplitude_fast(peaks, recording, noise_levels,
     return filtered_peaks, kept_amplitudes, kept_snr
 
 def main():
+    if os.environ.get("RCP_VELES_RUN") != "1":
+        from RCP_analysis.python.functions.pipeline_hierarchy import check_and_confirm_dependencies
+        data_root = f"{PARAMS.data_root}/{PARAMS.monkey}"
+        if not check_and_confirm_dependencies(Path(__file__).name, PARAMS.session, data_root):
+            print("[UA_BR_analysis_ssmf] Aborted by user due to dependency discrepancy.")
+            return
+
     sess_folders = BR_SESSION_FOLDERS
 
     print("Found session folders:", len(sess_folders))
@@ -408,14 +415,10 @@ def main():
             starts_intan = block_bounds[:, 0].astype(np.int64)
             ends_intan   = block_bounds[:, 1].astype(np.int64)
 
-            # shift+scale into UA sample index space
-            PPM_CORRECTION = -13.951
-            
-            scale_nominal = fs_ua / fs_intan
-            scale_corrected = scale_nominal * (1.0 + PPM_CORRECTION / 1e6)
-
-            starts_ua = np.round((starts_intan - shift_samp_intan) * scale_corrected).astype(np.int64)
-            ends_ua   = np.round((ends_intan   - shift_samp_intan) * scale_corrected).astype(np.int64)
+            # shift+scale into UA sample index space with PPM clock correction
+            PPM_CORRECTION = float(PARAMS.preprocessing.get("ppm_correction", -13.951))
+            starts_ua = rcp.intan_samples_to_br_samples(starts_intan, shift_samp_intan, fs_intan, fs_ua, PPM_CORRECTION)
+            ends_ua   = rcp.intan_samples_to_br_samples(ends_intan, shift_samp_intan, fs_intan, fs_ua, PPM_CORRECTION)
 
             n_total = rec_ns6.get_num_samples()
             ends_ua = np.minimum(ends_ua, n_total)

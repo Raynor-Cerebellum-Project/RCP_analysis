@@ -164,9 +164,10 @@ def main():
         rec_ref = spre.common_reference(rec_hp, reference="local", operator="median", local_radius=(RADII[0], RADII[1]))
         
         # block_bounds_samples: shape (# stim blocks, 2) in absolute samples
-        block_bounds = stim_ext_arrays.get("block_bounds_samples")
-        trigger_pairs = stim_ext_arrays.get("trigger_pairs") # (n_pulses, 2)
-        stim_channels = stim_ext_arrays['active_channels']
+        block_bounds = stim_ext_arrays.get("block_bounds_samples") if stim_ext_arrays else None
+        trigger_pairs = stim_ext_arrays.get("trigger_pairs") if stim_ext_arrays else None # (n_pulses, 2)
+        stim_channels = stim_ext_arrays.get('active_channels', np.array([])) if stim_ext_arrays else np.array([])
+        pulses_per_block = stim_ext_arrays.get("pulses_per_block") if stim_ext_arrays else None
 
         rec_artif_removed = rec_ref  # fallback
         fs_nprw = rec_reordered.get_sampling_frequency()
@@ -273,6 +274,8 @@ def main():
                 fs=fs_nprw,
                 stim_channels=stim_channels,
                 stim_dur = dur_ms if dur_ms is not None else 0.0,
+                stim_pulses_per_block=pulses_per_block if pulses_per_block is not None else np.empty(0, dtype=np.int32),
+                stim_n_pulses=int(np.median(pulses_per_block)) if (pulses_per_block is not None and pulses_per_block.size) else 0,
                 n_channels=rec_artif_removed.get_num_channels(),
                 session=str(sess.name),
                 n_samples = rec.get_total_samples(),

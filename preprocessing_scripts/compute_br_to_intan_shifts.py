@@ -11,6 +11,7 @@ Output:
 """
 import numpy as np
 import csv
+import os
 import spikeinterface.extractors as se
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
@@ -147,6 +148,13 @@ def refine_shift_with_loc_and_br0(
     return shift, int(delta_i), float(dt_ms), dbg
 
 def main():
+    if os.environ.get("RCP_VELES_RUN") != "1":
+        from RCP_analysis.python.functions.pipeline_hierarchy import check_and_confirm_dependencies
+        data_root = f"{PARAMS.data_root}/{PARAMS.monkey}"
+        if not check_and_confirm_dependencies(Path(__file__).name, PARAMS.session, data_root):
+            print("[compute_br_to_intan_shifts] Aborted by user due to dependency discrepancy.")
+            return
+
     # Load Intan sessions (from processed Intan rate files)
     rate_files = sorted(NPRW_CKPT_ROOT.rglob("rates__*.npz"))
     sessions = sorted({p.stem[len("rates__"):].split("__bin", 1)[0] for p in rate_files })

@@ -57,73 +57,6 @@ def _resolve_data_root(machines_yaml_path: Path, relative_data_root: str) -> str
     return f"{prefix}/{relative_data_root}"
 
 
-def _get_monkey_from_data_root(data_root: str) -> str:
-    """
-    Identify the monkey from the final part of data_root.
-
-    Example:
-        /some/path/Nike -> Nike
-        /some/path/Ada  -> Ada
-        /some/path/Bert -> Bert
-    """
-    monkey = Path(data_root).name.strip()
-
-    if monkey not in {"Nike", "Ada", "Bert"}:
-        raise ValueError(
-            f"Could not identify monkey from data_root: {data_root}. "
-            f"Expected final folder to be 'Nike' or 'Ada' or 'Bert', got '{monkey}'."
-        )
-
-    return monkey
-
-
-def _get_location_session_from_status_csv(data_root: str, process_fastigial: bool) -> tuple[str, str]:
-    """
-    Read data_root/data_status_reaching.csv and find the first row where
-    'Process Session?' is 'Yes'. Return that row's Location and Session.
-    """
-    if process_fastigial:
-        status_csv = Path(data_root) / "data_status_fastigial.csv"
-    else:
-        status_csv = Path(data_root) / "data_status_reaching.csv"
-
-    if not status_csv.exists():
-        raise FileNotFoundError(f"data_status_reaching.csv not found: {status_csv}")
-
-    with status_csv.open("r", newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-
-        required_cols = {"Process Session?", "Location", "Session"}
-        missing = required_cols - set(reader.fieldnames or [])
-        if missing:
-            raise KeyError(
-                f"Missing required column(s) in {status_csv}: {sorted(missing)}"
-            )
-
-        for row in reader:
-            process_which = str(row.get("Process Session?", "")).strip().lower()
-
-            if process_which == "yes":
-                location = str(row.get("Location", "")).strip()
-                session = str(row.get("Session", "")).strip()
-
-                if not location:
-                    raise ValueError(
-                        f"Found Process Session? = Yes, but Location is empty in {status_csv}"
-                    )
-                if not session:
-                    raise ValueError(
-                        f"Found Process Session? = Yes, but Session is empty in {status_csv}"
-                    )
-
-                return location, session
-
-
-    print(f"[RAS] No row with 'Process Session?' = 'Yes' found in {status_csv}")
-    
-    return "N/A", "N/A"
-
-
 def load_experiment_params(
     yaml_path: Path,
     repo_root: Path,
@@ -167,26 +100,27 @@ def load_experiment_params(
     # resolve machine-specific prefix and combine with the lab-relative data_root
     if machines_yaml_path is None:
         machines_yaml_path = repo_root / "config" / "machines.yaml"
-    data_root = _resolve_data_root(machines_yaml_path, relative_data_root)
-    monkey = _get_monkey_from_data_root(data_root)
+    data_root_monkeyless = _resolve_data_root(machines_yaml_path, relative_data_root)
 
-    if first_run:
-        location = ""
-        session = ""
-    else:
-        env_location = os.environ.get("RCP_LOCATION")
-        env_session = os.environ.get("RCP_SESSION")
+    monkey = ""
+    location = ""
+    session = ""
 
-        if env_location and env_session:
-            location = env_location
-            session = env_session
-        elif env_location or env_session:
-            raise RuntimeError(
-                "Both RCP_LOCATION and RCP_SESSION must be set together, "
-                f"got RCP_LOCATION={env_location!r}, RCP_SESSION={env_session!r}"
-            )
-        else:
-            location, session = _get_location_session_from_status_csv(data_root, process_fastigial)
+    env_location = os.environ.get("RCP_LOCATION")
+    env_session = os.environ.get("RCP_SESSION")
+    env_monkey = os.environ.get("RCP_MONKEY")
+
+    if env_location and env_session and env_monkey:
+        location = env_location
+        session = env_session
+        monkey = env_monkey
+    elif env_location or env_session or env_monkey:
+        raise RuntimeError(
+            "RCP_LOCATION, RCP_SESSION, and RCP_MONKEY must be set together, "
+            f"got RCP_LOCATION={env_location!r}, RCP_SESSION={env_session!r}, RCP_MONKEY={env_monkey!r}"
+        )
+
+    data_root = f"{data_root_monkeyless}/{monkey}"
 
     kin_cfg = dict(cfg.get("kinematics", {}) or {})
     kin_cfg["num_camera"] = kin_cfg.get("num_camera")
