@@ -396,14 +396,10 @@ def main():
             starts_intan = block_bounds[:, 0].astype(np.int64)
             ends_intan   = block_bounds[:, 1].astype(np.int64)
 
-            # shift+scale into UA sample index space
-            PPM_CORRECTION = -13.951
-            
-            scale_nominal = fs_ua / fs_intan
-            scale_corrected = scale_nominal * (1.0 + PPM_CORRECTION / 1e6)
-
-            starts_ua = np.round((starts_intan - shift_samp_intan) * scale_corrected).astype(np.int64)
-            ends_ua   = np.round((ends_intan   - shift_samp_intan) * scale_corrected).astype(np.int64)
+            # shift+scale into UA sample index space with PPM clock correction
+            PPM_CORRECTION = float(PARAMS.preprocessing.get("ppm_correction", -13.951))
+            starts_ua = rcp.intan_samples_to_br_samples(starts_intan, shift_samp_intan, fs_intan, fs_ua, PPM_CORRECTION)
+            ends_ua   = rcp.intan_samples_to_br_samples(ends_intan, shift_samp_intan, fs_intan, fs_ua, PPM_CORRECTION)
 
             n_total = rec_ns6.get_num_samples()
             ends_ua = np.minimum(ends_ua, n_total)

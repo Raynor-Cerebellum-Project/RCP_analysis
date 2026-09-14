@@ -1368,3 +1368,65 @@ def parse_session_metadata_from_csv(
         "overall_title": overall_title,
     }
 
+
+def intan_samples_to_br_ms(
+    intan_samples: np.ndarray | float | int,
+    shift_sample: float | int,
+    fs_intan: float = 30000.0,
+    ppm_correction: float = -13.951,
+) -> np.ndarray | float:
+    """
+    Convert Intan sample indices (or array of samples) to Blackrock-aligned milliseconds,
+    accounting for hardware clock drift (PPM).
+
+    Formula:
+        t_br_ms = ((intan_samples - shift_sample) / fs_intan * 1000.0) * (1.0 + ppm_correction / 1e6)
+    """
+    clock_scale = 1.0 + (float(ppm_correction) / 1e6)
+    delta_s = (np.asarray(intan_samples, dtype=np.float64) - float(shift_sample)) / float(fs_intan)
+    ms = delta_s * 1000.0 * clock_scale
+    if np.ndim(intan_samples) == 0:
+        return float(ms)
+    return ms
+
+
+def intan_samples_to_br_samples(
+    intan_samples: np.ndarray | int,
+    shift_sample: float | int,
+    fs_intan: float = 30000.0,
+    fs_br: float = 30000.0,
+    ppm_correction: float = -13.951,
+) -> np.ndarray | int:
+    """
+    Convert Intan sample indices to Blackrock sample indices, accounting for
+    sampling rate ratio and hardware clock drift (PPM).
+
+    Formula:
+        samp_br = round((intan_samples - shift_sample) * (fs_br / fs_intan) * (1.0 + ppm_correction / 1e6))
+    """
+    scale_corrected = (float(fs_br) / float(fs_intan)) * (1.0 + float(ppm_correction) / 1e6)
+    delta = np.asarray(intan_samples, dtype=np.float64) - float(shift_sample)
+    br_samps = np.round(delta * scale_corrected)
+    if np.ndim(intan_samples) == 0:
+        return int(br_samps)
+    return br_samps.astype(np.int64)
+
+
+def intan_ms_to_br_ms(
+    intan_ms: np.ndarray | float,
+    shift_ms: float,
+    ppm_correction: float = -13.951,
+) -> np.ndarray | float:
+    """
+    Convert Intan timestamps (already in ms) to Blackrock-aligned milliseconds,
+    accounting for hardware clock drift (PPM).
+
+    Formula:
+        t_br_ms = (intan_ms - shift_ms) * (1.0 + ppm_correction / 1e6)
+    """
+    clock_scale = 1.0 + (float(ppm_correction) / 1e6)
+    ms = (np.asarray(intan_ms, dtype=np.float64) - float(shift_ms)) * clock_scale
+    if np.ndim(intan_ms) == 0:
+        return float(ms)
+    return ms
+

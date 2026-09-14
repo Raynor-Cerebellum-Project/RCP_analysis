@@ -22,7 +22,7 @@ SESSIONS_TO_RUN = [
     # "NRR_RW032",
     # "NRR_RW029",
     # "NRR_RW026",
-    "NRR_RW022",
+    # "NRR_RW022",
     # "NRR_RW019",
     # "NRR_RW018",
     # "NRR_RW017",
@@ -34,7 +34,7 @@ SESSIONS_TO_RUN = [
     # "NRR_RW011",
 ]
 
-PROCESS_ONLY = []
+PROCESS_ONLY = [17]
 
 SCRIPTS = [
     # "preprocessing_scripts/OCR_frame_correction.py",
@@ -46,7 +46,7 @@ SCRIPTS = [
     "preprocessing_scripts/UA_BR_analysis_ssmf.py",
     "preprocessing_scripts/make_aligned_npz_and_mat.py",
     "preprocessing_scripts/extract_peri_stim.py",
-    # "preprocessing_scripts/inspect_kinematics_trajectories.py",
+    "preprocessing_scripts/inspect_kinematics_trajectories.py",
     ### RUN ^ inspect_kinematics_trajectories.py to check for remaining bad traces -> add bad traces to /config/manual_trial_remove.csv
     ### RERUN extract_peri_stim.py
 

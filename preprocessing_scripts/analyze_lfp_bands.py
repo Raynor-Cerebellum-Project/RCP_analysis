@@ -474,7 +474,7 @@ def apply_ipca_correction(
     # ══════════════════════════════════════════════════════════════════════
     # GENERATE PULSE TIMES IN UA COORDINATES
     # ══════════════════════════════════════════════════════════════════════
-    PPM_CORRECTION = -13.951
+    PPM_CORRECTION = float(PARAMS.preprocessing.get("ppm_correction", -13.951))
     scale_corrected = (fs_ua / fs_intan) * (1.0 + PPM_CORRECTION / 1e6)
     
     # Convert block starts back to Intan coordinates for anchor calculation

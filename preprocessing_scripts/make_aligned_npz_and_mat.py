@@ -250,17 +250,23 @@ def main():
             if not cands: print(f"[warn] No NPRW rates for session {intan_filename}"); continue
             nprw_rates_npz_loc = cands[0]
             
+            # PPM clock correction between Intan and Blackrock
+            ppm_corr = float(PARAMS.preprocessing.get("ppm_correction", -13.951))
+
             # NPRW
             nprw_npz = np.load(nprw_rates_npz_loc, allow_pickle=True)
             nprw_peaks = nprw_npz["peaks"]
             nprw_meta = nprw_npz["meta"].item() if hasattr(nprw_npz["meta"], "item") else nprw_npz["meta"]
-            nprw_meta['rec_start_ms_aligned'] = nprw_meta['rec_start_ms'] - shift_ms
-            nprw_meta['rec_end_ms_aligned'] = nprw_meta['rec_end_ms'] - shift_ms
+            nprw_meta['rec_start_ms_aligned'] = rcp.intan_ms_to_br_ms(nprw_meta['rec_start_ms'], shift_ms, ppm_corr)
+            nprw_meta['rec_end_ms_aligned'] = rcp.intan_ms_to_br_ms(nprw_meta['rec_end_ms'], shift_ms, ppm_corr)
             
             nprw_peak_samps, nprw_peak_amps = _parse_SI_peaks(nprw_peaks, nprw_meta['n_channels'])
-            nprw_peak_ms = {int(ch): samps / fs_nprw * 1000.0 - shift_ms for ch, samps in nprw_peak_samps.items()}
+            nprw_peak_ms = {
+                int(ch): rcp.intan_samples_to_br_ms(samps, shift_sample, fs_nprw, ppm_corr)
+                for ch, samps in nprw_peak_samps.items()
+            }
 
-            ir_ms = nprw_npz["ir_ms"] - shift_ms
+            ir_ms = rcp.intan_ms_to_br_ms(nprw_npz["ir_ms"], shift_ms, ppm_corr)
 
             # Parse structured session metadata from METADATA_CSV
             sess_meta = rcp.parse_session_metadata_from_csv(METADATA_CSV, sess=intan_filename, br_file=br_idx)
@@ -270,7 +276,7 @@ def main():
             stim_dur_nominal_ms = float(sess_meta["stim_dur_nominal_ms"])
             stim_delay_ms = float(sess_meta["stim_delay_ms"])
 
-            # Stim times (absolute Intan ms)
+            # Stim times (absolute Intan ms converted to Blackrock timeline with PPM correction)
             stim_dur = nprw_meta.get('stim_dur', 0.0)
             recording_stim_dur = float(np.median(stim_dur)) if hasattr(stim_dur, '__len__') and len(stim_dur) > 0 else float(stim_dur)
             stim_npz_path, _ = rcp.stim_npz_path_from_br_idx(br_idx, METADATA_CSV, NPRW_AUX_DATA)
@@ -282,9 +288,9 @@ def main():
                 stim = rcp.load_stim_detection(stim_npz_path)
                 bounds_samps = stim["block_bounds_samples"]
                 if bounds_samps.size:
-                    stim_ms = (bounds_samps[:, 0] * 1000.0 / fs_nprw - shift_ms).astype(np.float32)
-                    stim_block_bounds_ms = (bounds_samps * 1000.0 / fs_nprw - shift_ms).astype(np.float32)
-                    stim_dur_measured_ms = ((bounds_samps[:, 1] - bounds_samps[:, 0]) * 1000.0 / fs_nprw).astype(np.float32)
+                    stim_ms = rcp.intan_samples_to_br_ms(bounds_samps[:, 0], shift_sample, fs_nprw, ppm_corr).astype(np.float32)
+                    stim_block_bounds_ms = rcp.intan_samples_to_br_ms(bounds_samps, shift_sample, fs_nprw, ppm_corr).astype(np.float32)
+                    stim_dur_measured_ms = ((bounds_samps[:, 1] - bounds_samps[:, 0]) * 1000.0 / fs_nprw * (1.0 + ppm_corr / 1e6)).astype(np.float32)
                 stim_pulses_per_block = np.asarray(stim.get("pulses_per_block", []), dtype=np.int32)
             else:
                 print(f"[warn] stim npz not found for BR {br_idx:03d}: {stim_npz_path}")

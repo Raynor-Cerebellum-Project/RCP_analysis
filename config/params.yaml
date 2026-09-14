@@ -13,6 +13,7 @@ preprocessing:
   has_HR: False
   output_aligned_mat: True
   z_score_firing_rate: true  # If true, z-score firing rates per-trial before averaging for heatmap plots
+  ppm_correction: -13.951  # Hardware clock drift (PPM - parts per million) between Intan and Blackrock systems
 
 # Spike preprocessing
 highpass_hz: 300.0

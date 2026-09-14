@@ -44,6 +44,9 @@ from .python.functions.utils import (
     bin_counts_around_stim,
     smooth_counts_gauss,
     parse_session_metadata_from_csv,
+    intan_samples_to_br_ms,
+    intan_samples_to_br_samples,
+    intan_ms_to_br_ms,
 )
 # artifact correction
 from .python.functions.artifact_correction import (
@@ -163,6 +166,9 @@ __all__ = [
     "dedup_peaks",
     "bin_counts_around_stim",
     "smooth_counts_gauss",
+    "intan_samples_to_br_ms",
+    "intan_samples_to_br_samples",
+    "intan_ms_to_br_ms",
     
     # Impedance utils
     "get_session_impedances",
