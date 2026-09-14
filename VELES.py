@@ -7,21 +7,9 @@ Veles: a slavic diety of magic, knowledge, divination, and poetry,
 
 Like the god Veles, may this script provide us a view into the unknown!
 
-"""
 
-import subprocess
-from pathlib import Path
-import csv
-import sys
-from datetime import datetime
-from RCP_analysis.python.functions.params_loading import load_experiment_params 
-import os
-import json
-
-"""
 CHOOSE THE MONKEY + SESSION(s) + SCRIPT(s) via Commenting/Uncommenting
 """
-
 
 # MONKEY = "Ada"
 # MONKEY = "Bert"
@@ -77,40 +65,61 @@ SCRIPTS = [
 ]
 
 
+import subprocess
+from pathlib import Path
+import csv
+import sys
+from datetime import datetime
+from RCP_analysis.python.functions.params_loading import load_experiment_params 
+from RCP_analysis.python.functions.pipeline_hierarchy import (
+    SCRIPT_STATUS_COLUMNS,
+    check_and_confirm_dependencies,
+)
+import os
+import json
+from typing import Any
 
-# Mapping script name to columns in CSV
-SCRIPT_STATUS_COLUMNS = {
-    "OCR_frame_correction.py": "OCR",
-    "align_dlc_two_cams_to_br.py": "DLC",
-    "NPRW_Intan_analysis_mf.py": "NPRW_Intan_analysis",
-    "compute_br_to_intan_shifts.py": "compute_shifts",
-    "UA_BR_analysis_mf.py": "UA_BR_analysis",
-    "UA_BR_analysis_ssmf.py": "UA_BR_analysis",
-    "make_aligned_npz_and_mat.py": "make_aligned",
-    "extract_peri_stim.py": "extract_peri",
-    "inspect_kinematics_trajectories.py": "manual_inspection",
-    "plot_plateau_analysis.py": "plateau",
-    "RSA_calculation.py": "rsa",
-    "plot_firing_rates.py": "plot_FRs",
-    "plot_stim_response_overlays.py": "plot_PSTH_overlays",
-}
+LOG_FILE = Path(__file__).resolve().parent / "logs" / "VELES.log"
 
 
-def _update_script_status_for_session(data_root: str, session: str, status_column: str, value: str, ) -> None:
-    """_summary_
+def _init_veles_run_log(log_file: Path, monkey: str, sessions: list[str], process_only: list[Any], scripts: list[str],) -> None:
+    """Initialize a run block in VELES.log with execution parameters."""
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
+    lines = [
+        "=" * 80,
+        f"VELES RUN START: {ts}",
+        f"Monkey: {monkey}",
+        f"Sessions to run: {sessions}",
+        f"Process only: {process_only}",
+        "Scripts:",
+    ]
+    for s in scripts:
+        lines.append(f"  - {s}")
+    lines.append("=" * 80)
+    with log_file.open("a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
 
-    Args:
-        data_root (str): _description_
-        session (str): _description_
-        status_column (str): _description_
-        value (str): _description_
+def _log_veles_event(log_file: Path, session: str, script: str, status_text: str,) -> None:
+    """Append a timestamped event line to VELES.log and flush immediately."""
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
+    entry = f"[{ts}] [{session}] [{script}] {status_text}\n"
+    with log_file.open("a", encoding="utf-8") as f:
+        f.write(entry)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
 
-    Raises:
-        FileNotFoundError: _description_
-        ValueError: _description_
-        KeyError: _description_
-        ValueError: _description_
-    """
+def _update_script_status_for_session(data_root: str, session: str, status_column: str, value: str) -> None:
+    """Update data_status_reaching.csv for the specified session and column."""
     status_csv = Path(data_root) / "data_status_reaching.csv"
     if not status_csv.exists():
         raise FileNotFoundError(f"data_status_reaching.csv not found: {status_csv}")
@@ -155,9 +164,13 @@ def _update_script_status_for_session(data_root: str, session: str, status_colum
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
 
     print(f"[VELES] Updated {status_column} for session {target_session}: {value}")
-
 
 def _get_location_for_session(data_root: str, session: str) -> str:
     """
@@ -221,6 +234,14 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
     PARAMS = load_experiment_params(params_path, repo_root=base_dir, first_run=True)
     data_root = f"{PARAMS.data_root}/{MONKEY}"
 
+    # Initialize run in VELES.log
+    _init_veles_run_log(
+        log_file=LOG_FILE,
+        monkey=MONKEY,
+        sessions=SESSIONS_TO_RUN,
+        process_only=PROCESS_ONLY,
+        scripts=SCRIPTS,
+    )
 
     for session in SESSIONS_TO_RUN:
 
@@ -238,6 +259,7 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
         env["RCP_SESSION"] = session
         env["RCP_LOCATION"] = location
         env["RCP_PROCESS_ONLY"] = json.dumps(PROCESS_ONLY)
+        env["RCP_VELES_RUN"] = "1"
 
         print(f"[VELES] Session context: RCP_MONKEY={MONKEY}, RCP_SESSION={session}, RCP_LOCATION={location}, RCP_PROCESS_ONLY={PROCESS_ONLY}")
 
@@ -247,11 +269,35 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
 
             if not script_path.exists():
                 print(f"[VELES: ERROR] Script not found: {script_path}")
+                failed_at = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
+                _log_veles_event(LOG_FILE, session, script, f"FAIL: {failed_at} (Script not found)")
                 break
 
-            print(f"\n[VELES] Running {script_path}\n")
-
             status_column = SCRIPT_STATUS_COLUMNS.get(Path(script).name)
+
+            # Check pipeline hierarchy dependencies before running
+            dep_ok = check_and_confirm_dependencies(
+                script_name=script,
+                session=session,
+                data_root=data_root,
+                planned_batch_scripts=SCRIPTS,
+            )
+            if not dep_ok:
+                print(f"[VELES] Dependency check not confirmed for {script}; skipping.")
+                _log_veles_event(LOG_FILE, session, script, "SKIPPED: Dependency discrepancy not approved by user")
+                continue
+
+            # Record IN-PROGRESS in log file and CSV immediately
+            _log_veles_event(LOG_FILE, session, script, "IN-PROGRESS")
+            if status_column is not None:
+                _update_script_status_for_session(
+                    data_root=data_root,
+                    session=session,
+                    status_column=status_column,
+                    value="IN-PROGRESS",
+                )
+
+            print(f"\n[VELES] Running {script_path}\n")
 
             try:
                 subprocess.run(
@@ -261,9 +307,12 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
                     env=env,
                 )
 
+                # Script finished successfully
+                finished_at = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
+                _log_veles_event(LOG_FILE, session, script, f"FINISHED: {finished_at}")
+
                 # If this script has a corresponding CSV status column, write finish time
                 if status_column is not None:
-                    finished_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     _update_script_status_for_session(
                         data_root=data_root,
                         session=session,
@@ -272,7 +321,9 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
                     )
 
             except subprocess.CalledProcessError as e:
+                failed_at = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
                 print(f"[VELES: ERROR] Script failed for {session} with exit code {e.returncode}")
+                _log_veles_event(LOG_FILE, session, script, f"FAIL: {failed_at} (exit code {e.returncode})")
 
                 # If this script has a corresponding CSV status column, write FAIL
                 if status_column is not None:
@@ -285,6 +336,10 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
 
                 print("[VELES] Skipping to next session...")
                 break
+
+            except KeyboardInterrupt:
+                print(f"\n[VELES: INTERRUPT] Execution interrupted by user. Status retained as IN-PROGRESS for {script}.")
+                raise
         else:
             print(f"\n[VELES: SUCCESS] Completed all scripts for {session}")
 

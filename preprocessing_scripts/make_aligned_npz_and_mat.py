@@ -16,8 +16,9 @@
 
 """
 
-import json, csv
+import json, csv, os
 from scipy.io import savemat
+from pathlib import Path
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 import numpy as np
@@ -173,6 +174,13 @@ def _to_mat(x) -> np.ndarray | dict:
     return json.dumps(x, default=str)
 
 def main():
+    if os.environ.get("RCP_VELES_RUN") != "1":
+        from RCP_analysis.python.functions.pipeline_hierarchy import check_and_confirm_dependencies
+        data_root = f"{PARAMS.data_root}/{PARAMS.monkey}"
+        if not check_and_confirm_dependencies(Path(__file__).name, PARAMS.session, data_root):
+            print("[make_aligned_npz_and_mat] Aborted by user due to dependency discrepancy.")
+            return
+
     br2video = rcp.get_metadata_mapping(METADATA_CSV, "BR_File", "Video_File")
     br2vog = rcp.get_metadata_mapping(METADATA_CSV, "BR_File", "VOG_File")
     br2control = rcp.get_metadata_mapping(SHIFTS_CSV, "br_idx", "is_control")

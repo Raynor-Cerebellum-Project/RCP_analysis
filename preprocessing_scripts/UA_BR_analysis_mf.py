@@ -289,6 +289,13 @@ def filter_peaks_by_amplitude_fast(peaks, recording, noise_levels,
     return filtered_peaks, kept_amplitudes, kept_snr
 
 def main():
+    if os.environ.get("RCP_VELES_RUN") != "1":
+        from RCP_analysis.python.functions.pipeline_hierarchy import check_and_confirm_dependencies
+        data_root = f"{PARAMS.data_root}/{PARAMS.monkey}"
+        if not check_and_confirm_dependencies(Path(__file__).name, PARAMS.session, data_root):
+            print("[UA_BR_analysis_mf] Aborted by user due to dependency discrepancy.")
+            return
+
     sess_folders = BR_SESSION_FOLDERS
 
     print("Found session folders:", len(sess_folders))

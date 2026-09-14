@@ -106,6 +106,19 @@ from .python.functions.kinematics_utils import (
     mean_ci95_trace_summary,
 )
 
+# pipeline hierarchy
+from .python.functions.pipeline_hierarchy import (
+    SCRIPT_STATUS_COLUMNS,
+    COLUMN_DEPENDENCIES,
+    get_script_column,
+    parse_status_timestamp,
+    get_all_ancestor_columns,
+    load_session_status_row,
+    validate_script_dependencies,
+    prompt_dependency_warning,
+    check_and_confirm_dependencies,
+)
+
 
 __all__ = [
     # params
@@ -201,4 +214,15 @@ __all__ = [
     "mean_sd_from_trial_traces",
     "mean_ci95_from_trial_traces",
     "mean_ci95_trace_summary",
+
+    # pipeline hierarchy
+    "SCRIPT_STATUS_COLUMNS",
+    "COLUMN_DEPENDENCIES",
+    "get_script_column",
+    "parse_status_timestamp",
+    "get_all_ancestor_columns",
+    "load_session_status_row",
+    "validate_script_dependencies",
+    "prompt_dependency_warning",
+    "check_and_confirm_dependencies",
 ]

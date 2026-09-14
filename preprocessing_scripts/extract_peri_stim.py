@@ -31,7 +31,7 @@ Outputs:
     5. `PeriStim/IMU/`
     6. `PeriStim/continuous_stim/`
 """
-import re, json
+import re, json, os
 import pandas as pd
 import numpy as np
 from scipy.io import savemat
@@ -1766,6 +1766,13 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
     print(f"[extract] wrote peristim__{intan_filename}__BR_{int(br_idx)}")
     
 def main():
+    if os.environ.get("RCP_VELES_RUN") != "1":
+        from RCP_analysis.python.functions.pipeline_hierarchy import check_and_confirm_dependencies
+        data_root = f"{PARAMS.data_root}/{PARAMS.monkey}"
+        if not check_and_confirm_dependencies(Path(__file__).name, PARAMS.session, data_root):
+            print("[extract_peri_stim] Aborted by user due to dependency discrepancy.")
+            return
+
     control_files = sorted(CONTROL_ROOT.glob("aligned__*.npz"))
     stim_files = sorted(STIM_ROOT.glob("aligned__*.npz"))
     at_rest_files = sorted(AT_REST_ROOT.glob("aligned__*.npz"))

@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from matplotlib.colors import Normalize
 from pathlib import Path
+import os
 
 from RCP_analysis.python.functions.config_loading import *
 
@@ -239,6 +240,13 @@ def process_single_file(npz_path: Path, condition_type: str, target_label: str):
 
 
 def main():
+    if os.environ.get("RCP_VELES_RUN") != "1":
+        from RCP_analysis.python.functions.pipeline_hierarchy import check_and_confirm_dependencies
+        data_root = f"{PARAMS.data_root}/{PARAMS.monkey}"
+        if not check_and_confirm_dependencies(Path(__file__).name, PARAMS.session, data_root):
+            print("[inspect_kinematics_trajectories] Aborted by user due to dependency discrepancy.")
+            return
+
     print(f"\n[IKT] Session: {PARAMS.session}, Camera: {CAMERA}, Keypoint: {KEYPOINT}")
     
     all_files = find_all_peristim_files()
