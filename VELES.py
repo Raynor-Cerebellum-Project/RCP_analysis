@@ -232,7 +232,9 @@ def run_scripts(
     process_only: list[int] | None = None,
     log: Callable[[str], None] = print,
     on_session_complete: Callable[[str, bool], None] | None = None,
+    monkey: str | None = None,
 ) -> dict[str, bool]:
+    monkey = MONKEY if monkey is None else monkey
     sessions = SESSIONS_TO_RUN if sessions is None else sessions
     scripts = SCRIPTS if scripts is None else scripts
     process_only = PROCESS_ONLY if process_only is None else process_only
@@ -245,12 +247,14 @@ def run_scripts(
 
     # Load params once so we can get the machine-specific data_root.
     PARAMS = load_experiment_params(params_path, repo_root=base_dir, first_run=True)
-    data_root = f"{PARAMS.data_root}/{MONKEY}"
+    root = Path(PARAMS.data_root)
+    data_root_parent = root.parent if PARAMS.monkey else root
+    data_root = str(data_root_parent / monkey)
 
     # Initialize run in VELES.log
     _init_veles_run_log(
         log_file=LOG_FILE,
-        monkey=MONKEY,
+        monkey=monkey,
         sessions=sessions,
         process_only=process_only,
         scripts=scripts,
@@ -269,13 +273,13 @@ def run_scripts(
         # Per-subprocess session context.
         # This is private to scripts launched by this run_pipeline.py process.
         env = os.environ.copy()
-        env["RCP_MONKEY"] = MONKEY
+        env["RCP_MONKEY"] = monkey
         env["RCP_SESSION"] = session
         env["RCP_LOCATION"] = location
         env["RCP_PROCESS_ONLY"] = json.dumps(process_only)
         env["RCP_VELES_RUN"] = "1"
 
-        log(f"[VELES] Session context: RCP_MONKEY={MONKEY}, RCP_SESSION={session}, RCP_LOCATION={location}, RCP_PROCESS_ONLY={process_only}")
+        log(f"[VELES] Session context: RCP_MONKEY={monkey}, RCP_SESSION={session}, RCP_LOCATION={location}, RCP_PROCESS_ONLY={process_only}")
 
         # Run all scripts for this session
         for script in scripts:

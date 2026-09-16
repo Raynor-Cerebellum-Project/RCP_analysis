@@ -16,7 +16,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 
 from RCP_analysis.python.functions.params_loading import load_experiment_params
 from RCP_analysis.python.functions.br_preproc import list_br_sessions
-from run_pipeline import run_scripts
+from VELES import run_scripts
 
 def list_sessions(data_root:str) -> list[dict]:
     """List all sessions and the locations for a given data_root.
@@ -29,6 +29,7 @@ def list_sessions(data_root:str) -> list[dict]:
     status_csv = Path(data_root) / "data_status_reaching.csv"
 
     if not status_csv.exists():
+
         raise FileNotFoundError(f"data_status_reaching.csv not found: {status_csv}")
 
     with status_csv.open("r", newline="", encoding="utf-8-sig") as f:
@@ -99,9 +100,8 @@ CONDITIONS_PER_ROW = 15
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("RCP Analysis Pipeline")
-
-        self.base_dir = Path(__file__).resolve().parents[1]
+        self.setWindowTitle("VELES")
+        self.base_dir = Path(__file__).resolve().parent
         self.data_root: str | None = None
         self.data_root_parent: Path | None = None
         self.sessions_data: list[dict] = []
@@ -127,7 +127,7 @@ class MainWindow(QMainWindow):
         self.run_button = QPushButton("Run Selected Scripts")
         self.run_button.setEnabled(False)
         # Named _on_run_clicked (not run_scripts) so it doesn't shadow the
-        # run_scripts() imported from run_pipeline.
+        # run_scripts() imported from VELES.
         self.run_button.clicked.connect(self._on_run_clicked)
 
         # --- Conditions strip: "Run all" toggle + per-BR-index checkboxes ---
@@ -273,12 +273,11 @@ class MainWindow(QMainWindow):
         try:
             params_path = self.base_dir / "config" / "params.yaml"
             params = load_experiment_params(params_path, repo_root=self.base_dir, first_run=True)
-            self.data_root = params.data_root
-            self.data_root_parent = Path(self.data_root).parent
-            # Reflect the resolved animal in the combo without re-triggering a reload.
-            self.monkey_combo.blockSignals(True)
-            self.monkey_combo.setCurrentText(params.monkey)
-            self.monkey_combo.blockSignals(False)
+            # Initial loading returns the shared root; session context may
+            # already include an animal when launched from a pipeline process.
+            root = Path(params.data_root)
+            self.data_root_parent = root.parent if params.monkey else root
+            self.data_root = str(self.data_root_parent / self.monkey_combo.currentText())
         except Exception as exc:
             self.data_root = None
             self.data_root_parent = None
@@ -445,7 +444,10 @@ class MainWindow(QMainWindow):
             self.queue_items[self.run_order[0]].setText(f"{self.run_order[0]} — running")
 
         self.thread = QThread()
-        self.worker = PipelineWorker(self.base_dir, sessions, scripts, process_only)
+        self.worker = PipelineWorker(
+            self.base_dir, sessions, scripts, process_only,
+            monkey=self.monkey_combo.currentText(),
+        )
         self.worker.moveToThread(self.thread)
 
         self.thread.started.connect(self.worker.run)
@@ -505,12 +507,13 @@ class PipelineWorker(QObject):
     session_done = pyqtSignal(str, bool)
     finished = pyqtSignal(dict)
 
-    def __init__(self, base_dir: Path, sessions: list[str], scripts: list[str], process_only: list[int]):
+    def __init__(self, base_dir: Path, sessions: list[str], scripts: list[str], process_only: list[int], monkey: str):
         super().__init__()
         self.base_dir = base_dir
         self.sessions = sessions
         self.scripts = scripts
         self.process_only = process_only
+        self.monkey = monkey
 
     def run(self):
         log_dir = self.base_dir / "logs"
@@ -531,6 +534,7 @@ class PipelineWorker(QObject):
                 process_only=self.process_only,
                 log=log,
                 on_session_complete=self.session_done.emit,
+                monkey=self.monkey,
             )
 
         self.finished.emit(results)
