@@ -37,7 +37,7 @@ SESSIONS_TO_RUN = [
 PROCESS_ONLY = [17]
 
 SCRIPTS = [
-    # "preprocessing_scripts/OCR_frame_correction.py",
+    "preprocessing_scripts/OCR_frame_correction.py",
     # "preprocessing_scripts/align_dlc_two_cams_to_br.py",
     # "preprocessing_scripts/align_VOG_to_br.py",
     "preprocessing_scripts/NPRW_Intan_analysis_mf.py",
@@ -77,7 +77,7 @@ from RCP_analysis.python.functions.pipeline_hierarchy import (
 )
 import os
 import json
-from typing import Any
+from typing import Any, Callable
 
 LOG_FILE = Path(__file__).resolve().parent / "logs" / "VELES.log"
 
@@ -224,7 +224,22 @@ def _get_location_for_session(data_root: str, session: str) -> str:
     return location
 
 
-def run_scripts(base_dir: Path, scripts_folder: Path):
+def run_scripts(
+    base_dir: Path,
+    scripts_folder: Path,
+    sessions: list[str] | None = None,
+    scripts: list[str] | None = None,
+    process_only: list[int] | None = None,
+    log: Callable[[str], None] = print,
+    on_session_complete: Callable[[str, bool], None] | None = None,
+    monkey: str | None = None,
+) -> dict[str, bool]:
+    monkey = MONKEY if monkey is None else monkey
+    sessions = SESSIONS_TO_RUN if sessions is None else sessions
+    scripts = SCRIPTS if scripts is None else scripts
+    process_only = PROCESS_ONLY if process_only is None else process_only
+    results: dict[str, bool] = {}
+
     params_path = base_dir / "config" / "params.yaml"
 
     if not params_path.exists():
@@ -232,22 +247,25 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
 
     # Load params once so we can get the machine-specific data_root.
     PARAMS = load_experiment_params(params_path, repo_root=base_dir, first_run=True)
-    data_root = f"{PARAMS.data_root}/{MONKEY}"
+    root = Path(PARAMS.data_root)
+    data_root_parent = root.parent if PARAMS.monkey else root
+    data_root = str(data_root_parent / monkey)
 
     # Initialize run in VELES.log
     _init_veles_run_log(
         log_file=LOG_FILE,
-        monkey=MONKEY,
-        sessions=SESSIONS_TO_RUN,
-        process_only=PROCESS_ONLY,
-        scripts=SCRIPTS,
+        monkey=monkey,
+        sessions=sessions,
+        process_only=process_only,
+        scripts=scripts,
     )
 
-    for session in SESSIONS_TO_RUN:
+    for session in sessions:
+        results[session] = True
 
-        print(f"\n{'=' * 60}")
-        print(f"[VELES] Processing session: {session}")
-        print(f"{'=' * 60}")
+        log(f"\n{'=' * 60}")
+        log(f"[VELES] Processing session: {session}")
+        log(f"{'=' * 60}")
 
         # Look up this session's location without modifying "Process Session?"
         location = _get_location_for_session(data_root, session)
@@ -255,22 +273,23 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
         # Per-subprocess session context.
         # This is private to scripts launched by this run_pipeline.py process.
         env = os.environ.copy()
-        env["RCP_MONKEY"] = MONKEY
+        env["RCP_MONKEY"] = monkey
         env["RCP_SESSION"] = session
         env["RCP_LOCATION"] = location
-        env["RCP_PROCESS_ONLY"] = json.dumps(PROCESS_ONLY)
+        env["RCP_PROCESS_ONLY"] = json.dumps(process_only)
         env["RCP_VELES_RUN"] = "1"
 
-        print(f"[VELES] Session context: RCP_MONKEY={MONKEY}, RCP_SESSION={session}, RCP_LOCATION={location}, RCP_PROCESS_ONLY={PROCESS_ONLY}")
+        log(f"[VELES] Session context: RCP_MONKEY={monkey}, RCP_SESSION={session}, RCP_LOCATION={location}, RCP_PROCESS_ONLY={process_only}")
 
         # Run all scripts for this session
-        for script in SCRIPTS:
+        for script in scripts:
             script_path = scripts_folder / script
 
             if not script_path.exists():
-                print(f"[VELES: ERROR] Script not found: {script_path}")
+                log(f"[VELES: ERROR] Script not found: {script_path}")
                 failed_at = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
                 _log_veles_event(LOG_FILE, session, script, f"FAIL: {failed_at} (Script not found)")
+                results[session] = False
                 break
 
             status_column = SCRIPT_STATUS_COLUMNS.get(Path(script).name)
@@ -280,11 +299,12 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
                 script_name=script,
                 session=session,
                 data_root=data_root,
-                planned_batch_scripts=SCRIPTS,
+                planned_batch_scripts=scripts,
             )
             if not dep_ok:
-                print(f"[VELES] Dependency check not confirmed for {script}; skipping.")
+                log(f"[VELES] Dependency check not confirmed for {script}; skipping.")
                 _log_veles_event(LOG_FILE, session, script, "SKIPPED: Dependency discrepancy not approved by user")
+                results[session] = False
                 continue
 
             # Record IN-PROGRESS in log file and CSV immediately
@@ -297,7 +317,7 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
                     value="IN-PROGRESS",
                 )
 
-            print(f"\n[VELES] Running {script_path}\n")
+            log(f"\n[VELES] Running {script_path}\n")
 
             try:
                 subprocess.run(
@@ -322,7 +342,7 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
 
             except subprocess.CalledProcessError as e:
                 failed_at = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
-                print(f"[VELES: ERROR] Script failed for {session} with exit code {e.returncode}")
+                log(f"[VELES: ERROR] Script failed for {session} with exit code {e.returncode}")
                 _log_veles_event(LOG_FILE, session, script, f"FAIL: {failed_at} (exit code {e.returncode})")
 
                 # If this script has a corresponding CSV status column, write FAIL
@@ -334,18 +354,25 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
                         value="FAIL",
                     )
 
-                print("[VELES] Skipping to next session...")
+                log("[VELES] Skipping to next session...")
+                results[session] = False
                 break
 
             except KeyboardInterrupt:
-                print(f"\n[VELES: INTERRUPT] Execution interrupted by user. Status retained as IN-PROGRESS for {script}.")
+                log(f"\n[VELES: INTERRUPT] Execution interrupted by user. Status retained as IN-PROGRESS for {script}.")
                 raise
         else:
-            print(f"\n[VELES: SUCCESS] Completed all scripts for {session}")
+            if results[session]:
+                log(f"\n[VELES: SUCCESS] Completed all scripts for {session}")
 
-    print(f"\n{'=' * 60}")
-    print("[VELES] All sessions completed!")
-    print(f"{'=' * 60}")
+        if on_session_complete is not None:
+            on_session_complete(session, results[session])
+
+    log(f"\n{'=' * 60}")
+    log("[VELES] All sessions completed!")
+    log(f"{'=' * 60}")
+
+    return results
 
 
 def main():
