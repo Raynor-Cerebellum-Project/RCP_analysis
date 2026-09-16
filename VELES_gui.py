@@ -172,9 +172,9 @@ class MainWindow(QMainWindow):
         self._load_data_root()
         self._populate_sessions()
 
-    # ---------------------------------------------------------------
+
     # Layout
-    # ---------------------------------------------------------------
+
     def setup_layout(self):
         top_bar = QHBoxLayout()
         top_bar.addWidget(self.animal_label)
@@ -266,9 +266,9 @@ class MainWindow(QMainWindow):
             item.setData(Qt.UserRole, script_path)
             self.script_list_widget.addItem(item)
 
-    # ---------------------------------------------------------------
+
     # Data loading
-    # ---------------------------------------------------------------
+
     def _load_data_root(self):
         try:
             params_path = self.base_dir / "config" / "params.yaml"
@@ -386,9 +386,9 @@ class MainWindow(QMainWindow):
                 item.setCheckState(Qt.Unchecked)
         self._validate()
 
-    # ---------------------------------------------------------------
+ 
     # Run
-    # ---------------------------------------------------------------
+   
     def _collect_run_params(self):
         sessions = [item.text() for item in self.session_list_widget.selectedItems()]
 
