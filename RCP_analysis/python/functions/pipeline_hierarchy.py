@@ -210,9 +210,8 @@ def validate_script_dependencies(
             )
 
     # 2. Check timestamps along all dependency edges in the ancestor DAG
-    # For every edge (u -> v), if u was run AFTER v, then v was not re-run after u updated.
-    all_nodes_in_chain = ancestors + [target_col]
-    for v in all_nodes_in_chain:
+    # For every edge (u -> v) among ancestors, if u was run AFTER v, then v was not re-run after u updated.
+    for v in ancestors:
         if v in planned_earlier_cols:
             continue
 

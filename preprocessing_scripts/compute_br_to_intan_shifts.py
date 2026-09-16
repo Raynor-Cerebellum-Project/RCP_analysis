@@ -344,14 +344,42 @@ def main():
         print(f"[shift] Intan {intan_idx:03d} ↔ BR {br_idx:03d} : shift={adjusted_shift_sample:+d} samp ({shift_sec:+.6f} s)")
         print(f"[rec time] Intan {dur_intan_sec:05f} ↔ BR {dur_br_sec:05f}")
 
-    # ---------- write alignment summary CSV ----------
+    # ---------- write alignment summary CSV (merge with existing rows) ----------
     if summary_rows:
         out_csv = METADATA_ROOT / "br_to_intan_shifts.csv"
-        with out_csv.open("w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(summary_rows[0].keys()))
+        existing_rows_by_br: dict[int, dict] = {}
+        fieldnames = list(summary_rows[0].keys())
+
+        if out_csv.exists():
+            try:
+                with out_csv.open("r", newline="", encoding="utf-8-sig") as f:
+                    rdr = csv.DictReader(f)
+                    if rdr.fieldnames:
+                        for fn in rdr.fieldnames:
+                            if fn not in fieldnames:
+                                fieldnames.append(fn)
+                        for r in rdr:
+                            try:
+                                b_idx = int(r.get("br_idx", -1))
+                                existing_rows_by_br[b_idx] = r
+                            except (ValueError, TypeError):
+                                pass
+            except Exception as e:
+                print(f"[warn] Could not read existing shifts from {out_csv}: {e}")
+
+        # Update or add newly computed summary rows
+        for r in summary_rows:
+            b_idx = int(r["br_idx"])
+            existing_rows_by_br[b_idx] = r
+
+        # Sort all rows by br_idx
+        sorted_rows = [existing_rows_by_br[k] for k in sorted(existing_rows_by_br.keys())]
+
+        with out_csv.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
             w.writeheader()
-            w.writerows(summary_rows)
-        print(f"[done] wrote shifts → {out_csv}")
+            w.writerows(sorted_rows)
+        print(f"[done] wrote {len(sorted_rows)} shifts (merged {len(summary_rows)} new/updated) → {out_csv}")
     else:
         print("[done] no rows to write (no shifts).")
  

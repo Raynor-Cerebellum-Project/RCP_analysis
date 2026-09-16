@@ -19,7 +19,7 @@ MONKEY = "Nike"
 SESSIONS_TO_RUN = [
     # "NRR_RW035",
     # "NRR_RW034",
-    # "NRR_RW032",
+    "NRR_RW032",
     # "NRR_RW029",
     # "NRR_RW026",
     # "NRR_RW022",
@@ -30,29 +30,29 @@ SESSIONS_TO_RUN = [
     # "NRR_RW015",
     # "NRR_RW014",
     # "NRR_RW013",
-    "NRR_RW012",
+    # "NRR_RW012",
     # "NRR_RW011",
 ]
 
-PROCESS_ONLY = [17]
+PROCESS_ONLY = []
 
 SCRIPTS = [
     # "preprocessing_scripts/OCR_frame_correction.py",
     # "preprocessing_scripts/align_dlc_two_cams_to_br.py",
     # "preprocessing_scripts/align_VOG_to_br.py",
-    "preprocessing_scripts/NPRW_Intan_analysis_mf.py",
-    "preprocessing_scripts/compute_br_to_intan_shifts.py",
+    # "preprocessing_scripts/NPRW_Intan_analysis_mf.py",
+    # "preprocessing_scripts/compute_br_to_intan_shifts.py",
     # "preprocessing_scripts/UA_BR_analysis_mf.py", 
-    "preprocessing_scripts/UA_BR_analysis_ssmf.py",
-    "preprocessing_scripts/make_aligned_npz_and_mat.py",
-    "preprocessing_scripts/extract_peri_stim.py",
-    "preprocessing_scripts/inspect_kinematics_trajectories.py",
+    # "preprocessing_scripts/UA_BR_analysis_ssmf.py",
+    # "preprocessing_scripts/make_aligned_npz_and_mat.py",
+    # "preprocessing_scripts/extract_peri_stim.py",
+    # "preprocessing_scripts/inspect_kinematics_trajectories.py",
     ### RUN ^ inspect_kinematics_trajectories.py to check for remaining bad traces -> add bad traces to /config/manual_trial_remove.csv
     ### RERUN extract_peri_stim.py
 
     # "analysis_scripts/plot_plateau_analysis.py",
     # "analysis_scripts/RSA_calculation.py",
-    # "analysis_scripts/plot_firing_rates.py",
+    "analysis_scripts/plot_firing_rates.py",
     # "analysis_scripts/plot_peri_stim_raster.py",
     # "analysis_scripts/plot_stim_group_responses.py",
     # "analysis_scripts/plot_stim_response_overlays.py",
@@ -82,8 +82,25 @@ from typing import Any
 LOG_FILE = Path(__file__).resolve().parent / "logs" / "VELES.log"
 
 
+def _get_veles_log_file(base_dir: Path, monkey: str) -> Path:
+    """Generate a unique log file path formatted as VELES_{monkey}_{yyyymmdd}_{hhmmss}.log."""
+    logs_dir = base_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"VELES_{monkey}_{timestamp}.log"
+    log_file = logs_dir / filename
+
+    counter = 1
+    while log_file.exists():
+        log_file = logs_dir / f"VELES_{monkey}_{timestamp}_{counter}.log"
+        counter += 1
+
+    return log_file
+
+
 def _init_veles_run_log(log_file: Path, monkey: str, sessions: list[str], process_only: list[Any], scripts: list[str],) -> None:
-    """Initialize a run block in VELES.log with execution parameters."""
+    """Initialize a run block in log file with execution parameters."""
     log_file.parent.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
     lines = [
@@ -106,7 +123,7 @@ def _init_veles_run_log(log_file: Path, monkey: str, sessions: list[str], proces
             pass
 
 def _log_veles_event(log_file: Path, session: str, script: str, status_text: str,) -> None:
-    """Append a timestamped event line to VELES.log and flush immediately."""
+    """Append a timestamped event line to log file and flush immediately."""
     log_file.parent.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
     entry = f"[{ts}] [{session}] [{script}] {status_text}\n"
@@ -119,7 +136,7 @@ def _log_veles_event(log_file: Path, session: str, script: str, status_text: str
             pass
 
 def _update_script_status_for_session(data_root: str, session: str, status_column: str, value: str) -> None:
-    """Update data_status_reaching.csv for the specified session and column."""
+    """Update data_status_reaching.csv for the specified session and column using an atomic write."""
     status_csv = Path(data_root) / "data_status_reaching.csv"
     if not status_csv.exists():
         raise FileNotFoundError(f"data_status_reaching.csv not found: {status_csv}")
@@ -160,7 +177,9 @@ def _update_script_status_for_session(data_root: str, session: str, status_colum
     if not found:
         raise ValueError(f"Session '{target_session}' was not found in {status_csv}")
 
-    with status_csv.open("w", newline="", encoding="utf-8") as f:
+    # Use atomic write via temp file replacement to prevent race conditions during concurrent runs
+    temp_csv = status_csv.with_suffix(".csv.tmp")
+    with temp_csv.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
@@ -169,6 +188,8 @@ def _update_script_status_for_session(data_root: str, session: str, status_colum
             os.fsync(f.fileno())
         except OSError:
             pass
+
+    os.replace(temp_csv, status_csv)
 
     print(f"[VELES] Updated {status_column} for session {target_session}: {value}")
 
@@ -234,9 +255,13 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
     PARAMS = load_experiment_params(params_path, repo_root=base_dir, first_run=True)
     data_root = f"{PARAMS.data_root}/{MONKEY}"
 
-    # Initialize run in VELES.log
+    # Generate unique per-instance log file for this run
+    log_file = _get_veles_log_file(base_dir, MONKEY)
+    print(f"[VELES] Logging run to: {log_file}")
+
+    # Initialize run in instance log file
     _init_veles_run_log(
-        log_file=LOG_FILE,
+        log_file=log_file,
         monkey=MONKEY,
         sessions=SESSIONS_TO_RUN,
         process_only=PROCESS_ONLY,
@@ -270,7 +295,7 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
             if not script_path.exists():
                 print(f"[VELES: ERROR] Script not found: {script_path}")
                 failed_at = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
-                _log_veles_event(LOG_FILE, session, script, f"FAIL: {failed_at} (Script not found)")
+                _log_veles_event(log_file, session, script, f"FAIL: {failed_at} (Script not found)")
                 break
 
             status_column = SCRIPT_STATUS_COLUMNS.get(Path(script).name)
@@ -284,11 +309,11 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
             )
             if not dep_ok:
                 print(f"[VELES] Dependency check not confirmed for {script}; skipping.")
-                _log_veles_event(LOG_FILE, session, script, "SKIPPED: Dependency discrepancy not approved by user")
+                _log_veles_event(log_file, session, script, "SKIPPED: Dependency discrepancy not approved by user")
                 continue
 
             # Record IN-PROGRESS in log file and CSV immediately
-            _log_veles_event(LOG_FILE, session, script, "IN-PROGRESS")
+            _log_veles_event(log_file, session, script, "IN-PROGRESS")
             if status_column is not None:
                 _update_script_status_for_session(
                     data_root=data_root,
@@ -309,7 +334,7 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
 
                 # Script finished successfully
                 finished_at = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
-                _log_veles_event(LOG_FILE, session, script, f"FINISHED: {finished_at}")
+                _log_veles_event(log_file, session, script, f"FINISHED: {finished_at}")
 
                 # If this script has a corresponding CSV status column, write finish time
                 if status_column is not None:
@@ -323,7 +348,7 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
             except subprocess.CalledProcessError as e:
                 failed_at = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
                 print(f"[VELES: ERROR] Script failed for {session} with exit code {e.returncode}")
-                _log_veles_event(LOG_FILE, session, script, f"FAIL: {failed_at} (exit code {e.returncode})")
+                _log_veles_event(log_file, session, script, f"FAIL: {failed_at} (exit code {e.returncode})")
 
                 # If this script has a corresponding CSV status column, write FAIL
                 if status_column is not None:

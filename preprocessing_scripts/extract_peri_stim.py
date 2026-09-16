@@ -1809,7 +1809,7 @@ def main():
 
     # continuous_stim: per-file processing (align to ir_ms, no A/B)
     for file in continuous_stim_files:
-        extract_one_file(file, out_dir = CONTINUOUS_STIM_PERI_ROOT, use_ir_ms=True, split_targets=True)
+        extract_one_file(file, out_dir = CONTINUOUS_STIM_PERI_ROOT, use_ir_ms=True, split_targets=False)
 
     # at_rest: per-file processing (no A/B)
     for file in at_rest_files:

@@ -1,0 +1,10 @@
+================================================================================
+VELES RUN START: 09/16/2026 15:52:01
+Monkey: Nike
+Sessions to run: ['NRR_RW032']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/16/2026 15:52:01] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/16/2026 15:52:10] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] FAIL: 09/16/2026 15:52:10 (exit code 1)

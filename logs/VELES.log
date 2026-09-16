@@ -1,0 +1,172 @@
+================================================================================
+VELES RUN START: 09/14/2026 16:14:29
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [12]
+Scripts:
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 16:14:30] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/14/2026 16:14:39] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FAIL: 09/14/2026 16:14:39 (exit code 1)
+================================================================================
+VELES RUN START: 09/14/2026 16:20:16
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [12]
+Scripts:
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 16:20:16] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/14/2026 16:20:39] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/14/2026 16:20:39
+[09/14/2026 16:20:39] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/14/2026 16:20:47] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FAIL: 09/14/2026 16:20:47 (exit code 1)
+================================================================================
+VELES RUN START: 09/14/2026 16:24:29
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [12]
+Scripts:
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 16:24:29] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/14/2026 16:24:50] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/14/2026 16:24:50
+[09/14/2026 16:24:51] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/14/2026 16:24:59] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FAIL: 09/14/2026 16:24:59 (exit code 1)
+================================================================================
+VELES RUN START: 09/14/2026 16:25:52
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+================================================================================
+[09/14/2026 16:25:52] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+================================================================================
+VELES RUN START: 09/14/2026 16:31:45
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [12]
+Scripts:
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 16:31:57] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] SKIPPED: Dependency discrepancy not approved by user
+[09/14/2026 16:32:04] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] SKIPPED: Dependency discrepancy not approved by user
+[09/14/2026 16:32:07] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] SKIPPED: Dependency discrepancy not approved by user
+[09/14/2026 16:32:12] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] SKIPPED: Dependency discrepancy not approved by user
+================================================================================
+VELES RUN START: 09/14/2026 16:32:18
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [12]
+Scripts:
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 16:32:20] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/14/2026 16:35:31] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/14/2026 16:35:31
+[09/14/2026 16:35:56] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/14/2026 16:35:56
+[09/14/2026 16:51:23] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/14/2026 16:51:36] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/14/2026 16:51:36
+[09/14/2026 16:53:36] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/14/2026 16:54:35] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/14/2026 16:54:35
+[09/14/2026 16:54:47] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/14/2026 16:56:29] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/14/2026 16:56:29
+================================================================================
+VELES RUN START: 09/14/2026 17:03:00
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [9]
+Scripts:
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 17:03:00] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/14/2026 17:05:50] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/14/2026 17:05:50
+[09/14/2026 17:05:50] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/14/2026 17:06:03] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/14/2026 17:06:03
+[09/14/2026 17:06:03] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/14/2026 17:07:03] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/14/2026 17:07:03
+[09/14/2026 17:07:03] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/14/2026 17:08:42] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/14/2026 17:08:42
+================================================================================
+VELES RUN START: 09/14/2026 18:03:45
+Monkey: Nike
+Sessions to run: ['NRR_RW032', 'NRR_RW022', 'NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 18:03:45] [NRR_RW032] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+================================================================================
+VELES RUN START: 09/14/2026 18:04:13
+Monkey: Nike
+Sessions to run: ['NRR_RW032', 'NRR_RW022', 'NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - preprocessing_scripts/NPRW_Intan_analysis_mf.py
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 18:04:13] [NRR_RW032] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] IN-PROGRESS
+[09/14/2026 19:25:40] [NRR_RW032] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] FINISHED: 09/14/2026 19:25:40
+[09/14/2026 19:25:40] [NRR_RW032] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/14/2026 19:33:30] [NRR_RW032] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/14/2026 19:33:30
+[09/14/2026 19:33:30] [NRR_RW032] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/14/2026 20:06:09] [NRR_RW032] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/14/2026 20:06:09
+[09/14/2026 20:06:09] [NRR_RW032] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/14/2026 20:07:35] [NRR_RW032] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/14/2026 20:07:35
+[09/14/2026 20:07:35] [NRR_RW032] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/14/2026 20:14:49] [NRR_RW032] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/14/2026 20:14:49
+[09/14/2026 20:14:49] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/14/2026 20:38:25] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/14/2026 20:38:25
+[09/14/2026 20:38:25] [NRR_RW022] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] IN-PROGRESS
+[09/14/2026 22:28:19] [NRR_RW022] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] FINISHED: 09/14/2026 22:28:19
+[09/14/2026 22:28:19] [NRR_RW022] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+================================================================================
+VELES RUN START: 09/16/2026 13:12:34
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: []
+Scripts:
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/16/2026 13:12:34] [NRR_RW022] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/16/2026 13:22:48] [NRR_RW022] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/16/2026 13:22:48
+[09/16/2026 13:22:48] [NRR_RW022] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS[09/16/2026 14:15:31] [NRR_RW022] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/16/2026 14:15:31
+[09/16/2026 14:15:31] [NRR_RW022] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/16/2026 14:17:37] [NRR_RW022] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/16/2026 14:17:37
+[09/16/2026 14:17:38] [NRR_RW022] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/16/2026 14:27:51] [NRR_RW022] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/16/2026 14:27:51
+[09/16/2026 14:27:51] [NRR_RW022] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/16/2026 14:50:59] [NRR_RW022] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/16/2026 14:50:59

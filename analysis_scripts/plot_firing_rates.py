@@ -18,7 +18,6 @@ import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 
 PROCESS_ONLY = PARAMS.preprocessing.get("process_only")
-Z_SCORE_FR   = PARAMS.preprocessing.get("z_score_firing_rate", False)
 NPRW_BLANK_BEFORE_MS = float(PARAMS.NPRW_rate_est.get("remove_ms_before", 20.0))
 NPRW_BLANK_AFTER_MS  = float(PARAMS.NPRW_rate_est.get("remove_tail_ms_after", 20.0))
 
@@ -29,6 +28,9 @@ matplotlib.rcParams["svg.fonttype"] = "none"
 # CONFIG
 # ---------------------------------------------------------------------
 NORMALIZE_FIRST_MS = 150.0
+
+# plot raw or z-scored firing rates
+Z_SCORE_FR   = False
 
 # Neural heatmap vmin/vmax for median
 VMIN_NPRW, VMAX_NPRW = -25, 200
@@ -42,12 +44,15 @@ VMAX_SMA_VAR                 = 5000.0
 VMIN_NPRW_COUNTS, VMAX_NPRW_COUNTS = 0.0, 10.0
 VMIN_UA_COUNTS,   VMAX_UA_COUNTS   = 0.0, 10.0
 
+COLORMAP = "turbo"
+
 # Override color ranges for z-scored firing rates
 if Z_SCORE_FR:
     VMIN_NPRW, VMAX_NPRW = -3.0, 3.0
     VMIN_UA,   VMAX_UA   = -3.0, 3.0
+    COLORMAP = "RdBu_r"
 
-COLORMAP = "RdBu_r"
+
 
 # Kinematics
 KINEMATICS_YLIM = (-4, 4)    # fixed y-limits for all figures

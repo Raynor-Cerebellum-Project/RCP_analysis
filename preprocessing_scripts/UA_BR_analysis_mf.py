@@ -384,8 +384,11 @@ def main():
                 stim = rcp.load_stim_detection(stim_npz_path)
                 block_bounds = stim.get("block_bounds_samples", [])
 
+        starts_ua = np.empty(0, dtype=np.int64)
+        ends_ua = np.empty(0, dtype=np.int64)
+
         if block_bounds.size and br2shift_samp_intan is not None:
-            fs_intan = float(br2fs_intan.get(br_idx, fs_ua)) # Default to fs_ua if unknown, better than hardcoded 30k
+            fs_intan = float(br2fs_intan.get(br_idx, fs_ua))
             shift_raw = br2shift_samp_intan.get(br_idx, None)
             if shift_raw is None or (isinstance(shift_raw, str) and shift_raw.strip() == ""):
                 print(f"[WARN] Missing anchor_sample for br_idx={br_idx} in {SHIFT_CSV}. Skipping artifact removal.")
@@ -393,21 +396,22 @@ def main():
             else:
                 shift_samp_intan = float(shift_raw)
 
-            starts_intan = block_bounds[:, 0].astype(np.int64)
-            ends_intan   = block_bounds[:, 1].astype(np.int64)
+                starts_intan = block_bounds[:, 0].astype(np.int64)
+                ends_intan   = block_bounds[:, 1].astype(np.int64)
 
-            # shift+scale into UA sample index space with PPM clock correction
-            PPM_CORRECTION = float(PARAMS.preprocessing.get("ppm_correction", -13.951))
-            starts_ua = rcp.intan_samples_to_br_samples(starts_intan, shift_samp_intan, fs_intan, fs_ua, PPM_CORRECTION)
-            ends_ua   = rcp.intan_samples_to_br_samples(ends_intan, shift_samp_intan, fs_intan, fs_ua, PPM_CORRECTION)
+                # shift+scale into UA sample index space with PPM clock correction
+                PPM_CORRECTION = float(PARAMS.preprocessing.get("ppm_correction", -13.951))
+                scale_corrected = (fs_ua / fs_intan) * (1.0 + PPM_CORRECTION / 1e6)
+                starts_ua = rcp.intan_samples_to_br_samples(starts_intan, shift_samp_intan, fs_intan, fs_ua, PPM_CORRECTION)
+                ends_ua   = rcp.intan_samples_to_br_samples(ends_intan, shift_samp_intan, fs_intan, fs_ua, PPM_CORRECTION)
 
-            n_total = rec_ns6.get_num_samples()
-            ends_ua = np.minimum(ends_ua, n_total)
-            valid = (ends_ua > starts_ua) & (starts_ua >= 0) & (ends_ua <= n_total)
-            starts_ua = starts_ua[valid]
-            ends_ua   = ends_ua[valid]
-            starts_intan = starts_intan[valid]
-            ends_intan = ends_intan[valid]      
+                n_total = rec_ns6.get_num_samples()
+                ends_ua = np.minimum(ends_ua, n_total)
+                valid = (ends_ua > starts_ua) & (starts_ua >= 0) & (ends_ua <= n_total)
+                starts_ua = starts_ua[valid]
+                ends_ua   = ends_ua[valid]
+                starts_intan = starts_intan[valid]
+                ends_intan = ends_intan[valid]      
 
             if starts_ua.size:
                 if USE_IPCA_CORRECTION:
@@ -507,11 +511,11 @@ def main():
 
                         for st_intan, en_intan in zip(starts_intan, ends_intan):
                             # Convert ONLY the block start (anchor) with PPM correction
-                            anchor_ua = np.round((st_intan - shift_samp_intan) * scale_corrected).astype(np.int64)
+                            anchor_ua = rcp.intan_samples_to_br_samples(st_intan, shift_samp_intan, fs_intan, fs_ua, PPM_CORRECTION)
                             
                             # Calculate number of pulses based on block duration in UA time
                             # (Use UA timing for duration calculation as well)
-                            en_ua = np.round((en_intan - shift_samp_intan) * scale_corrected).astype(np.int64)
+                            en_ua = rcp.intan_samples_to_br_samples(en_intan, shift_samp_intan, fs_intan, fs_ua, PPM_CORRECTION)
                             stim_dur_ms = (en_ua - anchor_ua) / fs_ua * 1000.0
                             num_pulses = int(np.floor(stim_dur_ms / pulse_interval_ms)) + 1
                             

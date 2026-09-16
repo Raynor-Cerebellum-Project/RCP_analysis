@@ -1,0 +1,10 @@
+================================================================================
+VELES RUN START: 09/16/2026 13:51:34
+Monkey: Nike
+Sessions to run: ['NRR_RW032']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/16/2026 13:51:34] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/16/2026 14:17:05] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/16/2026 14:17:05
