@@ -19,7 +19,7 @@ MONKEY = "Nike"
 SESSIONS_TO_RUN = [
     # "NRR_RW035",
     # "NRR_RW034",
-    "NRR_RW032",
+    # "NRR_RW032",
     # "NRR_RW029",
     # "NRR_RW026",
     # "NRR_RW022",
@@ -30,7 +30,7 @@ SESSIONS_TO_RUN = [
     # "NRR_RW015",
     # "NRR_RW014",
     # "NRR_RW013",
-    # "NRR_RW012",
+    "NRR_RW012",
     # "NRR_RW011",
 ]
 
@@ -52,10 +52,10 @@ SCRIPTS = [
 
     # "analysis_scripts/plot_plateau_analysis.py",
     # "analysis_scripts/RSA_calculation.py",
-    "analysis_scripts/plot_firing_rates.py",
+    # "analysis_scripts/plot_firing_rates.py",
     # "analysis_scripts/plot_peri_stim_raster.py",
     # "analysis_scripts/plot_stim_group_responses.py",
-    # "analysis_scripts/plot_stim_response_overlays.py",
+    "analysis_scripts/plot_stim_response_overlays.py",
     # "analysis_scripts/plot_peak_csv_summaries.py",
 
 

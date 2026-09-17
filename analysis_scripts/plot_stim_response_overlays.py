@@ -51,6 +51,16 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from matplotlib.patches import Patch, Rectangle
+from scipy.io import loadmat
+
+try:
+    from probeinterface import Probe
+    from probeinterface.plotting import plot_probe
+except Exception:
+    Probe = None
+    plot_probe = None
 
 try:
     from joblib import Parallel, delayed
@@ -100,11 +110,23 @@ SKIP_EXISTING = False
 VERBOSE = False
 
 # Main peristim/checkpoint roots.
-PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStim"
-FIG_ROOT = OUT_BASE / "figures" / "stim_response_overlays"
-RESULT_ROOT = OUT_BASE / "checkpoints" / "stim_response_overlays"
+PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStim" if OUT_BASE is not None else Path(".")
+FIG_ROOT = OUT_BASE / "figures" / "stim_response_overlays" if OUT_BASE is not None else Path(".")
+RESULT_ROOT = OUT_BASE / "checkpoints" / "stim_response_overlays" if OUT_BASE is not None else Path(".")
 
-METADATA_PATH = METADATA_CSV
+METADATA_PATH = METADATA_CSV if "METADATA_CSV" in globals() else None
+
+# NPC aux / stim
+NPRW_AUX_DATA = OUT_BASE / "aux_data" / "NPRW" if OUT_BASE is not None else None
+
+# NPRW mapping / geometry
+GEOM_PATH = (
+    Path(PARAMS.geom_mat_rel).resolve()
+    if getattr(PARAMS, "geom_mat_rel", None) and str(PARAMS.geom_mat_rel).startswith("/")
+    else (REPO_ROOT / PARAMS.geom_mat_rel).resolve()
+    if getattr(PARAMS, "geom_mat_rel", None)
+    else rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT, session_key=None)
+) if (PARAMS is not None and getattr(PARAMS, "geom_mat_rel", None)) else None
 
 # Plot views.
 WIN_PLOT_MS = (-400.0, 400.0)
@@ -149,12 +171,12 @@ POST_REGION_ALPHA = 0.12
 BASELINE_REGION_COLOR = "tab:gray"
 BASELINE_REGION_ALPHA = 0.10
 
-LOW_ACTIVITY_OUTLINE_COLOR = "red"
-LOW_ACTIVITY_OUTLINE_WIDTH = 3.0
+LOW_ACTIVITY_OUTLINE_COLOR = "tab:blue"
+LOW_ACTIVITY_OUTLINE_WIDTH = 2.5
 
 BAD_CH_COLOR = "0.85"
 
-FIG_SIZE_NPRW = (48, 24)
+FIG_SIZE_NPRW = (54, 24)
 FIG_SIZE_UA = (32, 24)
 
 NPRW_DISPLAY_BIN_WIDTH_MS = 20.0  # Display bin width for NPRW overlay PSTHs
@@ -166,9 +188,11 @@ NPRW_HIGH_ACTIVITY_THRESH_HZ = 30.0
 UA_MEAN_RATE_WIN_MS = (0.0, 400.0)
 UA_PEAK_WIN_MS = (0.0, 400.0)
 
-PSTH_YLIM = (0, 200)          # Fixed y-axis limits (0 to 80 spikes) for all subplots
+NPRW_PSTH_YLIM = (0, 200)        # Fixed y-axis limits for NPRW subplots
+UA_PSTH_YLIM = (0, 500)          # Fixed y-axis limits for Utah array subplots (set to 500)
+PSTH_YLIM = NPRW_PSTH_YLIM       # Fallback/backward compatibility
 PSTH_YLIM_ZOOM = (0, 350)
-OVERLAY_LINEWIDTH = 2.5       # Thicker lines for control (orange) and rest (green)
+OVERLAY_LINEWIDTH = 2.5          # Thicker lines for control (orange) and rest (green)
 
 REGION_ORDER = ["SMA", "PMd", "M1i", "M1s"]
 
@@ -845,20 +869,6 @@ def get_nprw_channel_plot_order(peak_df, n_ch):
     return ordered
 
 
-def save_nprw_peak_timing_csv(peak_df, out_path):
-    """
-    Save per-NPRW-figure peak timing CSV next to the figure.
-
-    Example:
-      figure.png -> figure.nprw_peak_timings.csv
-    """
-    if peak_df is None or peak_df.empty:
-        return None
-
-    csv_path = Path(out_path).with_suffix(".nprw_peak_timings.csv")
-    peak_df.to_csv(csv_path, index=False)
-    return csv_path
-
 def compute_channel_mean_rate_from_psth_window(
     counts_arr: Optional[np.ndarray],
     centers_ms: Optional[np.ndarray],
@@ -1076,20 +1086,6 @@ def compute_ua_mean_rate_table_for_plot(
             rows.append(row)
 
     return pd.DataFrame(rows)
-
-def save_ua_mean_rate_csv(rate_df, out_path):
-    """
-    Save per-Utah-figure mean-rate CSV next to the figure.
-
-    Example:
-      figure.png -> figure.ua_mean_rates.csv
-    """
-    if rate_df is None or rate_df.empty:
-        return None
-
-    csv_path = Path(out_path).with_suffix(".ua_mean_rates.csv")
-    rate_df.to_csv(csv_path, index=False)
-    return csv_path
 
 
 def parse_br_from_filename(npz_path: Path) -> Optional[int]:
@@ -2406,6 +2402,316 @@ def process_ua(
     return n_saved
 
 
+def load_nprw_probe_and_mapping():
+    """Load NPRW probe geometry as specified in params.yaml."""
+    geom_file = None
+    candidate_paths = []
+    if GEOM_PATH is not None:
+        candidate_paths.append(Path(GEOM_PATH))
+
+    if PARAMS is not None:
+        if getattr(PARAMS, "geom_mat_rel", None):
+            candidate_paths.append(REPO_ROOT / PARAMS.geom_mat_rel)
+            candidate_paths.append(Path(PARAMS.geom_mat_rel))
+        nprw_cfg = getattr(PARAMS, "probes", {}).get("NPRW", {}) if hasattr(PARAMS, "probes") else {}
+        for k in ("geom_mat_rel", "mapping_mat_rel"):
+            rel = nprw_cfg.get(k)
+            if rel:
+                candidate_paths.append(REPO_ROOT / rel)
+                candidate_paths.append(REPO_ROOT / "config" / "probes" / Path(rel).name)
+                candidate_paths.append(Path(rel))
+
+    for p in candidate_paths:
+        if p is not None and p.exists() and p.is_file():
+            geom_file = p.resolve()
+            break
+
+    if geom_file is None:
+        return None, None, None
+
+    try:
+        mat_probe = loadmat(geom_file)
+        nprw_geom = {
+            "x": mat_probe["xcoords"].ravel(),
+            "y": mat_probe["ycoords"].ravel(),
+        }
+        if "chanMap0ind" in mat_probe:
+            dev_idx = mat_probe["chanMap0ind"].ravel()
+        else:
+            dev_idx = np.arange(nprw_geom["x"].size)
+
+        if Probe is not None:
+            nprw_probe = Probe(ndim=2)
+            nprw_probe.set_contacts(
+                positions=np.c_[nprw_geom["x"], nprw_geom["y"]],
+                shapes="square",
+                shape_params={"width": 12.0},
+            )
+            nprw_probe.set_device_channel_indices(dev_idx)
+            locs = nprw_probe.contact_positions.astype(float)
+            return nprw_probe, dev_idx, locs
+        else:
+            locs = np.c_[nprw_geom["x"], nprw_geom["y"]].astype(float)
+            return None, dev_idx, locs
+    except Exception as e:
+        _print(f"[warn] Failed to load NPRW probe geometry from {geom_file}: {e}")
+        return None, None, None
+
+
+def get_nprw_stim_channel_indices(
+    stim_data: np.lib.npyio.NpzFile,
+    stim_path: Path,
+    stim_meta: Dict[str, Any],
+) -> set:
+    """
+    Find stimulated channel indices (0-based) from aux stim stream, NPZ arrays, or metadata.
+    """
+    stim_channels = set()
+    sess = stim_meta.get("sess", None)
+    if not sess and stim_path is not None:
+        m_s = re.search(r"peristim__([^_]+)__", stim_path.name)
+        if m_s:
+            sess = m_s.group(1)
+
+    # 1. Try detect_stim_channels_from_npz on stim_stream.npz
+    if sess and NPRW_AUX_DATA is not None:
+        stim_npz = NPRW_AUX_DATA / f"{sess}_Intan_streams" / "stim_stream.npz"
+        if stim_npz.exists():
+            try:
+                detected = rcp.detect_stim_channels_from_npz(stim_npz, eps=1e-12, min_edges=1)
+                if detected is not None and np.size(detected):
+                    stim_channels.update(int(x) for x in np.asarray(detected).ravel())
+            except Exception as e:
+                _print(f"[warn] detect_stim_channels_from_npz failed: {e}")
+
+    # 2. Check stim_data keys if nothing found yet
+    if not stim_channels and stim_data is not None:
+        for k in ("active_channels_0based", "stim_channels_0based", "active_channels", "stim_channels"):
+            if k in stim_data.files:
+                arr = stim_data[k]
+                if arr is not None and np.size(arr):
+                    offset = 1 if "0based" not in k and (np.min(arr) >= 1) else 0
+                    stim_channels.update(int(x) - offset for x in np.asarray(arr).ravel())
+                break
+
+    # 3. Check stim_meta
+    if not stim_channels and stim_meta:
+        for k in ("active_channels", "stim_channel", "stim_channels"):
+            val = stim_meta.get(k, None)
+            if val is not None:
+                try:
+                    if isinstance(val, (list, tuple, np.ndarray)):
+                        stim_channels.update(int(x) for x in val)
+                    else:
+                        stim_channels.add(int(val))
+                except Exception:
+                    pass
+
+    return stim_channels
+
+
+def plot_nprw_probe_axis(
+    ax_probe,
+    probe,
+    dev_idx,
+    locs,
+    stim_channels: set,
+    low_activity_channels: set,
+    probe_title: str = "NPRW Probe Layout",
+):
+    """
+    Draw NPRW probe on ax_probe.
+    - Stimulated channels are highlighted with red fill ("tab:red").
+    - Low-activity channels have a purple outline ("tab:purple") with thick linewidth.
+    - High-activity channels have standard subtle outline.
+    """
+    if dev_idx is None and locs is not None:
+        dev_idx = np.arange(locs.shape[0])
+    n_contacts = len(dev_idx) if dev_idx is not None else (locs.shape[0] if locs is not None else 0)
+    if n_contacts == 0:
+        ax_probe.axis("off")
+        return
+
+    contacts_colors = ["none"] * n_contacts
+    contacts_edges = ["black"] * n_contacts
+    contacts_lws = [0.8] * n_contacts
+
+    for i in range(n_contacts):
+        ch = int(dev_idx[i]) if dev_idx is not None else i
+        is_stim = (i in stim_channels) or (ch in stim_channels)
+        is_low = (ch in low_activity_channels) or (i in low_activity_channels)
+
+        if is_stim:
+            contacts_colors[i] = "tab:red"
+        if is_low:
+            contacts_edges[i] = "tab:purple"
+            contacts_lws[i] = 2.4
+
+    if probe is not None and plot_probe is not None:
+        try:
+            if getattr(probe, "probe_shape", None) is None:
+                probe.create_auto_shape()
+            poly, poly_contour = plot_probe(
+                probe,
+                ax=ax_probe,
+                with_contact_id=False,
+                contacts_colors=contacts_colors,
+                probe_shape_kwargs={"facecolor": "none", "edgecolor": "black", "linewidth": 1.0},
+                contact_kwargs={"edgecolors": contacts_edges, "linewidths": contacts_lws, "zorder": 3},
+            )
+            if poly is not None:
+                poly.set_edgecolor(contacts_edges)
+                poly.set_linewidth(contacts_lws)
+        except Exception as e:
+            _print(f"[warn] plot_probe failed, fallback to scatter: {e}")
+            if locs is not None:
+                ax_probe.scatter(
+                    locs[:, 0], locs[:, 1],
+                    s=28,
+                    c=contacts_colors,
+                    edgecolors=contacts_edges,
+                    linewidths=contacts_lws,
+                    zorder=3,
+                )
+    elif locs is not None:
+        ax_probe.scatter(
+            locs[:, 0], locs[:, 1],
+            s=28,
+            c=contacts_colors,
+            edgecolors=contacts_edges,
+            linewidths=contacts_lws,
+            zorder=3,
+        )
+
+    ax_probe.set_title(probe_title, fontsize=11, fontweight="bold", pad=8)
+    ax_probe.set_aspect("equal")
+    ax_probe.margins(x=0.15, y=0.05)
+    ax_probe.set_xticks([])
+    ax_probe.set_yticks([])
+    for sp in ax_probe.spines.values():
+        sp.set_visible(False)
+
+    legend_elements = [
+        Patch(facecolor="tab:red", edgecolor="black", label="Stimulated (Red)"),
+        Patch(facecolor="none", edgecolor="tab:purple", linewidth=2.0, label="Low Activity (Purple outline)"),
+        Patch(facecolor="none", edgecolor="black", linewidth=1.0, label="High Activity (Standard)"),
+    ]
+    ax_probe.legend(handles=legend_elements, loc="upper right", fontsize=8, framealpha=0.9)
+
+
+def plot_peak_timing_bar_plot(
+    ax_bar,
+    peak_df: Optional[pd.DataFrame],
+    cond_type: str,
+    current_trial_label: str,
+    ctrl_trial_label: str,
+    rest_trial_label: str,
+):
+    """
+    Plot bar plot of the means and standard deviations of the vertical lines timings (peak timings)
+    for comparison across Low Activity, High Activity, and All Channels.
+    """
+    if peak_df is None or peak_df.empty:
+        ax_bar.text(0.5, 0.5, "No peak timing data available", ha="center", va="center", transform=ax_bar.transAxes)
+        ax_bar.set_xticks([])
+        ax_bar.set_yticks([])
+        return
+
+    df = peak_df.copy()
+    has_ctrl = "ctrl_peak_time_ms" in df.columns and np.isfinite(df["ctrl_peak_time_ms"]).any()
+    has_rest = "rest_peak_time_ms" in df.columns and np.isfinite(df["rest_peak_time_ms"]).any()
+    has_stim = "stim_peak_time_ms" in df.columns and np.isfinite(df["stim_peak_time_ms"]).any()
+
+    low_df = df[df["is_high_activity"] == False]
+    high_df = df[df["is_high_activity"] == True]
+
+    groups = [
+        ("Low Activity", low_df),
+        ("High Activity", high_df),
+        ("All Channels", df),
+    ]
+
+    conditions = []
+    if has_stim:
+        conditions.append(("Current", "stim_peak_time_ms", CURRENT_COLOR, current_trial_label))
+    if has_ctrl:
+        conditions.append(("Control", "ctrl_peak_time_ms", CTRL_COLOR, ctrl_trial_label))
+    if has_rest:
+        conditions.append(("Rest", "rest_peak_time_ms", REST_COLOR, rest_trial_label))
+
+    if not conditions:
+        ax_bar.text(0.5, 0.5, "No condition peak timings available", ha="center", va="center", transform=ax_bar.transAxes)
+        ax_bar.set_xticks([])
+        ax_bar.set_yticks([])
+        return
+
+    n_groups = len(groups)
+    n_conds = len(conditions)
+
+    bar_width = 0.8 / max(1, n_conds)
+    group_x = np.arange(n_groups)
+
+    for cond_idx, (cond_name, col_name, color, label) in enumerate(conditions):
+        means = []
+        stds = []
+        offsets = group_x - (n_conds - 1) * bar_width / 2.0 + cond_idx * bar_width
+
+        for _, grp_df in groups:
+            vals = grp_df[col_name].dropna().values.astype(float)
+            finite_vals = vals[np.isfinite(vals)]
+            if finite_vals.size > 0:
+                m = float(np.mean(finite_vals))
+                s = float(np.std(finite_vals, ddof=1)) if finite_vals.size > 1 else 0.0
+            else:
+                m = 0.0
+                s = 0.0
+            means.append(m)
+            stds.append(s)
+
+        bars = ax_bar.bar(
+            offsets,
+            means,
+            yerr=stds,
+            width=bar_width,
+            color=color,
+            edgecolor="black",
+            linewidth=0.8,
+            alpha=0.85,
+            capsize=4,
+            label=f"{label} (mean ± SD)",
+        )
+
+        for bar, m, s in zip(bars, means, stds):
+            if m > 0 or s > 0:
+                y_pos = m + s + 2.0
+                ax_bar.text(
+                    bar.get_x() + bar.get_width() / 2.0,
+                    y_pos,
+                    f"{m:.0f}±{s:.0f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                    fontweight="bold",
+                )
+
+    group_labels = [f"{name}\n(n={len(grp)})" for name, grp in groups]
+    ax_bar.set_xticks(group_x)
+    ax_bar.set_xticklabels(group_labels, fontsize=9, fontweight="bold")
+    ax_bar.set_ylabel("Peak Timing (ms)", fontsize=10, fontweight="bold")
+    ax_bar.set_title("Vertical Line Timings (Peak Timings Comparison)", fontsize=11, fontweight="bold", pad=8)
+    ax_bar.grid(axis="y", linestyle="--", alpha=0.4)
+    ax_bar.legend(loc="upper right", fontsize=8, framealpha=0.9)
+
+    all_times = []
+    for _, col_name, _, _ in conditions:
+        all_times.extend(df[col_name].dropna().values.tolist())
+    finite_all = [t for t in all_times if np.isfinite(t)]
+    if finite_all:
+        ymin = max(0, min(0, min(finite_all) - 20))
+        ymax = max(finite_all) + 60
+        ax_bar.set_ylim(ymin, ymax)
+
+
 def plot_nprw_overlay_grid(
     stim_data: np.lib.npyio.NpzFile,
     stim_path: Path,
@@ -2507,8 +2813,7 @@ def plot_nprw_overlay_grid(
     rest_trial_label = format_trial_label("REST", n_trials_rest)
 
     # -------------------------------------------------------------------------
-    # NPRW-only peak timing table and low/high activity panel ordering.
-    # Peaks are computed from the same display-binned PSTHs used for plotting.
+    # NPRW-only peak timing table and low/high activity panel separation.
     # -------------------------------------------------------------------------
     peak_df = compute_nprw_peak_table_for_plot(
         stim_counts=stim_counts,
@@ -2527,11 +2832,11 @@ def plot_nprw_overlay_grid(
         rest_path=rest_path,
     )
 
-    save_nprw_peak_timing_csv(peak_df, out_path)
-
-    plot_order = get_nprw_channel_plot_order(peak_df, n_ch)
-
+    # Separate low and high activity channels
+    low_channels = []
+    high_channels = []
     peak_by_ch = {}
+
     if peak_df is not None and not peak_df.empty and "channel" in peak_df.columns:
         for _, row in peak_df.iterrows():
             try:
@@ -2539,21 +2844,88 @@ def plot_nprw_overlay_grid(
             except Exception:
                 pass
 
-    n_cols = 8
-    n_rows = int(math.ceil(n_ch / n_cols))
+        low_df = peak_df[peak_df["is_high_activity"] == False].copy()
+        high_df = peak_df[peak_df["is_high_activity"] == True].copy()
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=FIG_SIZE_NPRW, squeeze=False)
-    axes_flat = axes.reshape(-1)
+        low_df = low_df.sort_values("channel")
+        if "ctrl_peak_rate_hz" in high_df.columns:
+            high_df = high_df.sort_values(
+                ["ctrl_peak_rate_hz", "channel"],
+                ascending=[False, True],
+                na_position="last",
+            )
+        else:
+            high_df = high_df.sort_values("channel")
+
+        low_channels = [int(c) for c in low_df["channel"].values]
+        high_channels = [int(c) for c in high_df["channel"].values]
+
+        accounted = set(low_channels) | set(high_channels)
+        missing = [ch for ch in range(n_ch) if ch not in accounted]
+        high_channels.extend(missing)
+    else:
+        high_channels = list(range(n_ch))
+
+    low_activity_ch_set = set(low_channels)
+
+    # -------------------------------------------------------------------------
+    # 3 Plot Groups Grid Layout:
+    #   - Left: Low-activity channels
+    #   - Middle: High-activity channels
+    #   - Right: Top: NPRW Probe, Bottom: Timings Bar Plot
+    # -------------------------------------------------------------------------
+    R = 16
+    C_low = max(1, int(math.ceil(max(1, len(low_channels)) / float(R))))
+    C_high = max(1, int(math.ceil(max(1, len(high_channels)) / float(R))))
+    W_right = 2.0
+
+    fig_w = max(44.0, 5.0 * (C_low + C_high + W_right))
+    fig_h = 24.0
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+
+    gs_outer = gridspec.GridSpec(
+        nrows=1,
+        ncols=3,
+        figure=fig,
+        left=0.03,
+        right=0.98,
+        top=0.91,
+        bottom=0.04,
+        width_ratios=[C_low, C_high, W_right],
+        wspace=0.18,
+    )
+
+    gs_low = gridspec.GridSpecFromSubplotSpec(
+        nrows=R,
+        ncols=C_low,
+        subplot_spec=gs_outer[0],
+        hspace=0.38,
+        wspace=0.22,
+    )
+
+    gs_high = gridspec.GridSpecFromSubplotSpec(
+        nrows=R,
+        ncols=C_high,
+        subplot_spec=gs_outer[1],
+        hspace=0.38,
+        wspace=0.22,
+    )
+
+    gs_right = gridspec.GridSpecFromSubplotSpec(
+        nrows=2,
+        ncols=1,
+        subplot_spec=gs_outer[2],
+        height_ratios=[2.2, 1.0],
+        hspace=0.28,
+    )
 
     current_label = f"current {cond_type.lower()} file"
 
-    for panel_idx, ch in enumerate(plot_order):
-        ax = axes_flat[panel_idx]
-
+    def _render_psth_channel(ax, ch: int, is_low: bool):
         x, y, width = get_channel_psth_rate_for_bar_axis(
             stim_counts, stim_centers, stim_width, ch
         )
-
         if x is not None and y is not None:
             ax.bar(
                 x,
@@ -2595,7 +2967,7 @@ def plot_nprw_overlay_grid(
                 label="matched rest",
             )
 
-        # NPRW-only peak timing lines, separately for current, control, and rest.
+        # Condition-specific peak timing vertical lines
         peak_row = peak_by_ch.get(ch, None)
         if peak_row is not None:
             stim_peak_t = peak_row.get("stim_peak_time_ms", np.nan)
@@ -2639,8 +3011,8 @@ def plot_nprw_overlay_grid(
 
         if view_suffix == "_zoom" and PSTH_YLIM_ZOOM is not None:
             ax.set_ylim(*PSTH_YLIM_ZOOM)
-        elif PSTH_YLIM is not None:
-            ax.set_ylim(*PSTH_YLIM)
+        elif NPRW_PSTH_YLIM is not None:
+            ax.set_ylim(*NPRW_PSTH_YLIM)
 
         shade_windows(ax, stim_dur_ms=stim_dur_ms)
 
@@ -2648,35 +3020,72 @@ def plot_nprw_overlay_grid(
         if is_bad:
             ax.set_facecolor(BAD_CH_COLOR)
 
-        activity_label = ""
-        is_low_activity = False
-
-        if peak_row is not None:
-            try:
-                is_high_activity = bool(peak_row.get("is_high_activity", False))
-                if is_high_activity:
-                    activity_label = " HIGH"
-                else:
-                    activity_label = " low"
-                    is_low_activity = True
-            except Exception:
-                activity_label = ""
-                is_low_activity = False
-
-        if is_low_activity:
+        if is_low:
             for spine in ax.spines.values():
                 spine.set_edgecolor(LOW_ACTIVITY_OUTLINE_COLOR)
                 spine.set_linewidth(LOW_ACTIVITY_OUTLINE_WIDTH)
+            ax.set_title(f"Ch {ch} low", fontsize=8, fontweight="bold", color="purple")
+        else:
+            ax.set_title(f"Ch {ch} HIGH", fontsize=8, fontweight="bold")
 
-        ax.set_title(f"Ch {ch}{activity_label}", fontsize=8)
         ax.tick_params(labelsize=6)
 
-    for j in range(len(plot_order), len(axes_flat)):
-        axes_flat[j].axis("off")
+    # 1. Render Left Group: Low Activity Channels
+    first_plotted_ax = None
+    for idx in range(R * C_low):
+        r = idx % R
+        c = idx // R
+        ax = fig.add_subplot(gs_low[r, c])
+        if idx < len(low_channels):
+            ch = low_channels[idx]
+            _render_psth_channel(ax, ch, is_low=True)
+            if first_plotted_ax is None:
+                first_plotted_ax = ax
+        else:
+            ax.axis("off")
 
-    handles, labels = axes_flat[0].get_legend_handles_labels()
-    if handles:
-        fig.legend(handles, labels, loc="upper right", fontsize=10)
+    # 2. Render Middle Group: High Activity Channels
+    for idx in range(R * C_high):
+        r = idx % R
+        c = idx // R
+        ax = fig.add_subplot(gs_high[r, c])
+        if idx < len(high_channels):
+            ch = high_channels[idx]
+            _render_psth_channel(ax, ch, is_low=False)
+            if first_plotted_ax is None:
+                first_plotted_ax = ax
+        else:
+            ax.axis("off")
+
+    # 3. Render Right Group: Top = NPRW Probe, Bottom = Timings Bar Plot
+    ax_probe = fig.add_subplot(gs_right[0])
+    probe_obj, dev_idx, locs = load_nprw_probe_and_mapping()
+    stim_channels = get_nprw_stim_channel_indices(stim_data, stim_path, stim_meta)
+    plot_nprw_probe_axis(
+        ax_probe=ax_probe,
+        probe=probe_obj,
+        dev_idx=dev_idx,
+        locs=locs,
+        stim_channels=stim_channels,
+        low_activity_channels=low_activity_ch_set,
+        probe_title=f"NPRW Probe Layout ({len(stim_channels)} Stimmed, {len(low_channels)} Low Activity)",
+    )
+
+    ax_bar = fig.add_subplot(gs_right[1])
+    plot_peak_timing_bar_plot(
+        ax_bar=ax_bar,
+        peak_df=peak_df,
+        cond_type=cond_type,
+        current_trial_label=current_trial_label,
+        ctrl_trial_label=ctrl_trial_label,
+        rest_trial_label=rest_trial_label,
+    )
+
+    # Main Legend
+    if first_plotted_ax is not None:
+        handles, labels = first_plotted_ax.get_legend_handles_labels()
+        if handles:
+            fig.legend(handles, labels, loc="upper right", bbox_to_anchor=(0.99, 0.98), fontsize=10, framealpha=0.9)
 
     title_base = str(stim_meta.get("overall_title", ""))
     br_val = stim_meta.get("br_idx", "UNK")
@@ -2691,17 +3100,15 @@ def plot_nprw_overlay_grid(
         ref_info.append("Rest")
     ref_str = f"Matched refs: {', '.join(ref_info)}" if ref_info else "No matched refs"
 
-    n_high = 0
-    n_low = 0
-    if peak_df is not None and not peak_df.empty and "is_high_activity" in peak_df.columns:
-        n_high = int(peak_df["is_high_activity"].astype(bool).sum())
-        n_low = int(len(peak_df) - n_high)
+    n_high = len(high_channels)
+    n_low = len(low_channels)
 
     fig.suptitle(
         f"{title_base} | NPRW Overlay PSTH (Trial-Averaged Firing Rate, Hz)\n"
         f"Current File ({cond_type}) | Target: {target_val or 'N/A'} | BR: {br_val} | {ref_str}\n"
         f"NPRW peak window: {NPRW_PEAK_WIN_MS[0]:.0f}-{NPRW_PEAK_WIN_MS[1]:.0f} ms | "
-        f"Low activity panels first: n={n_low}; high activity panels second: n={n_high}, sorted by control peak rate\n"
+        f"Left: Low Activity Panels (n={n_low}) | Middle: High Activity Panels (n={n_high}, sorted by control peak rate) | "
+        f"Right: NPRW Probe Layout & Peak Timings Comparison\n"
         f"[Grey Bars = Current File ({current_trial_label}) | "
         f"Orange Line = Matched {ctrl_trial_label} | "
         f"Green Line = Matched {rest_trial_label} | "
@@ -2709,7 +3116,6 @@ def plot_nprw_overlay_grid(
         fontsize=14,
     )
 
-    fig.tight_layout(rect=[0, 0, 0.98, 0.92])
     fig.savefig(out_path, dpi=DPI_OUTPUT)
     plt.close(fig)
 
@@ -2871,7 +3277,6 @@ def plot_ua_region_overlay_grid(
             rest_path=rest_path,
             mean_rate_win_ms=UA_MEAN_RATE_WIN_MS,
         )
-        save_ua_mean_rate_csv(ua_rate_df, out_path)
 
     fig, axes = plt.subplots(8, 8, figsize=FIG_SIZE_UA, squeeze=False)
 
@@ -3006,8 +3411,8 @@ def plot_ua_region_overlay_grid(
 
             if view_suffix == "_zoom" and PSTH_YLIM_ZOOM is not None:
                 ax.set_ylim(*PSTH_YLIM_ZOOM)
-            elif PSTH_YLIM is not None:
-                ax.set_ylim(*PSTH_YLIM)
+            elif UA_PSTH_YLIM is not None:
+                ax.set_ylim(*UA_PSTH_YLIM)
 
             shade_windows(ax, stim_dur_ms=stim_dur_ms)
 
@@ -3645,8 +4050,6 @@ def save_outputs(
     print(f"    Output directory:              {RESULT_ROOT}")
 
     if len(all_rows) == 0:
-        pd.DataFrame().to_csv(metrics_csv, index=False)
-        pd.DataFrame().to_csv(summary_csv, index=False)
         np.save(metrics_npy, np.array([], dtype=object))
         print("\nWARNING: No metric rows generated!")
         print("Likely causes:")
@@ -3659,16 +4062,12 @@ def save_outputs(
         return
 
     df = pd.DataFrame(all_rows)
-    df.to_csv(metrics_csv, index=False)
     np.save(metrics_npy, np.array(all_rows, dtype=object), allow_pickle=True)
 
     summary = summarize_metrics(df)
-    summary.to_csv(summary_csv, index=False)
     print("============================================================")
 
     print("\nSaved combined results:")
-    print(f"  {metrics_csv}")
-    print(f"  {summary_csv}")
     print(f"  {metrics_npy}")
 
 

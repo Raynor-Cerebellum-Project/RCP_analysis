@@ -1,0 +1,42 @@
+================================================================================
+VELES RUN START: 09/16/2026 16:21:43
+Monkey: Nike
+Sessions to run: ['NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - preprocessing_scripts/NPRW_Intan_analysis_mf.py
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/16/2026 16:21:43] [NRR_RW012] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] IN-PROGRESS
+[09/16/2026 18:50:04] [NRR_RW012] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] FINISHED: 09/16/2026 18:50:04
+[09/16/2026 18:50:04] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/16/2026 18:59:28] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/16/2026 18:59:28
+[09/16/2026 18:59:29] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/16/2026 20:02:37] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/16/2026 20:02:37
+[09/16/2026 20:02:37] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/16/2026 20:06:25] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/16/2026 20:06:25
+[09/16/2026 20:06:25] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/16/2026 20:25:02] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/16/2026 20:25:02
+[09/16/2026 20:25:02] [NRR_RW012] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[09/16/2026 20:26:19] [NRR_RW012] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 09/16/2026 20:26:19
+[09/16/2026 20:26:19] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/16/2026 21:00:54] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/16/2026 21:00:54
+[09/16/2026 21:00:54] [NRR_RW011] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] IN-PROGRESS
+[09/16/2026 23:05:43] [NRR_RW011] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] FINISHED: 09/16/2026 23:05:43
+[09/16/2026 23:05:43] [NRR_RW011] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/16/2026 23:13:53] [NRR_RW011] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/16/2026 23:13:53
+[09/16/2026 23:13:53] [NRR_RW011] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/17/2026 00:09:16] [NRR_RW011] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/17/2026 00:09:16
+[09/17/2026 00:09:16] [NRR_RW011] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/17/2026 00:12:22] [NRR_RW011] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/17/2026 00:12:22
+[09/17/2026 00:12:22] [NRR_RW011] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/17/2026 00:29:33] [NRR_RW011] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/17/2026 00:29:33
+[09/17/2026 00:29:34] [NRR_RW011] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[09/17/2026 00:30:29] [NRR_RW011] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 09/17/2026 00:30:29
+[09/17/2026 00:30:30] [NRR_RW011] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/17/2026 01:05:26] [NRR_RW011] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/17/2026 01:05:26

@@ -1,0 +1,10 @@
+================================================================================
+VELES RUN START: 09/17/2026 14:24:26
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_stim_response_overlays.py
+================================================================================
+[09/17/2026 14:24:38] [NRR_RW012] [analysis_scripts/plot_stim_response_overlays.py] IN-PROGRESS
+[09/17/2026 14:58:53] [NRR_RW012] [analysis_scripts/plot_stim_response_overlays.py] FAIL: 09/17/2026 14:58:53 (exit code 1)
