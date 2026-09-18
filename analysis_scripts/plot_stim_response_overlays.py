@@ -35,7 +35,6 @@ Place this file in:
 
 from __future__ import annotations
 
-import os
 import re
 import math
 import warnings
@@ -52,7 +51,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from matplotlib.patches import Patch, Rectangle
+from matplotlib.patches import Patch
 from scipy.io import loadmat
 
 try:
@@ -78,7 +77,7 @@ except Exception:
 
 
 # =============================================================================
-# User-facing options
+# Options to tweak
 # =============================================================================
 
 PROCESS_NPRW = True
@@ -91,7 +90,7 @@ GENERATE_ZOOM_VIEW = False
 GENERATE_STIM_FIGURES = True
 GENERATE_CTRL_FIGURES = True
 GENERATE_REST_FIGURES = True
-GENERATE_CONTSTIM_FIGURES = True
+GENERATE_CONTSTIM_FIGURES = False
 GENERATE_OTHER_FIGURES = False
 
 # Reference matching options
@@ -112,12 +111,9 @@ VERBOSE = False
 # Main peristim/checkpoint roots.
 PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStim" if OUT_BASE is not None else Path(".")
 FIG_ROOT = OUT_BASE / "figures" / "stim_response_overlays" if OUT_BASE is not None else Path(".")
-RESULT_ROOT = OUT_BASE / "checkpoints" / "stim_response_overlays" if OUT_BASE is not None else Path(".")
 
 METADATA_PATH = METADATA_CSV if "METADATA_CSV" in globals() else None
 
-# NPC aux / stim
-NPRW_AUX_DATA = OUT_BASE / "aux_data" / "NPRW" if OUT_BASE is not None else None
 
 # NPRW mapping / geometry
 GEOM_PATH = (
@@ -139,37 +135,14 @@ if GENERATE_STANDARD_VIEW:
 if GENERATE_ZOOM_VIEW:
     PLOT_VIEWS.append(("zoom", None, "_zoom"))
 
-# Analysis windows.
-BASELINE_WIN_MS = (-950.0, -650.0)
-
-# Directly-after-stim response length.
-POST_WIN_LEN_MS = 100.0
-
-# Utah Array additionally analyzes stimulation + post-stim coupled window.
-UA_INCLUDE_DURING_PLUS_POST = True
-
-# Blanking/artifact offsets.
-NPRW_POST_OFFSET_MS = 20.0
-UA_POST_OFFSET_MS = 0.0
-
-# Significance/classification thresholds.
-Z_THRESH = 2.0
-DELTA_HZ_THRESH = 5.0
-THRESHOLD_MODE = "either"  # "z", "delta", "both", "either"
-
 
 # Plot colors.
 CURRENT_COLOR = "tab:grey"
 CTRL_COLOR = "tab:orange"
 REST_COLOR = "tab:green"
-BASELINE_COLOR = "0.35"
 
 STIM_REGION_COLOR = "gold"
 STIM_REGION_ALPHA = 0.40
-POST_REGION_COLOR = "tab:purple"
-POST_REGION_ALPHA = 0.12
-BASELINE_REGION_COLOR = "tab:gray"
-BASELINE_REGION_ALPHA = 0.10
 
 LOW_ACTIVITY_OUTLINE_COLOR = "tab:blue"
 LOW_ACTIVITY_OUTLINE_WIDTH = 2.5
@@ -184,8 +157,6 @@ UA_DISPLAY_BIN_WIDTH_MS = 50.0    # Display bin width for Utah overlay PSTHs
 
 NPRW_PEAK_WIN_MS = (0.0, 400.0)
 NPRW_HIGH_ACTIVITY_THRESH_HZ = 30.0
-
-UA_MEAN_RATE_WIN_MS = (0.0, 400.0)
 UA_PEAK_WIN_MS = (0.0, 400.0)
 
 NPRW_PSTH_YLIM = (0, 200)        # Fixed y-axis limits for NPRW subplots
@@ -202,8 +173,7 @@ REGION_ORDER = ["SMA", "PMd", "M1i", "M1s"]
 # =============================================================================
 
 def _print(msg: str):
-    if VERBOSE:
-        print(msg)
+    if VERBOSE: print(msg)
 
 def should_generate_figures_for_condition(cond_type: str) -> bool:
     cond_type = str(cond_type).upper()
@@ -218,10 +188,7 @@ def should_generate_figures_for_condition(cond_type: str) -> bool:
         return GENERATE_CONTSTIM_FIGURES
     if cond_type == "OTHER":
         return GENERATE_OTHER_FIGURES
-
-    # don't generate figures for unknown types
     return False
-
 
 def get_n_trials_from_prepared_counts(counts_arr) -> Optional[int]:
     """Return number of trials from channels x trials x bins counts."""
@@ -233,7 +200,6 @@ def get_n_trials_from_prepared_counts(counts_arr) -> Optional[int]:
         return None
 
     return int(arr.shape[1])
-
 
 def format_trial_label(condition_name: str, n_trials: Optional[int]) -> str:
     """Format a condition label for titles/legends."""
@@ -303,7 +269,6 @@ def rebin_counts_and_axis(
 
     return new_counts, new_centers, w_target
 
-
 def compute_pulse_count(freq_hz: Optional[float], dur_ms: Optional[float]) -> Optional[float]:
     if freq_hz is None or dur_ms is None:
         return None
@@ -316,7 +281,6 @@ def compute_pulse_count(freq_hz: Optional[float], dur_ms: Optional[float]) -> Op
     except Exception:
         return None
 
-
 def get_rest_match_key(freq_hz: Optional[float], dur_ms: Optional[float]) -> Optional[Any]:
     if freq_hz is None or dur_ms is None:
         return None
@@ -328,16 +292,13 @@ def get_rest_match_key(freq_hz: Optional[float], dur_ms: Optional[float]) -> Opt
     else:  # "freq_dur"
         return ("freq_dur", float(freq_hz), float(dur_ms))
 
-
 def ensure_dir(path: Path):
     path.mkdir(parents=True, exist_ok=True)
-
 
 def safe_get_npz(data: np.lib.npyio.NpzFile, key: str, default=None):
     if key in data.files:
         return data[key]
     return default
-
 
 def scalarize(x, default=None):
     if x is None:
@@ -352,13 +313,11 @@ def scalarize(x, default=None):
         pass
     return x
 
-
 def sanitize_name(s: Any) -> str:
     s = str(s)
     s = s.replace(" ", "_")
     s = re.sub(r"[^A-Za-z0-9_\-\.]+", "", s)
     return s
-
 
 def get_base_folder(npz_path: Path) -> str:
     path_str = str(npz_path).lower()
@@ -372,7 +331,6 @@ def get_base_folder(npz_path: Path) -> str:
         return "at_rest"
     return "other"
 
-
 def get_cond_type(npz_path: Path) -> str:
     path_str = str(npz_path).lower()
     if "control_reaches" in path_str:
@@ -384,7 +342,6 @@ def get_cond_type(npz_path: Path) -> str:
     if "at_rest" in path_str:
         return "REST"
     return "OTHER"
-
 
 def get_target_folder(npz_path: Path) -> str:
     name = npz_path.name.lower()
@@ -399,7 +356,6 @@ def get_target_folder(npz_path: Path) -> str:
 
     return ""
 
-
 def output_dir_for_file(npz_path: Path) -> Path:
     base_folder = get_base_folder(npz_path)
     target_folder = get_target_folder(npz_path)
@@ -410,21 +366,8 @@ def output_dir_for_file(npz_path: Path) -> Path:
     ensure_dir(out_dir)
     return out_dir
 
-
 def check_output_exists(out_path: Path) -> bool:
     return SKIP_EXISTING and out_path.exists()
-
-
-def infer_bin_width_ms(edges_ms: np.ndarray) -> float:
-    edges_ms = np.asarray(edges_ms, dtype=float)
-    if edges_ms.size < 2:
-        return np.nan
-    diffs = np.diff(edges_ms)
-    diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
-    if diffs.size == 0:
-        return np.nan
-    return float(np.nanmedian(diffs))
-
 
 def get_time_axis_and_width(
     data: np.lib.npyio.NpzFile,
@@ -433,44 +376,18 @@ def get_time_axis_and_width(
 ) -> Tuple[Optional[np.ndarray], Optional[float], Optional[np.ndarray]]:
     """
     Return (centers_ms, width_ms, edges_ms_or_none) for NPRW/UA.
-
-    Current extract_peri_stim generator saves:
-      {prefix}_rel_t
-      {prefix}_width_ms
-
-    Older overlay code expected:
-      {prefix}_edges_ms
-
-    This helper supports both.
     """
-    edges = safe_get_npz(data, f"{prefix}_edges_ms", None)
     rel_t = safe_get_npz(data, f"{prefix}_rel_t", None)
     width = safe_get_npz(data, f"{prefix}_width_ms", None)
 
-    if edges is not None:
-        edges_arr = np.asarray(edges, dtype=float).reshape(-1)
-        centers = bin_centers_from_edges(edges_arr, n_bins=n_bins)
-        width_ms = infer_bin_width_ms(edges_arr)
-
-        if not np.isfinite(width_ms) or width_ms <= 0:
-            if centers is not None and centers.size > 1:
-                diffs = np.diff(centers)
-                diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
-                if diffs.size:
-                    width_ms = float(np.nanmedian(diffs))
-
-        return centers, width_ms, edges_arr
-
     if rel_t is not None:
         centers = np.asarray(rel_t, dtype=float).reshape(-1)
-
         if n_bins is not None:
             n_bins = int(n_bins)
             if centers.size >= n_bins:
                 centers = centers[:n_bins]
 
         width_ms = np.nan
-
         if width is not None:
             w = np.asarray(width, dtype=float).reshape(-1)
             w = w[np.isfinite(w) & (w > 0)]
@@ -486,84 +403,6 @@ def get_time_axis_and_width(
         return centers, width_ms, None
 
     return None, None, None
-
-
-def window_mask_from_centers(
-    centers_ms: np.ndarray,
-    win_ms: Tuple[float, float],
-    n_bins: Optional[int] = None,
-) -> np.ndarray:
-    """
-    Build a time-window mask using bin centers.
-
-    This is the correct mask for current PeriStim outputs, which save
-    *_rel_t as bin centers rather than *_edges_ms.
-    """
-    centers = np.asarray(centers_ms, dtype=float).reshape(-1)
-
-    if n_bins is not None:
-        n_bins = int(n_bins)
-        if centers.size >= n_bins:
-            centers = centers[:n_bins]
-        else:
-            padded = np.full(n_bins, np.nan)
-            padded[:centers.size] = centers
-            centers = padded
-
-    return (centers >= win_ms[0]) & (centers < win_ms[1])
-
-
-def window_rate_hz_from_counts_with_axis(
-    counts_trial_bin: np.ndarray,
-    centers_ms: np.ndarray,
-    bin_width_ms: Optional[float],
-    win_ms: Tuple[float, float],
-) -> Tuple[float, float, int]:
-    """
-    Compute mean/std trial rate in Hz for a time window using bin centers
-    plus a bin width.
-
-    counts_trial_bin shape:
-      trials x bins
-    or:
-      bins
-    """
-    arr = np.asarray(counts_trial_bin, dtype=float)
-
-    if arr.ndim == 1:
-        arr = arr[None, :]
-
-    if arr.ndim != 2:
-        return np.nan, np.nan, 0
-
-    n_bins = arr.shape[-1]
-    mask = window_mask_from_centers(centers_ms, win_ms, n_bins=n_bins)
-
-    if mask.size != n_bins:
-        m = min(mask.size, n_bins)
-        mask2 = np.zeros(n_bins, dtype=bool)
-        mask2[:m] = mask[:m]
-        mask = mask2
-
-    if not np.any(mask):
-        return np.nan, np.nan, int(arr.shape[0])
-
-    if bin_width_ms is not None and np.isfinite(bin_width_ms) and bin_width_ms > 0:
-        dur_s = float(np.sum(mask)) * float(bin_width_ms) / 1000.0
-    else:
-        dur_s = (float(win_ms[1]) - float(win_ms[0])) / 1000.0
-
-    if not np.isfinite(dur_s) or dur_s <= 0:
-        return np.nan, np.nan, int(arr.shape[0])
-
-    trial_counts = np.nansum(arr[:, mask], axis=1)
-    trial_rates = trial_counts / dur_s
-
-    mean_rate = float(np.nanmean(trial_rates)) if trial_rates.size else np.nan
-    std_rate = float(np.nanstd(trial_rates, ddof=1)) if trial_rates.size > 1 else np.nan
-
-    return mean_rate, std_rate, int(trial_rates.size)
-
 
 def get_channel_psth_rate_for_bar_axis(
     counts_arr: Optional[np.ndarray],
@@ -631,12 +470,9 @@ def get_channel_psth_rate_for_bar_axis(
 
     return centers[good], rate_hz[good], float(bar_width)
 
-
 def compute_peak_time_and_rate_from_psth(
-    x_ms,
-    y_hz,
-    peak_win_ms: Tuple[float, float] = NPRW_PEAK_WIN_MS,
-    array_type: str = "UA",
+    x_ms, y_hz, peak_win_ms: Tuple[float, float] = NPRW_PEAK_WIN_MS,
+    array_type: str = "UA", 
     local_window_ms: float = 150.0,  # ±75ms around max for centroid
 ) -> Tuple[float, float]:
     """
@@ -698,22 +534,11 @@ def compute_peak_time_and_rate_from_psth(
 
     return peak_time, peak_rate
 
-
 def compute_nprw_peak_table_for_plot(
-    stim_counts,
-    stim_centers_ms,
-    stim_bin_width_ms,
-    ctrl_counts,
-    ctrl_centers_ms,
-    ctrl_bin_width_ms,
-    rest_counts,
-    rest_centers_ms,
-    rest_bin_width_ms,
-    n_ch,
-    stim_meta=None,
-    stim_path=None,
-    ctrl_path=None,
-    rest_path=None,
+    stim_counts, stim_centers_ms, stim_bin_width_ms,
+    ctrl_counts, ctrl_centers_ms, ctrl_bin_width_ms,
+    rest_counts, rest_centers_ms, rest_bin_width_ms,
+    n_ch, stim_meta=None, stim_path=None, ctrl_path=None, rest_path=None,
 ):
     """
     Compute NPRW per-channel peak timing/rate for current/STIM, matched control,
@@ -742,52 +567,20 @@ def compute_nprw_peak_table_for_plot(
         )
 
         if ctrl_counts is not None and ctrl_centers_ms is not None:
-            ctrl_x, ctrl_y, _ = get_channel_psth_rate_for_bar_axis(
-                ctrl_counts,
-                ctrl_centers_ms,
-                ctrl_bin_width_ms,
-                ch,
-            )
+            ctrl_x, ctrl_y, _ = get_channel_psth_rate_for_bar_axis(ctrl_counts,ctrl_centers_ms,ctrl_bin_width_ms,ch,)
         else:
             ctrl_x, ctrl_y = np.array([]), np.array([])
 
         if rest_counts is not None and rest_centers_ms is not None:
-            rest_x, rest_y, _ = get_channel_psth_rate_for_bar_axis(
-                rest_counts,
-                rest_centers_ms,
-                rest_bin_width_ms,
-                ch,
-            )
+            rest_x, rest_y, _ = get_channel_psth_rate_for_bar_axis(rest_counts,rest_centers_ms,rest_bin_width_ms,ch,)
         else:
             rest_x, rest_y = np.array([]), np.array([])
 
-        stim_peak_t_ms, stim_peak_rate_hz = compute_peak_time_and_rate_from_psth(
-            stim_x,
-            stim_y,
-            NPRW_PEAK_WIN_MS,
-            array_type="NPRW",
-        )
-        ctrl_peak_t_ms, ctrl_peak_rate_hz = compute_peak_time_and_rate_from_psth(
-            ctrl_x,
-            ctrl_y,
-            NPRW_PEAK_WIN_MS,
-            array_type="NPRW",
-        )
-        rest_peak_t_ms, rest_peak_rate_hz = compute_peak_time_and_rate_from_psth(
-            rest_x,
-            rest_y,
-            NPRW_PEAK_WIN_MS,
-            array_type="NPRW",
-        )
+        stim_peak_t_ms, stim_peak_rate_hz = compute_peak_time_and_rate_from_psth(stim_x, stim_y,NPRW_PEAK_WIN_MS,array_type="NPRW")
+        ctrl_peak_t_ms, ctrl_peak_rate_hz = compute_peak_time_and_rate_from_psth(ctrl_x, ctrl_y,NPRW_PEAK_WIN_MS,array_type="NPRW")
+        rest_peak_t_ms, rest_peak_rate_hz = compute_peak_time_and_rate_from_psth(rest_x, rest_y,NPRW_PEAK_WIN_MS,array_type="NPRW")
 
-        peak_vals = np.array(
-            [
-                stim_peak_rate_hz,
-                ctrl_peak_rate_hz,
-                rest_peak_rate_hz,
-            ],
-            dtype=float,
-        )
+        peak_vals = np.array([stim_peak_rate_hz, ctrl_peak_rate_hz, rest_peak_rate_hz,],dtype=float,)
         finite_peak_vals = peak_vals[np.isfinite(peak_vals)]
         max_peak_rate_hz = float(np.max(finite_peak_vals)) if finite_peak_vals.size else np.nan
 
@@ -824,351 +617,7 @@ def compute_nprw_peak_table_for_plot(
                 row[k] = v
 
         rows.append(row)
-
     return pd.DataFrame(rows)
-
-def get_nprw_channel_plot_order(peak_df, n_ch):
-    """
-    NPRW panel order:
-      1. low-activity channels first
-      2. high-activity channels second
-      3. high-activity channels sorted by descending matched-control peak rate
-         in the 0-400 ms window
-    """
-    if peak_df is None or peak_df.empty:
-        return list(range(n_ch))
-
-    df = peak_df.copy()
-
-    if "channel" not in df.columns:
-        return list(range(n_ch))
-
-    df["channel"] = df["channel"].astype(int)
-
-    low_df = df[df["is_high_activity"] == False].copy()
-    high_df = df[df["is_high_activity"] == True].copy()
-
-    low_df = low_df.sort_values("channel")
-
-    if "ctrl_peak_rate_hz" in high_df.columns:
-        high_df = high_df.sort_values(
-            ["ctrl_peak_rate_hz", "channel"],
-            ascending=[False, True],
-            na_position="last",
-        )
-    else:
-        high_df = high_df.sort_values("channel")
-
-    ordered = list(low_df["channel"].astype(int).values) + list(
-        high_df["channel"].astype(int).values
-    )
-
-    missing = [ch for ch in range(n_ch) if ch not in ordered]
-    ordered.extend(missing)
-
-    return ordered
-
-
-def compute_channel_mean_rate_from_psth_window(
-    counts_arr: Optional[np.ndarray],
-    centers_ms: Optional[np.ndarray],
-    width_ms: Optional[float],
-    channel_idx: int,
-    win_ms: Tuple[float, float],
-) -> float:
-    """
-    Compute mean firing rate in Hz for one channel/electrode over a time window.
-
-    Uses the same prepared/rebinned counts arrays used for plotting:
-        channels x trials x bins
-
-    The returned value is the mean across trials of the window firing rate:
-
-        trial_rate_hz = sum(counts in window) / window_duration_s
-        output = mean(trial_rate_hz)
-
-    This is appropriate for comparing STIM, matched CONTROL, and matched REST
-    files even when they have different numbers of trials.
-    """
-    if counts_arr is None or centers_ms is None:
-        return np.nan
-
-    arr = np.asarray(counts_arr, dtype=float)
-    centers = np.asarray(centers_ms, dtype=float).reshape(-1)
-
-    if arr.ndim != 3:
-        return np.nan
-
-    if channel_idx is None or channel_idx < 0 or channel_idx >= arr.shape[0]:
-        return np.nan
-
-    trial_bin_counts = arr[channel_idx, :, :]  # trials x bins
-    if trial_bin_counts.ndim != 2 or trial_bin_counts.shape[0] == 0:
-        return np.nan
-
-    n_bins = trial_bin_counts.shape[-1]
-    mask = window_mask_from_centers(centers, win_ms, n_bins=n_bins)
-
-    if mask.size != n_bins:
-        m = min(mask.size, n_bins)
-        mask2 = np.zeros(n_bins, dtype=bool)
-        mask2[:m] = mask[:m]
-        mask = mask2
-
-    if not np.any(mask):
-        return np.nan
-
-    if width_ms is not None and np.isfinite(width_ms) and width_ms > 0:
-        dur_s = float(np.sum(mask)) * float(width_ms) / 1000.0
-    else:
-        dur_s = (float(win_ms[1]) - float(win_ms[0])) / 1000.0
-
-    if not np.isfinite(dur_s) or dur_s <= 0:
-        return np.nan
-
-    trial_counts = np.nansum(trial_bin_counts[:, mask], axis=1)
-    trial_rates = trial_counts / dur_s
-
-    if trial_rates.size == 0 or np.all(~np.isfinite(trial_rates)):
-        return np.nan
-
-    return float(np.nanmean(trial_rates))
-
-
-def compute_ua_mean_rate_table_for_plot(
-    stim_counts,
-    stim_centers_ms,
-    stim_bin_width_ms,
-    ctrl_counts,
-    ctrl_centers_ms,
-    ctrl_bin_width_ms,
-    rest_counts,
-    rest_centers_ms,
-    rest_bin_width_ms,
-    elec_to_idx: dict,
-    ctrl_elec_to_idx: dict,
-    rest_elec_to_idx: dict,
-    elec_info: dict,
-    region: str,
-    grid: np.ndarray,
-    stim_meta=None,
-    stim_path=None,
-    ctrl_path=None,
-    rest_path=None,
-    mean_rate_win_ms: Tuple[float, float] = UA_MEAN_RATE_WIN_MS,
-):
-    """
-    Compute per-electrode Utah mean firing rates in a fixed post-event window.
-
-    Unlike NPRW peak timing tables, this does not classify low/high activity and
-    does not reorder panels. It simply reports the mean firing rate in the
-    window for:
-        - current file / STIM
-        - matched CONTROL
-        - matched REST
-
-    One row is emitted for each plotted electrode in the region grid.
-    """
-    rows = []
-
-    stim_meta = stim_meta or {}
-    stim_file = str(stim_path) if stim_path is not None else ""
-    ctrl_file = str(ctrl_path) if ctrl_path is not None else ""
-    rest_file = str(rest_path) if rest_path is not None else ""
-
-    # Get trial counts from the counts arrays
-    n_trials_stim = stim_counts.shape[1] if stim_counts is not None and stim_counts.ndim == 3 else 0
-    n_trials_ctrl = ctrl_counts.shape[1] if ctrl_counts is not None and ctrl_counts.ndim == 3 else 0
-    n_trials_rest = rest_counts.shape[1] if rest_counts is not None and rest_counts.ndim == 3 else 0
-
-    if grid is None:
-        return pd.DataFrame()
-
-    for rr in range(grid.shape[0]):
-        for cc in range(grid.shape[1]):
-            elec_val = grid[rr, cc]
-
-            if not np.isfinite(elec_val) or int(elec_val) <= 0:
-                continue
-
-            elec = int(elec_val)
-            stim_idx = elec_to_idx.get(elec, None)
-
-            # Only include electrodes that are actually plotted from the current file.
-            if stim_idx is None:
-                continue
-
-            if stim_counts is None:
-                continue
-
-            try:
-                if stim_idx < 0 or stim_idx >= np.asarray(stim_counts).shape[0]:
-                    continue
-            except Exception:
-                continue
-
-            ctrl_idx = ctrl_elec_to_idx.get(elec, None)
-            rest_idx = rest_elec_to_idx.get(elec, None)
-
-            stim_mean_rate_hz = compute_channel_mean_rate_from_psth_window(
-                counts_arr=stim_counts,
-                centers_ms=stim_centers_ms,
-                width_ms=stim_bin_width_ms,
-                channel_idx=stim_idx,
-                win_ms=mean_rate_win_ms,
-            )
-
-            ctrl_mean_rate_hz = compute_channel_mean_rate_from_psth_window(
-                counts_arr=ctrl_counts,
-                centers_ms=ctrl_centers_ms,
-                width_ms=ctrl_bin_width_ms,
-                channel_idx=ctrl_idx,
-                win_ms=mean_rate_win_ms,
-            ) if ctrl_idx is not None else np.nan
-
-            rest_mean_rate_hz = compute_channel_mean_rate_from_psth_window(
-                counts_arr=rest_counts,
-                centers_ms=rest_centers_ms,
-                width_ms=rest_bin_width_ms,
-                channel_idx=rest_idx,
-                win_ms=mean_rate_win_ms,
-            ) if rest_idx is not None else np.nan
-
-            info = elec_info.get(elec, {}) if elec_info is not None else {}
-
-            row = {
-                "file": stim_file,
-                "region": region,
-                "grid_row": rr,
-                "grid_col": cc,
-                "electrode_id": elec,
-                "stim_channel_idx": stim_idx,
-                "ctrl_channel_idx": ctrl_idx,
-                "rest_channel_idx": rest_idx,
-                "mean_rate_window_start_ms": mean_rate_win_ms[0],
-                "mean_rate_window_stop_ms": mean_rate_win_ms[1],
-                "stim_mean_rate_hz": stim_mean_rate_hz,
-                "ctrl_mean_rate_hz": ctrl_mean_rate_hz,
-                "rest_mean_rate_hz": rest_mean_rate_hz,
-                "delta_stim_minus_ctrl_mean_rate_hz": (
-                    stim_mean_rate_hz - ctrl_mean_rate_hz
-                    if np.isfinite(stim_mean_rate_hz) and np.isfinite(ctrl_mean_rate_hz)
-                    else np.nan
-                ),
-                "delta_stim_minus_rest_mean_rate_hz": (
-                    stim_mean_rate_hz - rest_mean_rate_hz
-                    if np.isfinite(stim_mean_rate_hz) and np.isfinite(rest_mean_rate_hz)
-                    else np.nan
-                ),
-                "delta_rest_minus_ctrl_mean_rate_hz": (
-                    rest_mean_rate_hz - ctrl_mean_rate_hz
-                    if np.isfinite(rest_mean_rate_hz) and np.isfinite(ctrl_mean_rate_hz)
-                    else np.nan
-                ),
-                "mapping_nsp_id": info.get("nsp_id", np.nan),
-                "mapping_port": info.get("port", np.nan),
-                "mapping_region": info.get("region", np.nan),
-                "mapping_grid_row": info.get("row", np.nan),
-                "mapping_grid_col": info.get("col", np.nan),
-                # Reference file info
-                "matched_ctrl_file": ctrl_file,
-                "matched_rest_file": rest_file,
-                # Trial counts
-                "n_trials_stim": n_trials_stim,
-                "n_trials_ctrl": n_trials_ctrl,
-                "n_trials_rest": n_trials_rest,
-            }
-
-            for k, v in stim_meta.items():
-                if k not in row:
-                    row[k] = v
-
-            rows.append(row)
-
-    return pd.DataFrame(rows)
-
-
-def parse_br_from_filename(npz_path: Path) -> Optional[int]:
-    m = re.search(r"_BR[_\-]?(\d+)", npz_path.name, flags=re.IGNORECASE)
-    if m:
-        return int(m.group(1))
-    return None
-
-def bin_centers_from_edges(edges_ms: np.ndarray, n_bins: Optional[int] = None) -> np.ndarray:
-    """
-    Return bin centers from an edge-like vector.
-
-    Normal case:
-        len(edges_ms) == n_bins + 1
-
-    Some existing peristim files appear to have edge/time vectors that do not
-    exactly match the final count-bin dimension. This helper trims safely so
-    plotting and window calculations do not crash.
-    """
-    edges_ms = np.asarray(edges_ms, dtype=float).reshape(-1)
-
-    if edges_ms.size < 2:
-        centers = edges_ms.copy()
-    else:
-        centers = 0.5 * (edges_ms[:-1] + edges_ms[1:])
-
-    if n_bins is not None:
-        n_bins = int(n_bins)
-
-        if centers.size >= n_bins:
-            centers = centers[:n_bins]
-        elif edges_ms.size >= n_bins:
-            # Fallback: treat provided vector as already time-bin centers.
-            centers = edges_ms[:n_bins]
-        else:
-            # Last-resort fallback. This should rarely happen, but prevents
-            # hard crashes from malformed files.
-            out = np.full(n_bins, np.nan)
-            out[:centers.size] = centers
-            centers = out
-
-    return centers
-
-
-
-def compute_zscore(
-    test_mean: float,
-    ref_mean: float,
-    ref_std: float,
-) -> float:
-    if not np.isfinite(test_mean) or not np.isfinite(ref_mean):
-        return np.nan
-    if not np.isfinite(ref_std) or ref_std <= 0:
-        return np.nan
-    return float((test_mean - ref_mean) / ref_std)
-
-
-def classify_effect(delta_hz: float, z: float) -> str:
-    """
-    Simple increase/decrease/unchanged classification.
-    """
-    delta_ok = np.isfinite(delta_hz) and abs(delta_hz) >= DELTA_HZ_THRESH
-    z_ok = np.isfinite(z) and abs(z) >= Z_THRESH
-
-    if THRESHOLD_MODE == "z":
-        sig = z_ok
-    elif THRESHOLD_MODE == "delta":
-        sig = delta_ok
-    elif THRESHOLD_MODE == "both":
-        sig = z_ok and delta_ok
-    else:
-        sig = z_ok or delta_ok
-
-    if not sig:
-        return "unchanged"
-
-    # Prefer z direction if finite, otherwise delta direction.
-    direction_value = z if np.isfinite(z) else delta_hz
-    if direction_value > 0:
-        return "increase"
-    if direction_value < 0:
-        return "decrease"
-    return "unchanged"
 
 # =============================================================================
 # Metadata/reference helpers
@@ -1187,7 +636,6 @@ def load_metadata_csv() -> Optional[pd.DataFrame]:
     except Exception as exc:
         warnings.warn(f"Could not read metadata CSV {path}: {exc}")
         return None
-
 
 def find_metadata_row(
     data: np.lib.npyio.NpzFile,
@@ -1251,69 +699,19 @@ def _safe_float_or_none(x):
     except Exception:
         return None
 
+def get_freq_dur(data: np.lib.npyio.NpzFile, npz_path: Path, metadata_df: Optional[pd.DataFrame] = None) -> Tuple[Optional[float], Optional[float]]:
+    freq = _safe_float_or_none(safe_get_npz(data, "stim_freq_hz", None))
+    dur = _safe_float_or_none(safe_get_npz(data, "stim_dur_nominal_ms", None))
+    if dur is None:
+        dur_meas = safe_get_npz(data, "stim_dur_measured_ms", None)
+        if dur_meas is not None:
+            try:
+                dur = float(np.nanmedian(np.asarray(dur_meas, dtype=float)))
+            except Exception:
+                pass
 
-def get_freq_dur(
-    data: np.lib.npyio.NpzFile,
-    npz_path: Path,
-    metadata_df: Optional[pd.DataFrame] = None,
-) -> Tuple[Optional[float], Optional[float]]:
-    row = find_metadata_row(data, npz_path, metadata_df)
-
-    freq = None
-    dur = None
-
-    if row is not None:
-        for fcol in ["Stim_Frequency_Hz", "stim_freq_hz", "frequency_hz", "recording_stim_freq"]:
-            if fcol in row.index and freq is None:
-                freq = _safe_float_or_none(row[fcol])
-
-        for dcol in ["Stim_Duration_ms", "stim_dur_ms", "duration_ms", "recording_stim_dur"]:
-            if dcol in row.index and dur is None:
-                dur = _safe_float_or_none(row[dcol])
-
-    # Fallback to meta dict.
-    meta = scalarize(safe_get_npz(data, "meta", None), None)
-    if isinstance(meta, dict):
-        for fkey in [
-            "Stim_Frequency_Hz",
-            "stim_freq_hz",
-            "frequency_hz",
-            "freq_hz",
-            "recording_stim_freq",
-            "stim_freq",
-        ]:
-            if freq is None and fkey in meta:
-                freq = _safe_float_or_none(meta.get(fkey))
-
-        for dkey in [
-            "Stim_Duration_ms",
-            "stim_dur_ms",
-            "duration_ms",
-            "dur_ms",
-            "recording_stim_dur",
-            "stim_dur",
-        ]:
-            if dur is None and dkey in meta:
-                dur = _safe_float_or_none(meta.get(dkey))
-
-    # Fallback to nprw_meta dict, matching old script.
-    nprw_meta = scalarize(safe_get_npz(data, "nprw_meta", None), None)
-    if isinstance(nprw_meta, dict):
-        if freq is None:
-            sf = nprw_meta.get("stim_freq", nprw_meta.get("recording_stim_freq", None))
-            if sf is not None:
-                try:
-                    freq = float(np.nanmedian(np.asarray(sf, dtype=float)))
-                except Exception:
-                    freq = _safe_float_or_none(sf)
-
-        if dur is None:
-            sd = nprw_meta.get("stim_dur", nprw_meta.get("recording_stim_dur", None))
-            if sd is not None:
-                try:
-                    dur = float(np.nanmedian(np.asarray(sd, dtype=float)))
-                except Exception:
-                    dur = _safe_float_or_none(sd)
+    if freq is not None and dur is not None:
+        return freq, dur
 
     return freq, dur
 
@@ -1338,12 +736,7 @@ def normalize_port_value(port) -> Optional[str]:
 
     return None
 
-
-def get_ua_port(
-    data: np.lib.npyio.NpzFile,
-    npz_path: Path,
-    metadata_df: Optional[pd.DataFrame] = None,
-) -> Optional[str]:
+def get_ua_port(data: np.lib.npyio.NpzFile, npz_path: Path, metadata_df: Optional[pd.DataFrame] = None) -> Optional[str]:
     port = normalize_port_value(safe_get_npz(data, "ua_port", None))
     if port is not None:
         return port
@@ -1364,15 +757,15 @@ def get_ua_port(
 
     return "A"
 
-def extract_metadata(
-    data: np.lib.npyio.NpzFile,
-    npz_path: Path,
-    metadata_df: Optional[pd.DataFrame] = None,
-) -> Dict[str, Any]:
+def extract_metadata(data: np.lib.npyio.NpzFile, npz_path: Path, metadata_df: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
     br_idx = scalarize(safe_get_npz(data, "br_idx", None), None)
 
     if br_idx is None:
-        br_idx = parse_br_from_filename(npz_path)
+        m = re.search(r"_BR[_\-]?(\d+)", npz_path.name, flags=re.IGNORECASE)
+        if m:
+            br_idx = int(m.group(1))
+        else:
+            br_idx = None
 
     try:
         if br_idx is not None:
@@ -1389,9 +782,18 @@ def extract_metadata(
 
     freq, dur = get_freq_dur(data, npz_path, metadata_df)
     ua_port = get_ua_port(data, npz_path, metadata_df)
-    
-    # Compute pulse count from frequency and duration
-    pulse_count = compute_pulse_count(freq, dur)
+
+    # 1. Check precomputed pulse counts in data directly
+    pulse_count = None
+    pc_arr = safe_get_npz(data, "stim_pulse_counts", None)
+    if pc_arr is not None and np.size(pc_arr):
+        try:
+            pulse_count = float(np.nanmedian(np.asarray(pc_arr, dtype=float)))
+        except Exception:
+            pulse_count = None
+
+    if pulse_count is None or not np.isfinite(pulse_count) or pulse_count <= 0:
+        pulse_count = compute_pulse_count(freq, dur)
 
     return {
         "npz_path": str(npz_path),
@@ -1413,6 +815,20 @@ def extract_metadata(
 def count_trials_in_file(npz_path: Path, array_key: str = "NPRW_counts") -> int:
     try:
         with np.load(npz_path, allow_pickle=True) as data:
+            # 1. Direct scalar trial count saved by extract_peri_stim
+            n_trials = safe_get_npz(data, "n_trials", None)
+            if n_trials is not None:
+                try:
+                    return int(scalarize(n_trials))
+                except Exception:
+                    pass
+
+            # 2. Number of event timestamps
+            event_ms = safe_get_npz(data, "event_ms", None)
+            if event_ms is not None:
+                return int(np.asarray(event_ms).size)
+
+            # 3. Fallback to counts array shape inspection
             counts = safe_get_npz(data, array_key, None)
             if counts is None:
                 counts = safe_get_npz(data, "UA_counts", None)
@@ -1420,11 +836,8 @@ def count_trials_in_file(npz_path: Path, array_key: str = "NPRW_counts") -> int:
                 return 0
             arr = np.asarray(counts)
             if arr.ndim == 3:
-                # Existing files are usually trials x channels x bins.
-                # If second dim looks like channels, first dim is trials.
                 if arr.shape[1] in (32, 64, 96, 128, 256):
                     return int(arr.shape[0])
-                # If first dim looks like channels, second dim is trials.
                 if arr.shape[0] in (32, 64, 96, 128, 256):
                     return int(arr.shape[1])
                 return int(arr.shape[0])
@@ -1433,7 +846,6 @@ def count_trials_in_file(npz_path: Path, array_key: str = "NPRW_counts") -> int:
             return 0
     except Exception:
         return 0
-
 
 def get_display_bin_edges_ms(
     win_ms: Optional[Tuple[float, float]],
@@ -1485,7 +897,6 @@ def get_display_bin_edges_ms(
     stop = math.ceil(stop / w) * w
 
     return np.arange(start, stop + 0.5 * w, w, dtype=float)
-
 
 def load_reference_data(
     all_files: List[Path],
@@ -1554,7 +965,6 @@ def load_reference_data(
 
     return refs
 
-
 def get_matched_control_file(
     npz_path: Path,
     refs: Dict[str, Any],
@@ -1594,7 +1004,6 @@ def get_matched_control_file(
     key = (target, port)
     
     return refs.get("control_by_target_port", {}).get(key, None)
-
 
 def get_matched_control_file_for_at_rest(
     data: np.lib.npyio.NpzFile,
@@ -1662,7 +1071,6 @@ def get_session_location_for_impedances() -> Optional[Path]:
         return out_base.parent
     except Exception:
         return None
-
 
 def load_bad_channels() -> Dict[str, set]:
     """
@@ -1748,10 +1156,11 @@ def load_bad_channels() -> Dict[str, set]:
         pass
 
     return bad
+
+
 # =============================================================================
 # Utah mapping helpers
 # =============================================================================
-
 
 def load_utah_mapping() -> tuple[dict, dict]:
     """Load Utah array electrode mapping. Returns (elec_info, region_grids)."""
@@ -1766,7 +1175,6 @@ def get_electrode_mapping_csv(monkey: str = None) -> Path:
     if not csv_path.exists():
         raise FileNotFoundError(f"Electrode mapping CSV not found: {csv_path}")
     return csv_path
-
 
 @lru_cache(maxsize=4)
 def load_electrode_mapping_cached(monkey: str = None) -> tuple[dict, dict]:
@@ -1823,7 +1231,6 @@ def load_electrode_mapping_cached(monkey: str = None) -> tuple[dict, dict]:
             )
     
     return elec_info, region_grids
-
 
 def build_elec_to_data_idx(ua_ids_1based, elec_info, recording_port='A'):
     """
@@ -1929,11 +1336,9 @@ def get_region_grid(region: str, region_grids: dict) -> np.ndarray:
     return np.zeros((8, 8), dtype=int)
 
 
-
 # =============================================================================
 # Metric computation
 # =============================================================================
-
 
 def get_stim_duration_ms(
     data: np.lib.npyio.NpzFile,
@@ -1951,12 +1356,42 @@ def get_stim_duration_ms(
     if cond_type == "CTRL":
         return 0.0
 
+    # 1. Pull directly from top-level NPZ keys
+    dur_nom = safe_get_npz(data, "stim_dur_nominal_ms", None)
+    if dur_nom is not None:
+        try:
+            val = float(scalarize(dur_nom))
+            if np.isfinite(val) and val > 0:
+                return val
+        except Exception:
+            pass
+
+    dur_meas = safe_get_npz(data, "stim_dur_measured_ms", None)
+    if dur_meas is not None:
+        try:
+            val = float(np.nanmedian(np.asarray(dur_meas, dtype=float)))
+            if np.isfinite(val) and val > 0:
+                return val
+        except Exception:
+            pass
+
+    # 2. Fallback to get_freq_dur and metadata
     freq, dur = get_freq_dur(data, npz_path, metadata_df)
     
     if dur is not None and np.isfinite(dur) and dur > 0:
         return float(dur)
     
     if freq is not None and np.isfinite(freq) and freq > 0:
+        # Check stim_pulse_counts in data first
+        pc_arr = safe_get_npz(data, "stim_pulse_counts", None)
+        if pc_arr is not None and np.size(pc_arr):
+            try:
+                pc = float(np.nanmedian(np.asarray(pc_arr, dtype=float)))
+                if pc > 0:
+                    return float(pc / freq * 1000.0)
+            except Exception:
+                pass
+
         row = find_metadata_row(data, npz_path, metadata_df)
         pulse_count = None
         
@@ -1987,114 +1422,6 @@ def get_stim_duration_ms(
     
     return 0.0
 
-def get_response_windows(
-    stim_dur_ms: float,
-    array_type: str,
-) -> Dict[str, Tuple[float, float]]:
-    if array_type.upper() == "NPRW":
-        post_start = float(stim_dur_ms) + NPRW_POST_OFFSET_MS
-    else:
-        post_start = float(stim_dur_ms) + UA_POST_OFFSET_MS
-
-    windows = {
-        "baseline": BASELINE_WIN_MS,
-        "post": (post_start, post_start + POST_WIN_LEN_MS),
-    }
-
-    if array_type.upper() == "UA" and UA_INCLUDE_DURING_PLUS_POST:
-        windows["during_plus_post"] = (0.0, post_start + POST_WIN_LEN_MS)
-
-    return windows
-
-
-def compute_channel_metrics(
-    stim_counts_ch: np.ndarray,
-    stim_centers_ms: np.ndarray,
-    stim_bin_width_ms: Optional[float],
-    stim_meta: Dict[str, Any],
-    channel_id: int,
-    array_type: str,
-    comparison_name: str,
-    response_win_name: str,
-    response_win_ms: Tuple[float, float],
-    ref_counts_ch: Optional[np.ndarray] = None,
-    ref_centers_ms: Optional[np.ndarray] = None,
-    ref_bin_width_ms: Optional[float] = None,
-    is_bad_channel: bool = False,
-    region: Optional[str] = None,
-    electrode_id: Optional[int] = None,
-) -> Dict[str, Any]:
-
-    stim_resp_mean, stim_resp_std, stim_n = window_rate_hz_from_counts_with_axis(
-        stim_counts_ch, stim_centers_ms, stim_bin_width_ms, response_win_ms
-    )
-
-    stim_base_mean, stim_base_std, _ = window_rate_hz_from_counts_with_axis(
-        stim_counts_ch, stim_centers_ms, stim_bin_width_ms, BASELINE_WIN_MS
-    )
-
-    out = {
-        **stim_meta,
-        "array_type": array_type,
-        "channel_id": channel_id,
-        "electrode_id": electrode_id,
-        "region": region,
-        "comparison": comparison_name,
-        "response_window": response_win_name,
-        "response_win_start_ms": response_win_ms[0],
-        "response_win_end_ms": response_win_ms[1],
-        "baseline_win_start_ms": BASELINE_WIN_MS[0],
-        "baseline_win_end_ms": BASELINE_WIN_MS[1],
-        "stim_rate_hz": stim_resp_mean,
-        "stim_rate_std_hz": stim_resp_std,
-        "stim_baseline_rate_hz": stim_base_mean,
-        "stim_baseline_std_hz": stim_base_std,
-        "n_trials_stim": stim_n,
-        "ref_rate_hz": np.nan,
-        "ref_rate_std_hz": np.nan,
-        "n_trials_ref": 0,
-        "delta_hz": np.nan,
-        "z": np.nan,
-        "effect": "uncomputed",
-        "is_significant": False,
-        "is_increase": False,
-        "is_decrease": False,
-        "is_bad_channel": bool(is_bad_channel),
-    }
-
-    if comparison_name == "self_baseline":
-        ref_mean = stim_base_mean
-        ref_std = stim_base_std
-        ref_n = stim_n
-    else:
-        if ref_counts_ch is None or ref_centers_ms is None:
-            out["effect"] = "missing_reference"
-            return out
-
-        ref_mean, ref_std, ref_n = window_rate_hz_from_counts_with_axis(
-            ref_counts_ch,
-            ref_centers_ms,
-            ref_bin_width_ms,
-            response_win_ms,
-        )
-
-    delta = stim_resp_mean - ref_mean if np.isfinite(stim_resp_mean) and np.isfinite(ref_mean) else np.nan
-    z = compute_zscore(stim_resp_mean, ref_mean, ref_std)
-    effect = classify_effect(delta, z)
-
-    out.update({
-        "ref_rate_hz": ref_mean,
-        "ref_rate_std_hz": ref_std,
-        "n_trials_ref": ref_n,
-        "delta_hz": delta,
-        "z": z,
-        "effect": effect,
-        "is_significant": effect in ["increase", "decrease"],
-        "is_increase": effect == "increase",
-        "is_decrease": effect == "decrease",
-    })
-
-    return out
 
 # =============================================================================
 # Plotting helpers
@@ -2142,17 +1469,9 @@ def prepare_counts_array(counts: np.ndarray) -> np.ndarray:
     # Fallback: old files usually trials x channels x bins.
     return np.transpose(arr, (1, 0, 2))
 
-
-def shade_windows(
-    ax,
-    stim_dur_ms: float = 0.0,
-    baseline_window_ms: Optional[Tuple[float, float]] = None,
-    response_window_ms: Optional[Tuple[float, float]] = None,
-):
+def shade_windows(ax, stim_dur_ms: float = 0.0,):
     """
     Shade only the stimulation period from 0 ms to stim_dur_ms.
-
-    baseline_window_ms and response_window_ms are intentionally ignored.
     """
     if stim_dur_ms is not None and np.isfinite(stim_dur_ms) and stim_dur_ms > 0:
         ax.axvspan(
@@ -2187,8 +1506,6 @@ def shade_windows(
         label="_nolegend_",
     )
 
-
-
 def get_view_window(view_kind: str, win_ms, stim_dur_ms: float):
     """
     Return x-axis plotting window for standard/zoom views.
@@ -2212,8 +1529,6 @@ def set_view_limits(ax, win_ms):
         ax.set_xlim(win_ms[0], win_ms[1])
 
 
-
-
 # =============================================================================
 # File processing
 # =============================================================================
@@ -2221,7 +1536,6 @@ def set_view_limits(ax, win_ms):
 @lru_cache(maxsize=32)
 def _load_npz_cached_internal(path_str: str):
     return np.load(path_str, allow_pickle=True)
-
 
 def load_optional_npz(path: Optional[Path]):
     if path is None:
@@ -2238,7 +1552,6 @@ def load_optional_npz(path: Optional[Path]):
         warnings.warn(f"Could not load reference npz {path}: {exc}")
         return None
 
-
 def make_output_basename(stim_meta: Dict[str, Any], npz_path: Path, array_part: str, view_suffix: str) -> str:
     br_idx = stim_meta.get("br_idx", None)
     cond_type = stim_meta.get("cond_type", get_cond_type(npz_path))
@@ -2254,7 +1567,6 @@ def make_output_basename(stim_meta: Dict[str, Any], npz_path: Path, array_part: 
     processed = sanitize_name(Path(npz_path).stem.replace("peristim__", ""))
 
     return f"{processed}_{br_str}_{cond_type}_{array_part}{view_suffix}.png"
-
 
 def process_nprw(
     stim_data,
@@ -2316,7 +1628,6 @@ def process_nprw(
         n_saved += 1
 
     return n_saved
-
 
 def process_ua(
     stim_data,
@@ -2401,7 +1712,6 @@ def process_ua(
 
     return n_saved
 
-
 def load_nprw_probe_and_mapping():
     """Load NPRW probe geometry as specified in params.yaml."""
     geom_file = None
@@ -2457,58 +1767,44 @@ def load_nprw_probe_and_mapping():
         _print(f"[warn] Failed to load NPRW probe geometry from {geom_file}: {e}")
         return None, None, None
 
-
 def get_nprw_stim_channel_indices(
     stim_data: np.lib.npyio.NpzFile,
     stim_path: Path,
     stim_meta: Dict[str, Any],
 ) -> set:
     """
-    Find stimulated channel indices (0-based) from aux stim stream, NPZ arrays, or metadata.
+    Find stimulated channel indices (0-based) from NPZ metadata, arrays, or aux stim stream.
     """
     stim_channels = set()
-    sess = stim_meta.get("sess", None)
-    if not sess and stim_path is not None:
-        m_s = re.search(r"peristim__([^_]+)__", stim_path.name)
-        if m_s:
-            sess = m_s.group(1)
 
-    # 1. Try detect_stim_channels_from_npz on stim_stream.npz
-    if sess and NPRW_AUX_DATA is not None:
-        stim_npz = NPRW_AUX_DATA / f"{sess}_Intan_streams" / "stim_stream.npz"
-        if stim_npz.exists():
-            try:
-                detected = rcp.detect_stim_channels_from_npz(stim_npz, eps=1e-12, min_edges=1)
-                if detected is not None and np.size(detected):
-                    stim_channels.update(int(x) for x in np.asarray(detected).ravel())
-            except Exception as e:
-                _print(f"[warn] detect_stim_channels_from_npz failed: {e}")
-
-    # 2. Check stim_data keys if nothing found yet
-    if not stim_channels and stim_data is not None:
+    # 1. Check direct top-level keys in stim_data
+    if stim_data is not None:
         for k in ("active_channels_0based", "stim_channels_0based", "active_channels", "stim_channels"):
             if k in stim_data.files:
                 arr = stim_data[k]
                 if arr is not None and np.size(arr):
                     offset = 1 if "0based" not in k and (np.min(arr) >= 1) else 0
                     stim_channels.update(int(x) - offset for x in np.asarray(arr).ravel())
-                break
+                if stim_channels:
+                    return stim_channels
 
-    # 3. Check stim_meta
-    if not stim_channels and stim_meta:
-        for k in ("active_channels", "stim_channel", "stim_channels"):
-            val = stim_meta.get(k, None)
-            if val is not None:
-                try:
-                    if isinstance(val, (list, tuple, np.ndarray)):
-                        stim_channels.update(int(x) for x in val)
-                    else:
-                        stim_channels.add(int(val))
-                except Exception:
-                    pass
+    # 2. Check nprw_meta and meta inside stim_data (precomputed by Intan analysis / extract_peri_stim)
+    if not stim_channels and stim_data is not None:
+        for mkey in ("nprw_meta", "meta"):
+            if mkey in stim_data.files:
+                mdict = scalarize(stim_data[mkey], None)
+                if isinstance(mdict, dict):
+                    for skey in ("stim_channels", "stim_channel", "active_channels"):
+                        val = mdict.get(skey, None)
+                        if val is not None and np.size(val):
+                            try:
+                                stim_channels.update(int(x) for x in np.asarray(val).ravel() if np.isfinite(x))
+                            except Exception:
+                                pass
+                if stim_channels:
+                    return stim_channels
 
     return stim_channels
-
 
 def plot_nprw_probe_axis(
     ax_probe,
@@ -2597,7 +1893,6 @@ def plot_nprw_probe_axis(
         Patch(facecolor="none", edgecolor="black", linewidth=1.0, label="High Activity (Standard)"),
     ]
     ax_probe.legend(handles=legend_elements, loc="upper right", fontsize=8, framealpha=0.9)
-
 
 def plot_peak_timing_bar_plot(
     ax_bar,
@@ -2711,7 +2006,6 @@ def plot_peak_timing_bar_plot(
         ymax = max(finite_all) + 60
         ax_bar.set_ylim(ymin, ymax)
 
-
 def plot_nprw_overlay_grid(
     stim_data: np.lib.npyio.NpzFile,
     stim_path: Path,
@@ -2764,7 +2058,6 @@ def plot_nprw_overlay_grid(
         )
 
     stim_dur_ms = get_stim_duration_ms(stim_data, stim_path, metadata_df)
-    response_windows = get_response_windows(stim_dur_ms, "NPRW")
 
     display_bin_width_ms = NPRW_DISPLAY_BIN_WIDTH_MS
 
@@ -3199,7 +2492,6 @@ def plot_ua_region_overlay_grid(
         return
 
     stim_dur_ms = get_stim_duration_ms(stim_data, stim_path, metadata_df)
-    response_windows = get_response_windows(stim_dur_ms, "UA")
 
     display_bin_width_ms = UA_DISPLAY_BIN_WIDTH_MS
 
@@ -3246,37 +2538,6 @@ def plot_ua_region_overlay_grid(
     current_trial_label = format_trial_label(cond_type, n_trials_current)
     ctrl_trial_label = format_trial_label("CTRL", n_trials_ctrl)
     rest_trial_label = format_trial_label("REST", n_trials_rest)
-
-    # -------------------------------------------------------------------------
-    # Utah-array per-electrode mean firing-rate table.
-    #
-    # Save only for non-zoom/standard Utah figures. This avoids duplicate CSVs
-    # for zoom views while using the same display-rebinned arrays used for
-    # plotting the standard overlay.
-    # -------------------------------------------------------------------------
-    if view_suffix != "_zoom":
-        ua_rate_df = compute_ua_mean_rate_table_for_plot(
-            stim_counts=stim_counts,
-            stim_centers_ms=stim_centers,
-            stim_bin_width_ms=stim_width,
-            ctrl_counts=ctrl_counts,
-            ctrl_centers_ms=ctrl_centers,
-            ctrl_bin_width_ms=ctrl_width,
-            rest_counts=rest_counts,
-            rest_centers_ms=rest_centers,
-            rest_bin_width_ms=rest_width,
-            elec_to_idx=elec_to_idx,
-            ctrl_elec_to_idx=ctrl_elec_to_idx,
-            rest_elec_to_idx=rest_elec_to_idx,
-            elec_info=elec_info,
-            region=region,
-            grid=grid,
-            stim_meta=stim_meta,
-            stim_path=stim_path,
-            ctrl_path=ctrl_path,
-            rest_path=rest_path,
-            mean_rate_win_ms=UA_MEAN_RATE_WIN_MS,
-        )
 
     fig, axes = plt.subplots(8, 8, figsize=FIG_SIZE_UA, squeeze=False)
 
@@ -3502,7 +2763,6 @@ def process_file(
 
     try:
         cond_type = get_cond_type(npz_path)
-        compute_metrics = cond_type == "STIM"
         generate_figures = should_generate_figures_for_condition(cond_type)
 
         stim_meta = extract_metadata(data, npz_path, metadata_df)
@@ -3510,7 +2770,6 @@ def process_file(
 
         _print(f"  condition type: {cond_type}")
         _print(f"  generate_figures: {generate_figures}")
-        _print(f"  compute_metrics: {compute_metrics}")
         if cond_type == "STIM":
             _print(f"  stim duration from metadata: {stim_dur_ms} ms")
 
@@ -3554,7 +2813,6 @@ def process_file(
             rest_file = None
             _print("  matched rest: None")
 
-        rows: List[Dict[str, Any]] = []
         nprw_figs = 0
         ua_figs = 0
 
@@ -3589,34 +2847,9 @@ def process_file(
         else:
             _print(f"  figures skipped for condition type {cond_type}")
 
-        # Metrics are only for STIM, independent of figure gating.
-        if compute_metrics:
-            if PROCESS_NPRW:
-                rows.extend(compute_nprw_metrics_for_file(
-                    stim_data=data,
-                    stim_path=npz_path,
-                    stim_meta=stim_meta,
-                    ctrl_data=ctrl_data,
-                    rest_data=rest_data,
-                    bad=bad,
-                    metadata_df=metadata_df,
-                ))
-
-            if PROCESS_UA:
-                rows.extend(compute_ua_metrics_for_file(
-                    stim_data=data,
-                    stim_path=npz_path,
-                    stim_meta=stim_meta,
-                    ctrl_data=ctrl_data,
-                    rest_data=rest_data,
-                    mapping=mapping,
-                    bad=bad,
-                    metadata_df=metadata_df,
-                ))
-
         print(
             f"[{file_idx}/{total_files}] Done {cond_type}: {npz_path.name} "
-            f"(NPRW figs={nprw_figs}, UA figs={ua_figs}, metric rows={len(rows)})",
+            f"(NPRW figs={nprw_figs}, UA figs={ua_figs})",
             flush=True,
         )
 
@@ -3625,7 +2858,6 @@ def process_file(
             "file": str(npz_path),
             "cond_type": cond_type,
             "stim_dur_ms": stim_dur_ms,
-            "rows": rows,
             "nprw_figs": nprw_figs,
             "ua_figs": ua_figs,
         }
@@ -3640,7 +2872,6 @@ def process_file(
             "success": False,
             "file": str(npz_path),
             "cond_type": get_cond_type(npz_path),
-            "rows": [],
             "nprw_figs": 0,
             "ua_figs": 0,
         }
@@ -3655,421 +2886,6 @@ def process_file(
             if data is not None:
                 data.close()
 
-def compute_nprw_metrics_for_file(
-    stim_data,
-    stim_path: Path,
-    stim_meta: Dict[str, Any],
-    ctrl_data,
-    rest_data,
-    bad: Dict[str, set],
-    metadata_df,
-) -> List[Dict[str, Any]]:
-
-    rows = []
-
-    stim_counts_raw = safe_get_npz(stim_data, "NPRW_counts", None)
-    if stim_counts_raw is None:
-        _print("  NPRW metrics: skip, no NPRW_counts")
-        return rows
-
-    stim_counts = prepare_counts_array(stim_counts_raw)
-    if stim_counts is None or np.asarray(stim_counts).ndim != 3:
-        _print("  NPRW metrics: skip, bad counts shape")
-        return rows
-
-    stim_centers, stim_bw, _ = get_time_axis_and_width(
-        stim_data, "NPRW", n_bins=stim_counts.shape[-1]
-    )
-    if stim_centers is None:
-        _print("  NPRW metrics: skip, no time axis")
-        return rows
-
-    n_ch = stim_counts.shape[0]
-    stim_dur_ms = get_stim_duration_ms(stim_data, stim_path, metadata_df)
-    windows = get_response_windows(stim_dur_ms, "NPRW")
-
-    _print(f"  NPRW metrics: counts shape={stim_counts.shape}")
-    _print(f"  NPRW metrics: centers={len(stim_centers)}, bin_width={stim_bw}")
-    _print(f"  NPRW metrics: n_ch={n_ch}, windows={list(windows.keys())}")
-
-    ctrl_counts = None
-    ctrl_centers = None
-    ctrl_bw = None
-    if ctrl_data is not None and "NPRW_counts" in ctrl_data.files:
-        ctrl_counts = prepare_counts_array(ctrl_data["NPRW_counts"])
-        if ctrl_counts is not None and np.asarray(ctrl_counts).ndim == 3:
-            ctrl_centers, ctrl_bw, _ = get_time_axis_and_width(
-                ctrl_data, "NPRW", n_bins=ctrl_counts.shape[-1]
-            )
-        else:
-            ctrl_counts = None
-
-    rest_counts = None
-    rest_centers = None
-    rest_bw = None
-    if rest_data is not None and "NPRW_counts" in rest_data.files:
-        rest_counts = prepare_counts_array(rest_data["NPRW_counts"])
-        if rest_counts is not None and np.asarray(rest_counts).ndim == 3:
-            rest_centers, rest_bw, _ = get_time_axis_and_width(
-                rest_data, "NPRW", n_bins=rest_counts.shape[-1]
-            )
-        else:
-            rest_counts = None
-
-    for ch in range(n_ch):
-        is_bad_ch = ch in bad.get("NPRW", set()) or (ch + 1) in bad.get("NPRW", set())
-
-        for win_name, win in windows.items():
-            if win_name == "baseline":
-                continue
-
-            rows.append(compute_channel_metrics(
-                stim_counts_ch=stim_counts[ch],
-                stim_centers_ms=stim_centers,
-                stim_bin_width_ms=stim_bw,
-                stim_meta=stim_meta,
-                channel_id=ch,
-                array_type="NPRW",
-                comparison_name="self_baseline",
-                response_win_name=win_name,
-                response_win_ms=win,
-                is_bad_channel=is_bad_ch,
-            ))
-
-            rows.append(compute_channel_metrics(
-                stim_counts_ch=stim_counts[ch],
-                stim_centers_ms=stim_centers,
-                stim_bin_width_ms=stim_bw,
-                stim_meta=stim_meta,
-                channel_id=ch,
-                array_type="NPRW",
-                comparison_name="control",
-                response_win_name=win_name,
-                response_win_ms=win,
-                ref_counts_ch=ctrl_counts[ch] if ctrl_counts is not None and ctrl_centers is not None and ch < ctrl_counts.shape[0] else None,
-                ref_centers_ms=ctrl_centers,
-                ref_bin_width_ms=ctrl_bw,
-                is_bad_channel=is_bad_ch,
-            ))
-
-            rows.append(compute_channel_metrics(
-                stim_counts_ch=stim_counts[ch],
-                stim_centers_ms=stim_centers,
-                stim_bin_width_ms=stim_bw,
-                stim_meta=stim_meta,
-                channel_id=ch,
-                array_type="NPRW",
-                comparison_name="rest",
-                response_win_name=win_name,
-                response_win_ms=win,
-                ref_counts_ch=rest_counts[ch] if rest_counts is not None and rest_centers is not None and ch < rest_counts.shape[0] else None,
-                ref_centers_ms=rest_centers,
-                ref_bin_width_ms=rest_bw,
-                is_bad_channel=is_bad_ch,
-            ))
-
-    _print(f"  NPRW metrics: rows added={len(rows)}")
-    return rows
-
-
-def compute_ua_metrics_for_file(
-    stim_data,
-    stim_path: Path,
-    stim_meta: Dict[str, Any],
-    ctrl_data,
-    rest_data,
-    mapping: Dict[str, Any],
-    bad: Dict[str, set],
-    metadata_df,
-) -> List[Dict[str, Any]]:
-
-    rows = []
-
-    stim_counts_raw = safe_get_npz(stim_data, "UA_counts", None)
-    ua_ids = safe_get_npz(stim_data, "ua_ids_1based", None)
-
-    if stim_counts_raw is None or ua_ids is None:
-        _print("  UA metrics: skip, no UA_counts or ua_ids_1based")
-        return rows
-
-    stim_counts = prepare_counts_array(stim_counts_raw)
-    if stim_counts is None or np.asarray(stim_counts).ndim != 3:
-        _print("  UA metrics: skip, bad counts shape")
-        return rows
-
-    stim_centers, stim_bw, _ = get_time_axis_and_width(
-        stim_data, "UA", n_bins=stim_counts.shape[-1]
-    )
-    if stim_centers is None:
-        _print("  UA metrics: skip, no time axis")
-        return rows
-
-    ua_ids = np.asarray(ua_ids).astype(int).reshape(-1)
-    recording_port = stim_meta.get("ua_port", None)
-
-    elec_info, region_grids = mapping
-    elec_to_idx = build_elec_to_data_idx(ua_ids, elec_info, recording_port or 'A')
-    stim_dur_ms = get_stim_duration_ms(stim_data, stim_path, metadata_df)
-    windows = get_response_windows(stim_dur_ms, "UA")
-
-    _print(f"  UA metrics: counts shape={stim_counts.shape}")
-    _print(f"  UA metrics: centers={len(stim_centers)}, bin_width={stim_bw}")
-    _print(f"  UA metrics: mapped electrodes={len(elec_to_idx)}")
-    _print(f"  UA metrics: windows={list(windows.keys())}")
-
-    ctrl_counts = None
-    ctrl_centers = None
-    ctrl_bw = None
-    ctrl_elec_to_idx = {}
-    if ctrl_data is not None and "UA_counts" in ctrl_data.files:
-        ctrl_counts = prepare_counts_array(ctrl_data["UA_counts"])
-        if ctrl_counts is not None and np.asarray(ctrl_counts).ndim == 3:
-            ctrl_centers, ctrl_bw, _ = get_time_axis_and_width(
-                ctrl_data, "UA", n_bins=ctrl_counts.shape[-1]
-            )
-        else:
-            ctrl_counts = None
-
-        ctrl_ids = safe_get_npz(ctrl_data, "ua_ids_1based", None)
-        if ctrl_ids is not None:
-            ctrl_elec_to_idx = build_elec_to_data_idx(
-                np.asarray(ctrl_ids).astype(int), elec_info, recording_port or 'A'
-            )
-
-    rest_counts = None
-    rest_centers = None
-    rest_bw = None
-    rest_elec_to_idx = {}
-    if rest_data is not None and "UA_counts" in rest_data.files:
-        rest_counts = prepare_counts_array(rest_data["UA_counts"])
-        if rest_counts is not None and np.asarray(rest_counts).ndim == 3:
-            rest_centers, rest_bw, _ = get_time_axis_and_width(
-                rest_data, "UA", n_bins=rest_counts.shape[-1]
-            )
-        else:
-            rest_counts = None
-
-        rest_ids = safe_get_npz(rest_data, "ua_ids_1based", None)
-        if rest_ids is not None:
-            rest_elec_to_idx = build_elec_to_data_idx(
-                np.asarray(rest_ids).astype(int), elec_info, recording_port or 'A'
-            )
-
-    elec_to_region = {eid: info['region'] for eid, info in elec_info.items()}
-
-    for elec, idx in elec_to_idx.items():
-        if idx < 0 or idx >= stim_counts.shape[0]:
-            continue
-
-        region = None
-        if elec in elec_info:
-            region = str(elec_info[elec].get("region", ""))
-        elif elec in elec_to_region:
-            region = str(elec_to_region[elec])
-
-        is_bad_ch = (
-            elec in bad.get("UA", set())
-            or idx in bad.get("UA", set())
-            or (idx + 1) in bad.get("UA", set())
-        )
-
-        ctrl_idx = ctrl_elec_to_idx.get(elec, None)
-        rest_idx = rest_elec_to_idx.get(elec, None)
-
-        for win_name, win in windows.items():
-            if win_name == "baseline":
-                continue
-
-            rows.append(compute_channel_metrics(
-                stim_counts_ch=stim_counts[idx],
-                stim_centers_ms=stim_centers,
-                stim_bin_width_ms=stim_bw,
-                stim_meta=stim_meta,
-                channel_id=idx,
-                electrode_id=elec,
-                region=region,
-                array_type="UA",
-                comparison_name="self_baseline",
-                response_win_name=win_name,
-                response_win_ms=win,
-                is_bad_channel=is_bad_ch,
-            ))
-
-            rows.append(compute_channel_metrics(
-                stim_counts_ch=stim_counts[idx],
-                stim_centers_ms=stim_centers,
-                stim_bin_width_ms=stim_bw,
-                stim_meta=stim_meta,
-                channel_id=idx,
-                electrode_id=elec,
-                region=region,
-                array_type="UA",
-                comparison_name="control",
-                response_win_name=win_name,
-                response_win_ms=win,
-                ref_counts_ch=ctrl_counts[ctrl_idx] if ctrl_counts is not None and ctrl_centers is not None and ctrl_idx is not None and ctrl_idx < ctrl_counts.shape[0] else None,
-                ref_centers_ms=ctrl_centers,
-                ref_bin_width_ms=ctrl_bw,
-                is_bad_channel=is_bad_ch,
-            ))
-
-            rows.append(compute_channel_metrics(
-                stim_counts_ch=stim_counts[idx],
-                stim_centers_ms=stim_centers,
-                stim_bin_width_ms=stim_bw,
-                stim_meta=stim_meta,
-                channel_id=idx,
-                electrode_id=elec,
-                region=region,
-                array_type="UA",
-                comparison_name="rest",
-                response_win_name=win_name,
-                response_win_ms=win,
-                ref_counts_ch=rest_counts[rest_idx] if rest_counts is not None and rest_centers is not None and rest_idx is not None and rest_idx < rest_counts.shape[0] else None,
-                ref_centers_ms=rest_centers,
-                ref_bin_width_ms=rest_bw,
-                is_bad_channel=is_bad_ch,
-            ))
-
-    _print(f"  UA metrics: rows added={len(rows)}")
-    return rows
-
-
-
-
-# =============================================================================
-# Summary outputs
-# =============================================================================
-
-def nan_stat_or_nan(values, func):
-    arr = np.asarray(values, dtype=float)
-    arr = arr[np.isfinite(arr)]
-    if arr.size == 0:
-        return np.nan
-    return float(func(arr))
-
-def summarize_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    work = df.copy()
-
-    # Exclude bad channels from summary counts.
-    if "is_bad_channel" in work.columns:
-        work = work[~work["is_bad_channel"].astype(bool)]
-
-    group_cols = [
-        "sess",
-        "br_idx",
-        "cond_type",
-        "base_folder",
-        "target_folder",
-        "stim_freq_hz",
-        "stim_dur_ms",
-        "ua_port",
-        "array_type",
-        "region",
-        "comparison",
-        "response_window",
-    ]
-
-    group_cols = [c for c in group_cols if c in work.columns]
-
-    rows = []
-    for keys, g in work.groupby(group_cols, dropna=False):
-        if not isinstance(keys, tuple):
-            keys = (keys,)
-
-        rec = dict(zip(group_cols, keys))
-
-        valid = g[~g["effect"].isin(["missing_reference", "uncomputed"])]
-        sig = valid[valid["is_significant"].astype(bool)]
-
-        rec.update({
-            "n_channels_total": int(len(g)),
-            "n_channels_valid": int(len(valid)),
-            "n_significant": int(len(sig)),
-            "n_increase": int(valid["is_increase"].astype(bool).sum()),
-            "n_decrease": int(valid["is_decrease"].astype(bool).sum()),
-            "mean_delta_hz": nan_stat_or_nan(valid["delta_hz"], np.mean) if len(valid) else np.nan,
-            "median_delta_hz": nan_stat_or_nan(valid["delta_hz"], np.median) if len(valid) else np.nan,
-            "mean_z": nan_stat_or_nan(valid["z"], np.mean) if len(valid) else np.nan,
-            "median_z": nan_stat_or_nan(valid["z"], np.median) if len(valid) else np.nan,
-        })
-        rows.append(rec)
-
-    return pd.DataFrame(rows)
-
-
-def save_outputs(
-    all_rows: List[Dict[str, Any]],
-    stats_summary: Optional[Dict[str, Any]] = None,
-):
-    ensure_dir(RESULT_ROOT)
-
-    metrics_csv = RESULT_ROOT / "stim_response_channel_metrics_all.csv"
-    summary_csv = RESULT_ROOT / "stim_response_summary.csv"
-    metrics_npy = RESULT_ROOT / "stim_response_channel_metrics_all.npy"
-
-    if stats_summary is None:
-        stats_summary = {}
-
-    attempted = stats_summary.get("attempted", 0)
-    successful = stats_summary.get("successful", 0)
-    failed = stats_summary.get("failed", 0)
-    stim_proc = stats_summary.get("stim_processed", 0)
-    ctrl_proc = stats_summary.get("ctrl_processed", 0)
-    rest_proc = stats_summary.get("rest_processed", 0)
-    nprw_saved = stats_summary.get("nprw_figs_saved", 0)
-    ua_saved = stats_summary.get("ua_figs_saved", 0)
-    skipped_rest = stats_summary.get("skipped_unmatched_rest", 0)
-    contstim_proc = stats_summary.get("contstim_processed", 0)
-    other_proc = stats_summary.get("other_processed", 0)
-
-    print("\n============================================================")
-    print("Run summary:")
-    print("  Configuration & Speedups:")
-    print(f"    REST_MATCH_MODE:               {REST_MATCH_MODE}")
-    print(f"    REQUIRE_MATCHED_REST_FOR_STIM: {REQUIRE_MATCHED_REST_FOR_STIM}")
-    print(f"    CACHE_REFERENCES:              {CACHE_REFERENCES}")
-    print("  File Processing:")
-    print(f"    Files attempted:               {attempted}")
-    if REQUIRE_MATCHED_REST_FOR_STIM:
-        print(f"    STIM skipped (no rest match):  {skipped_rest}")
-    print(f"    Files processed successfully:  {successful}")
-    print(f"    Files skipped/failed:          {failed}")
-    print(f"      STIM files processed:        {stim_proc}")
-    print(f"      CTRL files processed:        {ctrl_proc}")
-    print(f"      REST files processed:        {rest_proc}")
-    print(f"      Contstim files processed:    {contstim_proc}")
-    print(f"      Other files processed:       {other_proc}")
-    print("  Outputs Generated:")
-    print(f"    NPRW figures saved:            {nprw_saved}")
-    print(f"    UA figures saved:              {ua_saved}")
-    print(f"    Metric rows saved:             {len(all_rows)}")
-    print(f"    Output directory:              {RESULT_ROOT}")
-
-    if len(all_rows) == 0:
-        np.save(metrics_npy, np.array([], dtype=object))
-        print("\nWARNING: No metric rows generated!")
-        print("Likely causes:")
-        print("  - No STIM files found or processed")
-        print("  - Missing *_counts in STIM files")
-        print("  - Missing *_rel_t or *_edges_ms time axis keys in STIM files")
-        print("  - All STIM files skipped by PROCESS_ONLY filter")
-        print("  - Or STIM files were skipped because matched at-rest references exist but no matching at-rest file was found")
-        print("============================================================")
-        return
-
-    df = pd.DataFrame(all_rows)
-    np.save(metrics_npy, np.array(all_rows, dtype=object), allow_pickle=True)
-
-    summary = summarize_metrics(df)
-    print("============================================================")
-
-    print("\nSaved combined results:")
-    print(f"  {metrics_npy}")
-
 
 # =============================================================================
 # Main
@@ -4077,22 +2893,17 @@ def save_outputs(
 
 def main():
     ensure_dir(FIG_ROOT)
-    ensure_dir(RESULT_ROOT)
 
     print("Stimulation response overlay analysis")
     print(f"Session:       {PARAMS.session}")
     print(f"Monkey:        {PARAMS.monkey}")
     print(f"Peristim root: {PERI_ROOT}")
     print(f"Figure root:   {FIG_ROOT}")
-    print(f"Result root:   {RESULT_ROOT}")
     print(f"Metadata CSV:  {METADATA_PATH}")
     print("Comparison modes:")
     print("  self baseline: True")
     print("  control:       True")
     print("  rest:          True")
-    print(f"Threshold mode: {THRESHOLD_MODE}")
-    print(f"Z threshold:    {Z_THRESH}")
-    print(f"Delta threshold:{DELTA_HZ_THRESH} Hz")
 
     if not PERI_ROOT.exists():
         raise FileNotFoundError(f"PERI_ROOT does not exist: {PERI_ROOT}")
@@ -4178,7 +2989,6 @@ def main():
 
     if len(files_to_process) == 0:
         print("No peristim files to process.")
-        save_outputs([], {"attempted": 0, "skipped_unmatched_rest": n_skipped_unmatched_rest})
         return
 
     print(f"Processing {len(files_to_process)} files.")
@@ -4205,56 +3015,7 @@ def main():
             for idx, f in enumerate(files_to_process)
         ]
 
-    all_rows = []
-    successful_count = 0
-    failed_count = 0
-    stim_count = 0
-    ctrl_count = 0
-    rest_count = 0
-    nprw_figs_count = 0
-    ua_figs_count = 0
 
-    for res in file_results:
-        if isinstance(res, dict):
-            if res.get("success", False):
-                successful_count += 1
-            else:
-                failed_count += 1
-
-            ctype = res.get("cond_type", "")
-            if ctype == "STIM":
-                stim_count += 1
-            elif ctype == "CTRL":
-                ctrl_count += 1
-            elif ctype == "REST":
-                rest_count += 1
-
-            nprw_figs_count += res.get("nprw_figs", 0)
-            ua_figs_count += res.get("ua_figs", 0)
-
-            rows = res.get("rows", [])
-            if rows:
-                all_rows.extend(rows)
-        elif isinstance(res, list):
-            if res:
-                all_rows.extend(res)
-                successful_count += 1
-
-    stats_summary = {
-        "attempted": total_files,
-        "successful": successful_count,
-        "failed": failed_count,
-        "stim_processed": stim_count,
-        "ctrl_processed": ctrl_count,
-        "rest_processed": rest_count,
-        "nprw_figs_saved": nprw_figs_count,
-        "ua_figs_saved": ua_figs_count,
-        "skipped_unmatched_rest": n_skipped_unmatched_rest,
-        "contstim_processed": contstim_count,
-        "other_processed": other_count,
-    }
-
-    save_outputs(all_rows, stats_summary)
     print("Done.")
 
 
