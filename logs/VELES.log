@@ -1,0 +1,118 @@
+================================================================================
+VELES RUN START: 09/16/2026 14:59:38
+Monkey: Nike
+Sessions to run: ['NRR_RW001', 'NRR_RW002', 'NRR_RW003', 'NRR_RW004', 'NRR_RW005', 'NRR_RW006']
+Process only: []
+Scripts:
+  - preprocessing_scripts/OCR_frame_correction.py
+================================================================================
+[09/16/2026 14:59:38] [NRR_RW001] [preprocessing_scripts/OCR_frame_correction.py] IN-PROGRESS
+[09/16/2026 14:59:39] [NRR_RW001] [preprocessing_scripts/OCR_frame_correction.py] FAIL: 09/16/2026 14:59:39 (exit code 1)
+[09/16/2026 14:59:39] [NRR_RW002] [preprocessing_scripts/OCR_frame_correction.py] IN-PROGRESS
+[09/16/2026 14:59:39] [NRR_RW002] [preprocessing_scripts/OCR_frame_correction.py] FAIL: 09/16/2026 14:59:39 (exit code 1)
+[09/16/2026 14:59:39] [NRR_RW003] [preprocessing_scripts/OCR_frame_correction.py] IN-PROGRESS
+[09/16/2026 14:59:40] [NRR_RW003] [preprocessing_scripts/OCR_frame_correction.py] FAIL: 09/16/2026 14:59:40 (exit code 1)
+[09/16/2026 14:59:40] [NRR_RW004] [preprocessing_scripts/OCR_frame_correction.py] IN-PROGRESS
+[09/16/2026 14:59:40] [NRR_RW004] [preprocessing_scripts/OCR_frame_correction.py] FAIL: 09/16/2026 14:59:40 (exit code 1)
+[09/16/2026 14:59:40] [NRR_RW005] [preprocessing_scripts/OCR_frame_correction.py] IN-PROGRESS
+[09/16/2026 14:59:41] [NRR_RW005] [preprocessing_scripts/OCR_frame_correction.py] FAIL: 09/16/2026 14:59:41 (exit code 1)
+[09/16/2026 14:59:41] [NRR_RW006] [preprocessing_scripts/OCR_frame_correction.py] IN-PROGRESS
+[09/16/2026 14:59:41] [NRR_RW006] [preprocessing_scripts/OCR_frame_correction.py] FAIL: 09/16/2026 14:59:41 (exit code 1)
+================================================================================
+VELES RUN START: 09/16/2026 15:09:19
+Monkey: Nike
+Sessions to run: ['NRR_RW001', 'NRR_RW002', 'NRR_RW003', 'NRR_RW004']
+Process only: []
+Scripts:
+  - preprocessing_scripts/OCR_frame_correction.py
+================================================================================
+[09/16/2026 15:09:19] [NRR_RW001] [preprocessing_scripts/OCR_frame_correction.py] IN-PROGRESS
+[09/16/2026 15:09:36] [NRR_RW001] [preprocessing_scripts/OCR_frame_correction.py] FINISHED: 09/16/2026 15:09:36
+[09/16/2026 15:09:36] [NRR_RW002] [preprocessing_scripts/OCR_frame_correction.py] IN-PROGRESS
+[09/16/2026 15:09:45] [NRR_RW002] [preprocessing_scripts/OCR_frame_correction.py] FINISHED: 09/16/2026 15:09:45
+[09/16/2026 15:09:45] [NRR_RW003] [preprocessing_scripts/OCR_frame_correction.py] IN-PROGRESS
+[09/17/2026 09:38:24] [NRR_RW003] [preprocessing_scripts/OCR_frame_correction.py] FAIL: 09/17/2026 09:38:24 (exit code 1)
+[09/17/2026 09:38:24] [NRR_RW004] [preprocessing_scripts/OCR_frame_correction.py] IN-PROGRESS
+================================================================================
+VELES RUN START: 09/17/2026 10:01:06
+Monkey: Nike
+Sessions to run: ['NRR_RW018']
+Process only: []
+Scripts:
+  - preprocessing_scripts/OCR_frame_correction.py
+================================================================================
+[09/17/2026 10:01:06] [NRR_RW018] [preprocessing_scripts/OCR_frame_correction.py] IN-PROGRESS
+[09/17/2026 10:01:18] [NRR_RW018] [preprocessing_scripts/OCR_frame_correction.py] FINISHED: 09/17/2026 10:01:18
+================================================================================
+VELES RUN START: 09/17/2026 10:04:44
+Monkey: Nike
+Sessions to run: ['NRR_RW019']
+Process only: []
+Scripts:
+  - preprocessing_scripts/OCR_frame_correction.py
+================================================================================
+[09/17/2026 10:04:44] [NRR_RW019] [preprocessing_scripts/OCR_frame_correction.py] IN-PROGRESS
+[09/17/2026 10:04:55] [NRR_RW019] [preprocessing_scripts/OCR_frame_correction.py] FINISHED: 09/17/2026 10:04:55
+================================================================================
+VELES RUN START: 09/17/2026 10:05:12
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - preprocessing_scripts/OCR_frame_correction.py
+  - preprocessing_scripts/align_dlc_two_cams_to_br.py
+================================================================================
+[09/17/2026 10:05:12] [NRR_RW012] [preprocessing_scripts/OCR_frame_correction.py] IN-PROGRESS
+[09/17/2026 10:05:23] [NRR_RW012] [preprocessing_scripts/OCR_frame_correction.py] FINISHED: 09/17/2026 10:05:23
+[09/17/2026 10:06:08] [NRR_RW012] [preprocessing_scripts/align_dlc_two_cams_to_br.py] IN-PROGRESS
+[09/17/2026 10:08:57] [NRR_RW012] [preprocessing_scripts/align_dlc_two_cams_to_br.py] FINISHED: 09/17/2026 10:08:57
+================================================================================
+VELES RUN START: 09/17/2026 13:14:50
+Monkey: Nike
+Sessions to run: ['NRR_RW001', 'NRR_RW002', 'NRR_RW003', 'NRR_RW004']
+Process only: []
+Scripts:
+  - preprocessing_scripts/OCR_frame_correction.py
+  - preprocessing_scripts/align_dlc_two_cams_to_br.py
+================================================================================
+[09/17/2026 13:14:50] [NRR_RW001] [preprocessing_scripts/OCR_frame_correction.py] IN-PROGRESS
+[09/17/2026 13:15:00] [NRR_RW001] [preprocessing_scripts/OCR_frame_correction.py] FINISHED: 09/17/2026 13:15:00
+================================================================================
+VELES RUN START: 09/17/2026 13:26:06
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - preprocessing_scripts/OCR_frame_correction.py
+================================================================================
+[09/17/2026 13:26:06] [NRR_RW012] [preprocessing_scripts/OCR_frame_correction.py] IN-PROGRESS
+[09/17/2026 13:26:16] [NRR_RW012] [preprocessing_scripts/OCR_frame_correction.py] FINISHED: 09/17/2026 13:26:16
+================================================================================
+VELES RUN START: 09/17/2026 13:26:42
+Monkey: Nike
+Sessions to run: ['NRR_RW008', 'NRR_RW009', 'NRR_RW010', 'NRR_RW011']
+Process only: []
+Scripts:
+  - preprocessing_scripts/align_dlc_two_cams_to_br.py
+================================================================================
+[09/17/2026 13:26:42] [NRR_RW008] [preprocessing_scripts/align_dlc_two_cams_to_br.py] IN-PROGRESS
+[09/17/2026 13:26:46] [NRR_RW008] [preprocessing_scripts/align_dlc_two_cams_to_br.py] FAIL: 09/17/2026 13:26:46 (exit code 1)
+[09/17/2026 13:26:46] [NRR_RW009] [preprocessing_scripts/align_dlc_two_cams_to_br.py] IN-PROGRESS
+[09/17/2026 13:26:49] [NRR_RW009] [preprocessing_scripts/align_dlc_two_cams_to_br.py] FINISHED: 09/17/2026 13:26:49
+[09/17/2026 13:26:50] [NRR_RW010] [preprocessing_scripts/align_dlc_two_cams_to_br.py] IN-PROGRESS
+================================================================================
+VELES RUN START: 09/23/2026 14:21:08
+Monkey: Nike
+Sessions to run: ['NRR_RW003']
+Process only: [1, 2]
+Scripts:
+  - analysis_scripts/plot_plateau_analysis.py
+================================================================================
+================================================================================
+VELES RUN START: 09/23/2026 14:22:34
+Monkey: Nike
+Sessions to run: ['NRR_RW004']
+Process only: [1, 2]
+Scripts:
+  - scripts/nikita_scripts/plotting_scripts/combine_UA_gifs.py
+================================================================================

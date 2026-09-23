@@ -1,25 +1,36 @@
 """
 Graphical User Interface for the RCP Analysis Pipeline
 """
-
+## Imports
 import sys
 import csv
+import subprocess
 from pathlib import Path
 from datetime import datetime
 
-#PyQt5 imports
+#PyQt5
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QPushButton, QSplitter, QCheckBox, QListWidget,
                                QListWidgetItem, QGridLayout, QMessageBox, QAbstractItemView,
-                               QComboBox, QProgressBar, QFrame, QPlainTextEdit)
+                               QComboBox, QProgressBar, QFrame, QPlainTextEdit, QLineEdit)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 
+# Pipeline imports
 from RCP_analysis.python.functions.params_loading import load_experiment_params
-from RCP_analysis.python.functions.br_preproc import list_br_sessions
 from VELES import run_scripts
 
-def list_sessions(data_root:str) -> list[dict]:
-    """List all sessions and the locations for a given data_root.
+
+def _metadata_csv_path(data_root: str, location: str, session: str) -> Path:
+    """Path to a session's per-condition metadata CSV, per config_loading.py convention."""
+    return Path(data_root) / location / "Metadata" / f"{session}_metadata.csv"
+
+
+def list_sessions(data_root: str) -> list[dict]:
+    """List all sessions and locations for a given data_root that have metadata.
+
+    Sessions without a `Metadata/<session>_metadata.csv` file are excluded,
+    since that file is required to determine their conditions.
+
     Args:
         data_root (str): The root directory of the data.
 
@@ -36,40 +47,59 @@ def list_sessions(data_root:str) -> list[dict]:
         reader = csv.DictReader(f)
         rows = list(reader)
 
-    return rows
+    return [
+        row for row in rows
+        if _metadata_csv_path(data_root, row["Location"], row["Session"]).exists()
+    ]
 
 
-def list_br_indices(data_root: str, location: str, session: str) -> list[int]:
-    """List all BR indices for a given data_root, location, and session.
-
-    Only files/folders whose name starts with `session` are considered --
-    a Blackrock folder can also contain unrelated recordings (e.g. "test_001"
-    calibration files) that don't belong to any session and would otherwise
-    crash the int() parse below.
+def load_session_metadata(data_root: str, location: str, session: str) -> list[dict]:
+    """Load all condition rows from a session's metadata CSV.
 
     Args:
         data_root (str): The root directory of the data.
-        location (str): The location to filter by.
-        session (str): The session name; only entries prefixed with this are kept.
+        location (str): The location the session belongs to.
+        session (str): The session name.
 
     Returns:
-        list[int]: A list of BR indices.
+        list[dict]: One dict per condition row (all CSV columns, raw strings).
     """
-    br_root = Path(data_root) / location / "Blackrock"
-    paths = list_br_sessions(br_root)
+    meta_csv = _metadata_csv_path(data_root, location, session)
+
+    if not meta_csv.exists():
+        raise FileNotFoundError(f"metadata CSV not found: {meta_csv}")
+
+    with meta_csv.open("r", newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        return list(reader)
+
+
+def list_conditions(data_root: str, location: str, session: str) -> list[int]:
+    """List all BR_File condition indices for a session, from its metadata CSV.
+
+    Args:
+        data_root (str): The root directory of the data.
+        location (str): The location the session belongs to.
+        session (str): The session name.
+
+    Returns:
+        list[int]: A sorted list of unique BR_File indices.
+    """
+    rows = load_session_metadata(data_root, location, session)
 
     indices = set()
-    for p in paths:
-        if not p.name.startswith(session):
+    for row in rows:
+        raw = (row.get("BR_File") or "").strip()
+        if not raw:
             continue
         try:
-            indices.add(int(p.name.split("_")[-1]))
+            indices.add(int(float(raw)))
         except ValueError:
             continue
 
     return sorted(indices)
 
-
+# Scripts available to run, grouped by category.
 SCRIPT_CATALOG: list[tuple[str, str]] = [
     ("Preprocessing", "preprocessing_scripts/OCR_frame_correction.py"),
     ("Preprocessing", "preprocessing_scripts/align_dlc_two_cams_to_br.py"),
@@ -93,6 +123,9 @@ SCRIPT_CATALOG: list[tuple[str, str]] = [
     ("Nikita Scripts", "scripts/nikita_scripts/plotting_scripts/combine_UA_gifs.py"),
 ]
 
+"""
+Gui Layout
+"""
 # Number of condition checkboxes per row in the Conditions strip.
 CONDITIONS_PER_ROW = 15
 
@@ -107,6 +140,8 @@ class MainWindow(QMainWindow):
         self.sessions_data: list[dict] = []
         self.thread: QThread | None = None
         self.worker: "PipelineWorker | None" = None
+        self.terminal_thread: QThread | None = None
+        self.terminal_worker: "CommandWorker | None" = None
 
         # condition_checkboxes: (br_index, QCheckBox) pairs for whichever single
         # session is currently selected -- rebuilt by _on_session_selection_changed.
@@ -162,6 +197,16 @@ class MainWindow(QMainWindow):
         self.log_preview.setReadOnly(True)
         self.log_preview.setMaximumBlockCount(300)
         self.log_preview.setMaximumHeight(110)
+
+        # --- Terminal panel: ad hoc commands, dual-purpose as stdin while running ---
+        self.terminal_input = QLineEdit()
+        self.terminal_input.setPlaceholderText(f"Run a command in {self.base_dir}...")
+        self.terminal_input.returnPressed.connect(self._on_terminal_submit)
+        self.terminal_run_button = QPushButton("Run")
+        self.terminal_run_button.clicked.connect(self._on_terminal_submit)
+        self.terminal_output = QPlainTextEdit()
+        self.terminal_output.setReadOnly(True)
+        self.terminal_output.setMaximumBlockCount(500)
 
         # --- Footer status bar ---
         self.status_label = QLabel("")
@@ -232,6 +277,17 @@ class MainWindow(QMainWindow):
         columns_widget = QWidget()
         columns_widget.setLayout(columns_layout)
 
+        terminal_input_row = QHBoxLayout()
+        terminal_input_row.addWidget(self.terminal_input, stretch=1)
+        terminal_input_row.addWidget(self.terminal_run_button)
+
+        terminal_layout = QVBoxLayout()
+        terminal_layout.addWidget(QLabel("Terminal"))
+        terminal_layout.addLayout(terminal_input_row)
+        terminal_layout.addWidget(self.terminal_output)
+        terminal_panel = QWidget()
+        terminal_panel.setLayout(terminal_layout)
+
         footer_layout = QHBoxLayout()
         footer_layout.addWidget(self.status_label)
         footer_widget = QWidget()
@@ -239,6 +295,7 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(columns_widget)
+        splitter.addWidget(terminal_panel)
 
         central_layout = QVBoxLayout()
         central_layout.addWidget(top_bar_widget)
@@ -348,7 +405,7 @@ class MainWindow(QMainWindow):
 
         location = matching_row["Location"]
         try:
-            indices = list_br_indices(self.data_root, location, selected_name)
+            indices = list_conditions(self.data_root, location, selected_name)
         except FileNotFoundError as exc:
             self.status_label.setText(str(exc))
             self._rebuild_conditions([])
@@ -388,7 +445,9 @@ class MainWindow(QMainWindow):
 
  
     # Run
-   
+   # ToDo: Multiple Instances; Check logs for scripts run on session before, do status coloring based on dependcies, staleness etc ..
+
+
     def _collect_run_params(self):
         sessions = [item.text() for item in self.session_list_widget.selectedItems()]
 
@@ -500,6 +559,77 @@ class MainWindow(QMainWindow):
             self._validate()
         else:
             self.run_button.setEnabled(False)
+
+    # Terminal
+
+    def _on_terminal_submit(self):
+        text = self.terminal_input.text()
+        self.terminal_input.clear()
+
+        if self.terminal_worker is not None:
+            # A command is already running -- forward this line as stdin
+            # instead of starting a new command.
+            self.terminal_output.appendPlainText(f"> {text}")
+            self.terminal_worker.send_input(text)
+            return
+
+        command = text.strip()
+        if not command:
+            return
+
+        self.terminal_output.appendPlainText(f"$ {command}")
+        self.terminal_run_button.setText("Send")
+
+        self.terminal_thread = QThread()
+        self.terminal_worker = CommandWorker(command, cwd=self.base_dir)
+        self.terminal_worker.moveToThread(self.terminal_thread)
+
+        self.terminal_thread.started.connect(self.terminal_worker.run)
+        self.terminal_worker.output_line.connect(self.terminal_output.appendPlainText)
+        self.terminal_worker.finished.connect(self._on_terminal_finished)
+        self.terminal_worker.finished.connect(self.terminal_thread.quit)
+        self.terminal_worker.finished.connect(self.terminal_worker.deleteLater)
+        self.terminal_thread.finished.connect(self.terminal_thread.deleteLater)
+
+        self.terminal_thread.start()
+
+    def _on_terminal_finished(self, returncode: int):
+        self.terminal_output.appendPlainText(f"[exit {returncode}]")
+        self.terminal_run_button.setText("Run")
+        self.terminal_thread = None
+        self.terminal_worker = None
+
+
+class CommandWorker(QObject):
+    output_line = pyqtSignal(str)
+    finished = pyqtSignal(int)
+
+    def __init__(self, command: str, cwd: Path):
+        super().__init__()
+        self.command = command
+        self.cwd = cwd
+        self.proc: subprocess.Popen | None = None
+
+    def run(self):
+        self.proc = subprocess.Popen(
+            self.command,
+            shell=True,
+            cwd=self.cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        for line in self.proc.stdout:
+            self.output_line.emit(line.rstrip("\n"))
+        self.proc.wait()
+        self.finished.emit(self.proc.returncode)
+
+    def send_input(self, text: str):
+        if self.proc is not None and self.proc.stdin is not None and not self.proc.stdin.closed:
+            self.proc.stdin.write(text + "\n")
+            self.proc.stdin.flush()
 
 
 class PipelineWorker(QObject):
