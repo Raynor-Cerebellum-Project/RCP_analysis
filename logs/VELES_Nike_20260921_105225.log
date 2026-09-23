@@ -1,0 +1,10 @@
+================================================================================
+VELES RUN START: 09/21/2026 10:52:25
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/21/2026 10:52:25] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/21/2026 10:54:21] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/21/2026 10:54:21

@@ -39,7 +39,11 @@ from matplotlib.collections import LineCollection
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
 
-from RCP_analysis.python.functions.kinematics_utils import mean_ci95_trace_summary
+from RCP_analysis.python.functions.kinematics_utils import (
+    mean_ci95_trace_summary,
+    butterworth_filter,
+    extract_xy_coordinates,
+)
 
 
 # =============================================================================
@@ -208,50 +212,9 @@ class SmoothingMethods:
         order: int = 4,
     ) -> np.ndarray:
         """
-        Butterworth low-pass filter.
-
-        Parameters
-        ----------
-        trace:
-            1D signal.
-        dt:
-            Sampling interval in milliseconds.
-        cutoff_hz:
-            Low-pass cutoff in Hz.
-        order:
-            Butterworth filter order.
+        Butterworth low-pass filter (delegated to kinematics_utils.butterworth_filter).
         """
-        fs = 1000.0 / dt
-        nyq = fs / 2.0
-
-        if cutoff_hz >= nyq:
-            cutoff_hz = nyq * 0.9
-
-        b, a = butter(order, cutoff_hz / nyq, btype="low")
-
-        valid_mask = np.isfinite(trace)
-        smoothed = trace.copy()
-
-        if np.sum(valid_mask) < 3 * order:
-            return smoothed
-
-        if np.all(valid_mask):
-            smoothed = filtfilt(b, a, trace)
-        else:
-            trace_interp = trace.copy()
-            nans = ~valid_mask
-
-            if np.any(nans) and np.any(valid_mask):
-                trace_interp[nans] = np.interp(
-                    np.flatnonzero(nans),
-                    np.flatnonzero(valid_mask),
-                    trace[valid_mask],
-                )
-
-            smoothed = filtfilt(b, a, trace_interp)
-            smoothed[nans] = np.nan
-
-        return smoothed
+        return butterworth_filter(trace, dt, cutoff_hz=cutoff_hz, order=order)
 
 # =============================================================================
 # Plateau detection

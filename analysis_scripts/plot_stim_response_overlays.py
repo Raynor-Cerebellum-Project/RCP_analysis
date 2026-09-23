@@ -42,39 +42,30 @@ import traceback
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
-
 import numpy as np
 import pandas as pd
-
 import matplotlib
-
 matplotlib.use("Agg")
+
+warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
+warnings.filterwarnings("ignore", message=".*tight_layout.*")
+warnings.filterwarnings("ignore", message=".*Axes that are not compatible with tight_layout.*")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*Mean of empty slice.*")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*All-NaN slice encountered.*")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*invalid value encountered.*")
+
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.patches import Patch
 from scipy.io import loadmat
-
-try:
-    from probeinterface import Probe
-    from probeinterface.plotting import plot_probe
-except Exception:
-    Probe = None
-    plot_probe = None
-
-try:
-    from joblib import Parallel, delayed
-except Exception:
-    Parallel = None
-    delayed = None
+from probeinterface import Probe
+from probeinterface.plotting import plot_probe
+from joblib import Parallel, delayed
 
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
-
-try:
-    from RCP_analysis.python.functions.impedance_utils import get_session_impedances
-except Exception:
-    get_session_impedances = None
-
+from RCP_analysis.python.functions.impedance_utils import get_session_impedances
+PROCESS_ONLY = PARAMS.preprocessing.get("process_only")
 
 # =============================================================================
 # Options to tweak
@@ -82,13 +73,14 @@ except Exception:
 
 PROCESS_NPRW = True
 PROCESS_UA = True
+PROCESS_POPULATION = True
 
 GENERATE_STANDARD_VIEW = True
 GENERATE_ZOOM_VIEW = False
 
 # Which condition types should generate figures?
 GENERATE_STIM_FIGURES = True
-GENERATE_CTRL_FIGURES = True
+GENERATE_CTRL_FIGURES = False
 GENERATE_REST_FIGURES = True
 GENERATE_CONTSTIM_FIGURES = False
 GENERATE_OTHER_FIGURES = False
@@ -151,6 +143,7 @@ BAD_CH_COLOR = "0.85"
 
 FIG_SIZE_NPRW = (54, 24)
 FIG_SIZE_UA = (32, 24)
+FIG_SIZE_POPULATION = (24, 12)
 
 NPRW_DISPLAY_BIN_WIDTH_MS = 20.0  # Display bin width for NPRW overlay PSTHs
 UA_DISPLAY_BIN_WIDTH_MS = 50.0    # Display bin width for Utah overlay PSTHs
@@ -1712,6 +1705,68 @@ def process_ua(
 
     return n_saved
 
+def process_population_average(
+    stim_data,
+    stim_path: Path,
+    stim_meta: Dict[str, Any],
+    ctrl_data,
+    ctrl_path: Optional[Path],
+    rest_data,
+    rest_path: Optional[Path],
+    mapping: Dict[str, Any],
+    bad: Dict[str, set],
+    metadata_df,
+) -> int:
+    n_saved = 0
+    if not PROCESS_POPULATION:
+        _print("  Population: skip, PROCESS_POPULATION=False")
+        return 0
+
+    has_nprw = "NPRW_counts" in stim_data.files and ("NPRW_edges_ms" in stim_data.files or "NPRW_rel_t" in stim_data.files)
+    has_ua = "UA_counts" in stim_data.files and ("UA_edges_ms" in stim_data.files or "UA_rel_t" in stim_data.files)
+
+    if not has_nprw and not has_ua:
+        _print("  Population: skip, neither NPRW nor UA counts found")
+        return 0
+
+    out_dir = output_dir_for_file(stim_path)
+    stim_dur_ms = get_stim_duration_ms(stim_data, stim_path, metadata_df)
+
+    for view_kind, win_ms, view_suffix in PLOT_VIEWS:
+        plot_win_ms = get_view_window(view_kind, win_ms, stim_dur_ms)
+
+        out_name = make_output_basename(
+            stim_meta=stim_meta,
+            npz_path=stim_path,
+            array_part="population_average",
+            view_suffix=view_suffix,
+        )
+        out_path = out_dir / out_name
+
+        if check_output_exists(out_path):
+            _print(f"  Population: skip existing {out_path.name}")
+            continue
+
+        _print(f"  Population: plotting {view_kind} to {out_path.name}")
+        plot_population_average_grid(
+            stim_data=stim_data,
+            stim_path=stim_path,
+            ctrl_data=ctrl_data,
+            ctrl_path=ctrl_path,
+            rest_data=rest_data,
+            rest_path=rest_path,
+            stim_meta=stim_meta,
+            mapping=mapping,
+            bad=bad,
+            metadata_df=metadata_df,
+            view_suffix=view_suffix,
+            win_ms=plot_win_ms,
+            out_path=out_path,
+        )
+        n_saved += 1
+
+    return n_saved
+
 def load_nprw_probe_and_mapping():
     """Load NPRW probe geometry as specified in params.yaml."""
     geom_file = None
@@ -2716,7 +2771,435 @@ def plot_ua_region_overlay_grid(
         fontsize=14,
     )
 
-    fig.tight_layout(rect=[0, 0, 0.98, 0.93])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fig.tight_layout(rect=[0, 0, 0.98, 0.93])
+    fig.savefig(out_path, dpi=DPI_OUTPUT)
+    plt.close(fig)
+
+
+def compute_population_psth(
+    counts_3d: Optional[np.ndarray],
+    centers_ms: Optional[np.ndarray],
+    width_ms: Optional[float],
+    channel_indices: List[int],
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], int]:
+    """
+    Compute population-averaged firing rate (mean and SEM across channels) in Hz.
+
+    Returns:
+        (centers_ms, mean_rate_hz, sem_rate_hz, n_valid_channels)
+    """
+    if counts_3d is None or centers_ms is None or not channel_indices:
+        return None, None, None, 0
+
+    rates_list = []
+    x_common = None
+
+    for ch in channel_indices:
+        x, y, w = get_channel_psth_rate_for_bar_axis(counts_3d, centers_ms, width_ms, ch)
+        if x is not None and y is not None and len(y) > 0:
+            if x_common is None:
+                x_common = x
+            if len(y) == len(x_common):
+                rates_list.append(y)
+
+    if not rates_list or x_common is None:
+        return None, None, None, 0
+
+    arr = np.array(rates_list, dtype=float)
+    n_ch = arr.shape[0]
+
+    mean_rate = np.nanmean(arr, axis=0)
+    if n_ch > 1:
+        sem_rate = np.nanstd(arr, axis=0, ddof=1) / np.sqrt(n_ch)
+    else:
+        sem_rate = np.zeros_like(mean_rate)
+
+    return x_common, mean_rate, sem_rate, n_ch
+
+
+def _plot_population_panel(
+    ax,
+    title: str,
+    time_curr, mean_curr, sem_curr, n_curr, current_label: str,
+    time_ctrl, mean_ctrl, sem_ctrl, n_ctrl, ctrl_label: str,
+    time_rest, mean_rest, sem_rest, n_rest, rest_label: str,
+    win_ms, stim_dur_ms: float,
+):
+    ax.set_title(title, fontsize=11, fontweight="bold", pad=8)
+
+    has_any = False
+
+    if time_curr is not None and mean_curr is not None:
+        has_any = True
+        ax.plot(
+            time_curr, mean_curr,
+            color=CURRENT_COLOR, linewidth=2.0, zorder=10,
+            label=f"{current_label} (n={n_curr} ch)",
+        )
+        if sem_curr is not None and np.any(sem_curr > 0):
+            ax.fill_between(
+                time_curr,
+                mean_curr - sem_curr,
+                mean_curr + sem_curr,
+                color=CURRENT_COLOR,
+                alpha=0.25,
+                zorder=9,
+            )
+
+    if time_ctrl is not None and mean_ctrl is not None:
+        has_any = True
+        ax.plot(
+            time_ctrl, mean_ctrl,
+            color=CTRL_COLOR, linewidth=OVERLAY_LINEWIDTH, zorder=12,
+            label=f"{ctrl_label} (n={n_ctrl} ch)",
+        )
+        if sem_ctrl is not None and np.any(sem_ctrl > 0):
+            ax.fill_between(
+                time_ctrl,
+                mean_ctrl - sem_ctrl,
+                mean_ctrl + sem_ctrl,
+                color=CTRL_COLOR,
+                alpha=0.20,
+                zorder=11,
+            )
+
+    if time_rest is not None and mean_rest is not None:
+        has_any = True
+        ax.plot(
+            time_rest, mean_rest,
+            color=REST_COLOR, linewidth=OVERLAY_LINEWIDTH, zorder=12,
+            label=f"{rest_label} (n={n_rest} ch)",
+        )
+        if sem_rest is not None and np.any(sem_rest > 0):
+            ax.fill_between(
+                time_rest,
+                mean_rest - sem_rest,
+                mean_rest + sem_rest,
+                color=REST_COLOR,
+                alpha=0.20,
+                zorder=11,
+            )
+
+    if not has_any:
+        ax.text(0.5, 0.5, "No data available", ha="center", va="center", transform=ax.transAxes, fontsize=10)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return
+
+    shade_windows(ax, stim_dur_ms=stim_dur_ms)
+    set_view_limits(ax, win_ms)
+    ax.set_xlabel("Time from stim onset (ms)", fontsize=9, fontweight="bold")
+    ax.set_ylabel("Firing Rate (Hz)", fontsize=9, fontweight="bold")
+    ax.grid(axis="y", linestyle="--", alpha=0.4)
+    ax.tick_params(labelsize=8)
+    ymin, ymax = ax.get_ylim()
+    ax.set_ylim(bottom=max(0, ymin))
+
+
+def plot_population_average_grid(
+    stim_data: np.lib.npyio.NpzFile,
+    stim_path: Path,
+    ctrl_data: Optional[np.lib.npyio.NpzFile],
+    ctrl_path: Optional[Path],
+    rest_data: Optional[np.lib.npyio.NpzFile],
+    rest_path: Optional[Path],
+    stim_meta: Dict[str, Any],
+    mapping: Dict[str, Any],
+    bad: Dict[str, set],
+    metadata_df: Optional[pd.DataFrame],
+    view_suffix: str,
+    win_ms,
+    out_path: Path,
+):
+    cond_type = str(stim_meta.get("cond_type", get_cond_type(stim_path))).upper()
+    stim_dur_ms = get_stim_duration_ms(stim_data, stim_path, metadata_df)
+
+    n_trials_current = get_n_trials_from_prepared_counts(
+        prepare_counts_array(safe_get_npz(stim_data, "NPRW_counts", safe_get_npz(stim_data, "UA_counts", None)))
+    )
+    n_trials_ctrl = get_n_trials_from_prepared_counts(
+        prepare_counts_array(safe_get_npz(ctrl_data, "NPRW_counts", safe_get_npz(ctrl_data, "UA_counts", None)))
+    ) if ctrl_data is not None else None
+    n_trials_rest = get_n_trials_from_prepared_counts(
+        prepare_counts_array(safe_get_npz(rest_data, "NPRW_counts", safe_get_npz(rest_data, "UA_counts", None)))
+    ) if rest_data is not None else None
+
+    current_trial_label = format_trial_label(cond_type, n_trials_current)
+    ctrl_trial_label = format_trial_label("CTRL", n_trials_ctrl)
+    rest_trial_label = format_trial_label("REST", n_trials_rest)
+
+    # -------------------------------------------------------------------------
+    # 1. NPRW Data Preparation
+    # -------------------------------------------------------------------------
+    stim_nprw_counts = None
+    stim_nprw_centers = None
+    stim_nprw_width = None
+    ctrl_nprw_counts = None
+    ctrl_nprw_centers = None
+    ctrl_nprw_width = None
+    rest_nprw_counts = None
+    rest_nprw_centers = None
+    rest_nprw_width = None
+    all_nprw_channels = []
+    high_nprw_channels = []
+
+    if "NPRW_counts" in stim_data.files:
+        raw = safe_get_npz(stim_data, "NPRW_counts", None)
+        stim_nprw_counts = prepare_counts_array(raw)
+        if stim_nprw_counts is not None and np.asarray(stim_nprw_counts).ndim == 3:
+            stim_nprw_centers, stim_nprw_width, _ = get_time_axis_and_width(
+                stim_data, "NPRW", n_bins=stim_nprw_counts.shape[-1]
+            )
+
+        if ctrl_data is not None and "NPRW_counts" in ctrl_data.files:
+            craw = safe_get_npz(ctrl_data, "NPRW_counts", None)
+            ctrl_nprw_counts = prepare_counts_array(craw)
+            if ctrl_nprw_counts is not None and np.asarray(ctrl_nprw_counts).ndim == 3:
+                ctrl_nprw_centers, ctrl_nprw_width, _ = get_time_axis_and_width(
+                    ctrl_data, "NPRW", n_bins=ctrl_nprw_counts.shape[-1]
+                )
+
+        if rest_data is not None and "NPRW_counts" in rest_data.files:
+            rraw = safe_get_npz(rest_data, "NPRW_counts", None)
+            rest_nprw_counts = prepare_counts_array(rraw)
+            if rest_nprw_counts is not None and np.asarray(rest_nprw_counts).ndim == 3:
+                rest_nprw_centers, rest_nprw_width, _ = get_time_axis_and_width(
+                    rest_data, "NPRW", n_bins=rest_nprw_counts.shape[-1]
+                )
+
+        # Rebin NPRW to display width
+        display_bin_w = NPRW_DISPLAY_BIN_WIDTH_MS
+        if display_bin_w is not None and display_bin_w > 0 and stim_nprw_centers is not None:
+            display_edges = get_display_bin_edges_ms(
+                win_ms=win_ms,
+                target_width_ms=display_bin_w,
+                fallback_centers_ms=stim_nprw_centers,
+                fallback_width_ms=stim_nprw_width,
+            )
+            stim_nprw_counts, stim_nprw_centers, stim_nprw_width = rebin_counts_and_axis(
+                stim_nprw_counts, stim_nprw_centers, stim_nprw_width, display_bin_w, target_edges_ms=display_edges
+            )
+            if ctrl_nprw_counts is not None:
+                ctrl_nprw_counts, ctrl_nprw_centers, ctrl_nprw_width = rebin_counts_and_axis(
+                    ctrl_nprw_counts, ctrl_nprw_centers, ctrl_nprw_width, display_bin_w, target_edges_ms=display_edges
+                )
+            if rest_nprw_counts is not None:
+                rest_nprw_counts, rest_nprw_centers, rest_nprw_width = rebin_counts_and_axis(
+                    rest_nprw_counts, rest_nprw_centers, rest_nprw_width, display_bin_w, target_edges_ms=display_edges
+                )
+
+        if stim_nprw_counts is not None and np.asarray(stim_nprw_counts).ndim == 3:
+            n_nprw_ch = stim_nprw_counts.shape[0]
+            bad_nprw = bad.get("NPRW", set())
+            all_nprw_channels = [ch for ch in range(n_nprw_ch) if ch not in bad_nprw and (ch + 1) not in bad_nprw]
+
+            # High activity channels
+            peak_df = compute_nprw_peak_table_for_plot(
+                stim_counts=stim_nprw_counts,
+                stim_centers_ms=stim_nprw_centers,
+                stim_bin_width_ms=stim_nprw_width,
+                ctrl_counts=ctrl_nprw_counts,
+                ctrl_centers_ms=ctrl_nprw_centers,
+                ctrl_bin_width_ms=ctrl_nprw_width,
+                rest_counts=rest_nprw_counts,
+                rest_centers_ms=rest_nprw_centers,
+                rest_bin_width_ms=rest_nprw_width,
+                n_ch=n_nprw_ch,
+                stim_meta=stim_meta,
+                stim_path=stim_path,
+                ctrl_path=ctrl_path,
+                rest_path=rest_path,
+            )
+            if peak_df is not None and not peak_df.empty and "is_high_activity" in peak_df.columns:
+                high_df = peak_df[peak_df["is_high_activity"] == True]
+                high_nprw_channels = [int(c) for c in high_df["channel"].values if c not in bad_nprw and (c + 1) not in bad_nprw]
+
+    # -------------------------------------------------------------------------
+    # 2. Utah Array Data Preparation
+    # -------------------------------------------------------------------------
+    stim_ua_counts = None
+    stim_ua_centers = None
+    stim_ua_width = None
+    ctrl_ua_counts = None
+    ctrl_ua_centers = None
+    ctrl_ua_width = None
+    rest_ua_counts = None
+    rest_ua_centers = None
+    rest_ua_width = None
+
+    ua_region_indices = {r: {"curr": [], "ctrl": [], "rest": []} for r in REGION_ORDER}
+
+    if "UA_counts" in stim_data.files:
+        ua_ids = safe_get_npz(stim_data, "ua_ids_1based", None)
+        raw_ua = safe_get_npz(stim_data, "UA_counts", None)
+        stim_ua_counts = prepare_counts_array(raw_ua)
+        if stim_ua_counts is not None and np.asarray(stim_ua_counts).ndim == 3:
+            stim_ua_centers, stim_ua_width, _ = get_time_axis_and_width(
+                stim_data, "UA", n_bins=stim_ua_counts.shape[-1]
+            )
+
+        ctrl_ids = safe_get_npz(ctrl_data, "ua_ids_1based", None) if ctrl_data is not None else None
+        if ctrl_data is not None and "UA_counts" in ctrl_data.files:
+            craw_ua = safe_get_npz(ctrl_data, "UA_counts", None)
+            ctrl_ua_counts = prepare_counts_array(craw_ua)
+            if ctrl_ua_counts is not None and np.asarray(ctrl_ua_counts).ndim == 3:
+                ctrl_ua_centers, ctrl_ua_width, _ = get_time_axis_and_width(
+                    ctrl_data, "UA", n_bins=ctrl_ua_counts.shape[-1]
+                )
+
+        rest_ids = safe_get_npz(rest_data, "ua_ids_1based", None) if rest_data is not None else None
+        if rest_data is not None and "UA_counts" in rest_data.files:
+            rraw_ua = safe_get_npz(rest_data, "UA_counts", None)
+            rest_ua_counts = prepare_counts_array(rraw_ua)
+            if rest_ua_counts is not None and np.asarray(rest_ua_counts).ndim == 3:
+                rest_ua_centers, rest_ua_width, _ = get_time_axis_and_width(
+                    rest_data, "UA", n_bins=rest_ua_counts.shape[-1]
+                )
+
+        # Rebin UA to display width
+        display_bin_ua = UA_DISPLAY_BIN_WIDTH_MS
+        if display_bin_ua is not None and display_bin_ua > 0 and stim_ua_centers is not None:
+            display_edges_ua = get_display_bin_edges_ms(
+                win_ms=win_ms,
+                target_width_ms=display_bin_ua,
+                fallback_centers_ms=stim_ua_centers,
+                fallback_width_ms=stim_ua_width,
+            )
+            stim_ua_counts, stim_ua_centers, stim_ua_width = rebin_counts_and_axis(
+                stim_ua_counts, stim_ua_centers, stim_ua_width, display_bin_ua, target_edges_ms=display_edges_ua
+            )
+            if ctrl_ua_counts is not None:
+                ctrl_ua_counts, ctrl_ua_centers, ctrl_ua_width = rebin_counts_and_axis(
+                    ctrl_ua_counts, ctrl_ua_centers, ctrl_ua_width, display_bin_ua, target_edges_ms=display_edges_ua
+                )
+            if rest_ua_counts is not None:
+                rest_ua_counts, rest_ua_centers, rest_ua_width = rebin_counts_and_axis(
+                    rest_ua_counts, rest_ua_centers, rest_ua_width, display_bin_ua, target_edges_ms=display_edges_ua
+                )
+
+        recording_port = stim_meta.get("ua_port", None)
+        elec_info, region_grids = mapping
+        bad_ua = bad.get("UA", set())
+
+        elec_to_idx = build_elec_to_data_idx(ua_ids, elec_info, recording_port or "A") if ua_ids is not None else {}
+        ctrl_elec_to_idx = build_elec_to_data_idx(ctrl_ids, elec_info, recording_port or "A") if ctrl_ids is not None else {}
+        rest_elec_to_idx = build_elec_to_data_idx(rest_ids, elec_info, recording_port or "A") if rest_ids is not None else {}
+
+        for r in REGION_ORDER:
+            ua_region_indices[r]["curr"] = [
+                idx for elec, idx in elec_to_idx.items()
+                if elec_info.get(elec, {}).get("region") == r and elec not in bad_ua and idx not in bad_ua and (idx + 1) not in bad_ua and idx < stim_ua_counts.shape[0]
+            ] if stim_ua_counts is not None else []
+            ua_region_indices[r]["ctrl"] = [
+                idx for elec, idx in ctrl_elec_to_idx.items()
+                if elec_info.get(elec, {}).get("region") == r and elec not in bad_ua and idx not in bad_ua and (idx + 1) not in bad_ua and ctrl_ua_counts is not None and idx < ctrl_ua_counts.shape[0]
+            ] if ctrl_ua_counts is not None else []
+            ua_region_indices[r]["rest"] = [
+                idx for elec, idx in rest_elec_to_idx.items()
+                if elec_info.get(elec, {}).get("region") == r and elec not in bad_ua and idx not in bad_ua and (idx + 1) not in bad_ua and rest_ua_counts is not None and idx < rest_ua_counts.shape[0]
+            ] if rest_ua_counts is not None else []
+
+    # -------------------------------------------------------------------------
+    # 3. Figure Layout & Plotting
+    # -------------------------------------------------------------------------
+    fig = plt.figure(figsize=FIG_SIZE_POPULATION)
+    gs = gridspec.GridSpec(2, 4, figure=fig, hspace=0.32, wspace=0.25)
+
+    ax_nprw_all = fig.add_subplot(gs[0, :2])
+    ax_nprw_high = fig.add_subplot(gs[0, 2:])
+    ax_ua_sma = fig.add_subplot(gs[1, 0])
+    ax_ua_pmd = fig.add_subplot(gs[1, 1])
+    ax_ua_m1i = fig.add_subplot(gs[1, 2])
+    ax_ua_m1s = fig.add_subplot(gs[1, 3])
+
+    # Plot NPRW All Channels
+    tc, mc, sc, nc = compute_population_psth(stim_nprw_counts, stim_nprw_centers, stim_nprw_width, all_nprw_channels)
+    tctl, mctl, sctl, nctl = compute_population_psth(ctrl_nprw_counts, ctrl_nprw_centers, ctrl_nprw_width, all_nprw_channels)
+    trst, mrst, srst, nrst = compute_population_psth(rest_nprw_counts, rest_nprw_centers, rest_nprw_width, all_nprw_channels)
+    _plot_population_panel(
+        ax_nprw_all, "NPRW — All Channels Average",
+        tc, mc, sc, nc, current_trial_label,
+        tctl, mctl, sctl, nctl, ctrl_trial_label,
+        trst, mrst, srst, nrst, rest_trial_label,
+        win_ms, stim_dur_ms
+    )
+
+    # Plot NPRW High Activity Channels
+    tc, mc, sc, nc = compute_population_psth(stim_nprw_counts, stim_nprw_centers, stim_nprw_width, high_nprw_channels)
+    tctl, mctl, sctl, nctl = compute_population_psth(ctrl_nprw_counts, ctrl_nprw_centers, ctrl_nprw_width, high_nprw_channels)
+    trst, mrst, srst, nrst = compute_population_psth(rest_nprw_counts, rest_nprw_centers, rest_nprw_width, high_nprw_channels)
+    _plot_population_panel(
+        ax_nprw_high, f"NPRW — High Activity Channels Average (Peak ≥ {NPRW_HIGH_ACTIVITY_THRESH_HZ:.0f} Hz)",
+        tc, mc, sc, nc, current_trial_label,
+        tctl, mctl, sctl, nctl, ctrl_trial_label,
+        trst, mrst, srst, nrst, rest_trial_label,
+        win_ms, stim_dur_ms
+    )
+
+    # Plot Utah Array Regions
+    ua_axes = {
+        "SMA": ax_ua_sma,
+        "PMd": ax_ua_pmd,
+        "M1i": ax_ua_m1i,
+        "M1s": ax_ua_m1s,
+    }
+    for r, ax_r in ua_axes.items():
+        tc, mc, sc, nc = compute_population_psth(stim_ua_counts, stim_ua_centers, stim_ua_width, ua_region_indices[r]["curr"])
+        tctl, mctl, sctl, nctl = compute_population_psth(ctrl_ua_counts, ctrl_ua_centers, ctrl_ua_width, ua_region_indices[r]["ctrl"])
+        trst, mrst, srst, nrst = compute_population_psth(rest_ua_counts, rest_ua_centers, rest_ua_width, ua_region_indices[r]["rest"])
+        _plot_population_panel(
+            ax_r, f"Utah Array — {r} Average",
+            tc, mc, sc, nc, current_trial_label,
+            tctl, mctl, sctl, nctl, ctrl_trial_label,
+            trst, mrst, srst, nrst, rest_trial_label,
+            win_ms, stim_dur_ms
+        )
+
+    # Legend
+    handles, labels = ax_nprw_all.get_legend_handles_labels()
+    if not handles:
+        for ax in [ax_nprw_high, ax_ua_sma, ax_ua_pmd, ax_ua_m1i, ax_ua_m1s]:
+            h, l = ax.get_legend_handles_labels()
+            if h:
+                handles, labels = h, l
+                break
+    if handles:
+        fig.legend(handles, labels, loc="upper right", bbox_to_anchor=(0.99, 0.98), fontsize=10, framealpha=0.9)
+
+    title_base = str(stim_meta.get("overall_title", ""))
+    br_val = stim_meta.get("br_idx", "UNK")
+    if not title_base:
+        title_base = f"BR_{br_val}"
+    target_val = stim_meta.get("target_folder", "")
+
+    ref_info = []
+    if ctrl_data is not None:
+        ref_info.append("Control")
+    if rest_data is not None:
+        ref_info.append("Rest")
+    ref_str = f"Matched refs: {', '.join(ref_info)}" if ref_info else "No matched refs"
+
+    ref_desc = [f"Grey Curve = Current File ({current_trial_label})"]
+    if ctrl_data is not None:
+        ref_desc.append(f"Orange Curve = Matched {ctrl_trial_label}")
+    if rest_data is not None:
+        ref_desc.append(f"Green Curve = Matched {rest_trial_label}")
+    ref_desc.append("Shaded Envelope = ±1 SEM across channels")
+    legend_desc_str = " | ".join(ref_desc)
+
+    fig.suptitle(
+        f"{title_base} | Population-Averaged PSTH (Mean ± SEM across channels)\n"
+        f"Current File ({cond_type}) | Target: {target_val or 'N/A'} | BR: {br_val} | {ref_str}\n"
+        f"[{legend_desc_str}]",
+        fontsize=14,
+        fontweight="bold",
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fig.tight_layout(rect=[0, 0, 0.99, 0.93])
     fig.savefig(out_path, dpi=DPI_OUTPUT)
     plt.close(fig)
 
@@ -2730,20 +3213,16 @@ def process_file(
     mapping,
     bad: Dict[str, set],
 ) -> dict: 
+    width = len(str(total_files))
     cond_type_for_progress = get_cond_type(npz_path)
 
-    print(
-        f"[{file_idx}/{total_files}] Processing {cond_type_for_progress}: {npz_path.name}",
-        flush=True,
-    )
-
-    _print(f"\n[{file_idx}/{total_files}] Processing {npz_path.name}")
+    _print(f"[{file_idx:>{width}}/{total_files}] Processing {cond_type_for_progress:<8}: {npz_path.name}")
 
     data = load_optional_npz(npz_path)
     if data is None:
         _print("  Could not load file.")
         print(
-            f"[{file_idx}/{total_files}] FAILED {cond_type_for_progress}: {npz_path.name} "
+            f"[{file_idx:>{width}}/{total_files}] FAILED {cond_type_for_progress:<8}: {npz_path.name} "
             f"(could not load file)",
             flush=True,
         )
@@ -2751,9 +3230,9 @@ def process_file(
             "success": False,
             "file": str(npz_path),
             "cond_type": get_cond_type(npz_path),
-            "rows": [],
             "nprw_figs": 0,
             "ua_figs": 0,
+            "pop_figs": 0,
         }
 
     ctrl_data = None
@@ -2815,6 +3294,7 @@ def process_file(
 
         nprw_figs = 0
         ua_figs = 0
+        pop_figs = 0
 
         # Figures are gated by condition type.
         if generate_figures:
@@ -2844,12 +3324,26 @@ def process_file(
                     bad=bad,
                     metadata_df=metadata_df,
                 )
+
+            if PROCESS_POPULATION:
+                pop_figs = process_population_average(
+                    stim_data=data,
+                    stim_path=npz_path,
+                    stim_meta=stim_meta,
+                    ctrl_data=ctrl_data,
+                    ctrl_path=ctrl_file,
+                    rest_data=rest_data,
+                    rest_path=rest_file,
+                    mapping=mapping,
+                    bad=bad,
+                    metadata_df=metadata_df,
+                )
         else:
             _print(f"  figures skipped for condition type {cond_type}")
 
         print(
-            f"[{file_idx}/{total_files}] Done {cond_type}: {npz_path.name} "
-            f"(NPRW figs={nprw_figs}, UA figs={ua_figs})",
+            f"[{file_idx:>{width}}/{total_files}] Done {cond_type:<8}: {npz_path.name} "
+            f"(NPRW figs={nprw_figs}, UA figs={ua_figs}, Pop figs={pop_figs})",
             flush=True,
         )
 
@@ -2860,11 +3354,12 @@ def process_file(
             "stim_dur_ms": stim_dur_ms,
             "nprw_figs": nprw_figs,
             "ua_figs": ua_figs,
+            "pop_figs": pop_figs,
         }
 
     except Exception as exc:
         print(
-            f"[{file_idx}/{total_files}] FAILED {cond_type_for_progress}: {npz_path.name} — {exc}",
+            f"[{file_idx:>{width}}/{total_files}] FAILED {cond_type_for_progress:<8}: {npz_path.name} — {exc}",
             flush=True,
         )
         traceback.print_exc()
@@ -2874,6 +3369,7 @@ def process_file(
             "cond_type": get_cond_type(npz_path),
             "nprw_figs": 0,
             "ua_figs": 0,
+            "pop_figs": 0,
         }
 
     finally:
@@ -2900,10 +3396,6 @@ def main():
     print(f"Peristim root: {PERI_ROOT}")
     print(f"Figure root:   {FIG_ROOT}")
     print(f"Metadata CSV:  {METADATA_PATH}")
-    print("Comparison modes:")
-    print("  self baseline: True")
-    print("  control:       True")
-    print("  rest:          True")
 
     if not PERI_ROOT.exists():
         raise FileNotFoundError(f"PERI_ROOT does not exist: {PERI_ROOT}")
@@ -2935,15 +3427,11 @@ def main():
     print(f"Loaded Utah mapping from: {mapping_csv}")
     print(f"Loaded Utah regions: {list(region_grids.keys())}")
 
-    files_to_process = all_files
-
-    # Optional: preserve PROCESS_ONLY behavior from old script if desired.
-    try:
-        PROCESS_ONLY = PARAMS.preprocessing.get("process_only")
-    except Exception:
-        PROCESS_ONLY = None
-
-    print(f"PROCESS_ONLY from PARAMS.preprocessing: {PROCESS_ONLY}")
+    # Filter files_to_process to exclude conditions that generate no figures (such as standalone control files)
+    files_to_process = [
+        f for f in all_files
+        if should_generate_figures_for_condition(get_cond_type(f))
+    ]
 
     if PROCESS_ONLY:
         filtered = []

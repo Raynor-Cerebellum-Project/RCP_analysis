@@ -32,6 +32,12 @@ No shuffle analysis in this first draft.
 from pathlib import Path
 import json
 import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
+warnings.filterwarnings("ignore", message=".*tight_layout.*")
+warnings.filterwarnings("ignore", message=".*Axes that are not compatible with tight_layout.*")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*Mean of empty slice.*")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*All-NaN slice encountered.*")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*invalid value encountered.*")
 from joblib import Parallel, delayed
 import numpy as np
 import pandas as pd

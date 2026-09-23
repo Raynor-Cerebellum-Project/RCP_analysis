@@ -44,7 +44,7 @@ VMAX_SMA_VAR                 = 5000.0
 VMIN_NPRW_COUNTS, VMAX_NPRW_COUNTS = 0.0, 10.0
 VMIN_UA_COUNTS,   VMAX_UA_COUNTS   = 0.0, 10.0
 
-COLORMAP = "turbo"
+COLORMAP = "RdBu_r"
 
 # Override color ranges for z-scored firing rates
 if Z_SCORE_FR:

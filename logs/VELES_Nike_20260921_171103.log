@@ -1,0 +1,25 @@
+================================================================================
+VELES RUN START: 09/21/2026 17:11:03
+Monkey: Nike
+Sessions to run: ['NRR_RW026']
+Process only: []
+Scripts:
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/21/2026 17:11:03] [NRR_RW026] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/21/2026 17:34:20] [NRR_RW026] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/21/2026 17:34:20
+[09/21/2026 17:34:20] [NRR_RW026] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/21/2026 18:52:07] [NRR_RW026] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/21/2026 18:52:07
+[09/21/2026 18:52:07] [NRR_RW026] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/21/2026 18:55:35] [NRR_RW026] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/21/2026 18:55:35
+[09/21/2026 18:55:36] [NRR_RW026] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/21/2026 19:09:48] [NRR_RW026] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/21/2026 19:09:48
+[09/21/2026 19:09:48] [NRR_RW026] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[09/21/2026 19:11:22] [NRR_RW026] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 09/21/2026 19:11:22
+[09/21/2026 19:11:22] [NRR_RW026] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/21/2026 19:18:57] [NRR_RW026] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/21/2026 19:18:57
