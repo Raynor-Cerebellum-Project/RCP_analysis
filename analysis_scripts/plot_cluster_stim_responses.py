@@ -57,6 +57,13 @@ from matplotlib.patches import Patch
 
 from scipy.cluster.hierarchy import linkage, dendrogram, fcluster
 from scipy.ndimage import gaussian_filter1d
+
+try:
+    from sklearn.metrics import silhouette_score, calinski_harabasz_score
+except ImportError:
+    silhouette_score = None
+    calinski_harabasz_score = None
+
 import RCP_analysis as rcp
 from RCP_analysis.python.functions.config_loading import *
 
@@ -92,10 +99,16 @@ UA_SMOOTHING_SIGMA_MS = float(PARAMS.UA_rate_est.get("sigma_ms", 20.0))
 BIN_WIDTH_MS = NPRW_BIN_WIDTH_MS
 SMOOTHING_SIGMA_MS = NPRW_SMOOTHING_SIGMA_MS
 
-# Responsiveness Gating (Permutation Test)
-N_PERMUTATIONS = 1000
-FDR_ALPHA = float(PARAMS.rsa_params.get("stim_alpha", 0.05))
-MIN_SPIKE_COUNT_THRESH = 5      # Exclude completely silent channels
+# Responsiveness Test Modes & Gating
+RESPONSIVENESS_TEST_MODE = "both"             # "paired_signflip", "unpaired_label_shuffle", or "both"
+RESPONSIVENESS_BOTH_COMBINATION = "intersection" # "intersection", "union", "paired_only", "unpaired_only"
+RESPONSIVENESS_CRITERION = "hybrid"           # "fdr" (BH FDR q < FDR_ALPHA), "p_val" (permutation p < P_VAL_THRESH & |Δr| >= MIN_DELTA_HZ), or "hybrid"
+CONTRAST_SOURCE_FOR_PLOTS = "paired"          # "paired" (mean paired contrast) or "unpaired" (mean STIM - mean CTRL)
+N_PERMUTATIONS = 2000
+FDR_ALPHA = 0.05
+P_VAL_THRESH = 0.05
+MIN_DELTA_HZ = 3.0                            # Minimum post-stim mean absolute contrast (Hz) when using p_val criterion
+MIN_SPIKE_COUNT_THRESH = 5                    # Exclude completely silent channels
 
 # Clustering Hyperparameters
 CLUSTER_RANGE_K = range(2, 9)
@@ -120,6 +133,7 @@ HAS_KINEMATICS = bool(PARAMS.preprocessing.get("has_kinematics", True))
 KIN_KEYPOINTS = ("middle", "wrist", "hand", "index")
 KIN_REF_TIME_MS = -600.0
 KIN_NORM_MODE = "max_abs"
+TRAJECTORY_VARIABILITY_AGG = "median"  # "median" (matching plot_plateau_analysis.py) or "mean"
 
 # Probe channel counts from params.yaml
 NPRW_N_CHANNELS = int(PARAMS.probes.get("NPRW", {}).get("n_channels", 128))
@@ -718,45 +732,95 @@ def match_trials_stratified(
 
 
 # =============================================================================
-# Statistical Responsiveness Pre-Gating
+# =============================================================================
+# Statistical Responsiveness Testing (Paired Sign-Flip & Unpaired Label-Shuffle)
 # =============================================================================
 
-def compute_responsiveness_gating(
+def apply_responsiveness_criterion(
+    p_values: np.ndarray,
+    q_values: np.ndarray,
+    mean_abs_delta_hz: np.ndarray,
+    criterion: str = RESPONSIVENESS_CRITERION,
+    alpha: float = FDR_ALPHA,
+    p_thresh: float = P_VAL_THRESH,
+    min_delta_hz: float = MIN_DELTA_HZ,
+) -> np.ndarray:
+    """
+    Apply statistical and effect-size gating criteria to p-values and q-values.
+    
+    Modes:
+      - "fdr": q <= alpha
+      - "p_val": (p <= p_thresh) & (mean_abs_delta_hz >= min_delta_hz)
+      - "hybrid": (q <= alpha) | ((p <= p_thresh) & (mean_abs_delta_hz >= min_delta_hz))
+    """
+    crit = str(criterion).strip().lower()
+    if crit == "p_val":
+        return (p_values <= p_thresh) & (mean_abs_delta_hz >= min_delta_hz)
+    elif crit == "hybrid":
+        return (q_values <= alpha) | ((p_values <= p_thresh) & (mean_abs_delta_hz >= min_delta_hz))
+    else:  # "fdr"
+        return q_values <= alpha
+
+
+def compute_paired_signflip_responsiveness(
     paired_stim: np.ndarray,
     paired_ctrl: np.ndarray,
     time_ms: np.ndarray,
     response_win_ms: Tuple[float, float] = FULL_RESPONSE_WIN_MS,
+    blank_mask: Optional[np.ndarray] = None,
     n_perms: int = N_PERMUTATIONS,
     alpha: float = FDR_ALPHA,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    criterion: str = RESPONSIVENESS_CRITERION,
+    p_thresh: float = P_VAL_THRESH,
+    min_delta_hz: float = MIN_DELTA_HZ,
+    rng_seed: int = 42,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Permutation test on paired trials (STIM vs CTRL label flip) to gate responsive channels.
-    Benjamini-Hochberg FDR correction applied across channels.
+    Paired sign-flip permutation test on 1-to-1 matched trials (STIM vs CTRL label flip).
+    
+    Null hypothesis:
+      Conditional on matched trial pairs, the sign of the difference Δr_{c, i}(t) is
+      exchangeable (±1 with equal probability). There is no condition effect beyond
+      trial-to-trial variance.
+
     Returns:
-        is_responsive: (n_channels,) boolean array
-        p_values: (n_channels,) raw permutation p-values
-        q_values: (n_channels,) FDR-adjusted q-values
+      is_responsive: (n_channels,) boolean array
+      p_values: (n_channels,) raw permutation p-values
+      q_values: (n_channels,) FDR-adjusted q-values
+      mean_abs_delta_hz: (n_channels,) response window mean absolute contrast in Hz
+      observed_contrast_mean: (n_channels, n_bins) trial-averaged contrast trace
     """
     n_ch, n_trials, n_bins = paired_stim.shape
     resp_mask = (time_ms >= response_win_ms[0]) & (time_ms <= response_win_ms[1])
+    if blank_mask is not None:
+        resp_mask = resp_mask & (~blank_mask)
+
+    diff_observed = paired_stim - paired_ctrl  # (ch, trials, bins)
+    observed_contrast_mean = np.nanmean(diff_observed, axis=1)  # (ch, bins)
 
     if n_trials < 3 or not np.any(resp_mask):
-        return np.ones(n_ch, dtype=bool), np.zeros(n_ch), np.zeros(n_ch)
+        _log(f"  [paired_signflip] Inadequate trials ({n_trials} < 3) or empty response window. Marking non-responsive.")
+        return (
+            np.zeros(n_ch, dtype=bool),
+            np.ones(n_ch, dtype=float),
+            np.ones(n_ch, dtype=float),
+            np.zeros(n_ch, dtype=float),
+            observed_contrast_mean,
+        )
 
-    # Observed absolute contrast integral
-    diff_observed = paired_stim - paired_ctrl  # (ch, trials, bins)
-    mean_contrast_obs = np.nanmean(diff_observed, axis=1)  # (ch, bins)
-    obs_integrals = np.nansum(np.abs(mean_contrast_obs[:, resp_mask]), axis=1)
+    # Observed absolute contrast integral across response window
+    obs_integrals = np.nansum(np.abs(observed_contrast_mean[:, resp_mask]), axis=1)
+    n_resp_bins = max(1, int(np.sum(resp_mask)))
+    mean_abs_delta_hz = obs_integrals / n_resp_bins
 
     # Vectorized paired sign-flip permutations: multiply paired differences by ±1
     diff_resp = np.nan_to_num(diff_observed[:, :, resp_mask], nan=0.0)  # (ch, trials, resp_bins)
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(rng_seed)
     signs = rng.choice([-1.0, 1.0], size=(n_trials, n_perms))
-    # perm_mean: (ch, resp_bins, perms)
     perm_mean = np.tensordot(diff_resp, signs, axes=([1], [0])) / max(1, n_trials)
     perm_integrals = np.nansum(np.abs(perm_mean), axis=1)  # (ch, perms)
 
-    # Compute p-values: proportion of permutations with integral >= observed
+    # Compute empirical p-values
     p_values = np.zeros(n_ch, dtype=float)
     for c in range(n_ch):
         p_values[c] = (1.0 + float(np.sum(perm_integrals[c, :] >= obs_integrals[c]))) / (n_perms + 1.0)
@@ -771,8 +835,252 @@ def compute_responsiveness_gating(
         cumulative_min = min(cumulative_min, q_val)
         q_values[idx] = min(cumulative_min, 1.0)
 
-    is_responsive = q_values <= alpha
-    return is_responsive, p_values, q_values
+    is_responsive = apply_responsiveness_criterion(
+        p_values, q_values, mean_abs_delta_hz,
+        criterion=criterion, alpha=alpha, p_thresh=p_thresh, min_delta_hz=min_delta_hz
+    )
+
+    return is_responsive, p_values, q_values, mean_abs_delta_hz, observed_contrast_mean
+
+
+def compute_unpaired_label_shuffle_responsiveness(
+    stim_rates: np.ndarray,
+    ctrl_rates: np.ndarray,
+    time_ms: np.ndarray,
+    response_win_ms: Tuple[float, float] = FULL_RESPONSE_WIN_MS,
+    blank_mask: Optional[np.ndarray] = None,
+    n_perms: int = N_PERMUTATIONS,
+    alpha: float = FDR_ALPHA,
+    criterion: str = RESPONSIVENESS_CRITERION,
+    p_thresh: float = P_VAL_THRESH,
+    min_delta_hz: float = MIN_DELTA_HZ,
+    rng_seed: int = 42,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Unpaired STIM-vs-CTRL condition-label permutation responsiveness test.
+    Uses all available STIM and CTRL trials without truncation when trial counts differ.
+
+    Null hypothesis:
+      Conditional on the observed set of trials, STIM and CTRL labels are exchangeable:
+      firing-rate traces are drawn from the same condition-independent distribution.
+      In practical terms, there is no condition-associated STIM-vs-CTRL firing-rate
+      difference in the response window.
+
+    Statistical Caveat:
+      This exchangeability assumption can be violated by block/session drift, behavioral
+      differences, fatigue, recording instability, or other confounds if STIM and CTRL
+      trials were not interleaved or behaviorally matched. While it leverages more trials
+      and accommodates unequal counts, it does not replace kinematic matching.
+
+    Returns:
+      is_responsive: (n_channels,) boolean array
+      p_values: (n_channels,) raw permutation p-values
+      q_values: (n_channels,) FDR-adjusted q-values
+      mean_abs_delta_hz: (n_channels,) response window mean absolute contrast in Hz
+      observed_contrast_mean: (n_channels, n_bins) unpaired contrast trace mean(STIM) - mean(CTRL)
+    """
+    n_ch, n_stim, n_bins = stim_rates.shape
+    n_ctrl = ctrl_rates.shape[1]
+
+    # Observed unpaired contrast: mean(STIM) - mean(CTRL)
+    mean_stim_obs = np.nanmean(stim_rates, axis=1)  # (ch, bins)
+    mean_ctrl_obs = np.nanmean(ctrl_rates, axis=1)  # (ch, bins)
+    observed_contrast_mean = mean_stim_obs - mean_ctrl_obs  # (ch, bins)
+
+    resp_mask = (time_ms >= response_win_ms[0]) & (time_ms <= response_win_ms[1])
+    if blank_mask is not None:
+        resp_mask = resp_mask & (~blank_mask)
+
+    if n_stim < 2 or n_ctrl < 2 or not np.any(resp_mask):
+        _log(f"  [unpaired_shuffle] Inadequate trials (stim={n_stim}, ctrl={n_ctrl}, require >= 2 each) or empty response window. Marking non-responsive.")
+        return (
+            np.zeros(n_ch, dtype=bool),
+            np.ones(n_ch, dtype=float),
+            np.ones(n_ch, dtype=float),
+            np.zeros(n_ch, dtype=float),
+            observed_contrast_mean,
+        )
+
+    # Two-sided response-magnitude statistic: T_obs = mean_t_in_response_window(|delta_obs|)
+    obs_integrals = np.nansum(np.abs(observed_contrast_mean[:, resp_mask]), axis=1)
+    n_resp_bins = max(1, int(np.sum(resp_mask)))
+    mean_abs_delta_hz = obs_integrals / n_resp_bins
+
+    # Pool STIM and CTRL trials across response window: shape (n_ch, n_tot, n_resp_bins)
+    n_tot = n_stim + n_ctrl
+    stim_resp = np.nan_to_num(stim_rates[:, :, resp_mask], nan=0.0)
+    ctrl_resp = np.nan_to_num(ctrl_rates[:, :, resp_mask], nan=0.0)
+    pooled_resp = np.concatenate([stim_resp, ctrl_resp], axis=1)  # (ch, n_tot, resp_bins)
+
+    rng = np.random.default_rng(rng_seed)
+    counts = np.zeros(n_ch, dtype=float)
+
+    # Chunked permutation execution for memory efficiency and vectorized matrix multiplication
+    chunk_size = min(500, n_perms)
+    n_processed = 0
+
+    while n_processed < n_perms:
+        b_size = min(chunk_size, n_perms - n_processed)
+        # Construct weight matrix for this chunk: shape (n_tot, b_size)
+        weights = np.zeros((n_tot, b_size), dtype=float)
+        for b in range(b_size):
+            perm = rng.permutation(n_tot)
+            weights[perm[:n_stim], b] = 1.0 / n_stim
+            weights[perm[n_stim:], b] = -1.0 / n_ctrl
+
+        # delta_perm has shape (n_ch, n_resp_bins, b_size)
+        delta_perm = np.tensordot(pooled_resp, weights, axes=([1], [0]))
+        # T_perm has shape (n_ch, b_size)
+        T_perm = np.nanmean(np.abs(delta_perm), axis=1)
+
+        counts += np.sum(T_perm >= mean_abs_delta_hz[:, None], axis=1)
+        n_processed += b_size
+
+    # Empirical p-values: (1 + count(T_perm >= T_obs)) / (1 + n_perms)
+    p_values = (1.0 + counts) / (n_perms + 1.0)
+
+    # Benjamini-Hochberg FDR correction
+    sorted_indices = np.argsort(p_values)
+    q_values = np.ones(n_ch, dtype=float)
+    cumulative_min = 1.0
+    for rank in range(n_ch - 1, -1, -1):
+        idx = sorted_indices[rank]
+        q_val = p_values[idx] * n_ch / (rank + 1)
+        cumulative_min = min(cumulative_min, q_val)
+        q_values[idx] = min(cumulative_min, 1.0)
+
+    is_responsive = apply_responsiveness_criterion(
+        p_values, q_values, mean_abs_delta_hz,
+        criterion=criterion, alpha=alpha, p_thresh=p_thresh, min_delta_hz=min_delta_hz
+    )
+
+    return is_responsive, p_values, q_values, mean_abs_delta_hz, observed_contrast_mean
+
+
+def compute_responsiveness_gating(
+    paired_stim: Optional[np.ndarray],
+    paired_ctrl: Optional[np.ndarray],
+    stim_rates: Optional[np.ndarray],
+    ctrl_rates: Optional[np.ndarray],
+    time_ms: np.ndarray,
+    response_win_ms: Tuple[float, float] = FULL_RESPONSE_WIN_MS,
+    blank_mask: Optional[np.ndarray] = None,
+    test_mode: str = RESPONSIVENESS_TEST_MODE,
+    both_combination: str = RESPONSIVENESS_BOTH_COMBINATION,
+    n_perms: int = N_PERMUTATIONS,
+    alpha: float = FDR_ALPHA,
+    criterion: str = RESPONSIVENESS_CRITERION,
+    p_thresh: float = P_VAL_THRESH,
+    min_delta_hz: float = MIN_DELTA_HZ,
+    rng_seed: int = 42,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+    """
+    Unified responsiveness gating orchestrator.
+    Supports:
+      - "paired_signflip": paired sign-flip permutation test.
+      - "unpaired_label_shuffle": unpaired condition-label shuffle permutation test.
+      - "both": runs both tests and combines them via both_combination ('intersection', 'union', 'paired_only', 'unpaired_only').
+    """
+    mode = str(test_mode).strip().lower()
+    comb = str(both_combination).strip().lower()
+
+    run_paired = mode in ("paired_signflip", "both")
+    run_unpaired = mode in ("unpaired_label_shuffle", "both")
+
+    paired_res = None
+    if run_paired:
+        if paired_stim is not None and paired_ctrl is not None:
+            paired_res = compute_paired_signflip_responsiveness(
+                paired_stim, paired_ctrl, time_ms,
+                response_win_ms=response_win_ms, blank_mask=blank_mask,
+                n_perms=n_perms, alpha=alpha, criterion=criterion,
+                p_thresh=p_thresh, min_delta_hz=min_delta_hz, rng_seed=rng_seed,
+            )
+
+    unpaired_res = None
+    if run_unpaired:
+        if stim_rates is not None and ctrl_rates is not None:
+            unpaired_res = compute_unpaired_label_shuffle_responsiveness(
+                stim_rates, ctrl_rates, time_ms,
+                response_win_ms=response_win_ms, blank_mask=blank_mask,
+                n_perms=n_perms, alpha=alpha, criterion=criterion,
+                p_thresh=p_thresh, min_delta_hz=min_delta_hz, rng_seed=rng_seed,
+            )
+
+    # Determine active gate
+    n_ch = paired_stim.shape[0] if paired_stim is not None else (stim_rates.shape[0] if stim_rates is not None else 0)
+
+    if mode == "paired_signflip":
+        if paired_res is not None:
+            is_responsive, p_vals, q_vals, mean_delta, contrast = paired_res
+        else:
+            is_responsive = np.zeros(n_ch, dtype=bool)
+            p_vals, q_vals = np.ones(n_ch), np.ones(n_ch)
+            mean_delta = np.zeros(n_ch)
+            contrast = np.zeros((n_ch, len(time_ms)))
+        gate_desc = f"paired ({criterion})"
+
+    elif mode == "unpaired_label_shuffle":
+        if unpaired_res is not None:
+            is_responsive, p_vals, q_vals, mean_delta, contrast = unpaired_res
+        else:
+            is_responsive = np.zeros(n_ch, dtype=bool)
+            p_vals, q_vals = np.ones(n_ch), np.ones(n_ch)
+            mean_delta = np.zeros(n_ch)
+            contrast = np.zeros((n_ch, len(time_ms)))
+        gate_desc = f"unpaired ({criterion})"
+
+    else:  # "both"
+        p_resp = paired_res[0] if paired_res is not None else np.zeros(n_ch, dtype=bool)
+        u_resp = unpaired_res[0] if unpaired_res is not None else np.zeros(n_ch, dtype=bool)
+
+        if comb == "intersection":
+            is_responsive = p_resp & u_resp
+            gate_desc = f"both/intersection ({criterion})"
+        elif comb == "union":
+            is_responsive = p_resp | u_resp
+            gate_desc = f"both/union ({criterion})"
+        elif comb == "unpaired_only":
+            is_responsive = u_resp
+            gate_desc = f"unpaired_only ({criterion})"
+        else:  # "paired_only"
+            is_responsive = p_resp
+            gate_desc = f"paired_only ({criterion})"
+
+        p_vals = paired_res[1] if paired_res is not None else (unpaired_res[1] if unpaired_res is not None else np.ones(n_ch))
+        q_vals = paired_res[2] if paired_res is not None else (unpaired_res[2] if unpaired_res is not None else np.ones(n_ch))
+        mean_delta = paired_res[3] if paired_res is not None else (unpaired_res[3] if unpaired_res is not None else np.zeros(n_ch))
+        contrast = paired_res[4] if paired_res is not None else (unpaired_res[4] if unpaired_res is not None else np.zeros((n_ch, len(time_ms))))
+
+    gate_info = {
+        "mode": mode,
+        "combination": comb,
+        "criterion": criterion,
+        "gate_desc": gate_desc,
+        "is_responsive": is_responsive,
+        "paired": {
+            "is_responsive": paired_res[0] if paired_res is not None else None,
+            "p_values": paired_res[1] if paired_res is not None else None,
+            "q_values": paired_res[2] if paired_res is not None else None,
+            "mean_abs_delta_hz": paired_res[3] if paired_res is not None else None,
+            "contrast_mean": paired_res[4] if paired_res is not None else None,
+            "n_resp": int(np.sum(paired_res[0])) if paired_res is not None else 0,
+            "n_sig_p": int(np.sum(paired_res[1] <= p_thresh)) if paired_res is not None else 0,
+            "n_sig_q": int(np.sum(paired_res[2] <= alpha)) if paired_res is not None else 0,
+        },
+        "unpaired": {
+            "is_responsive": unpaired_res[0] if unpaired_res is not None else None,
+            "p_values": unpaired_res[1] if unpaired_res is not None else None,
+            "q_values": unpaired_res[2] if unpaired_res is not None else None,
+            "mean_abs_delta_hz": unpaired_res[3] if unpaired_res is not None else None,
+            "contrast_mean": unpaired_res[4] if unpaired_res is not None else None,
+            "n_resp": int(np.sum(unpaired_res[0])) if unpaired_res is not None else 0,
+            "n_sig_p": int(np.sum(unpaired_res[1] <= p_thresh)) if unpaired_res is not None else 0,
+            "n_sig_q": int(np.sum(unpaired_res[2] <= alpha)) if unpaired_res is not None else 0,
+        },
+    }
+
+    return is_responsive, p_vals, q_vals, gate_info
 
 
 # =============================================================================
@@ -785,6 +1093,7 @@ def dual_normalize_contrasts(
     time_ms: np.ndarray,
     baseline_win_ms: Tuple[float, float] = BASELINE_WIN_MS,
     full_win_ms: Tuple[float, float] = FULL_RESPONSE_WIN_MS,
+    blank_mask: Optional[np.ndarray] = None,
     eps: float = 1e-6,
 ) -> Dict[str, np.ndarray]:
     """
@@ -794,6 +1103,9 @@ def dual_normalize_contrasts(
     n_ch, n_bins = contrast_mean.shape
     base_mask = (time_ms >= baseline_win_ms[0]) & (time_ms <= baseline_win_ms[1])
     resp_mask = (time_ms >= full_win_ms[0]) & (time_ms <= full_win_ms[1])
+    if blank_mask is not None:
+        base_mask = base_mask & (~blank_mask)
+        resp_mask = resp_mask & (~blank_mask)
 
     # 1. Baseline centering (subtract mean baseline from contrast trace)
     base_means = np.nanmean(contrast_mean[:, base_mask], axis=1, keepdims=True)
@@ -838,8 +1150,21 @@ def fit_empirical_clustering(
             "ch_scores": {},
         }
 
-    # Ward's linkage
-    z = linkage(unit_norm_traces, method=method)
+    # Ensure finite values - replace any residual NaNs or Infs with 0.0
+    unit_norm_clean = np.nan_to_num(unit_norm_traces, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Ward's linkage with defensive exception handling
+    try:
+        z = linkage(unit_norm_clean, method=method)
+    except Exception as err:
+        warnings.warn(f"Hierarchical clustering linkage failed: {err}. Falling back to single cluster.")
+        return {
+            "linkage_matrix": None,
+            "best_k": 1,
+            "cluster_labels": np.zeros(n_samples, dtype=int),
+            "silhouette_scores": {},
+            "ch_scores": {},
+        }
 
     sil_scores = {}
     ch_scores = {}
@@ -847,14 +1172,20 @@ def fit_empirical_clustering(
 
     for k in valid_k:
         labels = fcluster(z, t=k, criterion="maxclust") - 1
-        if len(np.unique(labels)) > 1:
-            try:
-                sil = silhouette_score(unit_norm_traces, labels)
-                ch = calinski_harabasz_score(unit_norm_traces, labels)
-                sil_scores[k] = sil
-                ch_scores[k] = ch
-            except Exception:
-                pass
+        n_unique = len(np.unique(labels))
+        if 1 < n_unique < n_samples:
+            if silhouette_score is not None:
+                try:
+                    sil = float(silhouette_score(unit_norm_clean, labels))
+                    sil_scores[k] = sil
+                except Exception:
+                    pass
+            if calinski_harabasz_score is not None:
+                try:
+                    ch = float(calinski_harabasz_score(unit_norm_clean, labels))
+                    ch_scores[k] = ch
+                except Exception:
+                    pass
 
     best_k = max(sil_scores, key=sil_scores.get) if sil_scores else min(DEFAULT_K, n_samples - 1)
     best_labels = fcluster(z, t=best_k, criterion="maxclust") - 1
@@ -872,6 +1203,7 @@ def assign_phenotype_labels(
     time_ms: np.ndarray,
     early_win: Tuple[float, float] = EARLY_WIN_MS,
     late_win: Tuple[float, float] = LATE_WIN_MS,
+    blank_mask: Optional[np.ndarray] = None,
 ) -> Dict[int, str]:
     """
     Assign interpretable physiological phenotype names to clusters based on mean temporal profile.
@@ -879,10 +1211,15 @@ def assign_phenotype_labels(
     phenotypes = {}
     early_mask = (time_ms >= early_win[0]) & (time_ms <= early_win[1])
     late_mask = (time_ms >= late_win[0]) & (time_ms <= late_win[1])
+    if blank_mask is not None:
+        early_mask = early_mask & (~blank_mask)
+        late_mask = late_mask & (~blank_mask)
 
     for k, trace in cluster_means_raw.items():
-        e_val = np.nanmean(trace[early_mask])
-        l_val = np.nanmean(trace[late_mask])
+        e_val = np.nanmean(trace[early_mask]) if np.any(early_mask) else 0.0
+        l_val = np.nanmean(trace[late_mask]) if np.any(late_mask) else 0.0
+        e_val = 0.0 if not np.isfinite(e_val) else float(e_val)
+        l_val = 0.0 if not np.isfinite(l_val) else float(l_val)
         peak_idx = np.nanargmax(np.abs(trace))
         peak_time = time_ms[peak_idx]
 
@@ -914,15 +1251,23 @@ def compute_early_late_quadrants(
     time_ms: np.ndarray,
     early_win: Tuple[float, float] = EARLY_WIN_MS,
     late_win: Tuple[float, float] = LATE_WIN_MS,
+    blank_mask: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute E_c and L_c window integrals per channel and assign quadrant ID (1..4).
     """
     early_mask = (time_ms >= early_win[0]) & (time_ms <= early_win[1])
     late_mask = (time_ms >= late_win[0]) & (time_ms <= late_win[1])
+    if blank_mask is not None:
+        early_mask = early_mask & (~blank_mask)
+        late_mask = late_mask & (~blank_mask)
 
-    e_vals = np.nanmean(contrast_mean[:, early_mask], axis=1)
-    l_vals = np.nanmean(contrast_mean[:, late_mask], axis=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        e_vals = np.nanmean(contrast_mean[:, early_mask], axis=1) if np.any(early_mask) else np.zeros(contrast_mean.shape[0])
+        l_vals = np.nanmean(contrast_mean[:, late_mask], axis=1) if np.any(late_mask) else np.zeros(contrast_mean.shape[0])
+    e_vals = np.nan_to_num(e_vals, nan=0.0)
+    l_vals = np.nan_to_num(l_vals, nan=0.0)
 
     # Quadrant:
     # Q1: (+, +) Sustained Excitation
@@ -959,10 +1304,11 @@ def plot_fig1_dendrogram_and_metrics(
     
     # 1. Dendrogram with branches colored by the chosen cut threshold
     axes[0].set_title("Response Profile Dendrogram", fontsize=11, fontweight="bold")
-    if linkage_matrix is not None and len(linkage_matrix) >= best_k:
-        thresh = float(linkage_matrix[-best_k + 1, 2]) if best_k > 1 else 0.0
-    else:
-        thresh = 0.0
+    thresh = 0.0
+    if linkage_matrix is not None and len(linkage_matrix) >= best_k > 1:
+        d_merge = float(linkage_matrix[-best_k + 1, 2])
+        d_prev = float(linkage_matrix[-best_k, 2]) if len(linkage_matrix) > best_k else 0.0
+        thresh = 0.5 * (d_merge + d_prev)
     dendrogram(linkage_matrix, ax=axes[0], no_labels=True, color_threshold=thresh, above_threshold_color="#888888")
     if thresh > 0:
         axes[0].axhline(thresh, color="#d62728", linestyle="--", linewidth=1.2, alpha=0.8, label=f"Cut: K={best_k}")
@@ -971,26 +1317,32 @@ def plot_fig1_dendrogram_and_metrics(
     axes[0].set_ylabel("Ward Distance")
 
     # 2. Silhouette Score
+    axes[1].set_title("Silhouette Score vs K", fontsize=11, fontweight="bold")
+    axes[1].set_xlabel("Number of Clusters (K)")
+    axes[1].set_ylabel("Mean Silhouette Score")
     if sil_scores:
-        k_vals = list(sil_scores.keys())
-        s_vals = list(sil_scores.values())
+        k_vals = sorted(sil_scores.keys())
+        s_vals = [sil_scores[k] for k in k_vals]
         axes[1].plot(k_vals, s_vals, "o-", color="#1f77b4", linewidth=2.0, markersize=6)
         axes[1].axvline(best_k, color="#d62728", linestyle="--", linewidth=1.2, label=f"Optimal K={best_k}")
-        axes[1].set_title("Silhouette Score vs K", fontsize=11, fontweight="bold")
-        axes[1].set_xlabel("Number of Clusters (K)")
-        axes[1].set_ylabel("Mean Silhouette Score")
+        axes[1].set_xticks(k_vals)
         axes[1].legend(loc="best", frameon=False, fontsize=9)
+    else:
+        axes[1].text(0.5, 0.5, "Silhouette score unavailable", ha="center", va="center", transform=axes[1].transAxes, color="0.5")
 
     # 3. Calinski-Harabasz Index
+    axes[2].set_title("Calinski-Harabasz Index vs K", fontsize=11, fontweight="bold")
+    axes[2].set_xlabel("Number of Clusters (K)")
+    axes[2].set_ylabel("CH Index")
     if ch_scores:
-        k_vals = list(ch_scores.keys())
-        c_vals = list(ch_scores.values())
+        k_vals = sorted(ch_scores.keys())
+        c_vals = [ch_scores[k] for k in k_vals]
         axes[2].plot(k_vals, c_vals, "s-", color="#2ca02c", linewidth=2.0, markersize=6)
         axes[2].axvline(best_k, color="#d62728", linestyle="--", linewidth=1.2, label=f"Optimal K={best_k}")
-        axes[2].set_title("Calinski-Harabasz Index vs K", fontsize=11, fontweight="bold")
-        axes[2].set_xlabel("Number of Clusters (K)")
-        axes[2].set_ylabel("CH Index")
+        axes[2].set_xticks(k_vals)
         axes[2].legend(loc="best", frameon=False, fontsize=9)
+    else:
+        axes[2].text(0.5, 0.5, "CH index unavailable", ha="center", va="center", transform=axes[2].transAxes, color="0.5")
 
     for ax in axes:
         ax.spines["top"].set_visible(False)
@@ -1302,30 +1654,40 @@ def plot_fig3_cluster_sorted_heatmaps(
     title_suffix: str = "",
     blank_win: Optional[Tuple[float, float]] = None,
     post_stim_start: Optional[float] = None,
+    nonresp_label: Optional[str] = None,
 ):
     # Sort responsive channels by cluster, then by peak response latency in post-stim window
     p_start = post_stim_start if post_stim_start is not None else (blank_win[1] if blank_win is not None else 0.0)
     resp_mask_time = (time_ms >= p_start) & (time_ms <= p_start + 300.0)
-    sort_keys = []
-    for i, k in enumerate(cluster_labels):
-        tr = raw_hz_traces[i]
-        sub_tr = np.abs(tr[resp_mask_time])
-        if np.any(np.isfinite(sub_tr)):
-            peak_lat = time_ms[resp_mask_time][np.nanargmax(sub_tr)]
-        else:
-            peak_lat = p_start
-        sort_keys.append((k, peak_lat))
+    if len(cluster_labels) > 0 and len(raw_hz_traces) > 0:
+        sort_keys = []
+        for i, k in enumerate(cluster_labels):
+            tr = raw_hz_traces[i]
+            sub_tr = np.abs(tr[resp_mask_time])
+            if np.any(np.isfinite(sub_tr)):
+                peak_lat = time_ms[resp_mask_time][np.nanargmax(sub_tr)]
+            else:
+                peak_lat = p_start
+            sort_keys.append((k, peak_lat))
 
-    sorted_indices = sorted(range(len(cluster_labels)), key=lambda x: sort_keys[x])
-    sorted_resp_traces = raw_hz_traces[sorted_indices]
+        sorted_indices = sorted(range(len(cluster_labels)), key=lambda x: sort_keys[x])
+        sorted_resp_traces = raw_hz_traces[sorted_indices]
+    else:
+        sorted_resp_traces = np.empty((0, len(time_ms)))
 
     # Combine with non-responsive channels at the bottom
     if nonresp_hz_traces is not None and len(nonresp_hz_traces) > 0:
-        all_traces = np.vstack([sorted_resp_traces, nonresp_hz_traces])
-        divider_row = len(sorted_resp_traces)
-    else:
+        if len(sorted_resp_traces) > 0:
+            all_traces = np.vstack([sorted_resp_traces, nonresp_hz_traces])
+            divider_row = len(sorted_resp_traces)
+        else:
+            all_traces = nonresp_hz_traces
+            divider_row = None
+    elif len(sorted_resp_traces) > 0:
         all_traces = sorted_resp_traces
         divider_row = None
+    else:
+        return
 
     fig, ax = plt.subplots(figsize=(11, 7))
     vmax = np.nanpercentile(np.abs(all_traces), 98)
@@ -1342,9 +1704,13 @@ def plot_fig3_cluster_sorted_heatmaps(
     else:
         ax.axvspan(0, stim_dur_ms, color=STIM_REGION_COLOR, alpha=0.25)
     ax.axvline(0, color="k", linestyle="--", linewidth=1.0)
+    
+    lbl = nonresp_label if nonresp_label is not None else "Non-responsive"
     if divider_row is not None:
         ax.axhline(divider_row, color="#333333", linewidth=1.5, linestyle="--")
-        ax.text(time_ms[0] + 15, divider_row + 4, "Non-responsive (q > 0.05)", color="#444444", fontsize=9, fontstyle="italic")
+        ax.text(time_ms[0] + 15, divider_row + 4, lbl, color="#444444", fontsize=9, fontstyle="italic")
+    elif len(sorted_resp_traces) == 0:
+        ax.text(time_ms[0] + 15, max(1, all_traces.shape[0] - 2), f"All Channels {lbl}", color="#444444", fontsize=9, fontstyle="italic")
 
     ax.set_xlabel("Time from Stim Onset (ms)")
     ax.set_ylabel("Sorted Channel Index")
@@ -1370,12 +1736,14 @@ def plot_fig4_early_late_quadrant_scatter(
     title_suffix: str = "",
     early_win: Tuple[float, float] = EARLY_WIN_MS,
     late_win: Tuple[float, float] = LATE_WIN_MS,
+    nonresp_label: Optional[str] = None,
 ):
     fig, ax = plt.subplots(figsize=(8.5, 7.5))
 
+    lbl = nonresp_label if nonresp_label is not None else "Non-responsive"
     # Plot Non-responsive
     if np.any(nonresp_mask):
-        ax.scatter(e_vals[nonresp_mask], l_vals[nonresp_mask], color="#c0c0c0", alpha=0.5, s=28, edgecolors="none", label="Non-responsive (q > 0.05)")
+        ax.scatter(e_vals[nonresp_mask], l_vals[nonresp_mask], color="#c0c0c0", alpha=0.5, s=28, edgecolors="none", label=lbl)
 
     # Plot Clusters
     resp_indices = np.where(~nonresp_mask)[0]
@@ -1728,9 +2096,9 @@ def process_single_condition(
         if paired_s.shape[1] == 0:
             continue
 
-        # Trial-level contrast Δr_{c, i}(t)
+        # Trial-level paired contrast Δr_{c, i}(t)
         diff_trials = paired_s - paired_c  # (ch, trials, bins)
-        contrast_mean = np.nanmean(diff_trials, axis=1)  # (ch, bins)
+        paired_contrast_mean = np.nanmean(diff_trials, axis=1)  # (ch, bins)
         contrast_sem = np.nanstd(diff_trials, axis=1) / math.sqrt(max(1, paired_s.shape[1]))
 
         # Define dynamic post-artifact response windows
@@ -1739,15 +2107,78 @@ def process_single_condition(
         early_win = (post_stim_start, min(post_stim_start + 50.0, float(WIN_PLOT_MS[1])))
         late_win = (post_stim_start + 50.0, min(post_stim_start + 200.0, float(WIN_PLOT_MS[1])))
 
-        # 2. Statistical Responsiveness Gating
-        is_responsive, p_vals, q_vals = compute_responsiveness_gating(paired_s, paired_c, time_ms, response_win_ms=resp_win)
+        # 2. Statistical Responsiveness Gating (Paired, Unpaired, or Both)
+        is_responsive, p_vals, q_vals, gate_info = compute_responsiveness_gating(
+            paired_stim=paired_s,
+            paired_ctrl=paired_c,
+            stim_rates=s_rates,
+            ctrl_rates=c_rates,
+            time_ms=time_ms,
+            response_win_ms=resp_win,
+            blank_mask=blank_mask,
+            test_mode=RESPONSIVENESS_TEST_MODE,
+            both_combination=RESPONSIVENESS_BOTH_COMBINATION,
+            n_perms=N_PERMUTATIONS,
+            alpha=FDR_ALPHA,
+            criterion=RESPONSIVENESS_CRITERION,
+            p_thresh=P_VAL_THRESH,
+            min_delta_hz=MIN_DELTA_HZ,
+        )
         n_resp = int(np.sum(is_responsive))
-        _log(f"       -> {arr_name:<6}: {n_resp:2d} / {len(is_responsive):2d} channels responsive (FDR q < {FDR_ALPHA})")
+        n_ch_total = len(is_responsive)
+        p_info = gate_info["paired"]
+        u_info = gate_info["unpaired"]
 
-        # Non-responsive array
-        nonresp_traces = contrast_mean[~is_responsive, :] if np.any(~is_responsive) else None
+        # Structured diagnostic logging for condition
+        _log(f"       -> {arr_name:<6}:")
+        _log(f"            trials: stim={s_rates.shape[1]}, ctrl={c_rates.shape[1]}, paired={paired_s.shape[1]}")
+        if p_info["is_responsive"] is not None:
+            _log(f"            paired:   responsive={p_info['n_resp']}/{n_ch_total}, p<{P_VAL_THRESH}={p_info['n_sig_p']}, q<{FDR_ALPHA}={p_info['n_sig_q']}")
+        if u_info["is_responsive"] is not None:
+            _log(f"            unpaired: responsive={u_info['n_resp']}/{n_ch_total}, p<{P_VAL_THRESH}={u_info['n_sig_p']}, q<{FDR_ALPHA}={u_info['n_sig_q']}")
+        _log(f"            active gate: {gate_info['gate_desc']} => {n_resp}/{n_ch_total}")
 
-        # 3. Dual Normalization for Responsive Channels
+        # Determine contrast mean source for downstream clustering and plots
+        if CONTRAST_SOURCE_FOR_PLOTS == "unpaired" and u_info["contrast_mean"] is not None:
+            contrast_mean = u_info["contrast_mean"]
+            contrast_source_desc = "Unpaired mean contrast"
+        else:
+            contrast_mean = paired_contrast_mean
+            contrast_source_desc = "Paired mean contrast"
+
+        # Rest rates (if present)
+        resp_rest_rates = None
+        rest_pop = None
+        n_rest_tr = None
+        if r_3d is not None and r_t is not None:
+            r_rates, _ = rebin_and_smooth(r_3d, r_t, target_bin_w=bin_w, smooth_sigma_ms=sigma, win_ms=WIN_PLOT_MS)
+            if has_blanking:
+                r_rates[:, :, blank_mask] = np.nan
+            rest_pop = np.nanmean(r_rates, axis=1)
+            n_rest_tr = r_rates.shape[1]
+
+        # Trial count tracking across conditions
+        trial_counts = {
+            "stim": int(s_rates.shape[1]),
+            "ctrl": int(c_rates.shape[1]),
+            "matched": int(paired_s.shape[1]),
+            "rest": int(n_rest_tr) if n_rest_tr is not None else None,
+        }
+        trial_info_str = format_trial_info(trial_counts)
+        nonresp_label = f"Not retained ({gate_info['gate_desc']})"
+
+        # Channel-level trial-averaged firing rates (Hz) for phenotype overlays
+        stim_ch_mean = np.nanmean(paired_s, axis=1)
+        ctrl_ch_mean = np.nanmean(paired_c, axis=1)
+
+        # Early vs Late Quadrants
+        e_vals, l_vals, quads = compute_early_late_quadrants(
+            contrast_mean, time_ms, early_win=early_win, late_win=late_win, blank_mask=blank_mask
+        )
+
+        base_name = f"{stim_path.stem}_{arr_name}"
+
+        # 3. Dual Normalization & Figure Generation
         if n_resp >= 2:
             resp_mean = contrast_mean[is_responsive, :]
             resp_diff_trials = diff_trials[is_responsive, :, :]
@@ -1755,10 +2186,12 @@ def process_single_condition(
                 resp_mean, resp_diff_trials, time_ms,
                 baseline_win_ms=BASELINE_WIN_MS,
                 full_win_ms=resp_win,
+                blank_mask=blank_mask,
             )
 
             # 4. Empirical Clustering (Ward's Linkage)
             resp_window_traces = norm_dict["unit_norm"][:, norm_dict["resp_mask"]]
+            resp_window_traces = np.nan_to_num(resp_window_traces, nan=0.0)
             clust_results = fit_empirical_clustering(resp_window_traces)
             k_labels = clust_results["cluster_labels"]
 
@@ -1771,36 +2204,18 @@ def process_single_condition(
             mean_by_cluster = {}
             for k in np.unique(k_labels):
                 mean_by_cluster[k] = np.nanmean(norm_dict["raw_centered"][k_labels == k], axis=0)
-            phenotypes = assign_phenotype_labels(mean_by_cluster, time_ms, early_win=early_win, late_win=late_win)
+            phenotypes = assign_phenotype_labels(
+                mean_by_cluster, time_ms, early_win=early_win, late_win=late_win, blank_mask=blank_mask
+            )
             phenotypes_by_array[arr_name] = phenotypes
 
-            # 5. Early vs Late Quadrants
-            e_vals, l_vals, quads = compute_early_late_quadrants(contrast_mean, time_ms, early_win=early_win, late_win=late_win)
+            # Non-responsive traces and channel means
+            nonresp_traces = contrast_mean[~is_responsive, :] if np.any(~is_responsive) else None
+            resp_stim_rates = stim_ch_mean[is_responsive, :]
+            resp_ctrl_rates = ctrl_ch_mean[is_responsive, :]
+            resp_rest_rates = rest_pop[is_responsive, :] if rest_pop is not None else None
 
-            # Rest rates (if present)
-            resp_rest_rates = None
-            rest_pop = None
-            n_rest_tr = None
-            if r_3d is not None and r_t is not None:
-                r_rates, _ = rebin_and_smooth(r_3d, r_t, target_bin_w=bin_w, smooth_sigma_ms=sigma, win_ms=WIN_PLOT_MS)
-                if has_blanking:
-                    r_rates[:, :, blank_mask] = np.nan
-                rest_pop = np.nanmean(r_rates, axis=1)
-                resp_rest_rates = rest_pop[is_responsive, :]
-                n_rest_tr = r_rates.shape[1]
-
-            # Trial count tracking across conditions
-            trial_counts = {
-                "stim": int(s_rates.shape[1]),
-                "ctrl": int(c_rates.shape[1]),
-                "matched": int(paired_s.shape[1]),
-                "rest": int(n_rest_tr) if n_rest_tr is not None else None,
-            }
-            trial_info_str = format_trial_info(trial_counts)
-
-            # 6. Plot Figures 1 to 4
-            base_name = f"{stim_path.stem}_{arr_name}"
-            
+            # 6. Plot Figures 1 to 5
             if clust_results["linkage_matrix"] is not None:
                 plot_fig1_dendrogram_and_metrics(
                     clust_results["linkage_matrix"],
@@ -1811,12 +2226,6 @@ def process_single_condition(
                     title_suffix=f"({arr_name}) | {trial_info_str}",
                 )
 
-            # Channel-level trial-averaged firing rates (Hz) for phenotype overlays
-            stim_ch_mean = np.nanmean(paired_s, axis=1)
-            ctrl_ch_mean = np.nanmean(paired_c, axis=1)
-            resp_stim_rates = stim_ch_mean[is_responsive, :]
-            resp_ctrl_rates = ctrl_ch_mean[is_responsive, :]
-
             plot_fig2_cluster_phenotype_profiles(
                 time_ms,
                 norm_dict["unit_norm"],
@@ -1825,7 +2234,7 @@ def process_single_condition(
                 phenotypes,
                 stim_dur_ms,
                 out_dir / f"{base_name}_fig2_phenotypes.png",
-                title_suffix=f"({arr_name})",
+                title_suffix=f"({arr_name}) | {gate_info['gate_desc']}",
                 blank_win=blank_win,
                 kinematics_data=kinematics_data,
                 stim_rates=resp_stim_rates,
@@ -1841,9 +2250,10 @@ def process_single_condition(
                 nonresp_traces,
                 stim_dur_ms,
                 out_dir / f"{base_name}_fig3_heatmaps.png",
-                title_suffix=f"({arr_name}) | {trial_info_str}",
+                title_suffix=f"({arr_name}) | {gate_info['gate_desc']} | {trial_info_str}",
                 blank_win=blank_win,
                 post_stim_start=post_stim_start,
+                nonresp_label=nonresp_label,
             )
 
             plot_fig4_early_late_quadrant_scatter(
@@ -1853,12 +2263,13 @@ def process_single_condition(
                 ~is_responsive,
                 phenotypes,
                 out_dir / f"{base_name}_fig4_quadrant_scatter.png",
-                title_suffix=f"({arr_name}) | {trial_info_str}",
+                title_suffix=f"({arr_name}) | {gate_info['gate_desc']} | {trial_info_str}",
                 early_win=early_win,
                 late_win=late_win,
+                nonresp_label=nonresp_label,
             )
 
-            # 7. Context Interaction (Reach vs Rest)
+            # Context Interaction (Reach vs Rest)
             if rest_pop is not None:
                 rest_base = np.nanmean(rest_pop[:, (time_ms >= BASELINE_WIN_MS[0]) & (time_ms <= BASELINE_WIN_MS[1])], axis=1, keepdims=True)
                 rest_contrast = rest_pop - rest_base
@@ -1876,7 +2287,108 @@ def process_single_condition(
                     post_stim_start=post_stim_start,
                 )
         else:
-            _log(f"       -> {arr_name:<6}: Insufficient responsive channels ({n_resp}) for clustering.")
+            _log(f"       -> {arr_name:<6}: Insufficient responsive channels ({n_resp}) for clustering. Rendering Population Fallback...")
+            # Normalize all channels across array for consistent population representation
+            norm_dict_all = dual_normalize_contrasts(
+                contrast_mean, diff_trials, time_ms,
+                baseline_win_ms=BASELINE_WIN_MS,
+                full_win_ms=resp_win,
+                blank_mask=blank_mask,
+            )
+
+            # Assign single population cluster (or split if 1 responsive channel)
+            if n_resp == 1:
+                resp_idx = int(np.where(is_responsive)[0][0])
+                k_labels = np.where(is_responsive, 0, 1)
+                phenotypes = {
+                    0: f"Responsive Unit (Ch {resp_idx + 1}, n=1)",
+                    1: f"Non-responsive Baseline (n={len(contrast_mean) - 1})",
+                }
+                fig2_title_suffix = f"({arr_name}) | 1 Responsive Channel ({gate_info['gate_desc']}) | Population Overview"
+            else:
+                k_labels = np.zeros(len(contrast_mean), dtype=int)
+                phenotypes = {0: f"Array Population (n={len(contrast_mean)})"}
+                fig2_title_suffix = f"({arr_name}) | 0 Responsive Channels ({gate_info['gate_desc']}) | Population Overview"
+
+            cluster_assignments[arr_name] = np.where(is_responsive, 0, -1)
+            phenotypes_by_array[arr_name] = phenotypes
+
+            # 1. Figure 2: Population Overview & Kinematics
+            plot_fig2_cluster_phenotype_profiles(
+                time_ms,
+                norm_dict_all["unit_norm"],
+                norm_dict_all["raw_centered"],
+                k_labels,
+                phenotypes,
+                stim_dur_ms,
+                out_dir / f"{base_name}_fig2_phenotypes.png",
+                title_suffix=fig2_title_suffix,
+                blank_win=blank_win,
+                kinematics_data=kinematics_data,
+                stim_rates=stim_ch_mean,
+                ctrl_rates=ctrl_ch_mean,
+                rest_rates=rest_pop,
+                trial_counts=trial_counts,
+            )
+
+            # 2. Figure 3: Heatmap (All channels showing non-responsive baseline)
+            if n_resp == 1:
+                fig3_resp_traces = norm_dict_all["raw_centered"][[resp_idx], :]
+                fig3_labels = np.array([0])
+                fig3_nonresp = norm_dict_all["raw_centered"][~is_responsive, :]
+            else:
+                fig3_resp_traces = np.empty((0, len(time_ms)))
+                fig3_labels = np.empty(0, dtype=int)
+                fig3_nonresp = norm_dict_all["raw_centered"]
+
+            plot_fig3_cluster_sorted_heatmaps(
+                time_ms,
+                fig3_resp_traces,
+                fig3_labels,
+                fig3_nonresp,
+                stim_dur_ms,
+                out_dir / f"{base_name}_fig3_heatmaps.png",
+                title_suffix=f"({arr_name}) | {n_resp} Responsive | {gate_info['gate_desc']} | {trial_info_str}",
+                blank_win=blank_win,
+                post_stim_start=post_stim_start,
+                nonresp_label=nonresp_label,
+            )
+
+            # 3. Figure 4: Quadrant Scatter (All channels in grey centered near 0)
+            if n_resp == 1:
+                fig4_labels = np.array([0])
+            else:
+                fig4_labels = np.empty(0, dtype=int)
+
+            plot_fig4_early_late_quadrant_scatter(
+                e_vals,
+                l_vals,
+                fig4_labels,
+                ~is_responsive,
+                phenotypes if n_resp == 1 else {},
+                out_dir / f"{base_name}_fig4_quadrant_scatter.png",
+                title_suffix=f"({arr_name}) | {n_resp} Responsive | {gate_info['gate_desc']} | {trial_info_str}",
+                early_win=early_win,
+                late_win=late_win,
+                nonresp_label=nonresp_label,
+            )
+
+            # 4. Figure 5: Reach vs Rest (Population interaction if rest exists)
+            if rest_pop is not None:
+                rest_base = np.nanmean(rest_pop[:, (time_ms >= BASELINE_WIN_MS[0]) & (time_ms <= BASELINE_WIN_MS[1])], axis=1, keepdims=True)
+                rest_contrast = rest_pop - rest_base
+                interaction = contrast_mean - rest_contrast
+                plot_fig5_context_interaction(
+                    time_ms,
+                    interaction,
+                    contrast_mean,
+                    rest_contrast,
+                    stim_dur_ms,
+                    out_dir / f"{base_name}_fig5_reach_vs_rest.png",
+                    title_suffix=f"({arr_name}) | Population Interaction | {trial_info_str}",
+                    blank_win=blank_win,
+                    post_stim_start=post_stim_start,
+                )
 
     _log(f"{prefix}Completed analysis for {stim_path.name}\n")
 

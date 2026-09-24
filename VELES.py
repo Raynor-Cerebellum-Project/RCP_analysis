@@ -22,7 +22,7 @@ SESSIONS_TO_RUN = [
     # "NRR_RW032",
     # "NRR_RW029",
     # "NRR_RW026",
-    "NRR_RW022",
+    # "NRR_RW022",
     # "NRR_RW019",
     # "NRR_RW018",
     # "NRR_RW017",
@@ -31,7 +31,7 @@ SESSIONS_TO_RUN = [
     # "NRR_RW014",
     # "NRR_RW013",
     "NRR_RW012",
-    "NRR_RW011",
+    # "NRR_RW011",
 ]
 
 PROCESS_ONLY = []

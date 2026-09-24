@@ -7,3 +7,8 @@ Scripts:
   - analysis_scripts/plot_firing_rates.py
 ================================================================================
 [09/23/2026 15:36:45] [NRR_RW022] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/23/2026 16:00:56] [NRR_RW022] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/23/2026 16:00:56
+[09/23/2026 16:11:07] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/23/2026 16:46:58] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/23/2026 16:46:58
+[09/23/2026 16:46:58] [NRR_RW011] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/23/2026 17:23:18] [NRR_RW011] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/23/2026 17:23:18
