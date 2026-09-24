@@ -36,6 +36,7 @@ SCRIPT_STATUS_COLUMNS: dict[str, str] = {
     "plot_stim_response_overlays.py": "plot_PSTH_overlays",
     "plot_peak_csv_summaries.py": "plot_peak_csv_summaries",
     "plot_bin_counts_per_target.py": "plot_bin_counts",
+    "plot_complete_shaded_BT.py": "plot_complete_shaded",
 }
 
 # Direct upstream dependencies for each status column
@@ -67,6 +68,7 @@ COLUMN_DEPENDENCIES: dict[str, list[str]] = {
     "plot_PSTH_overlays": ["extract_peri"],
     "plot_peak_csv_summaries": ["extract_peri"],
     "plot_bin_counts": ["extract_peri"],
+    "plot_complete_shaded": ["extract_peri"],
 }
 
 

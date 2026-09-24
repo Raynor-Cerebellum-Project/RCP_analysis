@@ -22,6 +22,7 @@ dependencies:
   - ipykernel
   - opencv
   - ipywidgets
+  - pytest
 
   # easyocr runtime deps (installed via conda so pip won't drag in torch)
   - scikit-image
