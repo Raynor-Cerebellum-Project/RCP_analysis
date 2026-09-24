@@ -102,3 +102,17 @@ Detected peaks
           - Timing: ``rec_dur``, ``rec_start_ms``, ``rec_end_ms``
           - ``session``: the session name
 
+Dependencies
+------------
+
+**Upstream steps** — none. It reads the raw Intan ``.rhs`` files.
+
+**Package modules**
+
+- ``intan_preproc`` — ``extract_stim_npz``, ``extract_intan_aux_streams_npz``,
+  and the stim trigger/block detection behind them.
+- ``utils`` — probe reordering and shared helpers.
+- ``params_loading`` — probe geometry and channel mapping.
+- ``config_loading`` — session paths and output roots.
+
+**External** — ``spikeinterface``, ``probeinterface``, ``scipy``.

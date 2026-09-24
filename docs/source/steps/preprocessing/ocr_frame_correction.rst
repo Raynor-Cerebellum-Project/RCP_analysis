@@ -60,3 +60,16 @@ Columns
      - Number of separate "drop events" so far.
    * - ``all_text``
      - Raw OCR text, kept for debugging.
+
+Dependencies
+------------
+
+**Upstream steps** — none. This is the first step; it reads raw video.
+
+**Package modules**
+
+- ``config_loading`` — only for the ``VIDEO_ROOT`` fallback when no path argument
+  is given.
+
+**External** — ``easyocr`` (uses the GPU when one initializes, CPU otherwise)
+and ``opencv`` for the frame cropping and thresholding.

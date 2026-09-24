@@ -156,3 +156,19 @@ Kinematics and auxiliary streams:
    Unlike the aligned files, the ``UA_*`` keys are always written here. When
    there is no UA data they are present but zero-sized, so check ``HAS_BR``
    or the array shape rather than key existence.
+
+Dependencies
+------------
+
+**Upstream steps**
+
+- :doc:`make_aligned` — supplies the aligned files this step cuts into trials.
+- :doc:`inspect_kinematics` — optional, supplies the curated
+  ``manual_trial_remove.csv``. The step runs without it, gating no trials.
+
+**Package modules**
+
+- ``utils`` — trial gating, binning, and smoothing helpers.
+- ``config_loading`` — session paths and the condition roots.
+
+**External** — ``scipy``, ``pandas``, ``matplotlib``.

@@ -108,79 +108,12 @@ Output:
 # Artifact correction schematic
 ![alt text](https://github.com/Raynor-Cerebellum-Project/RCP_analysis/blob/main/docs/source/images/utah_array_analysis_and_artifact_correction.png "artifact correction schematic")
 
-## LFP Band Analysis
-`preprocessing_scripts/analyze_lfp_bands.py`
-
-Analyzes LFP bands (Delta, Theta, Alpha, Beta, Low/High Gamma) for Utah Array (Blackrock) recordings.
-
-1. **Extraction:** Loads stimulation events and extracts epochs (±1000ms) with padding
-2. **IPCA Artifact Correction:** 
-   - Per-channel lag calibration using CSV lookup
-   - Clock drift correction (1.33% slower than nominal)
-   - Region-wise Incremental PCA artifact subtraction (rank 10)
-3. **Preprocessing:**
-   - Bandpass filter (1-200 Hz)
-   - Resample from 30kHz to 1kHz
-4. **1/f Detrending:** Adaptive spectral subtraction using baseline period
-5. **Band Filtering:** Zero-phase bandpass filtering for each frequency band:
-   - Delta (1-4 Hz)
-   - Theta (4-8 Hz)
-   - Alpha (8-12 Hz)
-   - Beta (12-25 Hz)
-   - Low Gamma (25-60 Hz)
-   - High Gamma (60-120 Hz)
-6. **Epoch Slicing:** Extracts pre-stim, post-stim, and full windows
-7. **Baseline Grouping:** Aggregates control/baseline sessions by UA port and depth
-
-**Output:**
-- `results/checkpoints/UA_LFP/<condition>/aligned_lfp__*.npz`
-- Conditions: `control_reaches/`, `stim_reaches/`, `at_rest/`, `Grasp/`, `IMU/`, `continuous_stim/`
-
-**Key Parameters:**
-- `EPOCH_PRE_MS`, `EPOCH_POST_MS`: 1000ms each
-- `BLANK_PRE_MS`, `BLANK_POST_MS`: 5ms, 101ms (stim artifact window)
-- `TARGET_FS`: 1000 Hz (resampled)
-- `IPCA_RANK`: 10
-
-**Dependencies:**
-- Requires aligned `.npz` files from Step 5
-- Requires per-channel lag calibration files in `config/channel_lag_calibration/`
-- Uses peristim files from Step 6 for event timing
-
-**Visualization:**
-*   `scripts/plot_lfp_all.py`: Generates comprehensive plots (traces, heatmaps, PSDs) for all frequency bands.
-*   `scripts/debug_lfp_pipeline_plots.py`: Generates step-by-step pipeline visualizations (Raw -> Blanked -> Filtered) for debugging.
-
-<!-- ## 9. Kinematics Quantification
-`preprocessing_scripts/quantify_stim_kinematics.py`
-
-Analyzes reach kinematics (Duration, Peak Speed) comparing stimulation conditions to baseline.
-
-**Features:**
-- Speed-based reach endpoint detection.
-- Statistical analysis (Welch's t-test vs Baseline) with significance clustering.
-- Generates Violin/Box plots with transparent, jittered individual points.
-- Parallel processing for fast dataset scanning.
-- Output: Stats summary CSVs and Figures in `results/figures/quantify_kinematics`.
-
-**Visualization:**
-*   `scripts/plot_individual_kinematics.py`: Plots individual kinematic traces for every trial in a grid layout to allow visual inspection and outlier identification. Output: `results/figures/individual_trials`. -->
-
 ## Other plots
 
 - RSA plots: `~/scripts/bryan_scripts/RSA_consistency/RSA_poststim_grouped_up.ipynb`
 - Dynamics: `~/scripts/bryan_scripts/dynamics/PoisLDS_NPRW_combined.ipynb`
 - Plot raw traces with peaks labeled: `~/scripts/bryan_scripts/quick_plots/plot_HPF_traces_with_peaks.ipynb`
 ---
-
-## Intermediate outputs:
-1. Stim stream npz files from Intan for stim timing and channels
-2. Auxiliary npz files for Intan sync signals
-3. Auxiliary npz files for BR sync signals
-4. Metadata for alignment of BR and Intan
-5. Checkpoint npz files for aligned DLC files  (Ex: Two camera to BR camera sync)
-6. Preprocessed npy files in spikeinterface format (UA and NPRW)
-7. Aligned kinematics, NPRW, and UA data
 
 ## Outputs
 1. Plots of kinematics (position and velocity) and neural data (Firing rate plot)

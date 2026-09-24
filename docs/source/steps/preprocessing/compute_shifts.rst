@@ -99,3 +99,18 @@ Per-block detail
 .. note::
    Every block is refined and written to the per-block CSV, but the summary row
    currently takes its shift from **block 0 only**. The remaining blocks are useful if we have multiple BR condition per Intan condition.
+
+Dependencies
+------------
+
+**Upstream steps**
+
+- :doc:`intan` — writes the ``aux_streams.npz`` holding the Intan ADC triangle
+  signal that this step matches against.
+
+**Package modules**
+
+- ``utils`` — cross-correlation and shift refinement helpers.
+- ``config_loading`` — session paths and the sync channel settings.
+
+**External** — ``spikeinterface``, ``scipy``.
