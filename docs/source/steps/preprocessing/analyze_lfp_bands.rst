@@ -111,3 +111,19 @@ Key parameters
    * - ``SKIP_EXISTING``
      - When true, sessions whose outputs already exist are skipped before
        Blackrock data is loaded.
+
+Dependencies
+------------
+
+**Upstream steps**
+
+- :doc:`extract_peri_stim` — supplies the event times the epochs are cut around.
+- :doc:`make_aligned` — supplies the aligned files behind those events.
+
+**Package modules**
+
+- ``br_preproc`` — Blackrock readers.
+- ``utils`` — blanking, filtering, and epoch helpers.
+- ``config_loading`` — session paths and the IPCA settings.
+
+**External** — ``spikeinterface``, ``scipy``, ``pandas``.

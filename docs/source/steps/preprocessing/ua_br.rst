@@ -132,3 +132,23 @@ Diagnostic figures
 - ``DATA_ROOT/results/figures/artifact_alignment/artifact_alignment_br<br_idx>.png``
 - ``DATA_ROOT/results/figures/IPCA_debug/debug_MACRO_UA_br<br_idx>_ch<electrode>.png``
 - ``DATA_ROOT/results/figures/classification/``
+
+Dependencies
+------------
+
+**Upstream steps**
+
+- :doc:`intan` — supplies ``stim_stream.npz``, used to locate stim artifacts.
+- :doc:`compute_shifts` — supplies ``br_to_intan_shifts.csv``.
+
+**Package modules**
+
+- ``br_preproc`` — ``extract_br_aux_streams_npz`` and the Blackrock readers.
+- ``artifact_correction`` — lag calibration and the region-wise IPCA subtraction.
+- ``subspace_detector`` — subspace matched filtering, used by the ``ssmf``
+  script only.
+- ``utils`` — UA mapping and shared helpers.
+- ``config_loading`` — session paths and probe config.
+
+**External** — ``spikeinterface``, ``scipy``, ``scikit-learn`` (IPCA),
+``pandas``, ``matplotlib``.

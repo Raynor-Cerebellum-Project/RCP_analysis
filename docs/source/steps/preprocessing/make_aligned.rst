@@ -155,3 +155,24 @@ Present when VOG exists:
    ``.get()`` rather than assuming every file has the same set. Which streams
    are expected is set by ``has_BR``, ``has_kinematics``, and ``has_VOG`` in
    ``config/params.yaml``.
+
+Dependencies
+------------
+
+**Upstream steps** — this is the join point, so it needs every stream that is
+being recorded:
+
+- :doc:`intan` — NPRW rates and the stim stream.
+- :doc:`ua_br` — UA rates, HR, and touchscreen state. Skipped when ``has_BR``
+  is false.
+- :doc:`compute_shifts` — the shift that puts Intan and BR on one clock.
+- :doc:`align_dlc` — aligned kinematics. Skipped when ``has_kinematics`` is
+  false.
+- :doc:`align_vog` — aligned VOG. Skipped when ``has_VOG`` is false.
+
+**Package modules**
+
+- ``utils`` — peak dictionaries, region permutation, and path lookups.
+- ``config_loading`` — session paths and the condition roots.
+
+**External** — ``scipy`` (for the optional ``.mat`` output).

@@ -127,3 +127,19 @@ One set per probe and criterion:
 .. note::
    TODO: save RSM into ``checkpoints/``
 
+Dependencies
+------------
+
+**Upstream steps**
+
+- :doc:`../preprocessing/extract_peri_stim` — supplies every peri-stim file
+  this step reads, across ``stim_reaches``, ``control_reaches``, and
+  ``at_rest``.
+
+**Package modules**
+
+- ``rsa_utils`` — holds the whole implementation. The script itself only reads
+  config and calls ``run_rsa``.
+- ``config_loading`` — session paths and the figure root.
+
+**External** — ``scipy`` (statistics), ``matplotlib``.

@@ -74,3 +74,20 @@ The header has two rows: ``cam0`` and ``cam1`` above the per-camera columns.
    frames, both cameras are truncated to the number of pulses and a warning is
    printed. If the BR file cannot be paired at all, the ``.csv`` is still
    written but without ``ns5_sample``.
+
+Dependencies
+------------
+
+**Upstream steps**
+
+- :doc:`ocr_frame_correction` — supplies the OCR frame maps that put DLC rows on
+  ``CORRECTED_framenum``.
+
+**Package modules**
+
+- ``utils`` — ``find_per_cond_inputs``, ``load_ocr_map``, ``load_dlc``,
+  ``align_dlc_to_corrected``, ``frame2sample_br_ns5_sync``,
+  ``get_metadata_mapping``, ``find_ns5_by_br_index``.
+- ``config_loading`` — session paths and probe config.
+
+**External** — ``pandas``.

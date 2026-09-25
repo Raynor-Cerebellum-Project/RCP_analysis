@@ -87,3 +87,16 @@ still writes the output.
    clipped to the shorter of the two and a warning is printed. If the BR file
    cannot be paired at all, the ``.csv`` is still written but without
    ``ns2_sample``.
+
+Dependencies
+------------
+
+**Upstream steps** — none. It reads raw VOG CSVs and the BR ``.ns2`` directly.
+
+**Package modules**
+
+- ``utils`` — ``get_metadata_mapping``, ``find_ns2_by_br_index``,
+  ``frame2sample_br_ns2_sync``.
+- ``config_loading`` — session paths and the ``VOG_sync_ch`` setting.
+
+**External** — ``pandas``, pulled in through ``config_loading``.

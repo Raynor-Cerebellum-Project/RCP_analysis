@@ -48,3 +48,19 @@ each subplot title in:
 Then re-run :doc:`extract_peri_stim`, which reads that file and gates the listed
 trials out.
 
+Dependencies
+------------
+
+**Upstream steps**
+
+- :doc:`extract_peri_stim` — supplies the peri-stim tensors that are plotted.
+
+Note this step sits inside a loop: it reads peri-stim output, and the
+``manual_trial_remove.csv`` it helps you write is then read back by
+:doc:`extract_peri_stim` on the next run.
+
+**Package modules**
+
+- ``config_loading`` — session paths and the peri-stim roots.
+
+**External** — ``matplotlib``.
