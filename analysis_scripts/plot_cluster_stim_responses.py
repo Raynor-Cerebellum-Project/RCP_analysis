@@ -9,7 +9,8 @@ Key Scientific Modules:
        Δr_{c, i}(t) = r_{STIM, c, i}(t) - r_{CTRL, c, π(i)}(t)
        Preserves trial-level variance to isolate stimulation effect from kinematic variability.
   2. Statistical Responsiveness Pre-Gating:
-       Permutation test (STIM vs CTRL label shuffle) with Benjamini-Hochberg FDR (q < 0.05).
+       Two-sample Welch t-test on trial-level baseline-corrected rate changes (STIM vs CTRL)
+       with Benjamini-Hochberg FDR (q < 0.05).
        Non-responsive channels are isolated as a distinct physiological group before clustering.
   3. Dual-Normalization Workflow:
        - Unit-norm trace ||Δr_c(t)||_2 for shape-based clustering (unbiased by high-rate units).
@@ -28,7 +29,9 @@ Key Scientific Modules:
 from __future__ import annotations
 
 import re
+import sys
 import math
+import argparse
 import warnings
 import traceback
 
@@ -57,6 +60,8 @@ from matplotlib.patches import Patch
 
 from scipy.cluster.hierarchy import linkage, dendrogram, fcluster
 from scipy.ndimage import gaussian_filter1d
+from scipy import stats
+from scipy.stats import ttest_ind, t
 
 try:
     from sklearn.metrics import silhouette_score, calinski_harabasz_score
@@ -72,13 +77,12 @@ from RCP_analysis.python.functions.config_loading import *
 # =============================================================================
 
 # Temporal Windows (ms relative to stimulation / event onset)
-WIN_PLOT_MS = (-400.0, 400.0)
-BASELINE_WIN_MS = (-400.0, -50.0)
+WIN_PLOT_MS = (-500.0, 500.0)
+BASELINE_WIN_MS = (-600.0, -400.0)
 
 # Early response window (defaults to rsa_params.poststim_win_ms if specified in params.yaml)
-EARLY_WIN_MS = tuple(float(x) for x in PARAMS.rsa_params.get("poststim_win_ms", [0.0, 50.0]))
-
-LATE_WIN_MS = (50.0, 250.0)
+EARLY_WIN_MS = (0.0, 50.0)
+LATE_WIN_MS = (50.0, 150.0)
 FULL_RESPONSE_WIN_MS = (0.0, 350.0)
 
 # Stimulation Artifact Blanking Parameters - derived from params.yaml
@@ -100,11 +104,11 @@ BIN_WIDTH_MS = NPRW_BIN_WIDTH_MS
 SMOOTHING_SIGMA_MS = NPRW_SMOOTHING_SIGMA_MS
 
 # Responsiveness Test Modes & Gating
-RESPONSIVENESS_TEST_MODE = "both"             # "paired_signflip", "unpaired_label_shuffle", or "both"
+RESPONSIVENESS_TEST_MODE = "welch_baseline_corrected"     # "welch_baseline_corrected", "paired_signflip", "unpaired_label_shuffle", or "both"
 RESPONSIVENESS_BOTH_COMBINATION = "intersection" # "intersection", "union", "paired_only", "unpaired_only"
-RESPONSIVENESS_CRITERION = "hybrid"           # "fdr" (BH FDR q < FDR_ALPHA), "p_val" (permutation p < P_VAL_THRESH & |Δr| >= MIN_DELTA_HZ), or "hybrid"
-CONTRAST_SOURCE_FOR_PLOTS = "paired"          # "paired" (mean paired contrast) or "unpaired" (mean STIM - mean CTRL)
-N_PERMUTATIONS = 2000
+RESPONSIVENESS_CRITERION = "fdr"           # "fdr" (BH FDR q < FDR_ALPHA), "p_val" (permutation p < P_VAL_THRESH & |Δr| >= MIN_DELTA_HZ), or "hybrid"
+CONTRAST_SOURCE_FOR_PLOTS = "unpaired"          # "paired" (mean paired contrast) or "unpaired" (mean STIM - mean CTRL)
+N_PERMUTATIONS = 3000
 FDR_ALPHA = 0.05
 P_VAL_THRESH = 0.05
 MIN_DELTA_HZ = 3.0                            # Minimum post-stim mean absolute contrast (Hz) when using p_val criterion
@@ -352,11 +356,12 @@ def load_reference_mapping(all_files: List[Path]) -> Dict[str, Any]:
 # Bad Channels & Utah Array Mapping
 # =============================================================================
 
-def load_bad_channels() -> Dict[str, set]:
+def load_bad_channels(session_loc: Optional[Path] = None) -> Dict[str, set]:
     bad = {"NPRW": set(), "UA": set()}
     try:
-        session_loc = getattr(PARAMS, "session_loc", None) or getattr(PARAMS, "session_path", None)
         if session_loc is None:
+            session_loc = globals().get("SESSION_LOC") or getattr(PARAMS, "session_loc", None) or getattr(PARAMS, "session_path", None)
+        if session_loc is None and "OUT_BASE" in globals() and OUT_BASE is not None:
             out_base = Path(OUT_BASE)
             parts = [p.lower() for p in out_base.parts]
             if "results" in parts:
@@ -370,6 +375,7 @@ def load_bad_channels() -> Dict[str, set]:
             if isinstance(imp, dict):
                 bad["NPRW"] = set(imp.get("nprw", []))
                 bad["UA"] = set(imp.get("utah", []))
+        _log(f"Impedance check for session ({session_loc}): NPRW bad={len(bad['NPRW'])}, UA bad={len(bad['UA'])}")
     except Exception as e:
         warnings.warn(f"Could not load impedances: {e}")
     return bad
@@ -508,11 +514,16 @@ def extract_array_channel_indices(
     ua_region: Optional[np.ndarray] = None,
     ua_region_names: Optional[np.ndarray] = None,
     max_channels: int = 128,
+    bad_channels: Optional[set] = None,
 ) -> Tuple[List[int], List[int]]:
     """
     Extract channel indices and electrode IDs corresponding to a specific Utah Array region (SMA, PMd, M1i, M1s).
     Prioritizes ua_region stored directly with the data in peristim npz files, with fallback to CSV electrode port mapping.
+    Filters out bad channels based on impedance if bad_channels set is provided.
     """
+    idxs = []
+    elecs = []
+
     # 1. Primary: Match directly via ua_region and ua_region_names from npz
     if ua_region is not None and ua_region_names is not None:
         region_lower = region.lower()
@@ -533,32 +544,44 @@ def extract_array_channel_indices(
                 break
 
         if reg_code is not None:
-            idxs = np.where(np.asarray(ua_region).ravel() == reg_code)[0].tolist()
-            idxs = [int(i) for i in idxs if int(i) < max_channels]
-            if idxs:
-                elecs = [int(ua_ids_1based[i]) for i in idxs] if ua_ids_1based is not None and len(ua_ids_1based) > max(idxs) else idxs
-                return idxs, elecs
+            raw_idxs = np.where(np.asarray(ua_region).ravel() == reg_code)[0].tolist()
+            raw_idxs = [int(i) for i in raw_idxs if int(i) < max_channels]
+            if raw_idxs:
+                raw_elecs = [int(ua_ids_1based[i]) for i in raw_idxs] if ua_ids_1based is not None and len(ua_ids_1based) > max(raw_idxs) else raw_idxs
+                idxs = raw_idxs
+                elecs = raw_elecs
 
     # 2. Fallback: Match via elec_info region field and elec_to_idx from CSV
-    elec_to_idx = build_elec_to_channel_idx(ua_ids_1based, elec_info, port)
-    reg_clean = region.strip().upper()
-    elecs_in_reg = [
-        e for e, info in elec_info.items()
-        if str(info.get("region", "")).strip().upper() == reg_clean
-    ]
-    matched_idxs = []
-    matched_elecs = []
-    for e in elecs_in_reg:
-        idx = elec_to_idx.get(e)
-        if idx is not None and 0 <= idx < max_channels:
-            matched_idxs.append(idx)
-            matched_elecs.append(e)
+    if not idxs:
+        elec_to_idx = build_elec_to_channel_idx(ua_ids_1based, elec_info, port)
+        reg_clean = region.strip().upper()
+        elecs_in_reg = [
+            e for e, info in elec_info.items()
+            if str(info.get("region", "")).strip().upper() == reg_clean
+        ]
+        matched_idxs = []
+        matched_elecs = []
+        for e in elecs_in_reg:
+            idx = elec_to_idx.get(e)
+            if idx is not None and 0 <= idx < max_channels:
+                matched_idxs.append(idx)
+                matched_elecs.append(e)
 
-    if matched_idxs:
-        pairs = sorted(zip(matched_idxs, matched_elecs), key=lambda p: p[0])
-        return [p[0] for p in pairs], [p[1] for p in pairs]
+        if matched_idxs:
+            pairs = sorted(zip(matched_idxs, matched_elecs), key=lambda p: p[0])
+            idxs = [p[0] for p in pairs]
+            elecs = [p[1] for p in pairs]
 
-    return [], []
+    # Filter bad channels based on impedance if bad_channels provided
+    if bad_channels and idxs:
+        filtered = [
+            (i, e) for i, e in zip(idxs, elecs)
+            if e not in bad_channels and i not in bad_channels and (i + 1) not in bad_channels
+        ]
+        idxs = [p[0] for p in filtered]
+        elecs = [p[1] for p in filtered]
+
+    return idxs, elecs
 
 
 
@@ -585,6 +608,26 @@ def prepare_counts_3d(counts_raw: Optional[np.ndarray]) -> Optional[np.ndarray]:
         return np.transpose(arr, (1, 0, 2))
     return arr
 
+def nan_gaussian_filter1d(arr_3d: np.ndarray, sigma_bins: float) -> np.ndarray:
+    """Apply 1D Gaussian filter along axis=2, ignoring NaNs to prevent 0-count artifact bleed into pre-stim baseline."""
+    if sigma_bins <= 0:
+        return arr_3d
+
+    val = arr_3d.copy()
+    nan_mask = np.isnan(val)
+    val[nan_mask] = 0.0
+    weights = (~nan_mask).astype(float)
+
+    smoothed_val = gaussian_filter1d(val, sigma=sigma_bins, axis=2, mode="nearest")
+    smoothed_w = gaussian_filter1d(weights, sigma=sigma_bins, axis=2, mode="nearest")
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out = smoothed_val / smoothed_w
+        out[smoothed_w < 1e-5] = np.nan
+    out[nan_mask] = np.nan
+    return out
+
+
 def rebin_and_smooth(
     counts_3d: np.ndarray,
     centers_ms: np.ndarray,
@@ -592,9 +635,10 @@ def rebin_and_smooth(
     target_bin_w: float = BIN_WIDTH_MS,
     smooth_sigma_ms: float = SMOOTHING_SIGMA_MS,
     win_ms: Tuple[float, float] = WIN_PLOT_MS,
+    blank_win: Optional[Tuple[float, float]] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Rebin counts to target_bin_w, convert to rates (Hz), and smooth along time axis.
+    Rebin counts to target_bin_w, convert to rates (Hz), mask blanking window, and smooth along time axis.
     Returns: rates_3d (channels, trials, bins), bin_centers_ms.
     """
     if counts_3d is None or centers_ms is None:
@@ -628,10 +672,18 @@ def rebin_and_smooth(
     # Convert counts to instantaneous firing rate (Hz)
     rates_hz = rebinned / (target_bin_w / 1000.0)
 
+    # Apply artifact blanking mask BEFORE Gaussian smoothing to prevent 0-count leakage into baseline
+    if blank_win is not None:
+        blank_mask = (new_centers >= blank_win[0]) & (new_centers <= blank_win[1])
+        rates_hz[:, :, blank_mask] = np.nan
+
     # Gaussian smoothing
     if smooth_sigma_ms > 0:
         sigma_bins = smooth_sigma_ms / target_bin_w
-        rates_hz = gaussian_filter1d(rates_hz, sigma=sigma_bins, axis=2, mode="nearest")
+        if np.any(np.isnan(rates_hz)):
+            rates_hz = nan_gaussian_filter1d(rates_hz, sigma_bins)
+        else:
+            rates_hz = gaussian_filter1d(rates_hz, sigma=sigma_bins, axis=2, mode="nearest")
 
     return rates_hz, new_centers
 
@@ -733,7 +785,7 @@ def match_trials_stratified(
 
 # =============================================================================
 # =============================================================================
-# Statistical Responsiveness Testing (Paired Sign-Flip & Unpaired Label-Shuffle)
+# Statistical Responsiveness Testing (Welch Baseline-Corrected, Paired Sign-Flip & Unpaired Label-Shuffle)
 # =============================================================================
 
 def apply_responsiveness_criterion(
@@ -749,17 +801,299 @@ def apply_responsiveness_criterion(
     Apply statistical and effect-size gating criteria to p-values and q-values.
     
     Modes:
-      - "fdr": q <= alpha
+      - "fdr": q <= alpha (effect-size threshold not required by default when using FDR)
+      - "fdr_min_delta" / "fdr_effect_size": (q <= alpha) & (mean_abs_delta_hz >= min_delta_hz)
       - "p_val": (p <= p_thresh) & (mean_abs_delta_hz >= min_delta_hz)
       - "hybrid": (q <= alpha) | ((p <= p_thresh) & (mean_abs_delta_hz >= min_delta_hz))
     """
     crit = str(criterion).strip().lower()
     if crit == "p_val":
         return (p_values <= p_thresh) & (mean_abs_delta_hz >= min_delta_hz)
+    elif crit in ("fdr_min_delta", "fdr_effect_size", "fdr_delta"):
+        return (q_values <= alpha) & (mean_abs_delta_hz >= min_delta_hz)
     elif crit == "hybrid":
         return (q_values <= alpha) | ((p_values <= p_thresh) & (mean_abs_delta_hz >= min_delta_hz))
     else:  # "fdr"
         return q_values <= alpha
+
+
+def compute_benjamini_hochberg_fdr(p_values: np.ndarray) -> np.ndarray:
+    """
+    Compute Benjamini-Hochberg FDR-adjusted q-values across an array of p-values.
+    Handles NaNs by treating them as p = 1.0 (non-significant).
+    """
+    p = np.array(p_values, dtype=float, copy=True)
+    p = np.nan_to_num(p, nan=1.0, posinf=1.0, neginf=1.0)
+    p = np.clip(p, 0.0, 1.0)
+    n = len(p)
+    if n == 0:
+        return np.empty(0, dtype=float)
+
+    sorted_indices = np.argsort(p)
+    q_values = np.ones(n, dtype=float)
+    cumulative_min = 1.0
+    for rank in range(n - 1, -1, -1):
+        idx = sorted_indices[rank]
+        q_val = p[idx] * n / (rank + 1)
+        cumulative_min = min(cumulative_min, q_val)
+        q_values[idx] = min(cumulative_min, 1.0)
+    return q_values
+
+
+def compute_welch_baseline_corrected_responsiveness(
+    stim_rates: np.ndarray,
+    ctrl_rates: np.ndarray,
+    time_ms: np.ndarray,
+    baseline_win_ms: Tuple[float, float] = BASELINE_WIN_MS,
+    response_win_ms: Tuple[float, float] = FULL_RESPONSE_WIN_MS,
+    blank_mask: Optional[np.ndarray] = None,
+    alpha: float = FDR_ALPHA,
+    criterion: str = RESPONSIVENESS_CRITERION,
+    p_thresh: float = P_VAL_THRESH,
+    min_delta_hz: float = MIN_DELTA_HZ,
+    contrast_trace: Optional[np.ndarray] = None,
+    channel_ids: Optional[Sequence[Any]] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+    """
+    Trial-level baseline-corrected Welch two-sample t-test for responsive-channel selection.
+
+    For each channel and each trial:
+      1. Baseline firing rate:
+           B_i = mean(r_i(t), t in [-500, -300] ms)
+      2. Response-window firing rate:
+           P_i = mean(r_i(t), t in resp_mask)
+         - For NPRW: post-artifact response window (resp_win)
+         - For UA: response window, including during-stimulation bins when UA blanking is disabled
+      3. Baseline-corrected rate change:
+           Δ_i = P_i - B_i
+      4. Compare STIM trial changes vs CTRL trial changes using a two-sided Welch two-sample t-test:
+           scipy.stats.ttest_ind(stim_changes, ctrl_changes, equal_var=False, nan_policy="omit")
+      5. Apply Benjamini-Hochberg FDR correction across channels within each analyzed array/condition:
+           q_value <= FDR_ALPHA
+         (MIN_DELTA_HZ threshold available as optional additional effect-size gate, but not required by default).
+      6. Report and return per-channel metrics:
+           - raw Welch t-test p-value
+           - BH-FDR q-value
+           - Welch t statistic
+           - STIM mean baseline-corrected change (Hz)
+           - CTRL mean baseline-corrected change (Hz)
+           - stimulation-specific effect size: Δ_effect = mean(Δ_STIM) - mean(Δ_CTRL)
+           - 95% confidence interval for effect size [ci_low, ci_high]
+           - responsive boolean
+
+    Returns:
+      is_responsive: (n_channels,) boolean array
+      p_values: (n_channels,) raw Welch t-test p-values
+      q_values: (n_channels,) BH-FDR adjusted q-values
+      mean_abs_delta_hz: (n_channels,) absolute effect size |Δ_effect| in Hz
+      observed_contrast_mean: (n_channels, n_bins) time-resolved contrast trace
+      stats_dict: dict containing full per-channel metrics and DataFrame
+    """
+    n_ch, n_stim, n_bins = stim_rates.shape
+    n_ctrl = ctrl_rates.shape[1]
+
+    # Baseline mask [-500, -300] ms
+    base_mask = (time_ms >= baseline_win_ms[0]) & (time_ms <= baseline_win_ms[1])
+
+    # Response window mask
+    resp_mask = (time_ms >= response_win_ms[0]) & (time_ms <= response_win_ms[1])
+    if blank_mask is not None:
+        resp_mask = resp_mask & (~blank_mask)
+
+    # Time-resolved contrast trace for downstream clustering/plots
+    if contrast_trace is not None:
+        observed_contrast_mean = contrast_trace
+    else:
+        mean_s = np.nanmean(stim_rates, axis=1)
+        mean_c = np.nanmean(ctrl_rates, axis=1)
+        observed_contrast_mean = mean_s - mean_c
+
+    # Check adequate trials and valid masks
+    if n_stim < 2 or n_ctrl < 2 or not np.any(resp_mask) or not np.any(base_mask):
+        _log(f"  [welch_baseline_corrected] Inadequate trials (stim={n_stim}, ctrl={n_ctrl}, require >= 2 each) or empty windows. Marking non-responsive.")
+        is_resp = np.zeros(n_ch, dtype=bool)
+        p_vals = np.ones(n_ch, dtype=float)
+        q_vals = np.ones(n_ch, dtype=float)
+        t_stats = np.zeros(n_ch, dtype=float)
+        stim_mean_delta = np.zeros(n_ch, dtype=float)
+        ctrl_mean_delta = np.zeros(n_ch, dtype=float)
+        delta_effect = np.zeros(n_ch, dtype=float)
+        ci_95_low = np.full(n_ch, np.nan)
+        ci_95_high = np.full(n_ch, np.nan)
+        mean_abs_delta = np.zeros(n_ch, dtype=float)
+
+        df_metrics = pd.DataFrame({
+            "channel_idx": np.arange(n_ch),
+            "channel_id": channel_ids if channel_ids is not None else np.arange(1, n_ch + 1),
+            "is_responsive": is_resp,
+            "welch_p_value": p_vals,
+            "bh_fdr_q_value": q_vals,
+            "welch_t_stat": t_stats,
+            "stim_mean_delta_hz": stim_mean_delta,
+            "ctrl_mean_delta_hz": ctrl_mean_delta,
+            "delta_effect_hz": delta_effect,
+            "ci_95_low_hz": ci_95_low,
+            "ci_95_high_hz": ci_95_high,
+            "n_stim_trials": np.full(n_ch, n_stim),
+            "n_ctrl_trials": np.full(n_ch, n_ctrl),
+        })
+        stats_dict = {
+            "is_responsive": is_resp,
+            "p_values": p_vals,
+            "q_values": q_vals,
+            "t_stats": t_stats,
+            "stim_mean_delta_hz": stim_mean_delta,
+            "ctrl_mean_delta_hz": ctrl_mean_delta,
+            "delta_effect_hz": delta_effect,
+            "ci_95_low_hz": ci_95_low,
+            "ci_95_high_hz": ci_95_high,
+            "mean_abs_delta_hz": mean_abs_delta,
+            "contrast_mean": observed_contrast_mean,
+            "metrics_df": df_metrics,
+            "n_resp": 0,
+            "n_sig_p": 0,
+            "n_sig_q": 0,
+        }
+        return is_resp, p_vals, q_vals, mean_abs_delta, observed_contrast_mean, stats_dict
+
+    # 1. Compute trial-level baseline firing rates: B_i = mean(r_i(t), t in [-500, -300] ms)
+    stim_base = np.nanmean(stim_rates[:, :, base_mask], axis=2)  # (n_ch, n_stim)
+    ctrl_base = np.nanmean(ctrl_rates[:, :, base_mask], axis=2)  # (n_ch, n_ctrl)
+
+    # 2. Compute trial-level response-window firing rates: P_i = mean(r_i(t), t in resp_mask)
+    stim_resp = np.nanmean(stim_rates[:, :, resp_mask], axis=2)  # (n_ch, n_stim)
+    ctrl_resp = np.nanmean(ctrl_rates[:, :, resp_mask], axis=2)  # (n_ch, n_ctrl)
+
+    # 3. Compute each trial's baseline-corrected rate change: Δ_i = P_i - B_i
+    stim_changes = stim_resp - stim_base  # (n_ch, n_stim)
+    ctrl_changes = ctrl_resp - ctrl_base  # (n_ch, n_ctrl)
+
+    # Preallocate metric arrays
+    raw_p_values = np.ones(n_ch, dtype=float)
+    welch_t_stats = np.zeros(n_ch, dtype=float)
+    stim_mean_delta_hz = np.zeros(n_ch, dtype=float)
+    ctrl_mean_delta_hz = np.zeros(n_ch, dtype=float)
+    delta_effect_hz = np.zeros(n_ch, dtype=float)
+    ci_95_low_hz = np.full(n_ch, np.nan, dtype=float)
+    ci_95_high_hz = np.full(n_ch, np.nan, dtype=float)
+    n_stim_trials_arr = np.zeros(n_ch, dtype=int)
+    n_ctrl_trials_arr = np.zeros(n_ch, dtype=int)
+
+    # 4. Compare STIM trial changes vs CTRL trial changes using two-sided Welch t-test
+    for c in range(n_ch):
+        s_c = stim_changes[c, :]
+        c_c = ctrl_changes[c, :]
+
+        s_clean = s_c[np.isfinite(s_c)]
+        c_clean = c_c[np.isfinite(c_c)]
+
+        n_s = len(s_clean)
+        n_c = len(c_clean)
+        n_stim_trials_arr[c] = n_s
+        n_ctrl_trials_arr[c] = n_c
+
+        if n_s == 0 or n_c == 0:
+            continue
+
+        mean_s = float(np.mean(s_clean))
+        mean_c = float(np.mean(c_clean))
+        stim_mean_delta_hz[c] = mean_s
+        ctrl_mean_delta_hz[c] = mean_c
+
+        diff_mean = mean_s - mean_c
+        delta_effect_hz[c] = diff_mean
+
+        if n_s < 2 or n_c < 2:
+            raw_p_values[c] = 1.0
+            welch_t_stats[c] = np.nan
+            continue
+
+        var_s = float(np.var(s_clean, ddof=1))
+        var_c = float(np.var(c_clean, ddof=1))
+
+        if var_s == 0.0 and var_c == 0.0:
+            if np.isclose(mean_s, mean_c):
+                welch_t_stats[c] = 0.0
+                raw_p_values[c] = 1.0
+                ci_95_low_hz[c] = diff_mean
+                ci_95_high_hz[c] = diff_mean
+            else:
+                welch_t_stats[c] = np.nan
+                raw_p_values[c] = 1.0
+            continue
+
+        # Two-sided Welch t-test
+        res = stats.ttest_ind(s_clean, c_clean, equal_var=False, nan_policy="omit")
+        t_val = float(res.statistic) if np.isfinite(res.statistic) else 0.0
+        p_val = float(res.pvalue) if np.isfinite(res.pvalue) else 1.0
+        welch_t_stats[c] = t_val
+        raw_p_values[c] = p_val
+
+        # 95% Confidence Interval for effect size via Welch-Satterthwaite approximation
+        se_diff = math.sqrt(var_s / n_s + var_c / n_c)
+        v_s = var_s / n_s
+        v_c = var_c / n_c
+        denom = ((v_s**2) / (n_s - 1)) + ((v_c**2) / (n_c - 1))
+        if denom > 0 and se_diff > 0:
+            df = ((v_s + v_c)**2) / denom
+            t_crit = float(stats.t.ppf(0.975, df))
+            ci_95_low_hz[c] = diff_mean - t_crit * se_diff
+            ci_95_high_hz[c] = diff_mean + t_crit * se_diff
+
+    # 5. Apply Benjamini-Hochberg FDR correction across channels
+    bh_fdr_q_values = compute_benjamini_hochberg_fdr(raw_p_values)
+
+    # Effect size magnitude
+    mean_abs_delta_hz = np.abs(delta_effect_hz)
+
+    # Mark responsive channels
+    is_responsive = apply_responsiveness_criterion(
+        raw_p_values,
+        bh_fdr_q_values,
+        mean_abs_delta_hz,
+        criterion=criterion,
+        alpha=alpha,
+        p_thresh=p_thresh,
+        min_delta_hz=min_delta_hz,
+    )
+
+    # Build per-channel report DataFrame
+    ch_ids = channel_ids if channel_ids is not None else np.arange(1, n_ch + 1)
+    df_metrics = pd.DataFrame({
+        "channel_idx": np.arange(n_ch),
+        "channel_id": ch_ids,
+        "is_responsive": is_responsive,
+        "welch_p_value": raw_p_values,
+        "bh_fdr_q_value": bh_fdr_q_values,
+        "welch_t_stat": welch_t_stats,
+        "stim_mean_delta_hz": stim_mean_delta_hz,
+        "ctrl_mean_delta_hz": ctrl_mean_delta_hz,
+        "delta_effect_hz": delta_effect_hz,
+        "ci_95_low_hz": ci_95_low_hz,
+        "ci_95_high_hz": ci_95_high_hz,
+        "n_stim_trials": n_stim_trials_arr,
+        "n_ctrl_trials": n_ctrl_trials_arr,
+    })
+
+    stats_dict = {
+        "is_responsive": is_responsive,
+        "p_values": raw_p_values,
+        "q_values": bh_fdr_q_values,
+        "t_stats": welch_t_stats,
+        "stim_mean_delta_hz": stim_mean_delta_hz,
+        "ctrl_mean_delta_hz": ctrl_mean_delta_hz,
+        "delta_effect_hz": delta_effect_hz,
+        "ci_95_low_hz": ci_95_low_hz,
+        "ci_95_high_hz": ci_95_high_hz,
+        "mean_abs_delta_hz": mean_abs_delta_hz,
+        "contrast_mean": observed_contrast_mean,
+        "metrics_df": df_metrics,
+        "n_resp": int(np.sum(is_responsive)),
+        "n_sig_p": int(np.sum(raw_p_values <= p_thresh)),
+        "n_sig_q": int(np.sum(bh_fdr_q_values <= alpha)),
+    }
+
+    return is_responsive, raw_p_values, bh_fdr_q_values, mean_abs_delta_hz, observed_contrast_mean, stats_dict
 
 
 def compute_paired_signflip_responsiveness(
@@ -826,14 +1160,7 @@ def compute_paired_signflip_responsiveness(
         p_values[c] = (1.0 + float(np.sum(perm_integrals[c, :] >= obs_integrals[c]))) / (n_perms + 1.0)
 
     # Benjamini-Hochberg FDR correction
-    sorted_indices = np.argsort(p_values)
-    q_values = np.ones(n_ch, dtype=float)
-    cumulative_min = 1.0
-    for rank in range(n_ch - 1, -1, -1):
-        idx = sorted_indices[rank]
-        q_val = p_values[idx] * n_ch / (rank + 1)
-        cumulative_min = min(cumulative_min, q_val)
-        q_values[idx] = min(cumulative_min, 1.0)
+    q_values = compute_benjamini_hochberg_fdr(p_values)
 
     is_responsive = apply_responsiveness_criterion(
         p_values, q_values, mean_abs_delta_hz,
@@ -865,12 +1192,6 @@ def compute_unpaired_label_shuffle_responsiveness(
       firing-rate traces are drawn from the same condition-independent distribution.
       In practical terms, there is no condition-associated STIM-vs-CTRL firing-rate
       difference in the response window.
-
-    Statistical Caveat:
-      This exchangeability assumption can be violated by block/session drift, behavioral
-      differences, fatigue, recording instability, or other confounds if STIM and CTRL
-      trials were not interleaved or behaviorally matched. While it leverages more trials
-      and accommodates unequal counts, it does not replace kinematic matching.
 
     Returns:
       is_responsive: (n_channels,) boolean array
@@ -940,14 +1261,7 @@ def compute_unpaired_label_shuffle_responsiveness(
     p_values = (1.0 + counts) / (n_perms + 1.0)
 
     # Benjamini-Hochberg FDR correction
-    sorted_indices = np.argsort(p_values)
-    q_values = np.ones(n_ch, dtype=float)
-    cumulative_min = 1.0
-    for rank in range(n_ch - 1, -1, -1):
-        idx = sorted_indices[rank]
-        q_val = p_values[idx] * n_ch / (rank + 1)
-        cumulative_min = min(cumulative_min, q_val)
-        q_values[idx] = min(cumulative_min, 1.0)
+    q_values = compute_benjamini_hochberg_fdr(p_values)
 
     is_responsive = apply_responsiveness_criterion(
         p_values, q_values, mean_abs_delta_hz,
@@ -963,6 +1277,7 @@ def compute_responsiveness_gating(
     stim_rates: Optional[np.ndarray],
     ctrl_rates: Optional[np.ndarray],
     time_ms: np.ndarray,
+    baseline_win_ms: Tuple[float, float] = BASELINE_WIN_MS,
     response_win_ms: Tuple[float, float] = FULL_RESPONSE_WIN_MS,
     blank_mask: Optional[np.ndarray] = None,
     test_mode: str = RESPONSIVENESS_TEST_MODE,
@@ -973,19 +1288,67 @@ def compute_responsiveness_gating(
     p_thresh: float = P_VAL_THRESH,
     min_delta_hz: float = MIN_DELTA_HZ,
     rng_seed: int = 42,
+    channel_ids: Optional[Sequence[Any]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
     """
     Unified responsiveness gating orchestrator.
     Supports:
+      - "welch_baseline_corrected": trial-level baseline-corrected Welch two-sample t-test with BH-FDR (default).
       - "paired_signflip": paired sign-flip permutation test.
       - "unpaired_label_shuffle": unpaired condition-label shuffle permutation test.
-      - "both": runs both tests and combines them via both_combination ('intersection', 'union', 'paired_only', 'unpaired_only').
+      - "both": runs paired and unpaired permutation tests and combines them via both_combination ('intersection', 'union', 'paired_only', 'unpaired_only').
+
+    Note on contrast_mean:
+      The returned contrast_mean strictly remains the existing time-resolved STIM-minus-CTRL trace
+      (paired or unpaired) so that downstream clustering, quadrant maps, and phenotype profiles
+      continue to operate on time-resolved physiological waveforms regardless of the statistical gate.
     """
     mode = str(test_mode).strip().lower()
     comb = str(both_combination).strip().lower()
+    crit = str(criterion).strip().lower()
 
+    # Precompute existing time-resolved contrast trace to preserve for downstream clustering / plots
+    paired_contrast = None
+    if paired_stim is not None and paired_ctrl is not None:
+        paired_contrast = np.nanmean(paired_stim - paired_ctrl, axis=1)
+
+    unpaired_contrast = None
+    if stim_rates is not None and ctrl_rates is not None:
+        unpaired_contrast = np.nanmean(stim_rates, axis=1) - np.nanmean(ctrl_rates, axis=1)
+
+    if CONTRAST_SOURCE_FOR_PLOTS == "unpaired" and unpaired_contrast is not None:
+        time_resolved_contrast = unpaired_contrast
+    elif paired_contrast is not None:
+        time_resolved_contrast = paired_contrast
+    elif unpaired_contrast is not None:
+        time_resolved_contrast = unpaired_contrast
+    else:
+        n_ch_fallback = paired_stim.shape[0] if paired_stim is not None else (stim_rates.shape[0] if stim_rates is not None else 0)
+        time_resolved_contrast = np.zeros((n_ch_fallback, len(time_ms)))
+
+    n_ch = paired_stim.shape[0] if paired_stim is not None else (stim_rates.shape[0] if stim_rates is not None else len(time_resolved_contrast))
+
+    run_welch = mode == "welch_baseline_corrected"
     run_paired = mode in ("paired_signflip", "both")
     run_unpaired = mode in ("unpaired_label_shuffle", "both")
+
+    welch_res = None
+    if run_welch:
+        s_in = stim_rates if stim_rates is not None else paired_stim
+        c_in = ctrl_rates if ctrl_rates is not None else paired_ctrl
+        if s_in is not None and c_in is not None:
+            welch_res = compute_welch_baseline_corrected_responsiveness(
+                s_in, c_in, time_ms,
+                baseline_win_ms=baseline_win_ms,
+                response_win_ms=response_win_ms,
+                blank_mask=blank_mask,
+                alpha=alpha,
+                criterion=criterion,
+                p_thresh=p_thresh,
+                min_delta_hz=min_delta_hz,
+                contrast_trace=time_resolved_contrast,
+                channel_ids=channel_ids,
+            )
 
     paired_res = None
     if run_paired:
@@ -1007,18 +1370,33 @@ def compute_responsiveness_gating(
                 p_thresh=p_thresh, min_delta_hz=min_delta_hz, rng_seed=rng_seed,
             )
 
-    # Determine active gate
-    n_ch = paired_stim.shape[0] if paired_stim is not None else (stim_rates.shape[0] if stim_rates is not None else 0)
+    # Determine active gate and descriptions
+    if mode == "welch_baseline_corrected":
+        if welch_res is not None:
+            is_responsive, p_vals, q_vals, mean_delta, contrast, welch_info = welch_res
+        else:
+            is_responsive = np.zeros(n_ch, dtype=bool)
+            p_vals, q_vals = np.ones(n_ch), np.ones(n_ch)
+            mean_delta = np.zeros(n_ch)
+            contrast = time_resolved_contrast
+            welch_info = None
 
-    if mode == "paired_signflip":
+        gate_desc = "Welch t-test on trial-level baseline-corrected STIM vs CTRL changes, BH-FDR q < 0.05"
+        if alpha != 0.05:
+            gate_desc = f"Welch t-test on trial-level baseline-corrected STIM vs CTRL changes, BH-FDR q < {alpha:.2f}"
+        if crit in ("fdr_min_delta", "fdr_effect_size", "p_val"):
+            gate_desc += f" & |Δ| >= {min_delta_hz:.1f} Hz"
+
+    elif mode == "paired_signflip":
         if paired_res is not None:
             is_responsive, p_vals, q_vals, mean_delta, contrast = paired_res
         else:
             is_responsive = np.zeros(n_ch, dtype=bool)
             p_vals, q_vals = np.ones(n_ch), np.ones(n_ch)
             mean_delta = np.zeros(n_ch)
-            contrast = np.zeros((n_ch, len(time_ms)))
+            contrast = time_resolved_contrast
         gate_desc = f"paired ({criterion})"
+        welch_info = None
 
     elif mode == "unpaired_label_shuffle":
         if unpaired_res is not None:
@@ -1027,8 +1405,9 @@ def compute_responsiveness_gating(
             is_responsive = np.zeros(n_ch, dtype=bool)
             p_vals, q_vals = np.ones(n_ch), np.ones(n_ch)
             mean_delta = np.zeros(n_ch)
-            contrast = np.zeros((n_ch, len(time_ms)))
+            contrast = time_resolved_contrast
         gate_desc = f"unpaired ({criterion})"
+        welch_info = None
 
     else:  # "both"
         p_resp = paired_res[0] if paired_res is not None else np.zeros(n_ch, dtype=bool)
@@ -1050,7 +1429,8 @@ def compute_responsiveness_gating(
         p_vals = paired_res[1] if paired_res is not None else (unpaired_res[1] if unpaired_res is not None else np.ones(n_ch))
         q_vals = paired_res[2] if paired_res is not None else (unpaired_res[2] if unpaired_res is not None else np.ones(n_ch))
         mean_delta = paired_res[3] if paired_res is not None else (unpaired_res[3] if unpaired_res is not None else np.zeros(n_ch))
-        contrast = paired_res[4] if paired_res is not None else (unpaired_res[4] if unpaired_res is not None else np.zeros((n_ch, len(time_ms))))
+        contrast = paired_res[4] if paired_res is not None else (unpaired_res[4] if unpaired_res is not None else time_resolved_contrast)
+        welch_info = None
 
     gate_info = {
         "mode": mode,
@@ -1058,6 +1438,11 @@ def compute_responsiveness_gating(
         "criterion": criterion,
         "gate_desc": gate_desc,
         "is_responsive": is_responsive,
+        "contrast_mean": contrast,
+        "p_values": p_vals,
+        "q_values": q_vals,
+        "mean_abs_delta_hz": mean_delta,
+        "welch": welch_info,
         "paired": {
             "is_responsive": paired_res[0] if paired_res is not None else None,
             "p_values": paired_res[1] if paired_res is not None else None,
@@ -1981,41 +2366,82 @@ def process_single_condition(
         "ctrl_n_trials": ctrl_dist.shape[0] if (ctrl_dist is not None and getattr(ctrl_dist, "ndim", 0) >= 2) else (ctrl_xy[0].shape[0] if ctrl_xy is not None else None),
     }
 
+    bad_nprw = bad_channels.get("NPRW", set()) if bad_channels else set()
+    bad_ua = bad_channels.get("UA", set()) if bad_channels else set()
+
     # Process Arrays: We analyze NPRW and Utah Arrays (individual arrays and/or combined)
     array_data_list = []
     if nprw_counts is not None and nprw_t is not None:
         s_nprw_3d = prepare_counts_3d(nprw_counts)
         c_nprw_3d = prepare_counts_3d(ctrl_nprw_counts) if ctrl_nprw_counts is not None else None
         r_nprw_3d = prepare_counts_3d(rest_nprw_counts) if rest_nprw_counts is not None else None
-        array_data_list.append((
-            "NPRW",
-            s_nprw_3d, nprw_t,
-            c_nprw_3d, ctrl_nprw_t if ctrl_nprw_t is not None else nprw_t,
-            r_nprw_3d, rest_nprw_t if rest_nprw_t is not None else nprw_t,
-        ))
+
+        if s_nprw_3d is not None and s_nprw_3d.shape[0] > 0:
+            n_nprw_total = s_nprw_3d.shape[0]
+            # Exclude bad channels based on impedance (checking both 0-based and 1-based channel IDs)
+            valid_nprw_idxs = [
+                ch for ch in range(n_nprw_total)
+                if ch not in bad_nprw and (ch + 1) not in bad_nprw
+            ]
+            n_nprw_bad = n_nprw_total - len(valid_nprw_idxs)
+            if n_nprw_bad > 0:
+                _log(f"  [NPRW] Excluded {n_nprw_bad}/{n_nprw_total} bad impedance channels; analyzing {len(valid_nprw_idxs)} valid channels.")
+
+            if valid_nprw_idxs:
+                s_nprw_valid = s_nprw_3d[valid_nprw_idxs, :, :]
+                c_nprw_valid = c_nprw_3d[valid_nprw_idxs, :, :] if (c_nprw_3d is not None and c_nprw_3d.shape[0] == n_nprw_total) else c_nprw_3d
+                r_nprw_valid = r_nprw_3d[valid_nprw_idxs, :, :] if (r_nprw_3d is not None and r_nprw_3d.shape[0] == n_nprw_total) else r_nprw_3d
+                nprw_ch_ids = [ch + 1 for ch in valid_nprw_idxs]
+                array_data_list.append((
+                    "NPRW",
+                    s_nprw_valid, nprw_t,
+                    c_nprw_valid, ctrl_nprw_t if ctrl_nprw_t is not None else nprw_t,
+                    r_nprw_valid, rest_nprw_t if rest_nprw_t is not None else nprw_t,
+                    nprw_ch_ids,
+                ))
+            else:
+                _log("  [NPRW] No valid channels remaining after impedance exclusion, skipping.")
 
     if ua_counts is not None and ua_t is not None:
         s_ua_3d = prepare_counts_3d(ua_counts)
         c_ua_3d = prepare_counts_3d(ctrl_ua_counts) if ctrl_ua_counts is not None else None
         r_ua_3d = prepare_counts_3d(rest_ua_counts) if rest_ua_counts is not None else None
 
-        if ANALYZE_COMBINED_UTAH and s_ua_3d is not None:
-            array_data_list.append((
-                "UA_ALL",
-                s_ua_3d, ua_t,
-                c_ua_3d, ctrl_ua_t if ctrl_ua_t is not None else ua_t,
-                r_ua_3d, rest_ua_t if rest_ua_t is not None else ua_t,
-            ))
+        if ANALYZE_COMBINED_UTAH and s_ua_3d is not None and s_ua_3d.shape[0] > 0:
+            all_ua_ch = s_ua_3d.shape[0]
+            ua_ids_arr = ua_ids.ravel() if ua_ids is not None else np.arange(1, all_ua_ch + 1)
+            valid_ua_idxs = [
+                i for i in range(all_ua_ch)
+                if int(ua_ids_arr[i]) not in bad_ua and i not in bad_ua and (i + 1) not in bad_ua
+            ]
+            n_ua_bad = all_ua_ch - len(valid_ua_idxs)
+            if n_ua_bad > 0:
+                _log(f"  [UA_ALL] Excluded {n_ua_bad}/{all_ua_ch} bad impedance channels; analyzing {len(valid_ua_idxs)} valid channels.")
+
+            if valid_ua_idxs:
+                s_ua_valid = s_ua_3d[valid_ua_idxs, :, :]
+                c_ua_valid = c_ua_3d[valid_ua_idxs, :, :] if (c_ua_3d is not None and c_ua_3d.shape[0] == all_ua_ch) else c_ua_3d
+                r_ua_valid = r_ua_3d[valid_ua_idxs, :, :] if (r_ua_3d is not None and r_ua_3d.shape[0] == all_ua_ch) else r_ua_3d
+                all_elecs = [int(ua_ids_arr[i]) for i in valid_ua_idxs]
+                array_data_list.append((
+                    "UA_ALL",
+                    s_ua_valid, ua_t,
+                    c_ua_valid, ctrl_ua_t if ctrl_ua_t is not None else ua_t,
+                    r_ua_valid, rest_ua_t if rest_ua_t is not None else ua_t,
+                    all_elecs,
+                ))
 
         if ANALYZE_INDIVIDUAL_UTAH_ARRAYS and s_ua_3d is not None:
             for reg in REGION_ORDER:
-                s_idxs, _ = extract_array_channel_indices(
+                s_idxs, s_elecs = extract_array_channel_indices(
                     ua_ids, elec_info, port, reg,
                     ua_region=ua_region,
                     ua_region_names=ua_region_names,
                     max_channels=s_ua_3d.shape[0],
+                    bad_channels=bad_ua,
                 )
                 if not s_idxs:
+                    _log(f"  [UA_{reg}] No valid channels found for region (all excluded or missing), skipping.")
                     continue
 
                 s_sub = s_ua_3d[s_idxs, :, :]
@@ -2030,6 +2456,7 @@ def process_single_condition(
                         ua_region=ctrl_ua_reg if ctrl_ua_reg is not None else ua_region,
                         ua_region_names=ctrl_ua_names if ctrl_ua_names is not None else ua_region_names,
                         max_channels=c_ua_3d.shape[0],
+                        bad_channels=bad_ua,
                     )
                     if c_idxs and len(c_idxs) == len(s_idxs):
                         c_sub = c_ua_3d[c_idxs, :, :]
@@ -2046,6 +2473,7 @@ def process_single_condition(
                         ua_region=rest_ua_reg if rest_ua_reg is not None else ua_region,
                         ua_region_names=rest_ua_names if rest_ua_names is not None else ua_region_names,
                         max_channels=r_ua_3d.shape[0],
+                        bad_channels=bad_ua,
                     )
                     if r_idxs and len(r_idxs) == len(s_idxs):
                         r_sub = r_ua_3d[r_idxs, :, :]
@@ -2057,23 +2485,23 @@ def process_single_condition(
                     s_sub, ua_t,
                     c_sub, ctrl_ua_t if ctrl_ua_t is not None else ua_t,
                     r_sub, rest_ua_t if rest_ua_t is not None else ua_t,
+                    s_elecs,
                 ))
 
     cluster_assignments = {}
     phenotypes_by_array = {}
 
-    for arr_name, s_3d, s_t, c_3d, c_t, r_3d, r_t in array_data_list:
+    for item in array_data_list:
+        if len(item) == 8:
+            arr_name, s_3d, s_t, c_3d, c_t, r_3d, r_t, arr_ch_ids = item
+        else:
+            arr_name, s_3d, s_t, c_3d, c_t, r_3d, r_t = item
+            arr_ch_ids = np.arange(1, s_3d.shape[0] + 1)
         _log(f"Analyzing array modality: {arr_name}")
 
         if s_3d is None or c_3d is None or s_3d.shape[0] == 0 or c_3d.shape[0] == 0:
             _log(f"Missing STIM or CTRL counts for {arr_name}, skipping.")
             continue
-
-        # Rebin and smooth rates (Hz) using parameters from params.yaml
-        bin_w = NPRW_BIN_WIDTH_MS if arr_name == "NPRW" else UA_BIN_WIDTH_MS
-        sigma = NPRW_SMOOTHING_SIGMA_MS if arr_name == "NPRW" else UA_SMOOTHING_SIGMA_MS
-        s_rates, time_ms = rebin_and_smooth(s_3d, s_t, target_bin_w=bin_w, smooth_sigma_ms=sigma, win_ms=WIN_PLOT_MS)
-        c_rates, _ = rebin_and_smooth(c_3d, c_t, target_bin_w=bin_w, smooth_sigma_ms=sigma, win_ms=WIN_PLOT_MS)
 
         # Determine blanking parameters based on array modality and stim duration
         is_stim_cond = stim_dur_ms > 0
@@ -2081,14 +2509,18 @@ def process_single_condition(
         blank_post = NPRW_BLANK_POST_MS if arr_name == "NPRW" else (UA_BLANK_POST_MS if BLANK_UA_STIM_PERIOD else 0.0)
 
         has_blanking = is_stim_cond and (blank_pre > 0 or blank_post > 0)
+        blank_win = (-blank_pre, stim_dur_ms + blank_post) if has_blanking else None
+
+        # Rebin and smooth rates (Hz) using parameters from params.yaml with NaN-aware blanking
+        bin_w = NPRW_BIN_WIDTH_MS if arr_name == "NPRW" else UA_BIN_WIDTH_MS
+        sigma = NPRW_SMOOTHING_SIGMA_MS if arr_name == "NPRW" else UA_SMOOTHING_SIGMA_MS
+        s_rates, time_ms = rebin_and_smooth(s_3d, s_t, target_bin_w=bin_w, smooth_sigma_ms=sigma, win_ms=WIN_PLOT_MS, blank_win=blank_win)
+        c_rates, _ = rebin_and_smooth(c_3d, c_t, target_bin_w=bin_w, smooth_sigma_ms=sigma, win_ms=WIN_PLOT_MS, blank_win=None)
+
         if has_blanking:
-            blank_win = (-blank_pre, stim_dur_ms + blank_post)
             blank_mask = (time_ms >= blank_win[0]) & (time_ms <= blank_win[1])
             _log(f"  [{arr_name}] Applying artifact blanking window: [{blank_win[0]:.1f}, {blank_win[1]:.1f}] ms")
-            # Introduce proper blanking across stimulation artifact window
-            s_rates[:, :, blank_mask] = np.nan
         else:
-            blank_win = None
             blank_mask = np.zeros(len(time_ms), dtype=bool)
 
         # 1. Stratified trial pairing
@@ -2102,18 +2534,19 @@ def process_single_condition(
         contrast_sem = np.nanstd(diff_trials, axis=1) / math.sqrt(max(1, paired_s.shape[1]))
 
         # Define dynamic post-artifact response windows
-        post_stim_start = (stim_dur_ms + blank_post) if has_blanking else stim_dur_ms
+        post_stim_start = (stim_dur_ms + blank_post) if has_blanking else 0.0
         resp_win = (post_stim_start, min(post_stim_start + 300.0, float(WIN_PLOT_MS[1])))
         early_win = (post_stim_start, min(post_stim_start + 50.0, float(WIN_PLOT_MS[1])))
         late_win = (post_stim_start + 50.0, min(post_stim_start + 200.0, float(WIN_PLOT_MS[1])))
 
-        # 2. Statistical Responsiveness Gating (Paired, Unpaired, or Both)
+        # 2. Statistical Responsiveness Gating (Welch baseline-corrected, Paired, Unpaired, or Both)
         is_responsive, p_vals, q_vals, gate_info = compute_responsiveness_gating(
             paired_stim=paired_s,
             paired_ctrl=paired_c,
             stim_rates=s_rates,
             ctrl_rates=c_rates,
             time_ms=time_ms,
+            baseline_win_ms=BASELINE_WIN_MS,
             response_win_ms=resp_win,
             blank_mask=blank_mask,
             test_mode=RESPONSIVENESS_TEST_MODE,
@@ -2123,25 +2556,44 @@ def process_single_condition(
             criterion=RESPONSIVENESS_CRITERION,
             p_thresh=P_VAL_THRESH,
             min_delta_hz=MIN_DELTA_HZ,
+            channel_ids=arr_ch_ids,
         )
         n_resp = int(np.sum(is_responsive))
         n_ch_total = len(is_responsive)
-        p_info = gate_info["paired"]
-        u_info = gate_info["unpaired"]
+        p_info = gate_info.get("paired", {})
+        u_info = gate_info.get("unpaired", {})
+        w_info = gate_info.get("welch", {})
 
         # Structured diagnostic logging for condition
         _log(f"       -> {arr_name:<6}:")
         _log(f"            trials: stim={s_rates.shape[1]}, ctrl={c_rates.shape[1]}, paired={paired_s.shape[1]}")
-        if p_info["is_responsive"] is not None:
+        if w_info and w_info.get("is_responsive") is not None:
+            _log(f"            welch:    responsive={w_info['n_resp']}/{n_ch_total}, p<{P_VAL_THRESH}={w_info['n_sig_p']}, q<{FDR_ALPHA}={w_info['n_sig_q']}")
+        if p_info and p_info.get("is_responsive") is not None:
             _log(f"            paired:   responsive={p_info['n_resp']}/{n_ch_total}, p<{P_VAL_THRESH}={p_info['n_sig_p']}, q<{FDR_ALPHA}={p_info['n_sig_q']}")
-        if u_info["is_responsive"] is not None:
+        if u_info and u_info.get("is_responsive") is not None:
             _log(f"            unpaired: responsive={u_info['n_resp']}/{n_ch_total}, p<{P_VAL_THRESH}={u_info['n_sig_p']}, q<{FDR_ALPHA}={u_info['n_sig_q']}")
         _log(f"            active gate: {gate_info['gate_desc']} => {n_resp}/{n_ch_total}")
 
+        base_name = f"{stim_path.stem}_{arr_name}"
+
+        # Save per-channel responsiveness metrics if available
+        if w_info and w_info.get("metrics_df") is not None:
+            welch_df = w_info["metrics_df"].copy()
+            welch_df.insert(0, "array", arr_name)
+            metrics_csv_path = out_dir / f"{base_name}_responsiveness_metrics.csv"
+            welch_df.to_csv(metrics_csv_path, index=False)
+            welch_csv_path = out_dir / f"{base_name}_responsiveness_welch.csv"
+            welch_df.to_csv(welch_csv_path, index=False)
+            _log(f"            saved metrics: {metrics_csv_path.name}")
+
         # Determine contrast mean source for downstream clustering and plots
-        if CONTRAST_SOURCE_FOR_PLOTS == "unpaired" and u_info["contrast_mean"] is not None:
+        if CONTRAST_SOURCE_FOR_PLOTS == "unpaired" and u_info is not None and u_info.get("contrast_mean") is not None:
             contrast_mean = u_info["contrast_mean"]
             contrast_source_desc = "Unpaired mean contrast"
+        elif "contrast_mean" in gate_info and gate_info["contrast_mean"] is not None:
+            contrast_mean = gate_info["contrast_mean"]
+            contrast_source_desc = f"{CONTRAST_SOURCE_FOR_PLOTS.capitalize()} mean contrast"
         else:
             contrast_mean = paired_contrast_mean
             contrast_source_desc = "Paired mean contrast"
@@ -2168,15 +2620,13 @@ def process_single_condition(
         nonresp_label = f"Not retained ({gate_info['gate_desc']})"
 
         # Channel-level trial-averaged firing rates (Hz) for phenotype overlays
-        stim_ch_mean = np.nanmean(paired_s, axis=1)
-        ctrl_ch_mean = np.nanmean(paired_c, axis=1)
+        stim_ch_mean = np.nanmean(s_rates, axis=1)
+        ctrl_ch_mean = np.nanmean(c_rates, axis=1)
 
         # Early vs Late Quadrants
         e_vals, l_vals, quads = compute_early_late_quadrants(
             contrast_mean, time_ms, early_win=early_win, late_win=late_win, blank_mask=blank_mask
         )
-
-        base_name = f"{stim_path.stem}_{arr_name}"
 
         # 3. Dual Normalization & Figure Generation
         if n_resp >= 2:
@@ -2393,7 +2843,90 @@ def process_single_condition(
     _log(f"{prefix}Completed analysis for {stim_path.name}\n")
 
 
-def main():
+def parse_condition_specifier(item: Any) -> Tuple[Optional[int], str]:
+    """Parse a condition specifier item into (br_int, str_repr)."""
+    if isinstance(item, int):
+        return item, str(item)
+    s = str(item).strip()
+    try:
+        return int(s), s
+    except ValueError:
+        pass
+    m = re.search(r"(?:BR|cond)[_]?(\d+)", s, re.IGNORECASE)
+    if m:
+        return int(m.group(1)), s
+    return None, s
+
+
+def is_stim_file_matching(stim_f: Path, targets: List[Any]) -> bool:
+    """Check if a stimulation NPZ file matches any specified condition targets."""
+    if not targets:
+        return True
+
+    file_name = stim_f.name
+    file_path_str = str(stim_f).lower()
+
+    m_br = re.search(r"BR_(\d+)", file_name, re.IGNORECASE)
+    file_br_idx = int(m_br.group(1)) if m_br else None
+
+    for target_item in targets:
+        br_int, str_val = parse_condition_specifier(target_item)
+
+        if br_int is not None:
+            # When an explicit BR index was identified (e.g. 7, "7", "BR_007", "cond7"),
+            # match STRICTLY against the file's BR index.
+            if file_br_idx is not None and file_br_idx == br_int:
+                return True
+        else:
+            # Non-numeric target specifier (e.g. "Target_A", "NRR_RW012"): substring match
+            str_lower = str_val.lower()
+            if str_lower in file_name.lower() or str_lower in file_path_str:
+                return True
+
+    return False
+
+
+def main(process_only: Optional[List[Any]] = None):
+    cli_targets = None
+    target_filter = None
+
+    if process_only is None and len(sys.argv) > 1:
+        try:
+            parser = argparse.ArgumentParser(
+                description="Stimulation response clustering, functional phenotyping, and neural state-space dynamics."
+            )
+            parser.add_argument(
+                "--process-only", "--condition", "--br", "-c",
+                nargs="+",
+                dest="process_only",
+                default=None,
+                help="Condition(s) or BR index(es) to process (e.g. 12, BR_012, cond012, Target_A). Defaults to PARAMS.preprocessing['process_only']."
+            )
+            parser.add_argument(
+                "--target", "-t",
+                type=str,
+                default=None,
+                help="Optional target folder filter (e.g. Target_A, Target_B, Target_control)."
+            )
+            parser.add_argument(
+                "--test-mode", "--mode",
+                type=str,
+                default=RESPONSIVENESS_TEST_MODE,
+                choices=["welch_baseline_corrected", "paired_signflip", "unpaired_label_shuffle", "both"],
+                help="Responsiveness test mode (default: welch_baseline_corrected).",
+            )
+            parsed_args, _ = parser.parse_known_args()
+            if parsed_args.process_only:
+                cli_targets = parsed_args.process_only
+            if parsed_args.target:
+                target_filter = parsed_args.target
+            if parsed_args.test_mode:
+                RESPONSIVENESS_TEST_MODE = parsed_args.test_mode
+        except Exception as e:
+            _log(f"CLI parsing warning: {e}")
+
+    targets = process_only if process_only is not None else (cli_targets if cli_targets is not None else PROCESS_ONLY)
+
     _log("Starting Stimulation Response Clustering & Neural Dynamics Analysis")
     ensure_dir(CLUST_FIG_ROOT)
 
@@ -2407,13 +2940,14 @@ def main():
     refs = load_reference_mapping(all_files)
 
     stim_files = [f for f in all_files if get_cond_type(f) == "STIM"]
-    if PROCESS_ONLY:
-        keep = set(int(x) for x in PROCESS_ONLY)
-        stim_files = [
-            f for f in stim_files
-            if (m := re.search(r"BR_(\d+)", f.name)) and int(m.group(1)) in keep
-        ]
-    _log(f"Found {len(stim_files)} STIM conditions to evaluate.")
+    if targets:
+        stim_files = [f for f in stim_files if is_stim_file_matching(f, targets)]
+
+    if target_filter:
+        t_clean = target_filter.strip().lower()
+        stim_files = [f for f in stim_files if t_clean in get_target_folder(f).lower() or t_clean in str(f).lower()]
+
+    _log(f"Found {len(stim_files)} STIM condition(s) to evaluate matching criteria: {targets or 'All'}")
 
     for idx, stim_f in enumerate(stim_files):
         target = get_target_folder(stim_f)
@@ -2432,7 +2966,7 @@ def main():
 
         # Output folder grouped by condition & target
         sub_dir = CLUST_FIG_ROOT / target if target else CLUST_FIG_ROOT / "other"
-        
+
         try:
             process_single_condition(
                 stim_path=stim_f,

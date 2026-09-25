@@ -34,7 +34,7 @@ SESSIONS_TO_RUN = [
     # "NRR_RW011",
 ]
 
-PROCESS_ONLY = []
+PROCESS_ONLY = [7, 8, 9, 10, 11, 12]
 
 SCRIPTS = [
     # "preprocessing_scripts/OCR_frame_correction.py",
@@ -58,6 +58,8 @@ SCRIPTS = [
     # "analysis_scripts/plot_stim_response_overlays.py",
     "analysis_scripts/plot_cluster_stim_responses.py",
 
+    # "scripts/nikita_scripts/plotting_scripts/plot_nprw_hpf_traces.py"
+
 
     # "preprocessing_scripts/analyze_lfp_bands.py",
     # "scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py",
@@ -77,7 +79,8 @@ from RCP_analysis.python.functions.pipeline_hierarchy import (
 )
 import os
 import json
-from typing import Any
+import argparse
+from typing import Any, List, Optional
 
 LOG_FILE = Path(__file__).resolve().parent / "logs" / "VELES.log"
 
@@ -97,6 +100,62 @@ def _get_veles_log_file(base_dir: Path, monkey: str) -> Path:
         counter += 1
 
     return log_file
+
+
+def parse_process_only_inputs(raw_inputs: Any) -> Optional[List[Any]]:
+    """
+    Parse flexible CLI inputs for PROCESS_ONLY.
+    Supports formats like:
+      -po "7, 8, 9, 10, 11, 12"
+      -po "7 8 9 10"
+      -po 7 8 9 10 11 12
+      -po 7, 8, 9
+      -po "[7, 8, 9]"
+    """
+    if raw_inputs is None:
+        return None
+
+    if isinstance(raw_inputs, str):
+        raw_inputs = [raw_inputs]
+
+    items: List[Any] = []
+    for item in raw_inputs:
+        if isinstance(item, int):
+            items.append(item)
+            continue
+        s = str(item).strip()
+        if not s:
+            continue
+
+        # Check if enclosed in brackets JSON-style
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                parsed_json = json.loads(s)
+                if isinstance(parsed_json, list):
+                    for sub in parsed_json:
+                        items.append(int(sub) if str(sub).strip().lstrip("-").isdigit() else str(sub).strip())
+                    continue
+            except Exception:
+                pass
+
+        # Split by comma
+        parts = s.split(",")
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            # Handle space-separated tokens within a part
+            subparts = part.split()
+            for subpart in subparts:
+                clean = subpart.strip().strip("'\"")
+                if not clean:
+                    continue
+                if clean.lstrip("-").isdigit():
+                    items.append(int(clean))
+                else:
+                    items.append(clean)
+
+    return items if items else None
 
 
 def _init_veles_run_log(log_file: Path, monkey: str, sessions: list[str], process_only: list[Any], scripts: list[str],) -> None:
@@ -245,7 +304,17 @@ def _get_location_for_session(data_root: str, session: str) -> str:
     return location
 
 
-def run_scripts(base_dir: Path, scripts_folder: Path):
+def run_scripts(
+    base_dir: Path,
+    scripts_folder: Path,
+    monkey: Optional[str] = None,
+    sessions: Optional[List[str]] = None,
+    process_only: Optional[List[Any]] = None,
+):
+    active_monkey = monkey if monkey is not None else MONKEY
+    active_sessions = sessions if sessions is not None else SESSIONS_TO_RUN
+    active_process_only = process_only if process_only is not None else PROCESS_ONLY
+
     params_path = base_dir / "config" / "params.yaml"
 
     if not params_path.exists():
@@ -253,22 +322,22 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
 
     # Load params once so we can get the machine-specific data_root.
     PARAMS = load_experiment_params(params_path, repo_root=base_dir, first_run=True)
-    data_root = f"{PARAMS.data_root}/{MONKEY}"
+    data_root = f"{PARAMS.data_root}/{active_monkey}"
 
     # Generate unique per-instance log file for this run
-    log_file = _get_veles_log_file(base_dir, MONKEY)
+    log_file = _get_veles_log_file(base_dir, active_monkey)
     print(f"[VELES] Logging run to: {log_file}")
 
     # Initialize run in instance log file
     _init_veles_run_log(
         log_file=log_file,
-        monkey=MONKEY,
-        sessions=SESSIONS_TO_RUN,
-        process_only=PROCESS_ONLY,
+        monkey=active_monkey,
+        sessions=active_sessions,
+        process_only=active_process_only,
         scripts=SCRIPTS,
     )
 
-    for session in SESSIONS_TO_RUN:
+    for session in active_sessions:
 
         print(f"\n{'=' * 60}")
         print(f"[VELES] Processing session: {session}")
@@ -280,13 +349,13 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
         # Per-subprocess session context.
         # This is private to scripts launched by this run_pipeline.py process.
         env = os.environ.copy()
-        env["RCP_MONKEY"] = MONKEY
+        env["RCP_MONKEY"] = active_monkey
         env["RCP_SESSION"] = session
         env["RCP_LOCATION"] = location
-        env["RCP_PROCESS_ONLY"] = json.dumps(PROCESS_ONLY)
+        env["RCP_PROCESS_ONLY"] = json.dumps(active_process_only)
         env["RCP_VELES_RUN"] = "1"
 
-        print(f"[VELES] Session context: RCP_MONKEY={MONKEY}, RCP_SESSION={session}, RCP_LOCATION={location}, RCP_PROCESS_ONLY={PROCESS_ONLY}")
+        print(f"[VELES] Session context: RCP_MONKEY={active_monkey}, RCP_SESSION={session}, RCP_LOCATION={location}, RCP_PROCESS_ONLY={active_process_only}")
 
         # Run all scripts for this session
         for script in SCRIPTS:
@@ -374,9 +443,43 @@ def run_scripts(base_dir: Path, scripts_folder: Path):
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="VELES - Versatile Electrophysiology and Limb-motion Evaluation Suite"
+    )
+    parser.add_argument(
+        "-po", "--process-only",
+        nargs="+",
+        dest="process_only",
+        default=None,
+        help="Optional conditions/BR indices to process (e.g. -po '7, 8, 9, 10, 11, 12' or -po 7 8 9 10). Overrides PROCESS_ONLY in VELES.py.",
+    )
+    parser.add_argument(
+        "-m", "--monkey",
+        type=str,
+        dest="monkey",
+        default=None,
+        help="Optional monkey name (e.g. Nike, Ada, Bert). Overrides MONKEY in VELES.py.",
+    )
+    parser.add_argument(
+        "-s", "--sessions",
+        nargs="+",
+        dest="sessions",
+        default=None,
+        help="Optional session(s) to process (e.g. -s NRR_RW012). Overrides SESSIONS_TO_RUN in VELES.py.",
+    )
+    parsed_args, _ = parser.parse_known_args()
+
+    parsed_po = parse_process_only_inputs(parsed_args.process_only)
+
     BASE = Path(__file__).resolve().parents[0]
     SCRIPTS_FOLDER = BASE
-    run_scripts(BASE, SCRIPTS_FOLDER)
+    run_scripts(
+        BASE,
+        SCRIPTS_FOLDER,
+        monkey=parsed_args.monkey,
+        sessions=parsed_args.sessions,
+        process_only=parsed_po,
+    )
     
 if __name__ == "__main__":
     main()

@@ -1,0 +1,10 @@
+================================================================================
+VELES RUN START: 09/24/2026 15:42:16
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - scripts/nikita_scripts/plotting_scripts/plot_nprw_hpf_traces.py
+================================================================================
+[09/24/2026 15:42:16] [NRR_RW012] [scripts/nikita_scripts/plotting_scripts/plot_nprw_hpf_traces.py] IN-PROGRESS
+[09/24/2026 15:44:48] [NRR_RW012] [scripts/nikita_scripts/plotting_scripts/plot_nprw_hpf_traces.py] FINISHED: 09/24/2026 15:44:48
