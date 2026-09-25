@@ -94,6 +94,9 @@ def decide(**overrides) -> CellState:
         ({}, S.SKIP),
         ({"status_value": "DONE"}, S.SKIP),
         ({"is_applicable": False}, S.NA),
+        ({"is_applicable": False, "status_value": ""}, S.NA),  # never-run VOG is n/a, not missing
+        ({"is_applicable": False, "is_target": True}, S.NA),  # ticking VOG can't run it without a VOG_File
+        ({"status_value": "fail"}, S.FAILED),
         ({"policy": "all"}, S.RERUN),
         ({"policy": "none", "status_value": ""}, S.SKIP),
         ({"policy": "none", "is_target": True}, S.RUN),

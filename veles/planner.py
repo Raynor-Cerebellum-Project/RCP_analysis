@@ -122,18 +122,27 @@ def decide_cell_state(
     status_value: raw data_status_reaching.csv cell ('', 'DONE', 'FAIL', 'IN-PROGRESS' or a timestamp).
     upstream_ran: an ancestor of this step is already planned to execute for this session.
     """
+    status = status_value.upper()
     # Decided by Keondre
     if not is_applicable:
         return CellState.NA
-    if is_target == True:
+    if is_target:
         return CellState.RUN
+    if policy == "none":
+        return CellState.SKIP
     if status_value == "":
         return CellState.MISSING
-    else:
-        raise NotImplementedError
-
-    
-
+    if status == "FAIL":
+        return CellState.FAILED
+    if status == "IN-PROGRESS":
+        return CellState.FAILED 
+    if is_stale:
+        return CellState.STALE
+    if upstream_ran:
+        return CellState.RERUN
+    if policy == "all":
+        return CellState.RERUN  
+    return CellState.SKIP
 
 def build_plan(request: RunRequest, sessions: dict[str, Session]) -> Plan:
     steps = close_and_order_steps(request.targets)
