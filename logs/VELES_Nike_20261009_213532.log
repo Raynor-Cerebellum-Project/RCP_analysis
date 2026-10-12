@@ -1,0 +1,10 @@
+================================================================================
+VELES RUN START: 10/09/2026 21:35:32
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_behavioral_stim_perturbation.py
+================================================================================
+[10/09/2026 21:35:32] [NRR_RW022] [analysis_scripts/plot_behavioral_stim_perturbation.py] IN-PROGRESS
+[10/09/2026 21:35:39] [NRR_RW022] [analysis_scripts/plot_behavioral_stim_perturbation.py] FINISHED: 10/09/2026 21:35:39

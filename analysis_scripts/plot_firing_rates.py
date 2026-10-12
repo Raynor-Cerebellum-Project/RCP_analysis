@@ -33,8 +33,8 @@ NORMALIZE_FIRST_MS = 150.0
 Z_SCORE_FR   = False
 
 # Neural heatmap vmin/vmax for median
-VMIN_NPRW, VMAX_NPRW = -25, 200
-VMIN_UA,   VMAX_UA   = -50, 150
+VMIN_NPRW, VMAX_NPRW = -150, 150
+VMIN_UA,   VMAX_UA   = -100, 100
 
 # Neural heatmap vmin/vmax for variance
 VMIN_NPRW_VAR, VMAX_NPRW_VAR = 0.0, 40000.0
@@ -45,12 +45,15 @@ VMIN_NPRW_COUNTS, VMAX_NPRW_COUNTS = 0.0, 10.0
 VMIN_UA_COUNTS,   VMAX_UA_COUNTS   = 0.0, 10.0
 
 COLORMAP = "RdBu_r"
+# Center 0 at white using TwoSlopeNorm when vmin < 0 < vmax (e.g. NPRW [-25, 200] and UA [-50, 150])
+CENTER_ZERO = True
 
 # Override color ranges for z-scored firing rates
 if Z_SCORE_FR:
     VMIN_NPRW, VMAX_NPRW = -3.0, 3.0
     VMIN_UA,   VMAX_UA   = -3.0, 3.0
     COLORMAP = "RdBu_r"
+    CENTER_ZERO = True
 
 
 
@@ -68,6 +71,11 @@ NORMALIZED_DISTANCE_REF_TIME_MS = -600.0 # -600 used in plot_plateau_analysis.py
 # "final_abs" : divide by abs(distance at final valid time).
 # "none"      : no scaling; plots distance-from-reference in original z/pixel units.
 NORMALIZED_DISTANCE_MODE = "max_abs"
+
+PLOT_CAM0 = False
+PLOT_TRAJECTORY_VARIABILITY = True
+TRAJECTORY_VARIABILITY_KEYPOINT = "middle"
+TRAJECTORY_VARIABILITY_AGG = "median"
 
 PLOT_POSITION = True
 PLOT_VELOCITY = False
@@ -284,14 +292,14 @@ def _select_kinematics_for_plot(
     return {
         "beh_labels": beh_labels_subset,
 
-        "beh_cam0_pos": _slice(beh_cam0_pos) if plot_position else None,
+        "beh_cam0_pos": _slice(beh_cam0_pos) if (plot_position and PLOT_CAM0) else None,
         "beh_cam1_pos": _slice(beh_cam1_pos) if plot_position else None,
-        "beh_cam0_vel": _slice(beh_cam0_vel) if plot_velocity else None,
+        "beh_cam0_vel": _slice(beh_cam0_vel) if (plot_velocity and PLOT_CAM0) else None,
         "beh_cam1_vel": _slice(beh_cam1_vel) if plot_velocity else None,
 
-        "beh_cam0_pos_stds": _slice(beh_cam0_pos_stds) if plot_position else None,
+        "beh_cam0_pos_stds": _slice(beh_cam0_pos_stds) if (plot_position and PLOT_CAM0) else None,
         "beh_cam1_pos_stds": _slice(beh_cam1_pos_stds) if plot_position else None,
-        "beh_cam0_vel_stds": _slice(beh_cam0_vel_stds) if plot_velocity else None,
+        "beh_cam0_vel_stds": _slice(beh_cam0_vel_stds) if (plot_velocity and PLOT_CAM0) else None,
         "beh_cam1_vel_stds": _slice(beh_cam1_vel_stds) if plot_velocity else None,
     }
 
@@ -497,15 +505,33 @@ def main():
         beh_labels_display = rcp.simple_beh_labels(beh_labels_raw, KEYPOINTS_ORDER)
         beh_time_for_both = beh_rel_t
 
-        if NORMALIZED_DISTANCE:
-            cam0_dist_trials = rcp.compute_normalized_distance_from_xy_3d(
-                cam0_pos_segs,
+        if PLOT_TRAJECTORY_VARIABILITY:
+            traj_var_curve, traj_var_std = rcp.compute_trajectory_variability_from_xy_3d(
+                cam1_pos_segs,
                 beh_labels_display,
-                beh_rel_t,
-                keypoint=NORMALIZED_DISTANCE_KEYPOINT,
-                ref_time_ms=NORMALIZED_DISTANCE_REF_TIME_MS,
-                mode=NORMALIZED_DISTANCE_MODE,
+                keypoint=TRAJECTORY_VARIABILITY_KEYPOINT,
+                agg=TRAJECTORY_VARIABILITY_AGG,
             )
+            beh_variability_for_plot = traj_var_curve
+            beh_variability_std_for_plot = traj_var_std
+        else:
+            beh_variability_for_plot = None
+            beh_variability_std_for_plot = None
+
+        if NORMALIZED_DISTANCE:
+            if PLOT_CAM0:
+                cam0_dist_trials = rcp.compute_normalized_distance_from_xy_3d(
+                    cam0_pos_segs,
+                    beh_labels_display,
+                    beh_rel_t,
+                    keypoint=NORMALIZED_DISTANCE_KEYPOINT,
+                    ref_time_ms=NORMALIZED_DISTANCE_REF_TIME_MS,
+                    mode=NORMALIZED_DISTANCE_MODE,
+                )
+                beh_cam0_pos_for_plot = rcp.median_from_trial_traces(cam0_dist_trials)
+            else:
+                cam0_dist_trials = None
+                beh_cam0_pos_for_plot = None
 
             cam1_dist_trials = rcp.compute_normalized_distance_from_xy_3d(
                 cam1_pos_segs,
@@ -516,7 +542,6 @@ def main():
                 mode=NORMALIZED_DISTANCE_MODE,
             )
 
-            beh_cam0_pos_for_plot = rcp.median_from_trial_traces(cam0_dist_trials)
             beh_cam1_pos_for_plot = rcp.median_from_trial_traces(cam1_dist_trials)
 
 
@@ -539,13 +564,13 @@ def main():
 
             kin_med_plot = _select_kinematics_for_plot(
                 beh_labels_display=beh_labels_display,
-                beh_cam0_pos=beh_cam0_pos_med,
+                beh_cam0_pos=beh_cam0_pos_med if PLOT_CAM0 else None,
                 beh_cam1_pos=beh_cam1_pos_med,
-                beh_cam0_vel=beh_cam0_vel_med,
+                beh_cam0_vel=beh_cam0_vel_med if PLOT_CAM0 else None,
                 beh_cam1_vel=beh_cam1_vel_med,
             )
 
-            target_pos_cam0_for_plot = target_pos_cam0
+            target_pos_cam0_for_plot = target_pos_cam0 if PLOT_CAM0 else None
             target_pos_cam1_for_plot = target_pos_cam1
 
         beh_ylim_for_plot = KINEMATICS_YLIM_NORMDIST if NORMALIZED_DISTANCE else KINEMATICS_YLIM
@@ -600,6 +625,7 @@ def main():
             base_neural_title,
             beh_pos_ylabel=beh_pos_ylabel_for_plot,
             cmap=COLORMAP,
+            center_zero=CENTER_ZERO,
             cb_label_nprw=cb_label,
             cb_label_ua=cb_label,
             vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
@@ -630,6 +656,8 @@ def main():
             beh_cam1_pos_stds=None,
             beh_cam0_vel_stds=None,
             beh_cam1_vel_stds=None,
+            beh_variability=beh_variability_for_plot,
+            beh_variability_stds=None,
             target_pos_cam0=target_pos_cam0_for_plot,
             target_pos_cam1=target_pos_cam1_for_plot,
             beh_labels=kin_med_plot["beh_labels"],
@@ -700,6 +728,8 @@ def main():
             beh_cam1_pos_stds=None,
             beh_cam0_vel_stds=None,
             beh_cam1_vel_stds=None,
+            beh_variability=beh_variability_for_plot,
+            beh_variability_stds=None,
             target_pos_cam0=target_pos_cam0_for_plot,
             target_pos_cam1=target_pos_cam1_for_plot,
             beh_labels=kin_med_plot["beh_labels"],
@@ -746,13 +776,13 @@ def main():
 
             return segs[:, idxs, :], [beh_labels_display[i] for i in idxs]
 
-        c0_pos_sel, labels_sel = _select_dims(cam0_pos_segs, idx_subset)
+        c0_pos_sel, labels_sel = _select_dims(cam0_pos_segs, idx_subset) if PLOT_CAM0 else (None, None)
         c1_pos_sel, _          = _select_dims(cam1_pos_segs, idx_subset)
-        c0_vel_sel, _          = _select_dims(cam0_vel_segs, idx_subset)
+        c0_vel_sel, _          = _select_dims(cam0_vel_segs, idx_subset) if PLOT_CAM0 else (None, None)
         c1_vel_sel, _          = _select_dims(cam1_vel_segs, idx_subset)
 
         # Compute mean + STD for pos, mean only for vel
-        if c0_pos_sel is not None:
+        if c0_pos_sel is not None and PLOT_CAM0:
             c0_pos_mean, c0_pos_sd = _compute_mean_and_sd(c0_pos_sel)
         else:
             c0_pos_mean, c0_pos_sd = np.zeros((0, 0)), None
@@ -762,7 +792,7 @@ def main():
         else:
             c1_pos_mean, c1_pos_sd = np.zeros((0, 0)), None
 
-        if c0_vel_sel is not None:
+        if c0_vel_sel is not None and PLOT_CAM0:
             c0_vel_mean, c0_vel_sd = _compute_mean_and_sd(c0_vel_sel)
         else:
             c0_vel_mean, c0_vel_sd = np.zeros((0, 0)), None
@@ -773,32 +803,37 @@ def main():
             c1_vel_mean, c1_vel_sd = np.zeros((0, 0)), None
 
         # If for some reason we ended up with no subset, fall back to ALL labels/medians
-        if not idx_subset or (c0_pos_mean.size == 0 and c1_pos_mean.size == 0):
+        if not idx_subset or ((c0_pos_mean.size == 0 or not PLOT_CAM0) and c1_pos_mean.size == 0):
             labels_sel  = beh_labels_display
-            c0_pos_mean = beh_cam0_pos_med
+            c0_pos_mean = beh_cam0_pos_med if PLOT_CAM0 else None
             c1_pos_mean = beh_cam1_pos_med
-            c0_vel_mean = beh_cam0_vel_med
+            c0_vel_mean = beh_cam0_vel_med if PLOT_CAM0 else None
             c1_vel_mean = beh_cam1_vel_med
             c0_pos_sd   = None
             c1_pos_sd   = None
 
         if NORMALIZED_DISTANCE:
-            c0_pos_mean, c0_pos_sd = rcp.mean_ci95_from_trial_traces(cam0_dist_trials)
+            if PLOT_CAM0 and cam0_dist_trials is not None:
+                c0_pos_mean, c0_pos_sd = rcp.mean_ci95_from_trial_traces(cam0_dist_trials)
+            else:
+                c0_pos_mean, c0_pos_sd = None, None
             c1_pos_mean, c1_pos_sd = rcp.mean_ci95_from_trial_traces(cam1_dist_trials)
 
             labels_sel = [""]
 
         # Apply position/velocity display toggles
-        if not PLOT_POSITION:
+        if (not PLOT_POSITION) or (not PLOT_CAM0):
             c0_pos_mean = None
-            c1_pos_mean = None
             c0_pos_sd = None
+        if not PLOT_POSITION:
+            c1_pos_mean = None
             c1_pos_sd = None
 
-        if not PLOT_VELOCITY:
+        if (not PLOT_VELOCITY) or (not PLOT_CAM0):
             c0_vel_mean = None
-            c1_vel_mean = None
             c0_vel_sd = None
+        if not PLOT_VELOCITY:
+            c1_vel_mean = None
             c1_vel_sd = None
 
         band_label = "95% CI" if NORMALIZED_DISTANCE else "std"
@@ -816,6 +851,7 @@ def main():
             title_MWT_neural,
             beh_pos_ylabel=beh_pos_ylabel_for_plot,
             cmap=COLORMAP,
+            center_zero=CENTER_ZERO,
             cb_label_nprw=cb_label,
             cb_label_ua=cb_label,
             vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
@@ -846,6 +882,8 @@ def main():
             beh_cam1_pos_stds=c1_pos_sd,
             beh_cam0_vel_stds=c0_vel_sd,
             beh_cam1_vel_stds=c1_vel_sd,
+            beh_variability=beh_variability_for_plot,
+            beh_variability_stds=beh_variability_std_for_plot,
             target_pos_cam0=target_pos_cam0_for_plot,
             target_pos_cam1=target_pos_cam1_for_plot,
             beh_labels=labels_sel,
@@ -916,6 +954,8 @@ def main():
             beh_cam1_pos_stds=c1_pos_sd,
             beh_cam0_vel_stds=c0_vel_sd,
             beh_cam1_vel_stds=c1_vel_sd,
+            beh_variability=beh_variability_for_plot,
+            beh_variability_stds=beh_variability_std_for_plot,
             target_pos_cam0=target_pos_cam0_for_plot,
             target_pos_cam1=target_pos_cam1_for_plot,
             beh_labels=labels_sel,
@@ -988,6 +1028,8 @@ def main():
             beh_cam1_pos_stds=c1_pos_sd,
             beh_cam0_vel_stds=c0_vel_sd,
             beh_cam1_vel_stds=c1_vel_sd,
+            beh_variability=beh_variability_for_plot,
+            beh_variability_stds=beh_variability_std_for_plot,
             target_pos_cam0=target_pos_cam0_for_plot,
             target_pos_cam1=target_pos_cam1_for_plot,
             beh_labels=labels_sel,      # MWT-only labels
@@ -1090,12 +1132,14 @@ def main():
                 else:
                     labels_single = labels_MWT
 
-                if not PLOT_POSITION:
+                if (not PLOT_POSITION) or (not PLOT_CAM0):
                     c0_pos_single = None
+                if not PLOT_POSITION:
                     c1_pos_single = None
 
-                if not PLOT_VELOCITY:
+                if (not PLOT_VELOCITY) or (not PLOT_CAM0):
                     c0_vel_single = None
+                if not PLOT_VELOCITY:
                     c1_vel_single = None
 
                 title_single_kin = f"Kinematics (MWT, single trial {i_trial+1})"
@@ -1123,6 +1167,7 @@ def main():
                     title_single_neural,
                     beh_pos_ylabel=beh_pos_ylabel_for_plot,
                     cmap=COLORMAP,
+                    center_zero=CENTER_ZERO,
                     vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
                     vmin_ua={
                         "M1i": VMIN_UA,
@@ -1151,6 +1196,8 @@ def main():
                     beh_cam1_pos_stds=None,
                     beh_cam0_vel_stds=None,
                     beh_cam1_vel_stds=None,
+                    beh_variability=beh_variability_for_plot,
+                    beh_variability_stds=None,
                     target_pos_cam0=target_pos_cam0_for_plot,
                     target_pos_cam1=target_pos_cam1_for_plot,
                     beh_labels=labels_single,

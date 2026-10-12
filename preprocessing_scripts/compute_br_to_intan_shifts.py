@@ -155,11 +155,17 @@ def main():
             print("[compute_br_to_intan_shifts] Aborted by user due to dependency discrepancy.")
             return
 
-    # Load Intan sessions (from processed Intan rate files)
+    # Load Intan sessions (from processed Intan rate files, aux streams, or raw folders)
     rate_files = sorted(NPRW_CKPT_ROOT.rglob("rates__*.npz"))
-    sessions = sorted({p.stem[len("rates__"):].split("__bin", 1)[0] for p in rate_files })
+    sessions = sorted({p.stem[len("rates__"):].split("__bin", 1)[0] for p in rate_files})
     if not sessions:
-        raise SystemExit(f"[error] No NPRW rate files under {NPRW_CKPT_ROOT}")
+        aux_dirs = sorted(NPRW_AUX_DATA.glob("*_Intan_streams"))
+        sessions = sorted({d.name[:-len("_Intan_streams")] for d in aux_dirs if d.is_dir()})
+    if not sessions:
+        intan_folders = rcp.list_intan_sessions(INTAN_ROOT)
+        sessions = sorted([s.name for s in intan_folders])
+    if not sessions:
+        raise SystemExit(f"[error] No Intan sessions found under {NPRW_CKPT_ROOT}, {NPRW_AUX_DATA}, or {INTAN_ROOT}")
 
     _, intan_idx_to_sess = rcp.build_session_index_map(sessions)
 

@@ -62,6 +62,10 @@ if PARAMS is not None:
         
         # Metadata file
         METADATA_CSV   = METADATA_ROOT / f"{PARAMS.session}_metadata.csv"
+        if not METADATA_CSV.exists() and METADATA_ROOT.exists():
+            cands = list(METADATA_ROOT.glob("*metadata*.csv"))
+            if cands:
+                METADATA_CSV = cands[0]
 
         # Probe config
         UA_CFG = PARAMS.probes.get("UA", {})

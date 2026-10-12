@@ -245,28 +245,44 @@ def main():
             else:
                 video_idx = int(video_val)
 
-            # load NPRW npz
-            cands = sorted(NPRW_CKPT_ROOT.glob(f"rates__{intan_filename}__*.npz"))
-            if not cands: print(f"[warn] No NPRW rates for session {intan_filename}"); continue
-            nprw_rates_npz_loc = cands[0]
-            
             # PPM clock correction between Intan and Blackrock
             ppm_corr = float(PARAMS.preprocessing.get("ppm_correction", -13.951))
 
-            # NPRW
-            nprw_npz = np.load(nprw_rates_npz_loc, allow_pickle=True)
-            nprw_peaks = nprw_npz["peaks"]
-            nprw_meta = nprw_npz["meta"].item() if hasattr(nprw_npz["meta"], "item") else nprw_npz["meta"]
-            nprw_meta['rec_start_ms_aligned'] = rcp.intan_ms_to_br_ms(nprw_meta['rec_start_ms'], shift_ms, ppm_corr)
-            nprw_meta['rec_end_ms_aligned'] = rcp.intan_ms_to_br_ms(nprw_meta['rec_end_ms'], shift_ms, ppm_corr)
-            
-            nprw_peak_samps, nprw_peak_amps = _parse_SI_peaks(nprw_peaks, nprw_meta['n_channels'])
-            nprw_peak_ms = {
-                int(ch): rcp.intan_samples_to_br_ms(samps, shift_sample, fs_nprw, ppm_corr)
-                for ch, samps in nprw_peak_samps.items()
-            }
+            # load NPRW npz
+            cands = sorted(NPRW_CKPT_ROOT.glob(f"rates__{intan_filename}__*.npz"))
+            if cands:
+                nprw_rates_npz_loc = cands[0]
+                nprw_npz = np.load(nprw_rates_npz_loc, allow_pickle=True)
+                nprw_peaks = nprw_npz["peaks"] if "peaks" in nprw_npz else np.empty(0, dtype=[('sample_index', np.int64), ('channel_index', np.int64), ('amplitude', np.float32)])
+                nprw_meta = nprw_npz["meta"].item() if hasattr(nprw_npz.get("meta", {}), "item") else nprw_npz.get("meta", {})
+                if not isinstance(nprw_meta, dict):
+                    nprw_meta = {}
+                nprw_meta['rec_start_ms_aligned'] = rcp.intan_ms_to_br_ms(nprw_meta.get('rec_start_ms', 0.0), shift_ms, ppm_corr)
+                nprw_meta['rec_end_ms_aligned'] = rcp.intan_ms_to_br_ms(nprw_meta.get('rec_end_ms', 0.0), shift_ms, ppm_corr)
+                
+                n_nprw_channels = int(nprw_meta.get('n_channels', 0))
+                nprw_peak_samps, nprw_peak_amps = _parse_SI_peaks(nprw_peaks, n_nprw_channels)
+                nprw_peak_ms = {
+                    int(ch): rcp.intan_samples_to_br_ms(samps, shift_sample, fs_nprw, ppm_corr)
+                    for ch, samps in nprw_peak_samps.items()
+                }
 
-            ir_ms = rcp.intan_ms_to_br_ms(nprw_npz["ir_ms"], shift_ms, ppm_corr)
+                raw_ir = nprw_npz["ir_ms"] if "ir_ms" in nprw_npz else np.array([])
+                ir_ms = rcp.intan_ms_to_br_ms(raw_ir, shift_ms, ppm_corr)
+            else:
+                print(f"[warn] No NPRW rates for session {intan_filename}; continuing in Blackrock-only / digital-only mode.")
+                nprw_peaks = np.empty(0, dtype=[('sample_index', np.int64), ('channel_index', np.int64), ('amplitude', np.float32)])
+                nprw_meta = {
+                    'n_channels': 0,
+                    'session': intan_filename,
+                    'rec_start_ms_aligned': 0.0,
+                    'rec_end_ms_aligned': 0.0,
+                    'rec_dur': 0.0,
+                    'fs': fs_nprw,
+                }
+                nprw_peak_samps, nprw_peak_amps = {}, {}
+                nprw_peak_ms = {}
+                ir_ms = np.array([], dtype=np.float32)
 
             # Parse structured session metadata from METADATA_CSV
             sess_meta = rcp.parse_session_metadata_from_csv(METADATA_CSV, sess=intan_filename, br_file=br_idx)
@@ -298,8 +314,8 @@ def main():
             
             if HAS_BR is True:
                 # load UA npz
-                cands = sorted(UA_CKPT_ROOT.glob(f"rates__NRR_RW*_{br_idx:03d}__*.npz"))
-                if not cands: print(f"[warn] No UA rates for session {intan_filename}"); continue
+                cands = sorted(UA_CKPT_ROOT.glob(f"rates__*_{br_idx:03d}__*.npz"))
+                if not cands: print(f"[warn] No UA rates for session {intan_filename} BR_{br_idx:03d}"); continue
                 ua_rates_npz_loc = cands[0]
                 
                 # UA
@@ -557,7 +573,7 @@ def main():
                 print(f"[write] MATLAB aligned: {out_mat}")
                 
         except Exception as e:
-            print(f"[error] Failed for session {row.get('session','?')}: {e}")
+            print(f"[error] Failed for session Intan={row.get('intan_filename', '?')} BR_{row.get('br_idx', '?')}: {e}")
             continue
 
 if __name__ == "__main__":

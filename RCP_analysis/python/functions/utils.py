@@ -115,6 +115,9 @@ def get_metadata_mapping(meta_csv: Path, field1: str, field2: str) -> dict[int, 
     - keys are int
     - values are stripped strings (no casting)
     """
+    if meta_csv is None or not Path(meta_csv).exists():
+        print(f"[get_metadata_mapping] Warning: Metadata file not found at '{meta_csv}'. Returning empty mapping.")
+        return {}
     with meta_csv.open(encoding="utf-8-sig", newline="") as f:
         rdr = csv.DictReader(f)
         if not rdr.fieldnames:

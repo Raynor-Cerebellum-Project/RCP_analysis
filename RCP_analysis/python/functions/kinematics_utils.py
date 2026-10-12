@@ -494,6 +494,80 @@ def compute_time_resolved_pairwise_variability(
     return curve, lower, upper
 
 
+def compute_trajectory_variability_from_xy_3d(
+    arr_nkt: np.ndarray | None,
+    labels: list[str],
+    keypoint: str = "middle",
+    agg: str = "median",
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """
+    Compute time-resolved pairwise trajectory variability curve and std
+    from a 3-D behavior array (n_trials, K, T).
+
+    Parameters
+    ----------
+    arr_nkt : np.ndarray | None
+        Shape (n_trials, K, T)
+    labels : list[str]
+        Behavior labels corresponding to K
+    keypoint : str
+        Keypoint name to extract X and Y for (default 'middle')
+    agg : str
+        Aggregation method across trial pairs ('median' or 'mean')
+
+    Returns
+    -------
+    curve : np.ndarray of shape (1, T) or None
+        Median (or mean) pairwise distance across trial pairs over time.
+    std : np.ndarray of shape (1, T) or None
+        Standard deviation across trial pairs over time.
+    """
+    if arr_nkt is None:
+        return None, None
+    arr_nkt = np.asarray(arr_nkt, dtype=float)
+    if arr_nkt.ndim != 3 or arr_nkt.size == 0:
+        return None, None
+
+    x_idx, y_idx = find_xy_indices_for_keypoint(labels, keypoint)
+    if x_idx is None or y_idx is None:
+        return None, None
+
+    n_trials, _, n_samples = arr_nkt.shape
+    if n_trials < 2:
+        return None, None
+
+    x = arr_nkt[:, x_idx, :]
+    y = arr_nkt[:, y_idx, :]
+
+    pairwise = []
+    for i in range(n_trials - 1):
+        dx = x[i + 1:] - x[i]
+        dy = y[i + 1:] - y[i]
+        d = np.sqrt(dx ** 2 + dy ** 2)
+        pairwise.append(d)
+
+    if not pairwise:
+        return None, None
+
+    pairwise_dists = np.vstack(pairwise)
+    if pairwise_dists.size == 0:
+        return None, None
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        if agg == "mean":
+            curve = np.nanmean(pairwise_dists, axis=0, keepdims=True)
+        else:
+            curve = np.nanmedian(pairwise_dists, axis=0, keepdims=True)
+        if pairwise_dists.shape[0] > 1:
+            std = np.nanstd(pairwise_dists, axis=0, ddof=1, keepdims=True)
+        else:
+            std = np.zeros_like(curve)
+
+    return curve, std
+
+
+
 def median_from_trial_traces(
     arr_nt: np.ndarray | None,
 ) -> np.ndarray | None:

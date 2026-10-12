@@ -1069,12 +1069,23 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
     br_idx          = int(meta.get("br_idx", -1))
     stim_dur        = float(meta.get("recording_stim_dur", 0.0))
     
-    nprw_meta       = aligned_npz["nprw_meta"].item() #TODO 
-    nprw_peak_ms    = aligned_npz["nprw_peak_ms"].reshape(-1)[0]
-    nprw_peak_amps  = aligned_npz["nprw_peak_amps"].reshape(-1)[0]
-    nprw_rec_ms     = (float(nprw_meta["rec_start_ms_aligned"]), float(nprw_meta["rec_end_ms_aligned"]))
-    nprw_rec_dur    = nprw_meta['rec_dur']
-    fs_nprw         = float(meta.get("fs_nprw", nprw_meta.get("fs", 30000.0)))
+    nprw_meta = aligned_npz["nprw_meta"].item() if hasattr(aligned_npz["nprw_meta"], "item") else aligned_npz["nprw_meta"]
+    if not isinstance(nprw_meta, dict):
+        nprw_meta = {}
+
+    raw_peak_ms = aligned_npz["nprw_peak_ms"]
+    nprw_peak_ms = raw_peak_ms.item() if hasattr(raw_peak_ms, "item") and raw_peak_ms.shape == () else (raw_peak_ms.reshape(-1)[0] if raw_peak_ms.size else {})
+    if not isinstance(nprw_peak_ms, dict):
+        nprw_peak_ms = {}
+
+    raw_peak_amps = aligned_npz["nprw_peak_amps"]
+    nprw_peak_amps = raw_peak_amps.item() if hasattr(raw_peak_amps, "item") and raw_peak_amps.shape == () else (raw_peak_amps.reshape(-1)[0] if raw_peak_amps.size else {})
+    if not isinstance(nprw_peak_amps, dict):
+        nprw_peak_amps = {}
+
+    nprw_rec_ms  = (float(nprw_meta.get("rec_start_ms_aligned", 0.0)), float(nprw_meta.get("rec_end_ms_aligned", 0.0)))
+    nprw_rec_dur = float(nprw_meta.get('rec_dur', 0.0))
+    fs_nprw      = float(meta.get("fs_nprw", nprw_meta.get("fs", 30000.0)))
     
     if use_ir_ms == True:
         event_ms = aligned_npz["ir_ms"]
@@ -1402,21 +1413,36 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         ua_rates_hz = rcp.smooth_counts_gauss(ua_counts, ua_widths_ms, ua_rel_t, UA_SIGMA_MS, ua_left_bins)
         ua_rates_hz_baselined = rcp.baseline_zero_each_trial(ua_rates_hz, ua_rel_t, normalize_first_ms=NORMALIZE_FIRST_MS)
 
-    # dedup peaks
-    nprw_peak_ms_dedup, nprw_amps_ms_dedup = rcp.dedup_peaks(nprw_peak_ms, nprw_peak_amps, NPRW_DEDUP_MS, MAX_CLUSTER_MS)
+    # dedup peaks & compute rates for NPRW
+    if len(nprw_peak_ms) == 0:
+        nprw_peak_ms_dedup, nprw_amps_ms_dedup = {}, {}
+        if HAS_BR and 'ua_rel_t' in locals() and ua_rel_t is not None and ua_rel_t.size:
+            nprw_rel_t = ua_rel_t.copy()
+            nprw_widths_ms = ua_widths_ms.copy()
+            n_bins = ua_rel_t.size
+        else:
+            nprw_rel_t = np.arange(0.0)
+            nprw_widths_ms = np.arange(0.0)
+            n_bins = 0
+        n_events_cur = event_ms.size
+        nprw_counts = np.zeros((n_events_cur, 0, n_bins), float)
+        nprw_rates_hz = np.zeros((n_events_cur, 0, n_bins), float)
+        nprw_rates_hz_baselined = np.zeros((n_events_cur, 0, n_bins), float)
+    else:
+        nprw_peak_ms_dedup, nprw_amps_ms_dedup = rcp.dedup_peaks(nprw_peak_ms, nprw_peak_amps, NPRW_DEDUP_MS, MAX_CLUSTER_MS)
 
-    # Blanking params (disable for controls)
-    nprw_ms_before = 0.0 if is_control else NPRW_MS_BEFORE
-    nprw_tail_ms   = 0.0 if is_control else NPRW_TAIL_MS
+        # Blanking params (disable for controls)
+        nprw_ms_before = 0.0 if is_control else NPRW_MS_BEFORE
+        nprw_tail_ms   = 0.0 if is_control else NPRW_TAIL_MS
 
-    # bin ONLY on valid stims per stream
-    nprw_counts, nprw_rel_t, nprw_widths_ms, nprw_left_bins = rcp.bin_counts_around_stim(
-        nprw_peak_ms_dedup, NPRW_BIN_MS, event_ms,
-        nprw_ms_before, (stim_dur + nprw_tail_ms), WIN_MS,
-        step_ms=NPRW_STEP_MS,
-    )
-    nprw_rates_hz = rcp.smooth_counts_gauss(nprw_counts, nprw_widths_ms, nprw_rel_t, NPRW_SIGMA_MS, nprw_left_bins)
-    nprw_rates_hz_baselined = rcp.baseline_zero_each_trial(nprw_rates_hz, nprw_rel_t, normalize_first_ms=NORMALIZE_FIRST_MS)
+        # bin ONLY on valid stims per stream
+        nprw_counts, nprw_rel_t, nprw_widths_ms, nprw_left_bins = rcp.bin_counts_around_stim(
+            nprw_peak_ms_dedup, NPRW_BIN_MS, event_ms,
+            nprw_ms_before, (stim_dur + nprw_tail_ms), WIN_MS,
+            step_ms=NPRW_STEP_MS,
+        )
+        nprw_rates_hz = rcp.smooth_counts_gauss(nprw_counts, nprw_widths_ms, nprw_rel_t, NPRW_SIGMA_MS, nprw_left_bins)
+        nprw_rates_hz_baselined = rcp.baseline_zero_each_trial(nprw_rates_hz, nprw_rel_t, normalize_first_ms=NORMALIZE_FIRST_MS)
 
     # Define subsets for each target A/B or all-events
     if split_targets and HAS_BR:
@@ -1462,9 +1488,9 @@ def extract_one_file(aligned_path: Path, out_dir: Path, use_ir_ms: bool = False,
         NPRW_rates_zeroed_sub = nprw_rates_hz_baselined[idx]
         NPRW_counts_sub       = nprw_counts[idx]
 
-        NPRW_med_counts_sub = _safe_nanmedian(NPRW_counts_sub, axis=0)
-        NPRW_med_sub = _safe_nanmedian(NPRW_rates_zeroed_sub, axis=0)
-        NPRW_var_sub = np.nanvar(NPRW_rates_zeroed_sub, axis=0)
+        NPRW_med_counts_sub = _safe_nanmedian(NPRW_counts_sub, axis=0) if NPRW_counts_sub.size else np.zeros((0, nprw_rel_t.size), float)
+        NPRW_med_sub = _safe_nanmedian(NPRW_rates_zeroed_sub, axis=0) if NPRW_rates_zeroed_sub.size else np.zeros((0, nprw_rel_t.size), float)
+        NPRW_var_sub = np.nanvar(NPRW_rates_zeroed_sub, axis=0) if NPRW_rates_zeroed_sub.size else np.zeros((0, nprw_rel_t.size), float)
 
         if HAS_BR:
             UA_rates_hz_sub     = ua_rates_hz[idx]

@@ -25,6 +25,7 @@ import gc
 import csv
 import numpy as np
 from scipy import signal
+from scipy.io import loadmat
 from pathlib import Path
 import pandas as pd
 
@@ -169,9 +170,11 @@ FILTER_ORDER = 4
 
 # Output Directories
 UA_LFP_CKPT_ROOT = OUT_BASE / "checkpoints" / "UA_LFP"
+NPRW_LFP_CKPT_ROOT = OUT_BASE / "checkpoints" / "NPRW_LFP"
 ALIGNED_CKPT_ROOT = OUT_BASE / "checkpoints" / "Aligned"
 PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStim"
 UA_LFP_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
+NPRW_LFP_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
 
 # Stim / Intan Settings mapping
 NPRW_CFG = PARAMS.probes.get("NPRW")
@@ -192,7 +195,7 @@ si.set_global_job_kwargs(**global_job_kwargs)
 STIM_CACHE = {}
 
 # What to actually process?
-SKIP_EXISTING = True
+SKIP_EXISTING = False
 
 
 # =============================================================================
@@ -237,25 +240,47 @@ def _get_ua_port_from_metadata(br_idx):
 # Peristim File Discovery
 # =============================================================================
 
-def find_peristim_files(sess_name, br_idx):
+def find_peristim_files(br_idx_or_sess, br_idx_opt=None):
+    """
+    Find all PeriStim files for a given Blackrock index.
+    Polymorphic: accepts find_peristim_files(br_idx) or find_peristim_files(sess_name, br_idx).
+    """
+    if isinstance(br_idx_or_sess, int):
+        br_idx = br_idx_or_sess
+        sess_name = br_idx_opt
+    elif isinstance(br_idx_opt, int):
+        br_idx = br_idx_opt
+        sess_name = br_idx_or_sess
+    else:
+        try:
+            br_idx = int(br_idx_opt)
+            sess_name = str(br_idx_or_sess)
+        except:
+            try:
+                br_idx = int(br_idx_or_sess)
+                sess_name = None
+            except:
+                return []
+
     found = []
-    # Loop through categories
+    pattern = f"peristim__*BR_{br_idx:03d}*.npz"
     for cat in ["control_reaches", "stim_reaches", "at_rest", "Grasp", "IMU", "continuous_stim"]:
         cat_dir = PERI_ROOT / cat
         if not cat_dir.exists(): 
             continue
         
         # Check main cat dir
-        pattern = f"peristim__*{sess_name}*BR_{br_idx:03d}*.npz"
-        for p in cat_dir.glob(pattern):
-            found.append((cat, None, p))
+        for p in sorted(cat_dir.glob(pattern)):
+            if sess_name is None or str(sess_name) in p.name:
+                found.append((cat, None, p))
              
         # Check target subdirs
         for target in ["target_A", "target_B"]:
             t_dir = cat_dir / target
             if t_dir.exists():
-                for p in t_dir.glob(pattern):
-                    found.append((cat, target, p))
+                for p in sorted(t_dir.glob(pattern)):
+                    if sess_name is None or str(sess_name) in p.name:
+                        found.append((cat, target, p))
     return found
 
 
@@ -473,25 +498,13 @@ def apply_ipca_correction(
     
     # ══════════════════════════════════════════════════════════════════════
     # GENERATE PULSE TIMES IN UA COORDINATES
+    # starts_ua and ends_ua are already converted to UA sample index space
+    # with PPM clock correction via rcp.intan_samples_to_br_samples.
     # ══════════════════════════════════════════════════════════════════════
-    PPM_CORRECTION = float(PARAMS.preprocessing.get("ppm_correction", -13.951))
-    scale_corrected = (fs_ua / fs_intan) * (1.0 + PPM_CORRECTION / 1e6)
-    
-    # Convert block starts back to Intan coordinates for anchor calculation
-    # starts_ua were computed as: (starts_intan - shift_samp_intan) * scale
-    # So: starts_intan = starts_ua / scale + shift_samp_intan
-    scale_nominal = fs_ua / fs_intan
-    starts_intan_approx = (starts_ua / scale_nominal + shift_samp_intan).astype(np.int64)
-    ends_intan_approx = (ends_ua / scale_nominal + shift_samp_intan).astype(np.int64)
-    
     all_ua_pulse_times = []
     
-    for st_intan, en_intan in zip(starts_intan_approx, ends_intan_approx):
-        # Convert ONLY the block start (anchor) with PPM correction
-        anchor_ua = np.round((st_intan - shift_samp_intan) * scale_corrected).astype(np.int64)
-        
+    for anchor_ua, en_ua in zip(starts_ua, ends_ua):
         # Calculate number of pulses based on block duration in UA time
-        en_ua = np.round((en_intan - shift_samp_intan) * scale_corrected).astype(np.int64)
         stim_dur_ms = (en_ua - anchor_ua) / fs_ua * 1000.0
         num_pulses = int(np.floor(stim_dur_ms / pulse_interval_ms)) + 1
         
@@ -1008,6 +1021,8 @@ def process_baseline_group_utah(
             "rel_time_post": t_post,
             "t_full_ms": t_full,
             "ua_ids_1based": ua_ids_global,
+            "is_control": True,
+            "n_pulses": 0,
             **results
         }
         
@@ -1018,105 +1033,125 @@ def process_baseline_group_utah(
 
 
 # =============================================================================
-# Main Utah Session Processing
+# Helper: Resolve Blackrock Session ID and Path
 # =============================================================================
 
-def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan: float, shift_sample: float):
-    matches = [p for p in BR_ROOT.iterdir() if p.is_dir() and f"_{br_idx:03d}" in p.name]
+def resolve_blackrock_session_id(br_idx: int, sess_name: str = "") -> tuple[Path | None, str]:
+    """
+    Given a Blackrock index (br_idx), find the Blackrock recording (.ns6, .ns2, etc.)
+    and return (sess_path, sess_id).
+    sess_id will be the directory name (if folder-based) or file stem (e.g. 'NRR_RW012_012').
+    """
+    fallback_id = f"{PARAMS.session}_{br_idx:03d}" if (PARAMS and hasattr(PARAMS, "session")) else f"BR_{br_idx:03d}"
     
-    if matches:
-        # Found a directory
-        dir_path = matches[0]
-        # Look for ns files inside
+    # Check directory structure
+    matches_dir = [p for p in BR_ROOT.iterdir() if p.is_dir() and f"_{br_idx:03d}" in p.name]
+    if matches_dir:
+        dir_path = matches_dir[0]
         ns_files = list(dir_path.glob("*.ns*"))
         ns6 = [f for f in ns_files if f.suffix == '.ns6']
         ns2 = [f for f in ns_files if f.suffix == '.ns2']
         ns5 = [f for f in ns_files if f.suffix == '.ns5']
-        
-        if ns6:
-            sess_path = ns6[0]
-        elif ns2:
-            sess_path = ns2[0]
-        elif ns5:
-            sess_path = ns5[0]
-        elif ns_files:
-            sess_path = ns_files[0]
-        else:
-            print(f"[UA] Found directory {dir_path.name} but no .ns files inside.")
-            return
+        sess_path = (ns6 or ns2 or ns5 or ns_files)[0] if (ns6 or ns2 or ns5 or ns_files) else None
+        return sess_path, dir_path.name
+
+    # Check flat file structure
+    matches_files = [p for p in BR_ROOT.iterdir() if p.is_file() and f"_{br_idx:03d}" in p.name and p.suffix in ['.ns2', '.ns5', '.ns6']]
+    if matches_files:
+        ns6 = [f for f in matches_files if f.suffix == '.ns6']
+        ns2 = [f for f in matches_files if f.suffix == '.ns2']
+        sess_path = (ns6 or ns2 or matches_files)[0]
+        return sess_path, sess_path.stem
+
+    return None, fallback_id
+
+
+# =============================================================================
+# Main Utah Session Processing (Unified per Blackrock ID)
+# =============================================================================
+
+def process_utah_session(
+    arg1,
+    arg2=None,
+    *args,
+    shift_ms: float = 0.0,
+    fs_intan: float = 30000.0,
+    shift_sample: float = 0.0,
+    sess_id: str | None = None,
+    sess_path: Path | None = None,
+    intan_rows: list[dict] | None = None,
+    **kwargs
+):
+    if isinstance(arg1, int):
+        br_idx = arg1
+        if isinstance(arg2, list):
+            intan_rows = arg2
+        sess_name = kwargs.get("sess_name", "")
     else:
-        # Check for files (flat structure)
-        matches_files = [p for p in BR_ROOT.iterdir() if p.is_file() and f"_{br_idx:03d}" in p.name and p.suffix in ['.ns2', '.ns5', '.ns6']]
-        if matches_files:
-            ns6 = [f for f in matches_files if f.suffix == '.ns6']
-            ns2 = [f for f in matches_files if f.suffix == '.ns2']
-            if ns6:
-                sess_path = ns6[0]
-            elif ns2:
-                sess_path = ns2[0]
-            else:
-                sess_path = matches_files[0]
-        else:
-            print(f"[UA] No session folder or files found for BR {br_idx:03d}")
-            return
+        sess_name = str(arg1)
+        br_idx = int(arg2) if arg2 is not None else int(kwargs.get("br_idx", -1))
+        if len(args) >= 1: shift_ms = float(args[0])
+        if len(args) >= 2: fs_intan = float(args[1])
+        if len(args) >= 3: shift_sample = float(args[2])
 
-    # Construct unique identifier for output filename
-    sess_id = sess_path.stem if sess_path.is_file() else sess_path.name
+    if sess_path is None or sess_id is None:
+        sess_path, sess_id = resolve_blackrock_session_id(br_idx, sess_name)
+
+    if sess_path is None:
+        print(f"[UA] No session folder or files found for BR {br_idx:03d}")
+        return
     
-    # Identify all peristim files to process
-    peristim_files = find_peristim_files(sess_name, br_idx)
+    # Identify all peristim files to process for this Blackrock ID
+    peristim_files = find_peristim_files(br_idx)
 
-    print(f"  [UA] Found {len(peristim_files)} PeriStim files for sess={sess_name}, BR={br_idx:03d}")
+    print(f"  [UA] Found {len(peristim_files)} PeriStim files for BR={br_idx:03d}")
     for cat, target, p in peristim_files:
         print(f"      cat={cat}, target={target}, file={p.name}")
 
-    # -------------------------------------------------------------------------
-    # Pre-raw-load per-output skip:
-    # Remove already-processed PeriStim outputs from peristim_files BEFORE
-    # loading Blackrock data. If nothing remains, skip the session entirely.
-    # -------------------------------------------------------------------------
-    if SKIP_EXISTING:
-        if peristim_files:
-            pending_peristim_files = []
+    # Group candidate events by (cat, target)
+    events_by_cat_target: dict[tuple, list[np.ndarray]] = {}
+    for cat, target, p in peristim_files:
+        try:
+            ps = np.load(p, allow_pickle=True)
+            event_ms = None
+            if "event_ms" in ps and ps["event_ms"].size > 0:
+                event_ms = ps["event_ms"]
+            elif "stim_ms" in ps and ps["stim_ms"].size > 0:
+                event_ms = ps["stim_ms"]
 
-            for cat, target, p in peristim_files:
+            if event_ms is not None:
+                events_by_cat_target.setdefault((cat, target), []).append(np.asarray(event_ms).flatten())
+        except Exception as e:
+            print(f"  [UA] Failed to load peristim {p.name}: {e}")
+
+    # Pre-raw-load per-output skip check
+    if SKIP_EXISTING:
+        if events_by_cat_target:
+            pending_events = {}
+            for (cat, target), ev_list in events_by_cat_target.items():
                 target_str = f"_target_{target}" if target else ""
                 out_name = f"aligned_lfp__{sess_id}_{cat}{target_str}.npz"
-
                 target_dir = UA_LFP_CKPT_ROOT / cat
                 if target:
                     target_dir = target_dir / target
-
                 expected_out = target_dir / out_name
 
                 if expected_out.exists():
-                    print(f"  [UA] Pre-skip existing output: {expected_out}")
+                    print(f"  [UA] Pre-skip existing output: {expected_out.name}")
                 else:
-                    pending_peristim_files.append((cat, target, p))
+                    pending_events[(cat, target)] = ev_list
 
-            if not pending_peristim_files:
-                print(
-                    f"[UA] Skipping {sess_name} BR={br_idx:03d}; "
-                    f"all PeriStim UA_LFP outputs already exist."
-                )
+            if not pending_events:
+                print(f"[UA] Skipping {sess_id}; all PeriStim UA_LFP outputs already exist.")
                 return
-
-            # Critical: only keep missing outputs
-            peristim_files = pending_peristim_files
-
+            events_by_cat_target = pending_events
         else:
-            # No PeriStim files found. This session would use fallback stim_reaches.
             out_name = f"aligned_lfp__{sess_id}_stim_reaches.npz"
             expected_out = UA_LFP_CKPT_ROOT / "stim_reaches" / out_name
-
             if expected_out.exists():
-                print(
-                    f"[UA] Skipping {sess_name} BR={br_idx:03d}; "
-                    f"fallback UA_LFP output already exists:"
-                )
-                print(f"     {expected_out}")
+                print(f"[UA] Skipping {sess_id}; fallback UA_LFP output already exists: {expected_out.name}")
                 return
-        
+
     print(f"[UA] Processing {sess_id} (Source: {sess_path.name})")
     
     # Load Recording
@@ -1134,173 +1169,104 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         return
     
     fs_native = rec_mapped.get_sampling_frequency()
-    
-    # If no peristim files found, fallback to standard stim detection
-    if not peristim_files:
-        print(f"  [UA] No peristim files found for {sess_id}. Falling back to standard stim detection.")
-        stim_npz_path, intan_session_name = rcp.stim_npz_path_from_br_idx(br_idx, METADATA_CSV, NPRW_AUX_DATA)
-        if not stim_npz_path or not stim_npz_path.exists():
-            print("[UA] No stim stream found (Intan). Skipping.")
-            return
-            
-        stim = rcp.load_stim_detection(stim_npz_path)
-        block_bounds = stim.get("block_bounds_samples", [])
-        
-        if block_bounds.size == 0:
-            print("[UA] No stim events found.")
-            stim_ms_ua_list = [np.array([])]
-            cat_target_list = [("stim_reaches", None)]
-        else:
-            intan_stim_samps = block_bounds[:, 0]
-            intan_stim_ms = intan_stim_samps * 1000.0 / fs_intan
-            stim_ms_ua = intan_stim_ms - shift_ms
-            stim_ms_ua_list = [stim_ms_ua]
-            cat_target_list = [("stim_reaches", None)]
-            
-            # For IPCA Correction Triggers
-            scale = fs_native / fs_intan
-            starts_ua = np.round((block_bounds[:, 0].astype(np.int64) - shift_sample) * scale).astype(np.int64)
-            ends_ua = np.round((block_bounds[:, 1].astype(np.int64) - shift_sample) * scale).astype(np.int64)
-            
-            n_total = rec_mapped.get_num_samples()
-            ends_ua = np.minimum(ends_ua, n_total)
-            valid = (ends_ua > starts_ua) & (starts_ua >= 0) & (ends_ua <= n_total)
-            starts_ua = starts_ua[valid]
-            ends_ua = ends_ua[valid]
-            
-            if len(starts_ua) > 0:
-                rec_mapped = apply_ipca_correction(
-                                    rec_mapped,
-                                    starts_ua,
-                                    ends_ua,
-                                    br_idx=br_idx,
-                                    fs_intan=fs_intan,
-                                    shift_samp_intan=shift_sample,
-                                    ua_region=ua_region,
-                                    ua_region_names=ua_region_names,
-                                )
-    else:
-        # We have peristim files. Use the events from them.
-        # But we STILL need stim bounds for IPCA correction if this is a stim session.
+    ppm_corr = float(PARAMS.preprocessing.get("ppm_correction", -13.951))
+
+    # IPCA artifact correction
+    rows_to_check = intan_rows if intan_rows else [{
+        "shift_sample": shift_sample, "fs_intan": fs_intan, "shift_ms": shift_ms
+    }]
+
+    all_starts_ua = []
+    all_ends_ua = []
+    for r in rows_to_check:
+        i_fn = r.get("intan_filename") or r.get("session") or ""
+        s_smp = float(r.get("shift_sample", 0.0))
+        f_int = float(r.get("fs_intan", 30000.0))
         stim_npz_path, _ = rcp.stim_npz_path_from_br_idx(br_idx, METADATA_CSV, NPRW_AUX_DATA)
-        if stim_npz_path and stim_npz_path.exists():
+        if not (stim_npz_path and Path(stim_npz_path).exists()) and i_fn:
+            cand = NPRW_AUX_DATA / f"{i_fn}_Intan_streams" / "stim_stream.npz"
+            if cand.exists():
+                stim_npz_path = cand
+        if stim_npz_path and Path(stim_npz_path).exists():
             stim = rcp.load_stim_detection(stim_npz_path)
-            block_bounds = stim.get("block_bounds_samples", [])
-            if block_bounds.size > 0:
-                scale = fs_native / fs_intan
-                starts_ua = np.round((block_bounds[:, 0].astype(np.int64) - shift_sample) * scale).astype(np.int64)
-                ends_ua = np.round((block_bounds[:, 1].astype(np.int64) - shift_sample) * scale).astype(np.int64)
-                
-                n_total = rec_mapped.get_num_samples()
-                ends_ua = np.minimum(ends_ua, n_total)
-                valid = (ends_ua > starts_ua) & (starts_ua >= 0) & (ends_ua <= n_total)
-                if valid.any():
-                    rec_mapped = apply_ipca_correction(
-                                    rec_mapped,
-                                    starts_ua[valid],
-                                    ends_ua[valid],
-                                    br_idx=br_idx,
-                                    fs_intan=fs_intan,
-                                    shift_samp_intan=shift_sample,
-                                    ua_region=ua_region,
-                                    ua_region_names=ua_region_names,
-                                )
+            b_bounds = stim.get("block_bounds_samples", [])
+            if len(b_bounds) > 0:
+                s_ua = rcp.intan_samples_to_br_samples(b_bounds[:, 0], s_smp, f_int, fs_native, ppm_corr)
+                e_ua = rcp.intan_samples_to_br_samples(b_bounds[:, 1], s_smp, f_int, fs_native, ppm_corr)
+                all_starts_ua.append(s_ua)
+                all_ends_ua.append(e_ua)
 
-        stim_ms_ua_list = []
-        cat_target_list = []
+    if all_starts_ua:
+        starts_ua = np.concatenate(all_starts_ua)
+        ends_ua = np.concatenate(all_ends_ua)
+        n_total = rec_mapped.get_num_samples()
+        ends_ua = np.minimum(ends_ua, n_total)
+        valid = (ends_ua > starts_ua) & (starts_ua >= 0) & (ends_ua <= n_total)
+        if valid.any():
+            primary_fs_intan = float(rows_to_check[0].get("fs_intan", 30000.0))
+            primary_shift_smp = float(rows_to_check[0].get("shift_sample", 0.0))
+            rec_mapped = apply_ipca_correction(
+                rec_mapped, starts_ua[valid], ends_ua[valid],
+                br_idx=br_idx, fs_intan=primary_fs_intan, shift_samp_intan=primary_shift_smp,
+                ua_region=ua_region, ua_region_names=ua_region_names
+            )
 
-        for cat, target, p in peristim_files:
-            try:
-                ps = np.load(p, allow_pickle=True)
+    # Fallback if no peristim files found
+    if not events_by_cat_target:
+        if all_starts_ua:
+            stim_ms_ua = starts_ua[valid] * 1000.0 / fs_native
+            events_by_cat_target[("stim_reaches", None)] = [stim_ms_ua]
+        else:
+            print(f"  [UA] No events found for {sess_id}. Skipping.")
+            return
 
-                event_ms = None
-                if "event_ms" in ps and ps["event_ms"].size > 0:
-                    event_ms = ps["event_ms"]
-                elif "stim_ms" in ps and ps["stim_ms"].size > 0:
-                    event_ms = ps["stim_ms"]
-
-                if event_ms is not None:
-                    stim_ms_ua_list.append(np.asarray(event_ms).flatten())
-                    cat_target_list.append((cat, target))
-                    print(f"  [UA] Loaded {cat} events from {p.name}: {len(event_ms)} events")
-                else:
-                    print(f"  [UA] PeriStim file has no event_ms/stim_ms events: {p.name}")
-
-            except Exception as e:
-                print(f"  [UA] Failed to load peristim {p.name}: {e}")
-
-    if not stim_ms_ua_list:
-        print(f"  [UA] No valid event sets found for {sess_id}. Skipping.")
-        return
-
-    # 2. Build SI Pipeline
+    # Build SI Pipeline
     rec_proc = build_lfp_preprocessing_pipeline(
         rec_mapped, 
         stim_indices_native=np.array([], dtype=int),
         curr_sess_name=sess_path.name,
         local_radii=None 
     )
-    
-    # # Pre-calculate filtered recordings lazily
-    # filtered_recs = {}
-    # for band_name, (low, high) in LFP_BANDS.items():
-    #     filtered_recs[band_name] = spre.bandpass_filter(
-    #         rec_proc, 
-    #         freq_min=low, 
-    #         freq_max=high,
-    #         filter_order=FILTER_ORDER,
-    #         dtype='float32',
-    #         add_reflect_padding=True,
-    #         ignore_low_freq_error=True,
-    #     )
 
-    # 3. Process each event set
-    for stim_ms_ua, (cat, target) in zip(stim_ms_ua_list, cat_target_list):
+    pad_samps = int(PAD_MS * TARGET_FS / 1000.0)
+    pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000) + pad_samps
+    post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000) + pad_samps
+    n_samps_total = rec_proc.get_total_samples()
+
+    WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
+    WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)
+    WIN_FULL = (-EPOCH_PRE_MS, EPOCH_POST_MS)
+    n_time = pre_samps + post_samps
+    rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
+
+    for (cat, target), ev_list in events_by_cat_target.items():
         target_str = f"_target_{target}" if target else ""
         out_name = f"aligned_lfp__{sess_id}_{cat}{target_str}.npz"
-        
-        # Determine output directory
         target_dir = UA_LFP_CKPT_ROOT / cat
         if target:
             target_dir = target_dir / target
         target_dir.mkdir(parents=True, exist_ok=True)
-        
         final_out_npz = target_dir / out_name
 
-        print(f"  [UA] Segmenting {cat}{target_str} ({len(stim_ms_ua)} events)...")
-        
-        # Convert native stim ms to resampled indices for segmentation
-        stim_indices_res = (stim_ms_ua * TARGET_FS / 1000.0).astype(np.int64)
-        n_samps_total = rec_proc.get_total_samples()
-        pad_samps = int(PAD_MS * TARGET_FS / 1000.0)
-        pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000) + pad_samps
-        post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000) + pad_samps
+        combined_ev = np.unique(np.concatenate(ev_list))
+        print(f"  [UA] Segmenting {cat}{target_str} ({len(combined_ev)} events)...")
 
-        WIN_PRE = (-EPOCH_PRE_MS, -BLANK_PRE_MS)
-        WIN_POST = (BLANK_POST_MS, EPOCH_POST_MS - BLANK_PRE_MS)
-        WIN_FULL = (-EPOCH_PRE_MS, EPOCH_POST_MS)
-        
-        results = {}
-        valid_indices = []
-        valid_stim_ms = []
-        
+        stim_indices_res = (combined_ev * TARGET_FS / 1000.0).astype(np.int64)
         segs_list_bb = []
-        for idx_res, stim_time in zip(stim_indices_res, stim_ms_ua):
+        valid_stim_ms = []
+
+        for idx_res, stim_time in zip(stim_indices_res, combined_ev):
             if (idx_res - pre_samps >= 0) and (idx_res + post_samps <= n_samps_total):
                 seg = extract_single_epoch(rec_proc, idx_res, pre_samps, post_samps)
                 if seg is not None:
                     segs_list_bb.append(seg)
                     valid_stim_ms.append(stim_time)
-                    valid_indices.append(idx_res)
 
         if not segs_list_bb:
             print(f"    [WARN] No valid segments for {cat}{target_str}.")
             continue
 
         segs_bb = np.stack(segs_list_bb, axis=0)
-        n_time = pre_samps + post_samps
-        rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
-
         segs_bb_clean = blank_notch_epochs(
             segs_bb, 
             fs=TARGET_FS, 
@@ -1308,32 +1274,25 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
             bandwidth=10.0
         )
 
+        results = {}
         results['broadband_full'], t_full = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_FULL)
         _, t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
         _, t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
-        
-        # # Band Analysis
-        # for band_name, rec_filtered in filtered_recs.items():
-        #     segs_list_filt = []
-        #     for idx_res in valid_indices:
-        #         seg = extract_single_epoch(rec_filtered, idx_res, pre_samps, post_samps)
-        #         if seg is not None:
-        #             segs_list_filt.append(seg)
-            
-        #     if segs_list_filt:
-        #         segs_filt = np.stack(segs_list_filt, axis=0)
-        #         results[f'{band_name}_full'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_FULL)
-        #         results[f'{band_name}_pre'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_PRE)
-        #         results[f'{band_name}_post'], _ = slice_epoch(segs_filt, rel_t_epoch, WIN_POST)
 
-        # Save
+        is_stim_cat = "stim" in cat.lower()
+        stim_dur_nominal = float(rcp.get_metadata_mapping(METADATA_CSV, 'BR_File', 'Stim_Duration_Nominal_ms').get(br_idx, 100.0))
+        n_pulses = int(round(stim_dur_nominal / 2.5)) if is_stim_cat else 0
+
         save_dict = {
             "fs_lfp": TARGET_FS,
             "ua_ids_1based": ua_ids_1based,
-            "session": sess_path.name,
+            "session": sess_id,
             "category": cat,
             "target": target if target else "none",
             "stim_ms": np.array(valid_stim_ms),
+            "stim_dur_ms": stim_dur_nominal if is_stim_cat else 0.0,
+            "n_pulses": n_pulses,
+            "is_control": not is_stim_cat or n_pulses == 0,
             "rel_time_pre": t_pre,
             "rel_time_post": t_post,
             "t_full_ms": t_full,
@@ -1341,10 +1300,301 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
         }
         
         np.savez_compressed(final_out_npz, **save_dict)
-        print(f"    Saved -> {final_out_npz}")
+        print(f"    Saved UA LFP -> {final_out_npz}")
 
-    # Cleanup
     del rec_proc, rec_mapped, rec_raw
+    gc.collect()
+
+
+# =============================================================================
+# Main NPRW Session Processing (Concatenate all constituent NPRW files by BR ID)
+# =============================================================================
+
+def process_nprw_session(
+    arg1,
+    arg2=None,
+    *args,
+    intan_rows: list[dict] | None = None,
+    sess_id: str | None = None,
+    **kwargs
+):
+    """
+    Process NPRW (Intan) neural stream for LFP band analysis.
+    Concatenates all constituent NPRW/Intan files falling under the same Blackrock ID.
+    
+    Notes:
+    - NO IPCA artifact correction is applied (not applicable for Intan/NPRW stim site).
+    - Blanking is applied from 20 ms before stim to 20 ms post stim end 
+      (-20 ms to stim_dur + 20 ms) to remove massive stimulation transients.
+    - broadband_full has the blanked stimulation window set to NaN.
+    """
+    if isinstance(arg1, int):
+        br_idx = arg1
+        if isinstance(arg2, list):
+            intan_rows = arg2
+        sess_name = kwargs.get("sess_name", "")
+    elif isinstance(arg2, list):
+        sess_path = Path(arg1) if not isinstance(arg1, Path) else arg1
+        br_idx = int(kwargs.get("br_idx", -1))
+        intan_rows = arg2
+        sess_name = sess_path.name
+    else:
+        sess_path = Path(arg1) if not isinstance(arg1, Path) else arg1
+        sess_name = str(arg2)
+        intan_idx = int(args[0]) if len(args) > 0 else int(kwargs.get("intan_idx", -1))
+        br_idx = int(args[1]) if len(args) > 1 else int(kwargs.get("br_idx", -1))
+        intan_rows = [{"intan_filename": sess_name, "intan_idx": intan_idx, "br_idx": br_idx}]
+
+    if sess_id is None:
+        _, sess_id = resolve_blackrock_session_id(br_idx, sess_name)
+
+    if not intan_rows:
+        intan_rows = [{"intan_filename": sess_name, "intan_idx": -1, "br_idx": br_idx}]
+
+    print(f"\n[NPRW] Processing unified Blackrock ID {sess_id} (BR {br_idx:03d}, {len(intan_rows)} constituent Intan files)")
+
+    # Load geometry & mapping
+    try:
+        geom_path = rcp.resolve_probe_geom_path(PARAMS, REPO_ROOT, session_key=None)
+        mat_probe = loadmat(Path(geom_path))
+        if "chanMap0ind" in mat_probe:
+            intan_probe_mapping = mat_probe["chanMap0ind"].ravel()
+        else:
+            print(f"[NPRW] No chanMap0ind in {geom_path}")
+            return
+    except Exception as e:
+        print(f"[NPRW] Failed to load probe geometry: {e}")
+        return
+
+    # Find peristim files for this BR ID
+    peristim_files = find_peristim_files(br_idx)
+
+    # Pre-skip check
+    if SKIP_EXISTING:
+        if peristim_files:
+            cats_targets = set((cat, target) for cat, target, _ in peristim_files)
+            all_exist = True
+            for cat, target in cats_targets:
+                target_str = f"_target_{target}" if target else ""
+                expected_out = NPRW_LFP_CKPT_ROOT / cat
+                if target:
+                    expected_out = expected_out / target
+                expected_out = expected_out / f"aligned_lfp__{sess_id}_{cat}{target_str}.npz"
+                if not expected_out.exists():
+                    all_exist = False
+                    break
+            if all_exist:
+                print(f"[NPRW] Skipping {sess_id}; all PeriStim NPRW outputs already exist.")
+                return
+        else:
+            expected_out = NPRW_LFP_CKPT_ROOT / "stim_reaches" / f"aligned_lfp__{sess_id}_stim_reaches.npz"
+            if expected_out.exists():
+                print(f"[NPRW] Skipping {sess_id}; fallback NPRW output already exists: {expected_out.name}")
+                return
+
+    # Load and preprocess each unique constituent Intan recording
+    intan_stream = NPRW_CFG.get("neural_data_stream")
+    ppm_corr = float(PARAMS.preprocessing.get("ppm_correction", -13.951))
+    clock_scale = 1.0 + (ppm_corr / 1e6)
+
+    loaded_recordings: dict[str, dict] = {}
+    for r in intan_rows:
+        i_fn = r.get("intan_filename") or r.get("session")
+        if not i_fn or i_fn in loaded_recordings:
+            continue
+        matches = list(INTAN_ROOT.glob(f"*{i_fn}*"))
+        valid_folders = [p for p in matches if p.is_dir()]
+        if not valid_folders:
+            print(f"  [NPRW] Warning: Intan folder '{i_fn}' not found in {INTAN_ROOT}")
+            continue
+        sess_path_i = valid_folders[0]
+        print(f"  [NPRW] Loading Intan stream: {intan_stream} from {sess_path_i.name}")
+        try:
+            rec_raw = se.read_split_intan_files(sess_path_i, mode="concatenate", stream_name=intan_stream, use_names_as_ids=True)
+            rec_raw = spre.unsigned_to_signed(rec_raw)
+            rec_mapped = rcp.reorder_recording_to_geometry(rec_raw, intan_probe_mapping)
+            rec_proc = build_lfp_preprocessing_pipeline(
+                rec_mapped, stim_indices_native=np.array([], dtype=int),
+                curr_sess_name=sess_path_i.name, local_radii=None
+            )
+            fs_native = rec_mapped.get_sampling_frequency()
+
+            stim_npz_path = NPRW_AUX_DATA / f"{sess_path_i.name}_Intan_streams" / "stim_stream.npz"
+            stim_dur_ms = 100.0
+            if stim_npz_path.exists():
+                stim_det = rcp.load_stim_detection(stim_npz_path)
+                b_bounds = stim_det.get("block_bounds_samples", [])
+                if len(b_bounds) > 0:
+                    durs = (b_bounds[:, 1] - b_bounds[:, 0]) * 1000.0 / fs_native
+                    stim_dur_ms = float(np.median(durs))
+            else:
+                stim_dur_ms = float(rcp.get_metadata_mapping(METADATA_CSV, 'BR_File', 'Stim_Duration_Nominal_ms').get(br_idx, 100.0))
+
+            loaded_recordings[i_fn] = {
+                "rec_proc": rec_proc,
+                "rec_raw": rec_raw,
+                "rec_mapped": rec_mapped,
+                "sess_path": sess_path_i,
+                "intan_idx": int(r.get("intan_idx", -1)),
+                "shift_ms": float(r.get("shift_ms", 0.0)),
+                "shift_sample": float(r.get("shift_sample", 0.0)),
+                "fs_intan": float(r.get("fs_intan", 30000.0)),
+                "fs_native": fs_native,
+                "stim_dur_ms": stim_dur_ms,
+                "n_samps_proc": rec_proc.get_total_samples(),
+            }
+        except Exception as e:
+            print(f"  [NPRW] Failed to load Intan stream {i_fn}: {e}")
+
+    if not loaded_recordings:
+        print(f"  [NPRW] No valid Intan recordings could be loaded for BR {br_idx:03d}. Skipping.")
+        return
+
+    # Group peristim files or stim detections by (cat, target)
+    events_by_cat_target: dict[tuple, list[np.ndarray]] = {}
+
+    if peristim_files:
+        for cat, target, p in peristim_files:
+            try:
+                ps = np.load(p, allow_pickle=True)
+                event_ms = None
+                if "event_ms" in ps and ps["event_ms"].size > 0:
+                    event_ms = ps["event_ms"]
+                elif "stim_ms" in ps and ps["stim_ms"].size > 0:
+                    event_ms = ps["stim_ms"]
+
+                if event_ms is not None:
+                    ev_br = np.asarray(event_ms, dtype=np.float64).flatten()
+                    events_by_cat_target.setdefault((cat, target), []).append(ev_br)
+            except Exception as e:
+                print(f"  [NPRW] Failed to load peristim {p.name}: {e}")
+    else:
+        for i_fn, r_info in loaded_recordings.items():
+            stim_npz_path = NPRW_AUX_DATA / f"{r_info['sess_path'].name}_Intan_streams" / "stim_stream.npz"
+            if stim_npz_path.exists():
+                stim_det = rcp.load_stim_detection(stim_npz_path)
+                b_bounds = stim_det.get("block_bounds_samples", [])
+                if len(b_bounds) > 0:
+                    stim_samps = b_bounds[:, 0]
+                    stim_ms_br = rcp.intan_samples_to_br_ms(stim_samps, r_info["shift_sample"], r_info["fs_intan"], ppm_corr)
+                    events_by_cat_target.setdefault(("stim_reaches", None), []).append(stim_ms_br)
+
+    if not events_by_cat_target:
+        print(f"  [NPRW] No valid event sets found for {sess_id}. Skipping.")
+        return
+
+    ARTRMV_MS_BEFORE = 20.0
+    ARTRMV_TAIL_MS = 20.0
+
+    pad_samps = int(PAD_MS * TARGET_FS / 1000.0)
+    pre_samps = int(EPOCH_PRE_MS * TARGET_FS / 1000) + pad_samps
+    post_samps = int(EPOCH_POST_MS * TARGET_FS / 1000) + pad_samps
+    n_time = pre_samps + post_samps
+    rel_t_epoch = (np.arange(n_time) / TARGET_FS * 1000.0) - (EPOCH_PRE_MS + PAD_MS)
+
+    for (cat, target), ev_list in events_by_cat_target.items():
+        target_str = f"_target_{target}" if target else ""
+        out_name = f"aligned_lfp__{sess_id}_{cat}{target_str}.npz"
+        
+        target_dir = NPRW_LFP_CKPT_ROOT / cat
+        if target:
+            target_dir = target_dir / target
+        target_dir.mkdir(parents=True, exist_ok=True)
+        final_out_npz = target_dir / out_name
+
+        if SKIP_EXISTING and final_out_npz.exists():
+            print(f"  [NPRW] Skipping existing {final_out_npz.name}")
+            continue
+
+        segs_list_bb = []
+        valid_stim_ms = []
+        stim_dur_list = []
+
+        all_candidate_events = np.unique(np.concatenate(ev_list))
+        print(f"  [NPRW] Segmenting concatenated {cat}{target_str} ({len(all_candidate_events)} candidate events across {len(loaded_recordings)} files)...")
+
+        for ev_br in all_candidate_events:
+            for r_info in loaded_recordings.values():
+                rec_proc = r_info["rec_proc"]
+                shift_ms = r_info["shift_ms"]
+                n_samps_total = r_info["n_samps_proc"]
+
+                # Convert Blackrock event times to native Intan ms, then target_fs sample indices
+                ev_intan_ms = (ev_br / clock_scale) + shift_ms
+                idx_res = int(round(ev_intan_ms * TARGET_FS / 1000.0))
+
+                if (idx_res - pre_samps >= 0) and (idx_res + post_samps <= n_samps_total):
+                    seg = extract_single_epoch(rec_proc, idx_res, pre_samps, post_samps)
+                    if seg is not None:
+                        segs_list_bb.append(seg)
+                        valid_stim_ms.append(ev_br)
+                        stim_dur_list.append(r_info["stim_dur_ms"])
+                        break
+
+        if not segs_list_bb:
+            print(f"    [WARN] No valid segments extracted for {cat}{target_str}.")
+            continue
+
+        segs_bb = np.stack(segs_list_bb, axis=0)
+        sort_order = np.argsort(valid_stim_ms)
+        segs_bb = segs_bb[sort_order]
+        valid_stim_ms = [valid_stim_ms[i] for i in sort_order]
+
+        stim_dur_ms = float(np.median(stim_dur_list)) if stim_dur_list else 100.0
+        blank_win_start = -ARTRMV_MS_BEFORE
+        blank_win_end = stim_dur_ms + ARTRMV_TAIL_MS
+
+        WIN_PRE = (-EPOCH_PRE_MS, blank_win_start)
+        WIN_POST = (blank_win_end, EPOCH_POST_MS - ARTRMV_MS_BEFORE)
+        WIN_FULL = (-EPOCH_PRE_MS, EPOCH_POST_MS)
+
+        segs_bb_clean = blank_notch_epochs(
+            segs_bb,
+            fs=TARGET_FS,
+            notch_freqs=[60.0, 120.0],
+            bandwidth=10.0
+        )
+
+        bb_full, t_full = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_FULL)
+        _, t_pre = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_PRE)
+        _, t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
+
+        is_stim_cat = "stim" in cat.lower()
+        bb_full_blanked = bb_full.copy()
+        if is_stim_cat:
+            blank_mask = (t_full >= blank_win_start) & (t_full <= blank_win_end)
+            bb_full_blanked[:, :, blank_mask] = np.nan
+
+        results = {
+            'broadband_full': bb_full_blanked,
+            'broadband_full_raw': bb_full,
+        }
+
+        n_pulses = int(round(stim_dur_ms / 2.5)) if is_stim_cat else 0
+
+        save_dict = {
+            "fs_lfp": TARGET_FS,
+            "session": sess_id,
+            "br_idx": br_idx,
+            "intan_folders": [r["sess_path"].name for r in loaded_recordings.values()],
+            "intan_indices": [r["intan_idx"] for r in loaded_recordings.values()],
+            "category": cat,
+            "target": target if target else "none",
+            "stim_ms": np.array(valid_stim_ms),
+            "stim_dur_ms": stim_dur_ms,
+            "n_pulses": n_pulses,
+            "is_control": not is_stim_cat or n_pulses == 0,
+            "rel_time_pre": t_pre,
+            "rel_time_post": t_post,
+            "t_full_ms": t_full,
+            "n_channels": segs_bb.shape[1],
+            **results
+        }
+        
+        np.savez_compressed(final_out_npz, **save_dict)
+        print(f"    Saved unified concatenated NPRW LFP ({len(valid_stim_ms)} trials from {len(loaded_recordings)} files) -> {final_out_npz}")
+
+    del loaded_recordings
     gc.collect()
 
 
@@ -1352,88 +1602,49 @@ def process_utah_session(sess_name: str, br_idx: int, shift_ms: float, fs_intan:
 # Stim Check Helper
 # =============================================================================
 
-def quick_check_stim(sess_path: Path, stream_name: str, intan_idx: int, br_idx: int) -> bool:
+def quick_check_stim_for_br(br_idx: int, intan_rows: list[dict]) -> bool:
     """
-    Check if stim file or aligned file exists and has events.
+    Check if stim file, peristim file, or aligned file exists and has events for this Blackrock ID.
     """
-    sess_name = sess_path.name
-    
-    # 0. Check Aligned File First
-    aligned_path = ALIGNED_CKPT_ROOT / f"aligned__{sess_name}__Intan_{intan_idx:03d}__BR_{br_idx:03d}.npz"
-    if aligned_path.exists():
-        try:
-            aln = np.load(aligned_path, allow_pickle=True)
-            if "stim_ms" in aln and aln["stim_ms"].size > 0:
-                print(f"    [Check] Found aligned file with {aln['stim_ms'].size} events: {aligned_path.name}")
-                return True
-        except:
-            pass
-
-    stim_npz = NPRW_AUX_DATA / f"{sess_name}_Intan_streams" / "stim_stream.npz"
-    
-    # Check cache first
-    if stim_npz in STIM_CACHE:
-        return STIM_CACHE[stim_npz]
-    
-    print(f"\nChecking stim for {sess_name}...")
-
-    has_stim = False
-    
-    # 1. Standard Stim Check
-    if stim_npz.exists():
-        try:
-            print(f"    [Check] Loading existing {stim_npz.name}")
-            stim_data = rcp.load_stim_detection(stim_npz)
-            bounds = stim_data.get("block_bounds_samples")
-            if bounds is not None and bounds.size > 0:
-                print(f"    [Check] Found {len(bounds)} stim blocks.")
-                has_stim = True
-            else:
-                print("    [Check] Existing file has 0 stim blocks.")
-        except Exception as e:
-            print(f"    [Check] Failed to load existing: {e}")
-    
-    STIM_CACHE[stim_npz] = has_stim
-    
-    if has_stim:
+    # 1. Check if any peristim files exist on disk for this Blackrock ID
+    peri = find_peristim_files(br_idx)
+    if peri:
         return True
 
-    # -------------------------------------------------------------------------
-    # [Control/IR Fallback Check]
-    # If no stim, check if we have valid IR events from baseline PeriStim files
-    # -------------------------------------------------------------------------
-    print(f"    [Check] No stim found. Checking for baseline PeriStim files...")
-    try:
-        for target in ["control_reaches/target_A", "control_reaches/target_B", "control_reaches", "Grasp", "IMU", "continuous_stim", "at_rest"]:
-            target_dir = PERI_ROOT / target
-            if not target_dir.exists():
-                continue
-                
-            pattern = f"peristim__*{sess_name}*.npz"
-            matches = list(target_dir.glob(pattern))
-            
-            if matches:
-                baseline_file = matches[0]
-                print(f"    [Check] Found baseline file: {baseline_file.name}")
-                try:
-                    event_key = None
-                    if "event_ms" in bl_data and bl_data["event_ms"].size > 0:
-                        event_key = "event_ms"
-                    elif "stim_ms" in bl_data and bl_data["stim_ms"].size > 0:
-                        event_key = "stim_ms"
+    # 2. Check each constituent Intan recording
+    for r in intan_rows:
+        i_fn = r.get("intan_filename") or r.get("session") or ""
+        i_idx = int(r.get("intan_idx", -1))
+        
+        aligned_path = ALIGNED_CKPT_ROOT / f"aligned__{i_fn}__Intan_{i_idx:03d}__BR_{br_idx:03d}.npz"
+        if aligned_path.exists():
+            try:
+                aln = np.load(aligned_path, allow_pickle=True)
+                if "stim_ms" in aln and aln["stim_ms"].size > 0:
+                    return True
+            except:
+                pass
 
-                    if event_key is not None:
-                        print(f"    [Check] PeriStim file has {bl_data[event_key].size} events in {event_key}.")
-                        return True
-                except Exception as e:
-                    print(f"    [Check] Failed to load baseline file: {e}")
-                    
-        print(f"    [Check] No baseline PeriStim files found for {sess_name}.")
-                    
-    except Exception as e:
-        print(f"    [Check] Baseline file check failed: {e}")
-            
+        stim_npz = NPRW_AUX_DATA / f"{i_fn}_Intan_streams" / "stim_stream.npz"
+        if stim_npz in STIM_CACHE:
+            if STIM_CACHE[stim_npz]:
+                return True
+        elif stim_npz.exists():
+            try:
+                stim_data = rcp.load_stim_detection(stim_npz)
+                bounds = stim_data.get("block_bounds_samples")
+                has_s = bool(bounds is not None and len(bounds) > 0)
+                STIM_CACHE[stim_npz] = has_s
+                if has_s:
+                    return True
+            except:
+                pass
+
     return False
+
+
+def quick_check_stim(sess_path: Path, stream_name: str, intan_idx: int, br_idx: int) -> bool:
+    return quick_check_stim_for_br(br_idx, [{"intan_filename": sess_path.name, "intan_idx": intan_idx}])
 
 
 # =============================================================================
@@ -1449,11 +1660,25 @@ def main():
         reader = csv.DictReader(f)
         rows = list(reader)
         
-    print(f"Found {len(rows)} sessions in shift CSV.")
+    print(f"Found {len(rows)} entries in shift CSV.")
+
+    PROCESS_ONLY = PARAMS.preprocessing.get("process_only")
+
+    # Group shift rows by Blackrock ID (br_idx)
+    br_to_intan_rows: dict[int, list[dict]] = {}
+    for r in rows:
+        try:
+            b = int(r["br_idx"])
+            br_to_intan_rows.setdefault(b, []).append(r)
+        except Exception:
+            continue
+
+    if PROCESS_ONLY:
+        keep_brs = set(int(x) for x in PROCESS_ONLY)
+        br_to_intan_rows = {b: r_list for b, r_list in br_to_intan_rows.items() if b in keep_brs}
+        print(f"[INFO] PROCESS_ONLY: filtered to BR indices: {sorted(br_to_intan_rows.keys())}")
     
-    # =========================================================================
     # Load Metadata to Identify Baseline Sessions
-    # =========================================================================
     baseline_br_idxs = set()
     baseline_groups = {}
     
@@ -1486,31 +1711,25 @@ def main():
     print(f"Identified {len(baseline_br_idxs)} baseline BR indices: {sorted(baseline_br_idxs)}")
     
     # =========================================================================
-    # Per-Session Loop (Skip Baseline Sessions)
+    # Per-Blackrock ID Loop (Concatenates constituent NPRW files together)
     # =========================================================================
-    for row in rows:
-        if "session" in row:
-            session_name = row["session"]
-        elif "intan_filename" in row:
-            session_name = Path(row["intan_filename"]).stem
-        else:
-            continue
-            
-        intan_idx = int(row["intan_idx"])
-        br_idx = int(row["br_idx"])
-        shift_ms = float(row["shift_ms"])
-        fs_intan = float(row.get("fs_intan", 30000.0))
-        shift_sample = float(row.get("shift_sample", 0.0))
-        
+    for br_idx, intan_rows in sorted(br_to_intan_rows.items()):
+        sess_path_br, sess_id = resolve_blackrock_session_id(br_idx)
+        print(f"\n{'='*70}")
+        print(f"[UNIFIED] Processing Blackrock ID BR_{br_idx:03d} -> Session ID: {sess_id}")
+        print(f"          Constituent NPRW/Intan files ({len(intan_rows)}):")
+        for r in intan_rows:
+            i_name = r.get("intan_filename") or r.get("session")
+            print(f"            - Intan {int(r.get('intan_idx', -1)):03d}: {i_name} (shift={float(r.get('shift_ms', 0)):.2f} ms)")
+        print(f"{'='*70}")
+
         # Check if this is a baseline session
         if br_idx in baseline_br_idxs:
-            print(f"\n[Baseline] Session {session_name} (BR={br_idx}) is baseline. Will process in group.")
-            
+            print(f"\n[Baseline] BR {br_idx} is baseline. Registering constituent sessions for baseline grouping.")
             if METADATA_CSV.exists():
                 try:
                     df_meta_raw = pd.read_csv(METADATA_CSV)
                     df_meta = _normalize_metadata(df_meta_raw)
-                    
                     if "br_file" in df_meta.columns:
                         br_col = pd.to_numeric(df_meta["br_file"], errors="coerce")
                         mask = br_col == br_idx
@@ -1522,7 +1741,6 @@ def main():
                             depth = row_meta.get("_depth_mm_norm") if "_depth_mm_norm" in row_meta else (
                                 str(row_meta.get("depth_mm", "n/a")).strip() or "n/a"
                             )
-                            
                             port = str(port).upper().strip() or "UNKNOWN"
                             try:
                                 depth = float(depth)
@@ -1534,46 +1752,44 @@ def main():
                             if group_key not in baseline_groups:
                                 baseline_groups[group_key] = []
                             
-                            baseline_groups[group_key].append({
-                                "session": session_name,
-                                "br_idx": br_idx,
-                                "intan_idx": intan_idx,
-                                "shift_ms": shift_ms,
-                                "fs_intan": fs_intan,
-                            })
+                            for r in intan_rows:
+                                s_name = r.get("session") or Path(r.get("intan_filename", "")).stem
+                                baseline_groups[group_key].append({
+                                    "session": s_name,
+                                    "br_idx": br_idx,
+                                    "intan_idx": int(r.get("intan_idx", -1)),
+                                    "shift_ms": float(r.get("shift_ms", 0.0)),
+                                    "fs_intan": float(r.get("fs_intan", 30000.0)),
+                                })
                 except Exception as e:
                     print(f"    [WARN] Failed to identify group for session: {e}")
             continue
-        
-        # Resolve Intan Path
-        matches = list(INTAN_ROOT.glob(f"*{session_name}*"))
-        valid_folders = [p for p in matches if p.is_dir()]
-        
-        if not valid_folders:
-            print(f"[WARN] Session folder not found: {session_name}. Skipping pair.")
-            continue
-            
-        sess_path = valid_folders[0]
-        
-        # Pre-Check Stim
-        has_stim = quick_check_stim(sess_path, STIM_STREAM, intan_idx, br_idx)
-        
-        if not has_stim:
-            print(f"  -> No valid stim events found. Skipping both NPRW and UA for this session.")
-            continue
-            
-        print(f"  -> Stim OK. Proceeding...")
 
+        # Check stim / peristim events
+        has_stim = quick_check_stim_for_br(br_idx, intan_rows)
+        if not has_stim:
+            print(f"  -> No valid stim or peristim events found for BR {br_idx}. Skipping both NPRW and UA.")
+            continue
+
+        print(f"  -> Events confirmed. Proceeding with unified Blackrock ID {sess_id}...")
+
+        # 1. Process Utah Array (ONCE per Blackrock ID)
         try:
-            process_utah_session(session_name, br_idx, shift_ms, fs_intan, shift_sample)
+            process_utah_session(br_idx, intan_rows, sess_id=sess_id, sess_path=sess_path_br)
         except Exception as e:
-            print(f"[ERROR] UA {br_idx}: {e}")
+            print(f"[ERROR] UA BR_{br_idx:03d}: {e}")
             import traceback
             traceback.print_exc()
 
-    # =========================================================================
+        # 2. Process NPRW (Concatenate all constituent NPRW files under Blackrock ID)
+        try:
+            process_nprw_session(br_idx, intan_rows, sess_id=sess_id)
+        except Exception as e:
+            print(f"[ERROR] NPRW BR_{br_idx:03d}: {e}")
+            import traceback
+            traceback.print_exc()
+
     # Process Baseline Groups
-    # =========================================================================
     if baseline_groups:
         print(f"\n{'='*60}")
         print("Processing Baseline Groups")

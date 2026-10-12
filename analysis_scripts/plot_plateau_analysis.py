@@ -77,8 +77,8 @@ except ImportError:
 CAMERA_TO_USE = "cam1"
 KEYPOINT_BASE = "middle"
 
-PRE_ZERO_MS = 500.0
-POST_ZERO_MS = 500.0
+PRE_ZERO_MS = -800.0
+POST_ZERO_MS = 600.0
 
 ONSET_TIME_XLIM = (0, POST_ZERO_MS)  # ms
 
@@ -105,21 +105,22 @@ DETECTION_PARAMS = {
 }
 
 # Conditions used in selected statistical comparison
-# COMPARE_CONDITIONS = [1, 11, 12, 13, 14, 15, 16, 17] # condition 22
-# COMPARE_CONDITIONS = [1, 17] # condition 22
-# COMPARE_CONDITIONS = [3, 7, 8, 9, 10, 11, 12] # condition 12
-COMPARE_CONDITIONS = [3, 12] # condition 12
+# COMPARE_CONDITIONS = [1, 11, 12, 13, 14, 15, 16, 17] # session 22
+# COMPARE_CONDITIONS = [1, 17] # session 22
+# COMPARE_CONDITIONS = [3, 7, 8, 9, 10, 11, 12] # session 12
+# COMPARE_CONDITIONS = [3, 12] # session 12
+COMPARE_CONDITIONS = [17, 18, 25] # session 22
 
 
 # Plot/save settings
 PLOT_EACH_CONDITION = True
 SAVE_FIGS = True
-SAVE_STATS = True
+SAVE_STATS = False
 
 GENERATE_DISTANCE_GIFS = False
 
 DISTANCE_GIF_CONFIG = {
-    "time_range_ms": (-500.0, 500.0),
+    "time_range_ms": (-800.0, 600.0),
     "step_ms": 20.0,
     "fps": 10,
     "loop": 0,  # 0 = loop forever
@@ -569,6 +570,71 @@ def load_condition_data(
         else:
             cond_str = f"BR{br_idx}" if br_idx else "Unknown"
 
+        # Extract stimulation parameters and condition metadata
+        pulse_count = None
+        if "stim_pulse_counts" in data:
+            spc = data["stim_pulse_counts"]
+            if hasattr(spc, "size") and spc.size > 0:
+                pos_pulses = spc[spc > 0]
+                if pos_pulses.size > 0:
+                    pulse_count = int(np.nanmedian(pos_pulses))
+                else:
+                    pulse_count = 0
+        elif "pulse_count" in data:
+            try:
+                pulse_count = int(data["pulse_count"])
+            except Exception:
+                pass
+
+        stim_freq_hz = None
+        if "stim_freq_hz" in data:
+            try:
+                stim_freq_hz = float(data["stim_freq_hz"])
+            except Exception:
+                pass
+
+        stim_dur_nominal_ms = None
+        if "stim_dur_nominal_ms" in data:
+            try:
+                stim_dur_nominal_ms = float(data["stim_dur_nominal_ms"])
+            except Exception:
+                pass
+
+        # Parse from cond_str / overall_title if missing or NaN
+        if cond_str:
+            if stim_freq_hz is None or np.isnan(stim_freq_hz):
+                m_f = re.search(r"(?:Freq:\s*|,\s*|\b)([\d.]+)\s*Hz", cond_str, re.IGNORECASE)
+                if m_f:
+                    stim_freq_hz = float(m_f.group(1))
+
+            if stim_dur_nominal_ms is None or np.isnan(stim_dur_nominal_ms):
+                m_d = re.search(r"(?:Duration:\s*|,\s*|\b)([\d.]+)\s*ms", cond_str, re.IGNORECASE)
+                if m_d:
+                    stim_dur_nominal_ms = float(m_d.group(1))
+
+            if pulse_count is None:
+                m_p = re.search(r"(\d+)\s*pulses?", cond_str, re.IGNORECASE)
+                if m_p:
+                    pulse_count = int(m_p.group(1))
+                elif stim_dur_nominal_ms is not None and not np.isnan(stim_dur_nominal_ms) and stim_dur_nominal_ms > 0:
+                    pulse_count = int(round(stim_dur_nominal_ms / PULSE_WIDTH_MS))
+
+        meta_dict = data["meta"].item() if "meta" in data.files and hasattr(data["meta"], "item") else {}
+        notes = ""
+        if isinstance(meta_dict, dict):
+            notes = str(meta_dict.get("Notes", meta_dict.get("notes", "")))
+        if not notes and br_idx is not None:
+            notes = get_metadata_notes_mapping().get(br_idx, "")
+
+        is_control = (
+            (br_idx is not None and br_idx in CONTROL_BR_INDICES)
+            or ("control" in cond_str.lower())
+            or ("baseline" in cond_str.lower())
+            or ("control" in file_path.stem.lower())
+            or ("ctrl" in file_path.stem.lower())
+            or (pulse_count == 0)
+        )
+
     return {
         "x_all": x_all,
         "y_all": y_all,
@@ -577,6 +643,11 @@ def load_condition_data(
         "kp_names": kp_names,
         "br_idx": br_idx,
         "cond_str": cond_str,
+        "notes": notes,
+        "pulse_count": pulse_count,
+        "stim_freq_hz": stim_freq_hz,
+        "stim_dur_nominal_ms": stim_dur_nominal_ms,
+        "is_control": is_control,
         "n_trials": pos_segs.shape[0],
         "file_path": file_path,
     }
@@ -807,6 +878,11 @@ def process_condition(
         "dt": dt,
         "br_idx": condition_data.get("br_idx"),
         "cond_str": condition_data.get("cond_str"),
+        "notes": condition_data.get("notes", ""),
+        "pulse_count": condition_data.get("pulse_count"),
+        "stim_freq_hz": condition_data.get("stim_freq_hz"),
+        "stim_dur_nominal_ms": condition_data.get("stim_dur_nominal_ms"),
+        "is_control": condition_data.get("is_control"),
     }
 
 
@@ -990,6 +1066,19 @@ def _extract_trajectory_data_for_target(
         if n_valid < min_reaches:
             continue
 
+        dist_all = processed.get("dist_norm", None)
+        if dist_all is not None:
+            dist_all = np.asarray(dist_all)
+            dist_valid = dist_all[valid_mask][finite_trials]
+            dist_mean = np.nanmean(dist_valid, axis=0) if dist_valid.shape[0] > 0 else np.full_like(time, np.nan)
+            dist_std = np.nanstd(dist_valid, axis=0, ddof=1) if dist_valid.shape[0] > 1 else np.zeros_like(dist_mean)
+            dist_sem = dist_std / np.sqrt(np.maximum(1, np.sum(np.isfinite(dist_valid), axis=0)))
+        else:
+            dist_valid = None
+            dist_mean = processed.get("dist_mean", np.full_like(time, np.nan))
+            dist_std = processed.get("dist_std", np.zeros_like(time))
+            dist_sem = processed.get("dist_sem", np.zeros_like(time))
+
         extracted.append(
             {
                 "cond_key": cond_key,
@@ -1000,6 +1089,15 @@ def _extract_trajectory_data_for_target(
                 "y": y_valid,
                 "n_valid": n_valid,
                 "processed_data": processed,
+                "dist_valid": dist_valid,
+                "dist_mean": dist_mean,
+                "dist_std": dist_std,
+                "dist_sem": dist_sem,
+                "pulse_count": processed.get("pulse_count"),
+                "stim_freq_hz": processed.get("stim_freq_hz"),
+                "stim_dur_nominal_ms": processed.get("stim_dur_nominal_ms"),
+                "is_control": processed.get("is_control"),
+                "notes": processed.get("notes", ""),
             }
         )
 
@@ -1187,6 +1285,13 @@ def _compute_time_resolved_variability(
     pairwise = _pairwise_distances_at_each_sample(x, y)
     curve = _aggregate_pairwise(pairwise, cfg["pairwise_agg"])
 
+    if pairwise.size > 0 and pairwise.shape[0] > 1:
+        pairwise_std = np.nanstd(pairwise, axis=0, ddof=1)
+    elif pairwise.size > 0:
+        pairwise_std = np.zeros_like(curve)
+    else:
+        pairwise_std = np.full_like(time, np.nan)
+
     t0, t1 = cfg["time_summary_window_ms"]
     summary_mask = (time >= t0) & (time <= t1)
 
@@ -1201,6 +1306,7 @@ def _compute_time_resolved_variability(
         "analysis": "time_resolved_pairwise",
         "x_axis": time,
         "curve": curve,
+        "std": pairwise_std,
         "summary_score": summary_score,
         "per_trial_scores": per_trial_scores,
         "summary_mask": summary_mask,
@@ -1590,6 +1696,203 @@ def save_and_close_fig(fig, save_path, dpi=300):
 
     print(f"[saved] {save_path}")
 
+_METADATA_NOTES_CACHE: Optional[Dict[int, str]] = None
+
+
+def get_metadata_notes_mapping() -> Dict[int, str]:
+    """Load mapping of BR index -> Notes string from session metadata CSV."""
+    global _METADATA_NOTES_CACHE
+    if _METADATA_NOTES_CACHE is not None:
+        return _METADATA_NOTES_CACHE
+
+    meta_csv = None
+    try:
+        if METADATA_CSV and Path(METADATA_CSV).exists():
+            meta_csv = Path(METADATA_CSV)
+    except Exception:
+        pass
+
+    if meta_csv is None or not meta_csv.exists():
+        cand_roots = []
+        try:
+            cand_roots.append(METADATA_ROOT)
+        except Exception:
+            pass
+        try:
+            cand_roots.append(RESULTS_ROOT / "Metadata")
+            cand_roots.append(RESULTS_ROOT / "metadata")
+        except Exception:
+            pass
+        try:
+            cand_roots.append(Path(PERI_ROOT).parents[1] / "Metadata")
+        except Exception:
+            pass
+
+        for root in cand_roots:
+            if root and root.exists():
+                cands = list(root.glob("*metadata*.csv"))
+                if cands:
+                    meta_csv = cands[0]
+                    break
+
+    if meta_csv is None or not meta_csv.exists():
+        _METADATA_NOTES_CACHE = {}
+        return _METADATA_NOTES_CACHE
+
+    mapping: Dict[int, str] = {}
+
+    # Try standard utils helper first
+    try:
+        from RCP_analysis.python.functions.utils import get_metadata_mapping
+        notes_m = get_metadata_mapping(meta_csv, "BR_File", "Notes")
+        for k, v in notes_m.items():
+            if str(v).strip():
+                mapping[int(k)] = str(v).strip()
+    except Exception:
+        pass
+
+    # Read CSV directly with pandas for flexible column matching
+    df = None
+    for enc in ("utf-8-sig", "latin-1", "cp1252", "utf-8"):
+        try:
+            df = pd.read_csv(meta_csv, encoding=enc, engine="python", on_bad_lines="skip")
+            break
+        except Exception:
+            continue
+
+    if df is not None and not df.empty:
+        norm_cols = {str(c).strip().lower().replace(" ", "_"): c for c in df.columns}
+
+        br_col = None
+        for candidate in ("br_file", "br", "br_idx", "condition", "cond", "intan_file"):
+            if candidate in norm_cols:
+                br_col = norm_cols[candidate]
+                break
+
+        notes_col = None
+        for candidate in ("notes", "note", "comments", "comment", "description"):
+            if candidate in norm_cols:
+                notes_col = norm_cols[candidate]
+                break
+
+        if br_col is not None and notes_col is not None:
+            for _, r in df.iterrows():
+                try:
+                    b_raw = r[br_col]
+                    if pd.isna(b_raw):
+                        continue
+                    b_str = str(b_raw).strip()
+                    try:
+                        b_int = int(b_str)
+                    except ValueError:
+                        nums = re.findall(r"\d+", b_str)
+                        if not nums:
+                            continue
+                        b_int = int(nums[-1])
+
+                    n_val = str(r[notes_col]) if not pd.isna(r[notes_col]) else ""
+                    if n_val.strip():
+                        mapping[b_int] = n_val.strip()
+                except Exception:
+                    continue
+
+    _METADATA_NOTES_CACHE = mapping
+    return _METADATA_NOTES_CACHE
+
+
+def format_condition_label(
+    cond_num: int,
+    cond_info: Optional[Dict] = None,
+    control_br_indices: Optional[List[int]] = None,
+    pulse_width_ms: float = 2.5,
+) -> str:
+    """
+    Format condition label for trajectory variability plots.
+
+    - Control conditions: 'Control'
+    - Stim conditions: '{n_pulses} pulses, {freq} Hz' (e.g. '10 pulses, 200 Hz')
+    - If condition has 'curr_steering' in metadata 'Notes': append ', Current Steering'
+    """
+    if control_br_indices is None:
+        control_br_indices = CONTROL_BR_INDICES
+
+    if cond_info is None:
+        cond_info = {}
+
+    br_idx = cond_info.get("br_idx", cond_num)
+
+    is_control = (
+        cond_num in control_br_indices
+        or (br_idx is not None and br_idx in control_br_indices)
+        or cond_info.get("is_control", False)
+        or (cond_info.get("pulse_count") == 0)
+    )
+
+    cond_str = str(cond_info.get("cond_str", ""))
+    if not is_control and cond_str:
+        if "control" in cond_str.lower() or "baseline" in cond_str.lower():
+            is_control = True
+
+    # Check for Current Steering in metadata Notes or cond_info
+    notes = str(cond_info.get("notes", ""))
+    if not notes and br_idx is not None:
+        notes = get_metadata_notes_mapping().get(br_idx, "")
+    if not notes and cond_num is not None:
+        notes = get_metadata_notes_mapping().get(cond_num, "")
+
+    is_curr_steering = False
+    for candidate_str in [notes, cond_str]:
+        if not candidate_str:
+            continue
+        cleaned = candidate_str.lower().replace("-", " ").replace("_", " ")
+        if "curr steer" in cleaned or "current steer" in cleaned:
+            is_curr_steering = True
+            break
+
+    if is_control:
+        base_label = "Control"
+    else:
+        pulse_count = cond_info.get("pulse_count")
+        freq_hz = cond_info.get("stim_freq_hz")
+        dur_ms = cond_info.get("stim_dur_nominal_ms")
+
+        if (freq_hz is None or np.isnan(freq_hz)) and cond_str:
+            m_f = re.search(r"(?:Freq:\s*|,\s*|\b)([\d.]+)\s*Hz", cond_str, re.IGNORECASE)
+            if m_f:
+                freq_hz = float(m_f.group(1))
+
+        if (dur_ms is None or np.isnan(dur_ms)) and cond_str:
+            m_d = re.search(r"(?:Duration:\s*|,\s*|\b)([\d.]+)\s*ms", cond_str, re.IGNORECASE)
+            if m_d:
+                dur_ms = float(m_d.group(1))
+
+        if pulse_count is None and cond_str:
+            m_p = re.search(r"(\d+)\s*pulses?", cond_str, re.IGNORECASE)
+            if m_p:
+                pulse_count = int(m_p.group(1))
+
+        if pulse_count is None and dur_ms is not None and not np.isnan(dur_ms) and dur_ms > 0:
+            pulse_count = int(round(dur_ms / pulse_width_ms))
+
+        if pulse_count is not None and freq_hz is not None and not np.isnan(freq_hz):
+            pulse_str = f"{pulse_count} pulse" if pulse_count == 1 else f"{pulse_count} pulses"
+            freq_str = f"{int(freq_hz)} Hz" if float(freq_hz).is_integer() else f"{freq_hz:.1f} Hz"
+            base_label = f"{pulse_str}, {freq_str}"
+        elif pulse_count is not None:
+            pulse_str = f"{pulse_count} pulse" if pulse_count == 1 else f"{pulse_count} pulses"
+            base_label = f"{pulse_str}"
+        elif freq_hz is not None and not np.isnan(freq_hz):
+            freq_str = f"{int(freq_hz)} Hz" if float(freq_hz).is_integer() else f"{freq_hz:.1f} Hz"
+            base_label = f"{freq_str}"
+        else:
+            base_label = f"Cond {cond_num}"
+
+    if is_curr_steering:
+        base_label = f"{base_label}, Current Steering"
+
+    return base_label
+
+
 def plot_xy_trajectory_overlay_for_conditions(
     condition_rows: List[Dict],
     target: str,
@@ -1598,15 +1901,53 @@ def plot_xy_trajectory_overlay_for_conditions(
     """
     Overlay individual X-Y trajectories for selected comparison conditions.
 
-    One color per condition. Individual trials are transparent.
-    No mean/median trajectory and no start/end markers.
+    One color per condition using the classic bone colormap gradient (orange for Control).
+    Individual trials are transparent. No mean/median trajectory and no start/end markers.
     """
     if len(condition_rows) == 0:
         return None
 
     fig, ax = plt.subplots(figsize=(7.5, 7.0))
 
-    colors = plt.get_cmap("cool")(np.linspace(0.1, 0.9, len(condition_rows)))
+    has_control = any(
+        format_condition_label(r.get("cond_num"), r, CONTROL_BR_INDICES).startswith("Control")
+        or r.get("cond_num") in CONTROL_BR_INDICES
+        or r.get("is_control")
+        for r in condition_rows
+    )
+    if has_control:
+        stim_rows = [
+            r for r in condition_rows
+            if not (
+                format_condition_label(r.get("cond_num"), r, CONTROL_BR_INDICES).startswith("Control")
+                or r.get("cond_num") in CONTROL_BR_INDICES
+                or r.get("is_control")
+            )
+        ]
+        n_stim = max(1, len(stim_rows))
+        stim_lo = 0.35
+        stim_hi = min(0.72, 0.35 + 0.20 * n_stim)
+        stim_colors = list(plt.get_cmap("bone")(np.linspace(stim_lo, stim_hi, n_stim)))
+        colors = []
+        stim_idx = 0
+        for r in condition_rows:
+            if (
+                format_condition_label(r.get("cond_num"), r, CONTROL_BR_INDICES).startswith("Control")
+                or r.get("cond_num") in CONTROL_BR_INDICES
+                or r.get("is_control")
+            ):
+                colors.append(matplotlib.colors.to_rgba("orange"))
+            else:
+                colors.append(stim_colors[stim_idx])
+                stim_idx += 1
+    else:
+        n_conds = max(1, len(condition_rows))
+        cond_lo = 0.35
+        cond_hi = min(0.72, 0.35 + 0.20 * n_conds)
+        bone_colors = list(plt.get_cmap("bone")(np.linspace(cond_lo, cond_hi, n_conds)))
+        if len(bone_colors) > 0:
+            bone_colors[0] = matplotlib.colors.to_rgba("orange")
+        colors = bone_colors
 
     for row, color in zip(condition_rows, colors):
         x = row["x"]
@@ -1624,7 +1965,8 @@ def plot_xy_trajectory_overlay_for_conditions(
 
             label = None
             if not first_label_used:
-                label = f"Cond {cond_num}, n={n_trials}"
+                lbl_cond = format_condition_label(cond_num, row, CONTROL_BR_INDICES)
+                label = f"{lbl_cond}, n={n_trials}"
                 first_label_used = True
 
             ax.plot(
@@ -1645,83 +1987,188 @@ def plot_xy_trajectory_overlay_for_conditions(
     fig.tight_layout()
     return fig
 
+
 def plot_trajectory_variability_comparison(
     variability_results: Dict[int, Dict],
     target: str,
-    cfg: Dict) -> Optional[plt.Figure]:
+    cfg: Dict,
+    control_br_indices: Optional[List[int]] = None) -> Optional[plt.Figure]:
     """
     Plot trajectory variability comparisons for selected conditions.
 
     Figure layout:
-        Row 1: time-resolved pairwise X-Y distance curve
-        Row 2: path-progress-normalized pairwise X-Y distance curve
+        Top subplot: time-resolved pairwise X-Y distance curve with ±1 SD shading.
+        Bottom subplot: kinematics normalized distance curve with ±1 SD shading.
 
-    No summary-score bar plots.
+    Vertical line at 0 signifies stim onset / IR beam crossing.
+    Condition labels: 'Control' for baseline, '{pulses} pulses, {freq} Hz' for stim conditions.
+    If 'curr_steering' is in metadata Notes, ', Current Steering' is appended to the label.
+    Legend placed in the top left for the top subplot.
     """
     if len(variability_results) == 0:
         return None
 
-    cond_nums = sorted(variability_results.keys())
-    colors = plt.get_cmap("bone")(np.linspace(0.1, 0.8, len(cond_nums)))
+    if control_br_indices is None:
+        control_br_indices = CONTROL_BR_INDICES
 
-    if len(colors) > 0:
-        colors[0] = matplotlib.colors.to_rgba("orange")
+    cond_nums = sorted(variability_results.keys())
+
+    # Build condition labels
+    labels = {}
+    for c in cond_nums:
+        labels[c] = format_condition_label(
+            cond_num=c,
+            cond_info=variability_results[c],
+            control_br_indices=control_br_indices,
+            pulse_width_ms=cfg.get("pulse_width_ms", PULSE_WIDTH_MS),
+        )
+
+    # Distribute colors and linestyles (old plateau_analysis coloring):
+    # 'bone' colormap gradient, with Control / first condition in orange
+    has_control = any(
+        labels[c].startswith("Control") or c in control_br_indices or variability_results[c].get("is_control")
+        for c in cond_nums
+    )
+    if has_control:
+        stim_conds = [
+            c for c in cond_nums
+            if not (labels[c].startswith("Control") or c in control_br_indices or variability_results[c].get("is_control"))
+        ]
+        n_stim = max(1, len(stim_conds))
+        # Use mid-tone range (0.35 – 0.72) so that with 1-2 conditions neither
+        # extreme (near-black or near-white) is selected from the bone colormap.
+        stim_lo = 0.35
+        stim_hi = min(0.72, 0.35 + 0.20 * n_stim)  # widen slightly as n grows
+        stim_colors = list(plt.get_cmap("bone")(np.linspace(stim_lo, stim_hi, n_stim)))
+        colors = {}
+        stim_idx = 0
+        for c in cond_nums:
+            if labels[c].startswith("Control") or c in control_br_indices or variability_results[c].get("is_control"):
+                colors[c] = matplotlib.colors.to_rgba("orange")
+            else:
+                colors[c] = stim_colors[stim_idx]
+                stim_idx += 1
+    else:
+        n_conds = max(1, len(cond_nums))
+        cond_lo = 0.35
+        cond_hi = min(0.72, 0.35 + 0.20 * n_conds)
+        bone_colors = list(plt.get_cmap("bone")(np.linspace(cond_lo, cond_hi, n_conds)))
+        if len(bone_colors) > 0:
+            bone_colors[0] = matplotlib.colors.to_rgba("orange")
+        colors = {c: col for c, col in zip(cond_nums, bone_colors)}
+
+    linestyles = {}
+    for c in cond_nums:
+        if labels[c].startswith("Control"):
+            linestyles[c] = "--"
+        else:
+            linestyles[c] = "-"
 
     fig, axes = plt.subplots(
         nrows=2,
         ncols=1,
         figsize=(9, 8),
-        sharey=False,
+        sharex=True,
     )
 
-    analysis_rows = [
-        {
-            "key": "time_resolved_pairwise",
-            "title": "Time-resolved pairwise X-Y variability",
-            "xlabel": "Time from alignment event (ms)",
-            "ylabel": "Pairwise distance",
-            "window": cfg["time_summary_window_ms"],
-        },
-        {
-            "key": "progress_pairwise",
-            "title": "Path-progress-normalized pairwise variability",
-            "xlabel": "Normalized path progress",
-            "ylabel": "Pairwise distance",
-            "window": cfg["progress_summary_window"],
-        },
-    ]
+    ax_var = axes[0]
+    ax_dist = axes[1]
 
-    for row_idx, info in enumerate(analysis_rows):
-        ax = axes[row_idx]
+    # 1. Top Subplot: Time-resolved pairwise X-Y variability
+    for c in cond_nums:
+        var_res = variability_results[c].get("time_resolved_pairwise", {})
+        x_axis = var_res.get("x_axis", None)
+        curve = var_res.get("curve", None)
+        curve_std = var_res.get("std", None)
 
-        for cond_num, color in zip(cond_nums, colors):
-            result = variability_results[cond_num][info["key"]]
-            x_axis = result["x_axis"]
-            curve = result["curve"]
+        if x_axis is None or curve is None:
+            continue
 
-            ax.plot(
+        x_axis = np.asarray(x_axis, dtype=float)
+        curve = np.asarray(curve, dtype=float)
+
+        ax_var.plot(
+            x_axis,
+            curve,
+            color=colors[c],
+            linestyle=linestyles[c],
+            linewidth=2.0,
+            label=labels[c],
+        )
+
+        if curve_std is not None:
+            curve_std = np.asarray(curve_std, dtype=float)
+            valid = np.isfinite(curve) & np.isfinite(curve_std)
+            lower = np.maximum(0.0, curve - curve_std)
+            upper = curve + curve_std
+            ax_var.fill_between(
                 x_axis,
-                curve,
-                color=color,
-                linewidth=2.5,
-                label=f"Cond {cond_num}",
+                lower,
+                upper,
+                where=valid,
+                color=colors[c],
+                alpha=0.20,
+                linewidth=0,
             )
 
-        # Shade summary window, even though the summary bar plot is removed.
-        # This still shows the window used for CSV/statistical summary scores.
-        # w0, w1 = info["window"]
-        # ax.axvspan(w0, w1, color="gray", alpha=0.15, linewidth=0)
+    ax_var.axvline(0, color="black", linestyle="--", linewidth=1.2, alpha=0.7)
+    ax_var.set_ylim(bottom=0)
+    ax_var.set_ylabel("Pairwise Distance", fontsize=10)
+    ax_var.set_title("Kinematics: Pairwise X-Y Variability", fontsize=11, fontweight="bold")
+    ax_var.legend(loc="upper left", frameon=False, fontsize=9)
+    ax_var.spines["top"].set_visible(False)
+    ax_var.spines["right"].set_visible(False)
+    ax_var.grid(True, alpha=0.15, linestyle=":")
 
-        ax.set_title(info["title"])
-        ax.set_xlabel(info["xlabel"])
-        ax.set_ylabel(info["ylabel"])
+    # 2. Bottom Subplot: Kinematics Normalized Distance
+    for c in cond_nums:
+        dist_res = variability_results[c].get("norm_distance", {})
+        t_dist = dist_res.get("time", None)
+        dist_mean = dist_res.get("mean", None)
+        dist_std = dist_res.get("std", None)
 
-        if row_idx == 0:
-            ax.legend(frameon=False)
+        if t_dist is None or dist_mean is None:
+            continue
+
+        t_dist = np.asarray(t_dist, dtype=float)
+        dist_mean = np.asarray(dist_mean, dtype=float)
+
+        ax_dist.plot(
+            t_dist,
+            dist_mean,
+            color=colors[c],
+            linestyle=linestyles[c],
+            linewidth=2.0,
+            label=labels[c],
+        )
+
+        if dist_std is not None:
+            dist_std = np.asarray(dist_std, dtype=float)
+            valid = np.isfinite(dist_mean) & np.isfinite(dist_std)
+            ax_dist.fill_between(
+                t_dist,
+                dist_mean - dist_std,
+                dist_mean + dist_std,
+                where=valid,
+                color=colors[c],
+                alpha=0.20,
+                linewidth=0,
+            )
+
+    ax_dist.axhline(0, color="#666666", linestyle=":", alpha=0.7, linewidth=1.0)
+    ax_dist.axhline(1, color="#888888", linestyle=":", alpha=0.5, linewidth=0.8)
+    ax_dist.axvline(0, color="black", linestyle="--", linewidth=1.2, alpha=0.7)
+    ax_dist.set_ylim(-0.1, 1.15)
+    ax_dist.set_ylabel("Norm. Distance", fontsize=10)
+    ax_dist.set_title("Kinematics: Norm. Distance", fontsize=11, fontweight="bold")
+    ax_dist.set_xlabel("Time from Stim Onset (ms)", fontsize=10)
+    ax_dist.spines["top"].set_visible(False)
+    ax_dist.spines["right"].set_visible(False)
+    ax_dist.grid(True, alpha=0.15, linestyle=":")
 
     fig.suptitle(
-        f"Trajectory variability comparison, Target {target}",
-        fontsize=15,
+        f"Trajectory Variability & Normalized Distance Comparison, Target {target}",
+        fontsize=13,
         y=0.995,
     )
 
@@ -1923,6 +2370,15 @@ def _extract_condition_data_for_target(
             label = f"C{cond_num}, {n_pulses}p"
         else:
             label = f"C{cond_num}"
+
+        notes_val = get_metadata_notes_mapping().get(cond_num, "")
+        if not notes_val:
+            processed_tmp = data.get("processed_data", {})
+            notes_val = processed_tmp.get("notes", "") if isinstance(processed_tmp, dict) else ""
+        if notes_val:
+            n_clean = str(notes_val).lower().replace("-", " ").replace("_", " ")
+            if "curr steer" in n_clean or "current steer" in n_clean:
+                label = f"{label}, Current Steering"
 
         mean_val = np.mean(onset_times)
         std_val = np.std(onset_times, ddof=1)
@@ -2497,8 +2953,9 @@ def build_trajectory_variability_tables(
 
         for analysis_key in [
             "time_resolved_pairwise",
-            "progress_pairwise",
         ]:
+            if analysis_key not in cond_res:
+                continue
             res = cond_res[analysis_key]
 
             summary_rows.append(
@@ -2540,12 +2997,15 @@ def build_trajectory_variability_stats_table(
 
     for analysis_key in [
         "time_resolved_pairwise",
-        "progress_pairwise",
     ]:
         scores_by_condition = {}
 
         for cond_num, cond_res in variability_results.items():
-            scores_by_condition[cond_num] = cond_res[analysis_key]["per_trial_scores"]
+            if analysis_key in cond_res and "per_trial_scores" in cond_res[analysis_key]:
+                scores_by_condition[cond_num] = cond_res[analysis_key]["per_trial_scores"]
+
+        if not scores_by_condition:
+            continue
 
         stat_res = _compare_per_trial_scores(scores_by_condition)
 
@@ -2940,7 +3400,7 @@ def run_trajectory_variability_analysis_for_target(
 
     Analyses included:
         1. Time-resolved pairwise X-Y variability
-        2. Path-progress-normalized pairwise X-Y variability
+        2. Kinematics normalized distance
 
     Returns
     -------
@@ -2963,7 +3423,6 @@ def run_trajectory_variability_analysis_for_target(
         cond_num = row["cond_num"]
 
         time_res = _compute_time_resolved_variability(row, cfg)
-        prog_res = _compute_progress_pairwise_variability(row, cfg)
 
         variability_results[cond_num] = {
             "target": target,
@@ -2971,7 +3430,20 @@ def run_trajectory_variability_analysis_for_target(
             "cond_key": row["cond_key"],
             "n_valid": row["n_valid"],
             "time_resolved_pairwise": time_res,
-            "progress_pairwise": prog_res,
+            "norm_distance": {
+                "time": row["time"],
+                "mean": row.get("dist_mean"),
+                "std": row.get("dist_std"),
+                "sem": row.get("dist_sem"),
+                "dist_valid": row.get("dist_valid"),
+            },
+            "pulse_count": row.get("pulse_count"),
+            "stim_freq_hz": row.get("stim_freq_hz"),
+            "stim_dur_nominal_ms": row.get("stim_dur_nominal_ms"),
+            "is_control": row.get("is_control"),
+            "notes": row.get("notes", row.get("processed_data", {}).get("notes", "")),
+            "br_idx": row.get("processed_data", {}).get("br_idx", cond_num),
+            "cond_str": row.get("processed_data", {}).get("cond_str", ""),
         }
 
     return variability_results

@@ -593,7 +593,7 @@ def load_reference_data(all_files, metadata_df=None):
         for f in tqdm(target_files, desc=f"Scanning {target} Controls", leave=False, disable=not VERBOSE):
             try:
                 data = np.load(f, allow_pickle=True)
-                n_trials = data['UA_counts'].shape[0] if 'UA_counts' in data and len(data['UA_counts'].shape) > 0 else 0
+                n_trials = data['UA_counts'].shape[0] if 'UA_counts' in data and len(data['UA_counts'].shape) > 0 else (data['NPRW_counts'].shape[0] if 'NPRW_counts' in data and len(data['NPRW_counts'].shape) > 0 else 0)
                 if n_trials > max_trials:
                     max_trials = n_trials
                     entry = {
@@ -625,7 +625,7 @@ def load_reference_data(all_files, metadata_df=None):
                 continue 
             
             key = (freq, dur)
-            n_trials = data['UA_counts'].shape[0] if 'UA_counts' in data and len(data['UA_counts'].shape) > 0 else 0
+            n_trials = data['UA_counts'].shape[0] if 'UA_counts' in data and len(data['UA_counts'].shape) > 0 else (data['NPRW_counts'].shape[0] if 'NPRW_counts' in data and len(data['NPRW_counts'].shape) > 0 else 0)
             
             if key not in references['rest'] or n_trials > references['rest'][key]['n_trials']:
                 entry = {
@@ -807,6 +807,40 @@ def extract_metadata(data, npz_path, metadata_df):
     }
 
 
+def _get_edges_or_reconstruct(data, prefix='NPRW'):
+    """Return edges_ms array from NPZ archive, or reconstruct from rel_t and width_ms."""
+    edges_key = f"{prefix}_edges_ms"
+    if edges_key in data:
+        return data[edges_key]
+    rel_t_key = f"{prefix}_rel_t"
+    if rel_t_key in data:
+        centers = np.asarray(data[rel_t_key], float).ravel()
+        if centers.size == 0:
+            return None
+        widths_key = f"{prefix}_width_ms"
+        widths = np.asarray(data[widths_key], float).ravel() if widths_key in data else None
+        
+        if centers.size == 1:
+            w = float(widths[0]) if (widths is not None and widths.size > 0) else 1.0
+            return np.array([centers[0] - w / 2.0, centers[0] + w / 2.0], float)
+            
+        edges = np.empty(centers.size + 1, float)
+        edges[1:-1] = 0.5 * (centers[:-1] + centers[1:])
+        
+        widths_ok = False
+        if widths is not None and widths.size == centers.size and np.all(np.isfinite(widths)):
+            edges[0] = centers[0] - widths[0] / 2.0
+            edges[-1] = centers[-1] + widths[-1] / 2.0
+            widths_ok = True
+            
+        if not widths_ok:
+            edges[0] = centers[0] - (centers[1] - centers[0]) / 2.0
+            edges[-1] = centers[-1] + (centers[-1] - centers[-2]) / 2.0
+            
+        return edges
+    return None
+
+
 # =============================================================================
 # NPRW PROCESSING
 # =============================================================================
@@ -817,8 +851,8 @@ def process_nprw(data, meta, references, bad_nprw):
         return
     
     peaks_dict = data['NPRW_peak_ms_dedup'].item()
-    counts_data_orig = data['NPRW_counts']
-    edges_ms_orig = data['NPRW_edges_ms']
+    counts_data_orig = data['NPRW_counts'] if 'NPRW_counts' in data else None
+    edges_ms_orig = _get_edges_or_reconstruct(data, 'NPRW')
     centers_ms_orig = data['NPRW_rel_t'] if 'NPRW_rel_t' in data else None
     
     n_ch = 128
@@ -1045,8 +1079,8 @@ def process_ua(data, meta, references, bad_ua, metadata_df):
         return
 
     peaks_dict = data['UA_peak_ms_dedup'].item()
-    counts_data_orig = data['UA_counts']
-    edges_ms_orig = data['UA_edges_ms']
+    counts_data_orig = data['UA_counts'] if 'UA_counts' in data else None
+    edges_ms_orig = _get_edges_or_reconstruct(data, 'UA')
     centers_ms_orig = data['UA_rel_t'] if 'UA_rel_t' in data else None
 
     # DEBUG: Print peaks_dict keys to understand the format

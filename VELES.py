@@ -16,13 +16,13 @@ CHOOSE THE MONKEY + SESSION(s) + SCRIPT(s) via Commenting/Uncommenting
 MONKEY = "Nike"
 
 
-SESSIONS_TO_RUN = [
+SESSIONS_TO_RUN_NIKE = [
     # "NRR_RW035",
     # "NRR_RW034",
     # "NRR_RW032",
     # "NRR_RW029",
     # "NRR_RW026",
-    # "NRR_RW022",
+    "NRR_RW022",
     # "NRR_RW019",
     # "NRR_RW018",
     # "NRR_RW017",
@@ -30,11 +30,18 @@ SESSIONS_TO_RUN = [
     # "NRR_RW015",
     # "NRR_RW014",
     # "NRR_RW013",
-    "NRR_RW012",
+    # "NRR_RW012",
     # "NRR_RW011",
 ]
 
-PROCESS_ONLY = [7, 8, 9, 10, 11, 12]
+SESSIONS_TO_RUN_ADA = [
+    "ANR_UA004",
+]
+
+# PROCESS_ONLY = [7, 8, 9, 10, 11, 12]
+# PROCESS_ONLY = [17, 18, 25]
+PROCESS_ONLY = []
+
 
 SCRIPTS = [
     # "preprocessing_scripts/OCR_frame_correction.py",
@@ -51,12 +58,13 @@ SCRIPTS = [
     ### RERUN extract_peri_stim.py
 
     # "analysis_scripts/plot_plateau_analysis.py",
+    "analysis_scripts/plot_behavioral_stim_perturbation.py",
     # "analysis_scripts/RSA_calculation.py",
     # "analysis_scripts/plot_firing_rates.py",
     # "analysis_scripts/plot_peri_stim_raster.py",
     # "analysis_scripts/plot_stim_group_responses.py",
     # "analysis_scripts/plot_stim_response_overlays.py",
-    "analysis_scripts/plot_cluster_stim_responses.py",
+    # "analysis_scripts/plot_cluster_stim_responses.py",
 
     # "scripts/nikita_scripts/plotting_scripts/plot_nprw_hpf_traces.py"
 
@@ -65,6 +73,14 @@ SCRIPTS = [
     # "scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py",
     # "scripts/nikita_scripts/plotting_scripts/combine_UA_gifs.py",
 ]
+
+
+if MONKEY == "Nike":
+    SESSIONS_TO_RUN = SESSIONS_TO_RUN_NIKE
+elif MONKEY == "Ada":
+    SESSIONS_TO_RUN = SESSIONS_TO_RUN_ADA
+elif MONKEY == "Bert":
+    SESSIONS_TO_RUN = SESSIONS_TO_RUN_BERT
 
 
 import subprocess

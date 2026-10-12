@@ -5,6 +5,7 @@ import matplotlib.gridspec as gridspec
 from pathlib import Path
 import numpy.ma as ma
 from matplotlib import cm
+from matplotlib.colors import TwoSlopeNorm
 
 from probeinterface.plotting import plot_probe
 from probeinterface import Probe
@@ -132,6 +133,9 @@ def stacked_heatmaps_plus_behv(
     nprw_med, ua_med, t_nprw, t_ua, nprw_edges_ms, ua_edges_ms, out_svg,
     title_kinematics, title_NA,
     *, cmap="jet",
+    cmap_nprw=None, cmap_ua=None,
+    norm_nprw=None, norm_ua=None,
+    center_zero: bool = False,
     vmin_nprw=None, vmax_nprw=None,
     vmin_ua=None, vmax_ua=None,
     probe=None, probe_locs=None, stim_idx=None,
@@ -141,6 +145,11 @@ def stacked_heatmaps_plus_behv(
     beh_rel_time=None, beh_cam0_pos=None, beh_cam1_pos=None,
     beh_labels=None, beh_cam0_vel=None, beh_cam1_vel=None,
     beh_pos_ylabel="Position Δ (z)",
+    beh_variability=None,
+    beh_variability_stds=None,
+    title_variability=None,
+    beh_variability_ylabel="Pairwise\nDistance",
+    beh_variability_ylim=None,
     # Optional per-timepoint STD arrays for shaded plotting of position traces
     beh_cam0_pos_stds=None, beh_cam1_pos_stds=None,
     beh_cam0_vel_stds=None, beh_cam1_vel_stds=None,
@@ -187,12 +196,14 @@ def stacked_heatmaps_plus_behv(
 
     labs = (beh_labels or [])
 
+    beh_variability, have_variability = _prepare_cam(beh_variability, beh_rel_time)
     beh_cam0_pos, have_cam0_pos = _prepare_cam(beh_cam0_pos, beh_rel_time)
     beh_cam1_pos, have_cam1_pos = _prepare_cam(beh_cam1_pos, beh_rel_time)
     beh_cam0_vel, have_cam0_vel = _prepare_cam(beh_cam0_vel, beh_rel_time)
     beh_cam1_vel, have_cam1_vel = _prepare_cam(beh_cam1_vel, beh_rel_time)
 
     beh_rows = []
+    if have_variability: beh_rows.append(("beh", "variability"))
     if have_cam0_pos: beh_rows.append(("beh", "cam0_pos"))
     if have_cam1_pos: beh_rows.append(("beh", "cam1_pos"))
     if have_cam0_vel: beh_rows.append(("beh", "cam0_vel"))
@@ -376,22 +387,48 @@ def stacked_heatmaps_plus_behv(
         D = lines.shape[0]
         if ylim is not None:
             ax.set_ylim(ylim)
+        elif sub == "variability":
+            finite_lines = lines[np.isfinite(lines)]
+            if finite_lines.size > 0:
+                max_val = float(np.nanmax(lines))
+                if stds is not None:
+                    try:
+                        s_arr = np.asarray(stds, float)
+                        if s_arr.size > 0 and np.isfinite(s_arr).any():
+                            max_val = max(max_val, float(np.nanmax(lines + s_arr)))
+                    except Exception:
+                        pass
+                ax.set_ylim(bottom=0.0, top=max(1.0, max_val * 1.15))
+            else:
+                ax.set_ylim(bottom=0.0)
 
         for i in range(D):
             y = lines[i]
             if not np.isfinite(y).any():
                 continue
-            lab = labs[i] if i < len(labs) else f"trace_{i+1}"
+            if sub == "variability":
+                lab = ""
+            else:
+                lab = labs[i] if i < len(labs) else f"trace_{i+1}"
             # plot mean line first to capture color from matplotlib cycle
             ln, = ax.plot(rel_t, y, lw=1.25, alpha=0.95, label=lab)
             # if stds available and matching shape, draw shaded band
             if stds is not None:
                 try:
                     s = stds[i]
-                    if np.shape(s) == np.shape(y):
-                        col = ln.get_color()
+                    col = ln.get_color()
+                    if isinstance(s, (tuple, list)) and len(s) == 2:
+                        lo, hi = np.asarray(s[0], float), np.asarray(s[1], float)
+                    elif isinstance(s, np.ndarray) and s.ndim == 2 and s.shape[0] == 2:
+                        lo, hi = s[0], s[1]
+                    elif np.shape(s) == np.shape(y):
                         lo = y - s
                         hi = y + s
+                    else:
+                        lo, hi = None, None
+                    if lo is not None and hi is not None:
+                        if sub == "variability":
+                            lo = np.maximum(0.0, lo)
                         ax.fill_between(rel_t, lo, hi, color=col, alpha=0.22, linewidth=0.0)
                 except Exception:
                     pass
@@ -399,6 +436,10 @@ def stacked_heatmaps_plus_behv(
             # ax.axhline(target[0], color="red", alpha=0.8, linewidth=1.2, ls="--")
             # ax.axhline(target[1], color="red", alpha=0.8, linewidth=1.2, ls="--")
             
+        if sub in ("cam0_pos", "cam1_pos") and "normalized" in str(ylabel).lower():
+            ax.axhline(0.0, color="0.5", linestyle=":", alpha=0.5, linewidth=0.8)
+            ax.axhline(1.0, color="0.5", linestyle=":", alpha=0.5, linewidth=0.8)
+
         ax.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
         if stim_dur_ms is not None and np.isfinite(stim_dur_ms) and stim_dur_ms > 0:
             ax.axvspan(
@@ -442,11 +483,19 @@ def stacked_heatmaps_plus_behv(
             # Only place legend on the chosen behavior row
             place_legend_now = (beh_row_i == legend_row_idx) and (not legend_placed)
 
-            if sub == "cam0_pos":
-                _plot_lines(ax, beh_rel_time, beh_cam0_pos, title_kinematics or "",
+            if sub == "variability":
+                var_title = title_variability if title_variability is not None else (title_kinematics or "")
+                _plot_lines(ax, beh_rel_time, beh_variability, var_title,
+                            beh_variability_ylabel, sub, place_legend_now, stds=beh_variability_stds, ylim=beh_variability_ylim, target=None)
+            elif sub == "cam0_pos":
+                c0_title = "" if have_variability else (title_kinematics or "")
+                _plot_lines(ax, beh_rel_time, beh_cam0_pos, c0_title,
                             f"Cam-0\n{beh_pos_ylabel}", sub, place_legend_now, stds=beh_cam0_pos_stds, ylim=beh_ylim, target=target_pos_cam0)
             elif sub == "cam1_pos":
-                _plot_lines(ax, beh_rel_time, beh_cam1_pos, title_cam1 or "",
+                c1_title = "" if (have_variability or have_cam0_pos) else (title_kinematics or "")
+                if title_cam1:
+                    c1_title = title_cam1
+                _plot_lines(ax, beh_rel_time, beh_cam1_pos, c1_title,
                             f"Cam-1\n{beh_pos_ylabel}", sub, place_legend_now, stds=beh_cam1_pos_stds, ylim=beh_ylim, target=target_pos_cam1)
             elif sub == "cam0_vel":
                 _plot_lines(ax, beh_rel_time, beh_cam0_vel, title_cam0_vel or "",
@@ -485,8 +534,18 @@ def stacked_heatmaps_plus_behv(
         )
 
         # Make a copy of the cmap and set NaN color to gray
-        cmap_local_nprw = cm.get_cmap(cmap).copy()
+        cmap_choice_nprw = cmap_nprw if cmap_nprw is not None else cmap
+        try:
+            cmap_local_nprw = plt.get_cmap(cmap_choice_nprw).copy()
+        except Exception:
+            cmap_local_nprw = cm.get_cmap(cmap_choice_nprw).copy()
         cmap_local_nprw.set_bad(color="0.9")
+
+        # Determine normalization for NPRW
+        norm_local_nprw = norm_nprw
+        if norm_local_nprw is None and center_zero and (vmin_nprw is not None) and (vmax_nprw is not None):
+            if vmin_nprw < 0.0 < vmax_nprw:
+                norm_local_nprw = TwoSlopeNorm(vcenter=0.0, vmin=float(vmin_nprw), vmax=float(vmax_nprw))
         
         # nprw_masked: (n_ch, T)
         n_ch, T = nprw_masked.shape
@@ -504,16 +563,23 @@ def stacked_heatmaps_plus_behv(
                 f"len(nprw_edges_ms)={len(nprw_edges_ms)}"
             )
 
+        pcolor_kwargs_nprw = dict(
+            cmap=cmap_local_nprw,
+            shading="flat",
+            antialiased=False,
+            rasterized=True,
+        )
+        if norm_local_nprw is not None:
+            pcolor_kwargs_nprw["norm"] = norm_local_nprw
+        else:
+            pcolor_kwargs_nprw["vmin"] = vmin_nprw
+            pcolor_kwargs_nprw["vmax"] = vmax_nprw
+
         im0 = ax_nprw.pcolormesh(
             nprw_x_edges,
             y_edges,
             nprw_masked,
-            cmap=cmap_local_nprw,
-            vmin=vmin_nprw,
-            vmax=vmax_nprw,
-            shading="flat",
-            antialiased=False,
-            rasterized=True,
+            **pcolor_kwargs_nprw,
         )
         im0.set_edgecolor('none')
         # im1.set_rasterized(True)
@@ -570,8 +636,23 @@ def stacked_heatmaps_plus_behv(
             # Mask NaNs
             ua_masked = ma.masked_invalid(mat_group)
 
+            # Determine normalization for UA
+            norm_local_ua = None
+            if isinstance(norm_ua, dict):
+                norm_local_ua = norm_ua.get(label_group, None)
+            elif norm_ua is not None:
+                norm_local_ua = norm_ua
+
+            if norm_local_ua is None and center_zero and (vmin_ua_group is not None) and (vmax_ua_group is not None):
+                if vmin_ua_group < 0.0 < vmax_ua_group:
+                    norm_local_ua = TwoSlopeNorm(vcenter=0.0, vmin=float(vmin_ua_group), vmax=float(vmax_ua_group))
+
             # Make a copy of the cmap and set NaN color to gray
-            cmap_local_ua = cm.get_cmap(cmap).copy()
+            cmap_choice_ua = cmap_ua if cmap_ua is not None else cmap
+            try:
+                cmap_local_ua = plt.get_cmap(cmap_choice_ua).copy()
+            except Exception:
+                cmap_local_ua = cm.get_cmap(cmap_choice_ua).copy()
             cmap_local_ua.set_bad(color="gray")
             
             # ua_masked: (n_ch, T)
@@ -603,16 +684,23 @@ def stacked_heatmaps_plus_behv(
                     f"len(ua_edges_ms)={len(ua_edges_ms)}"
                 )
 
+            pcolor_kwargs_ua = dict(
+                cmap=cmap_local_ua,
+                shading="flat",
+                antialiased=False,
+                rasterized=True,
+            )
+            if norm_local_ua is not None:
+                pcolor_kwargs_ua["norm"] = norm_local_ua
+            else:
+                pcolor_kwargs_ua["vmin"] = vmin_ua_group
+                pcolor_kwargs_ua["vmax"] = vmax_ua_group
+
             im1 = ax_ua.pcolormesh(
                 ua_x_edges,
                 y_edges,
                 ua_masked,
-                cmap=cmap_local_ua,
-                vmin=vmin_ua_group,
-                vmax=vmax_ua_group,
-                shading="flat",
-                antialiased=False,
-                rasterized=True,
+                **pcolor_kwargs_ua,
             )
             im1.set_edgecolor('none')
             # im1.set_rasterized(True)

@@ -1,0 +1,11 @@
+================================================================================
+VELES RUN START: 09/30/2026 14:02:46
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 12]
+Scripts:
+  - preprocessing_scripts/analyze_lfp_bands.py
+  - scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py
+================================================================================
+[09/30/2026 14:02:48] [NRR_RW012] [preprocessing_scripts/analyze_lfp_bands.py] SKIPPED: Dependency discrepancy not approved by user
+[09/30/2026 14:02:48] [NRR_RW012] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] SKIPPED: Dependency discrepancy not approved by user

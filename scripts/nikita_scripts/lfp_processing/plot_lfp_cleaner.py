@@ -42,13 +42,14 @@ except Exception:
     TORCH_AVAILABLE = False
 
 # =============================================================================
-# SESSION SELECTION - EDIT THESE TO FILTER WHICH SESSIONS TO PROCESS
-# =============================================================================
+# Load process_only dynamically from PARAMS if available, otherwise None
+try:
+    from RCP_analysis.python.functions.config_loading import PARAMS
+    _po = PARAMS.preprocessing.get("process_only") if PARAMS is not None else None
+    SESSION_FILTER = [int(x) for x in _po] if _po else None
+except Exception:
+    SESSION_FILTER = None
 
-# SESSION_FILTER = [17]
-# SESSION_FILTER = [1]
-# SESSION_FILTER = [17, 16, 15, 1,]          # None = all, or list like [1, 2, 3]
-SESSION_FILTER = None
 SESSION_ID_PATTERN = None      # None = all, or regex like r'.*control.*'
 
 
@@ -69,6 +70,8 @@ FIGURE_CONFIG = {
     'generate_per_ua_trial_average': False,
     'generate_per_ua_array_median': True,  # Median across all trials AND channels per Utah array
     'generate_control_median_baseline_norm_array_median': True,
+    'generate_causal_diagnostic': True,      # Causal filterbank vs acausal Morlet comparison (0 to 50 ms)
+    'generate_causal_zoomed_spectrogram': True,  # Alias for backward compatibility
     
 
     # Inter-regional analyses
@@ -240,6 +243,8 @@ WAVELET_TEST_CONFIG = {
         {'label': 'STFT 100ms',  'method': 'stft', 'window_ms': 100},
         # Paul wavelet (m=4): better time resolution than Morlet, good for transients
         {'label': 'Paul m=4',    'method': 'paul', 'order': 4},
+        # Causal SOS filterbank: forward-only, strictly zero backward precursor before t=0
+        {'label': 'Causal SOS (forward-only)', 'method': 'causal_sos', 'order': 2},
     ],
 
     # --- Normalization to apply to all methods ---
@@ -336,14 +341,20 @@ def mask_notch_regions(f, psd, notch_regions=None):
         notch_regions = ANALYSIS_CONFIG.get('notch_regions', [(55, 65), (115, 125)])
     
     psd_masked = psd.copy()
+    if psd_masked.size == 0 or np.asarray(f).size == 0:
+        return psd_masked
+
+    f_1d = np.asarray(f).ravel()
     
     for f_lo, f_hi in notch_regions:
-        mask = (f >= f_lo) & (f <= f_hi)
+        mask = (f_1d >= f_lo) & (f_1d <= f_hi)
         if psd_masked.ndim == 1:
-            psd_masked[mask] = np.nan
+            if mask.size == psd_masked.size:
+                psd_masked[mask] = np.nan
         else:
             # Assume frequency is last axis
-            psd_masked[..., mask] = np.nan
+            if mask.size == psd_masked.shape[-1]:
+                psd_masked[..., mask] = np.nan
     
     return psd_masked
 
@@ -730,6 +741,156 @@ def compute_array_median_raw_spectrograms(data, groups, fs=1000,
 
     return region_specs_raw
 
+def compute_array_median_causal_raw_spectrograms(data, groups, fs=1000,
+                                                region_grids=None, elec_to_idx=None,
+                                                order=2, n_cycles=5):
+    """
+    Compute strictly causal forward-only filterbank spectrogram median across all
+    valid trial/channel pairs for each array/region.
+
+    Uses the exact same frequencies, trial time window, and channel pooling as
+    compute_array_median_raw_spectrograms, but replaces acausal Morlet wavelets with
+    strictly causal forward-only Butterworth bandpass filtering (sosfilt),
+    analytic envelope extraction (hilbert), and frequency-matched causal
+    recursive exponential smoothing.
+
+    Returns dict mapping region_name -> {
+        'Sxx': Sxx_region_median_raw,
+        'f': foi,
+        't_ms': t_spec_ms_saved,
+        'n_valid_channels': n_valid_channels,
+        'n_valid_trial_channel_pairs': n_valid_trial_channel_pairs,
+    }
+    """
+    spec_cfg = PLOT_CONFIG.get('spectrogram', {})
+    freq_min = spec_cfg.get('freq_min', 1)
+    freq_max = spec_cfg.get('freq_max', 120)
+    freq_step = spec_cfg.get('freq_step', 1)
+    foi = get_foi_with_notch_gaps(freq_min, freq_max, freq_step)
+
+    bb_full, t_ms = get_broadband_full(data)
+    if bb_full is None:
+        print("    WARNING: broadband data missing; cannot compute causal spectrograms.")
+        return {}
+
+    bb_full = np.asarray(bb_full)
+    if bb_full.ndim != 3:
+        print(f"    WARNING: expected broadband data shape trial x channel x time, got {bb_full.shape}")
+        return {}
+
+    n_trials, n_channels, n_time = bb_full.shape
+    t_ms_arr = np.asarray(t_ms)
+
+    region_specs_raw = {}
+
+    # Build map of regions to process: region_name -> list of channel indices
+    region_channel_map = {}
+    if region_grids is not None and elec_to_idx is not None:
+        for grp_idxs, grp_name in groups:
+            r_name = grp_name.split(' (')[0]
+            if r_name in region_grids:
+                grid_elec = region_grids[r_name]
+                ch_indices = []
+                for elec_id in np.asarray(grid_elec).ravel():
+                    if elec_id is None:
+                        continue
+                    try:
+                        if np.isnan(float(elec_id)):
+                            continue
+                    except (ValueError, TypeError):
+                        continue
+                    ch_idx = elec_to_idx.get(int(elec_id), None)
+                    if ch_idx is not None and 0 <= ch_idx < n_channels:
+                        ch_indices.append(ch_idx)
+                if ch_indices:
+                    region_channel_map[r_name] = sorted(list(set(ch_indices)))
+
+    if not region_channel_map:
+        for grp_idxs, grp_name in groups:
+            r_name = grp_name.split(' (')[0]
+            valid_idxs = [idx for idx in grp_idxs if 0 <= idx < n_channels]
+            if valid_idxs:
+                region_channel_map[r_name] = sorted(list(set(valid_idxs)))
+
+    for region_name, ch_indices in region_channel_map.items():
+        print(f"    Computing causal array-median spectrogram for {region_name}...")
+
+        region_traces = []
+        for ch_idx in ch_indices:
+            for trial_idx in range(n_trials):
+                trace = bb_full[trial_idx, ch_idx, :]
+                if trace is None or trace.size != n_time:
+                    continue
+                if not np.isfinite(trace).any():
+                    continue
+                region_traces.append(trace.astype(np.float64))
+
+        n_valid_channels = len(ch_indices)
+        n_valid_trial_channel_pairs = len(region_traces)
+
+        if n_valid_trial_channel_pairs == 0:
+            print(f"      No valid trial/channel pairs for {region_name}; skipping.")
+            continue
+
+        traces_arr = np.stack(region_traces, axis=0)
+
+        # Interpolate NaNs across time to protect IIR/Hilbert filtering from NaN propagation
+        for i_tr in range(len(traces_arr)):
+            nan_m = np.isnan(traces_arr[i_tr])
+            if nan_m.any():
+                if nan_m.all():
+                    traces_arr[i_tr] = 0.0
+                else:
+                    x_good = np.flatnonzero(~nan_m)
+                    x_bad = np.flatnonzero(nan_m)
+                    traces_arr[i_tr, x_bad] = np.interp(x_bad, x_good, traces_arr[i_tr, x_good])
+
+        n_freq = len(foi)
+        Sxx_region_median_raw = np.zeros((n_freq, n_time), dtype=np.float64)
+
+        for i_f, f in enumerate(foi):
+            bw = max(1.5, f / float(n_cycles))
+            low = max(0.5, f - bw / 2.0)
+            high = min(fs / 2.0 - 1.0, f + bw / 2.0)
+            if low >= high:
+                continue
+
+            sos = signal.butter(order, [low, high], btype='bandpass', fs=fs, output='sos')
+
+            # 1. Strictly causal forward-only filtering across all traces
+            filtered = signal.sosfilt(sos, traces_arr, axis=-1)
+
+            # 2. Instantaneous analytic envelope power across all traces
+            analytic = signal.hilbert(filtered, axis=-1)
+            envelope_power = np.abs(analytic) ** 2
+
+            # 3. Frequency-matched causal exponential smoothing
+            tau = float(n_cycles) / (2.0 * np.pi * f)
+            alpha = np.exp(-1.0 / max(tau * fs, 1.0))
+            b_filt = [1.0 - alpha]
+            a_filt = [1.0, -alpha]
+            zi = signal.lfilter_zi(b_filt, a_filt)
+            zi_batch = np.outer(envelope_power[:, 0], zi)
+            envelope_smooth, _ = signal.lfilter(b_filt, a_filt, envelope_power, axis=-1, zi=zi_batch)
+
+            # 4. Median across all trial/channel traces for this frequency
+            Sxx_region_median_raw[i_f, :] = np.nanmedian(envelope_smooth, axis=0)
+
+        region_specs_raw[region_name] = {
+            'Sxx': Sxx_region_median_raw,
+            'f': foi,
+            't_ms': t_ms_arr,
+            'n_valid_channels': n_valid_channels,
+            'n_valid_trial_channel_pairs': n_valid_trial_channel_pairs,
+        }
+        print(
+            f"      {region_name}: Causal filterbank complete, "
+            f"{n_valid_channels} channels, "
+            f"{n_valid_trial_channel_pairs} trial/channel pairs"
+        )
+
+    return region_specs_raw
+
 def get_trial_count(data):
     return int(data['broadband_full'].shape[0])
 
@@ -929,6 +1090,49 @@ def slice_time_window(data_3d, t_ms, t_start, t_end):
     """
     mask = (t_ms >= t_start) & (t_ms <= t_end)
     return data_3d[..., mask], t_ms[mask]
+
+def get_clean_pre_post_windows(data, bb_full, t_ms):
+    """
+    Determine clean (pre_start, pre_end) and (post_start, post_end) time bounds in ms.
+    
+    For NPRW or stimulation sessions with blanking periods (which contain NaNs during
+    stimulation, e.g. [-20 ms, stim_dur + 20 ms]), ensures that:
+      - pre_end ends strictly before any blanking/NaNs begin.
+      - post_start starts strictly after any blanking/NaNs end.
+    This guarantees that slice_time_window produces completely finite arrays,
+    preventing scipy.signal.welch from producing all-NaN PSD curves.
+    """
+    pre_start = float(TIME_WINDOWS['pre_start'])
+    pre_end = float(TIME_WINDOWS['pre_end'])
+    post_start = float(TIME_WINDOWS['post_start'])
+    post_end = float(TIME_WINDOWS['post_end'])
+    
+    t_ms = np.asarray(t_ms)
+    
+    # Check if bb_full has NaNs
+    if bb_full is not None and np.isnan(bb_full).any():
+        nan_mask_t = np.isnan(bb_full).any(axis=tuple(range(bb_full.ndim - 1)))
+        nan_times = t_ms[nan_mask_t]
+        if len(nan_times) > 0:
+            nan_min = float(nan_times.min())
+            nan_max = float(nan_times.max())
+            if nan_min < pre_end:
+                pre_end = min(pre_end, nan_min - 1.0)
+            if nan_max > post_start:
+                post_start = max(post_start, nan_max + 1.0)
+    elif 'stim_dur_ms' in data and not data.get('is_control', False):
+        stim_dur = float(data.get('stim_dur_ms', 0.0))
+        if stim_dur > 0 and 'ua_ids_1based' not in data:
+            # NPRW blanking duration fallback
+            pre_end = min(pre_end, -25.0)
+            post_start = max(post_start, stim_dur + 25.0)
+
+    # Bound within available time range
+    if t_ms.size > 0:
+        pre_start = max(pre_start, float(t_ms[0]))
+        post_end = min(post_end, float(t_ms[-1]))
+    
+    return (pre_start, pre_end), (post_start, post_end)
 
 # =============================================================================
 # MORLET WAVELET SPECTROGRAM (replaces superlet)
@@ -1482,6 +1686,86 @@ def compute_paul_wavelet_spectrogram(trace, fs, foi=None, order=4, t_ms=None):
     return Sxx, foi, t_sec
 
 
+def compute_causal_filterbank_spectrogram(trace, fs, foi=None, order=2, n_cycles=5, smooth_win_ms=None, t_ms=None):
+    """
+    Compute a strictly causal time-frequency power envelope using forward-only
+    Butterworth bandpass filtering (scipy.signal.sosfilt) and analytic envelope extraction.
+    
+    Why this matches Morlet spectrogram aesthetics while preserving causality:
+    - Bandwidth: Constant-Q scaling with frequency (f / n_cycles), matching Morlet frequency resolution.
+    - Analytic Envelope: Computing the envelope |y(t) + i H{y(t)}|^2 eliminates carrier-wave
+      intra-cycle oscillations (no zebra stripes or phase ripples), yielding a smooth scalogram like |W(t, f)|^2.
+    - Strict Causality: Because sosfilt is forward-only, the filter state and analytic signal at t < 0
+      depend ONLY on data before t = 0 ms. There is mathematically zero backward smearing or leakage
+      from the stimulation artifact at t >= 0 into t < 0.
+    
+    Args:
+        trace: 1D array (n_time,)
+        fs: sampling rate (Hz)
+        foi: array of frequencies (Hz)
+        order: filter order (default 2 for sharp temporal resolution with minimal ringing)
+        n_cycles: constant-Q quality factor matching Morlet cycles (default 5)
+        smooth_win_ms: optional additional smoothing window in ms
+        t_ms: time array in ms
+    
+    Returns:
+        Sxx: (n_freq, n_time) causal instantaneous power envelope
+        foi: frequency array
+        t_sec: time array in seconds
+    """
+    if foi is None:
+        foi = get_foi_with_notch_gaps()
+    
+    trace_clean = trace.copy().astype(np.float64)
+    nan_mask = np.isnan(trace_clean)
+    if nan_mask.any():
+        if nan_mask.all():
+            return None, None, None
+        trace_clean[nan_mask] = np.interp(
+            np.flatnonzero(nan_mask),
+            np.flatnonzero(~nan_mask),
+            trace_clean[~nan_mask]
+        )
+    
+    n_time = len(trace_clean)
+    n_freq = len(foi)
+    Sxx = np.zeros((n_freq, n_time), dtype=np.float64)
+    
+    for i, f in enumerate(foi):
+        # Constant-Q bandwidth matching Morlet frequency scaling
+        bw = max(1.5, f / float(n_cycles))
+        low = max(0.5, f - bw / 2.0)
+        high = min(fs / 2.0 - 1.0, f + bw / 2.0)
+        
+        if low >= high:
+            continue
+            
+        sos = signal.butter(order, [low, high], btype='bandpass', fs=fs, output='sos')
+        # 1. Strictly causal forward-only filtering:
+        filtered = signal.sosfilt(sos, trace_clean)
+        # 2. Instantaneous analytic power envelope:
+        analytic = signal.hilbert(filtered)
+        envelope_power = np.abs(analytic) ** 2
+        
+        # 3. Frequency-matched causal exponential smoothing:
+        # Matches the effective duration of Morlet wavelet tau(f) = n_cycles / (2*pi*f)
+        # using a strictly causal 1-pole recursive exponential filter:
+        # y[n] = alpha * y[n-1] + (1 - alpha) * x[n]
+        if smooth_win_ms is not None and smooth_win_ms > 0:
+            tau = float(smooth_win_ms) / 1000.0
+        else:
+            tau = float(n_cycles) / (2.0 * np.pi * f)
+            
+        alpha = np.exp(-1.0 / max(tau * fs, 1.0))
+        zi = signal.lfilter_zi([1.0 - alpha], [1.0, -alpha]) * envelope_power[0]
+        envelope_smooth, _ = signal.lfilter([1.0 - alpha], [1.0, -alpha], envelope_power, zi=zi)
+            
+        Sxx[i, :] = envelope_smooth
+        
+    t_sec = np.arange(n_time) / fs
+    return Sxx, foi, t_sec
+
+
 def compute_tfr_method(trace, fs, method_cfg, foi=None, t_ms=None):
     """
     Dispatch function: compute TFR using the method specified in method_cfg.
@@ -1517,6 +1801,13 @@ def compute_tfr_method(trace, fs, method_cfg, foi=None, t_ms=None):
         return compute_paul_wavelet_spectrogram(
             trace, fs, foi=foi,
             order=method_cfg.get('order', 4),
+            t_ms=t_ms,
+        )
+    elif method in ('causal_sos', 'causal_filterbank'):
+        return compute_causal_filterbank_spectrogram(
+            trace, fs, foi=foi,
+            order=method_cfg.get('order', 2),
+            smooth_win_ms=method_cfg.get('smooth_win_ms', 5.0),
             t_ms=t_ms,
         )
     else:
@@ -1570,6 +1861,8 @@ def run_wavelet_comparison(lfp_dir, fig_dir, label=""):
                 br_idx = int(br_match.group(1))
                 if br_idx not in SESSION_FILTER:
                     continue
+            elif not ('baseline' in session_candidate_id.lower() or 'control' in session_candidate_id.lower()):
+                continue
 
         files_filtered.append(npz_candidate)
 
@@ -1944,19 +2237,30 @@ def generate_session_summary(data, session_id, fig_dir, groups, fs=1000):
         print(f"    [Skip] No broadband data for session summary: {e}")
         return None
     
+    # Determine clean analysis windows (avoids blanking NaNs in NPRW)
+    (pre_start, pre_end), (post_start, post_end) = get_clean_pre_post_windows(data, bb_full, t_ms)
+
     # Slice to analysis windows
     bb_pre, t_pre = slice_time_window(
         bb_full, t_ms,
-        TIME_WINDOWS['pre_start'], TIME_WINDOWS['pre_end']
+        pre_start, pre_end
     )
     bb_post, t_post = slice_time_window(
         bb_full, t_ms,
-        TIME_WINDOWS['post_start'], TIME_WINDOWS['post_end']
+        post_start, post_end
     )
     
-    n_trials, n_ch, n_time = bb_post.shape
+    n_trials, n_ch = bb_full.shape[0], bb_full.shape[1]
     n_regions = len(groups)
     
+    # Check if either pre or post has valid samples
+    has_post = (bb_post is not None and bb_post.ndim == 3 and bb_post.shape[2] >= 8 and post_start < post_end)
+    has_pre = (bb_pre is not None and bb_pre.ndim == 3 and bb_pre.shape[2] >= 8 and pre_start < pre_end)
+
+    if not has_post and not has_pre:
+        print(f"    [Skip] Insufficient time samples in both pre and post windows for session summary ({session_id})")
+        return None
+
     # Create figure - single row of PSD plots
     fig, axes = plt.subplots(1, n_regions, figsize=(4 * n_regions, 4))
     if n_regions == 1:
@@ -1968,7 +2272,8 @@ def generate_session_summary(data, session_id, fig_dir, groups, fs=1000):
     
     freq_range = ANALYSIS_CONFIG['freq_range_display']
     notch_regions = ANALYSIS_CONFIG.get('notch_regions', [(55, 65), (115, 125)])
-    nperseg = min(n_time, 512)
+    n_time_post = bb_post.shape[2] if has_post else 0
+    nperseg = min(n_time_post, 512) if has_post else 0
     
     # PSD for each region
     for col, (grp_idxs, grp_name) in enumerate(groups):
@@ -1976,40 +2281,78 @@ def generate_session_summary(data, session_id, fig_dir, groups, fs=1000):
         short_name = grp_name.split(' (')[0]
         color = get_region_color(short_name)
         
-        # Compute PSD
-        region_data = bb_post[:, grp_idxs, :]
-        f, Pxx = signal.welch(region_data, fs=fs, nperseg=nperseg, axis=2)
-        
-        # Average across channels, then compute stats across trials
-        Pxx_ch_mean = np.nanmean(Pxx, axis=1)  # (trials, freq)
-        
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            Pxx_dB = 10 * np.log10(Pxx_ch_mean + 1e-20)
-        
-        # Compute mean and 95% CI
-        psd_mean, psd_ci_lo, psd_ci_hi = compute_confidence_interval(Pxx_dB, axis=0)
-        
-        # === MASK NOTCH REGIONS ===
-        psd_mean = mask_notch_regions(f, psd_mean, notch_regions)
-        psd_ci_lo = mask_notch_regions(f, psd_ci_lo, notch_regions)
-        psd_ci_hi = mask_notch_regions(f, psd_ci_hi, notch_regions)
-        
-        # Mask to frequency range (1-120 Hz)
-        f_mask = (f >= freq_range[0]) & (f <= freq_range[1])
-        f_plot = f[f_mask]
-        
-        # Plot (NaN values will create gaps automatically)
-        ax.plot(f_plot, psd_mean[f_mask], color=color, lw=2, label='Post')
-        ax.fill_between(f_plot,
-                        psd_ci_lo[f_mask],
-                        psd_ci_hi[f_mask],
-                        color=color, alpha=0.2)
+        # Post-stim PSD (if post window is available and finite)
+        if has_post:
+            region_data = bb_post[:, grp_idxs, :].copy()
+
+            # Guard against any sporadic NaNs
+            if np.isnan(region_data).any():
+                cleaned_list = []
+                for tr_i in range(region_data.shape[0]):
+                    ch_list = []
+                    for ch_i in range(region_data.shape[1]):
+                        tr = region_data[tr_i, ch_i]
+                        if np.isnan(tr).any():
+                            c_tr = interpolate_nans_1d(tr)
+                            if c_tr is None:
+                                c_tr = np.zeros(region_data.shape[2], dtype=np.float32)
+                            ch_list.append(c_tr)
+                        else:
+                            ch_list.append(tr)
+                    cleaned_list.append(np.stack(ch_list, axis=0))
+                region_data = np.stack(cleaned_list, axis=0)
+
+            f, Pxx = signal.welch(region_data, fs=fs, nperseg=nperseg, axis=2)
+            f = np.asarray(f).ravel()
+            
+            # Average across channels, then compute stats across trials
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                Pxx_ch_mean = np.nanmean(Pxx, axis=1)  # (trials, freq)
+                Pxx_dB = 10 * np.log10(Pxx_ch_mean + 1e-20)
+            
+            # Compute mean and 95% CI
+            psd_mean, psd_ci_lo, psd_ci_hi = compute_confidence_interval(Pxx_dB, axis=0)
+            
+            # === MASK NOTCH REGIONS ===
+            psd_mean = mask_notch_regions(f, psd_mean, notch_regions)
+            psd_ci_lo = mask_notch_regions(f, psd_ci_lo, notch_regions)
+            psd_ci_hi = mask_notch_regions(f, psd_ci_hi, notch_regions)
+            
+            # Mask to frequency range (1-120 Hz)
+            f_mask = (f >= freq_range[0]) & (f <= freq_range[1])
+            f_plot = f[f_mask]
+            
+            # Plot (NaN values will create gaps automatically)
+            ax.plot(f_plot, psd_mean[f_mask], color=color, lw=2, label='Post')
+            ax.fill_between(f_plot,
+                            psd_ci_lo[f_mask],
+                            psd_ci_hi[f_mask],
+                            color=color, alpha=0.2)
+        else:
+            # Indicate post is blanked / continuous stim
+            ax.plot([], [], ' ', label='Post: N/A (continuous stim / blanked)')
         
         # Add pre-stim if available
-        if bb_pre is not None:
-            pre_data = bb_pre[:, grp_idxs, :]
-            if pre_data.shape[2] > 0:
+        if has_pre:
+            pre_data = bb_pre[:, grp_idxs, :].copy()
+            if pre_data.shape[2] >= 8:
+                if np.isnan(pre_data).any():
+                    cleaned_list = []
+                    for tr_i in range(pre_data.shape[0]):
+                        ch_list = []
+                        for ch_i in range(pre_data.shape[1]):
+                            tr = pre_data[tr_i, ch_i]
+                            if np.isnan(tr).any():
+                                c_tr = interpolate_nans_1d(tr)
+                                if c_tr is None:
+                                    c_tr = np.zeros(pre_data.shape[2], dtype=np.float32)
+                                ch_list.append(c_tr)
+                            else:
+                                ch_list.append(tr)
+                        cleaned_list.append(np.stack(ch_list, axis=0))
+                    pre_data = np.stack(cleaned_list, axis=0)
+
                 f_pre, Pxx_pre = signal.welch(pre_data, fs=fs, nperseg=min(pre_data.shape[2], 512), axis=2)
                 Pxx_pre_ch_mean = np.nanmean(Pxx_pre, axis=1)
                 with warnings.catch_warnings():
@@ -2281,15 +2624,22 @@ def generate_stim_vs_control(data_stim, data_control, session_id, fig_dir,
         print(f"    [Skip] Missing data for stim vs control: {e}")
         return None
     
-    # Slice to post-stim window for comparison
-    bb_stim, _ = slice_time_window(
-        stim_full, t_stim,
-        TIME_WINDOWS['post_start'], TIME_WINDOWS['post_end']
-    )
-    bb_ctrl, _ = slice_time_window(
-        ctrl_full, t_ctrl,
-        TIME_WINDOWS['post_start'], TIME_WINDOWS['post_end']
-    )
+    # Slice to post-stim window for comparison (clean of any blanking NaNs)
+    _, (post_start_stim, post_end_stim) = get_clean_pre_post_windows(data_stim, stim_full, t_stim)
+    _, (post_start_ctrl, post_end_ctrl) = get_clean_pre_post_windows(data_control, ctrl_full, t_ctrl)
+    post_start = max(post_start_stim, post_start_ctrl)
+    post_end = min(post_end_stim, post_end_ctrl)
+
+    if post_start >= post_end:
+        print(f"    [Skip] Post-stim window has insufficient samples for stim vs control ({session_id})")
+        return None
+
+    bb_stim, _ = slice_time_window(stim_full, t_stim, post_start, post_end)
+    bb_ctrl, _ = slice_time_window(ctrl_full, t_ctrl, post_start, post_end)
+    
+    if bb_stim.shape[2] < 8 or bb_ctrl.shape[2] < 8:
+        print(f"    [Skip] Insufficient time points for stim vs control ({session_id})")
+        return None
     
     n_regions = len(groups)
     bands = ANALYSIS_CONFIG['bands']
@@ -2442,7 +2792,7 @@ def generate_dose_response(session_data_dict, base_session_id, fig_dir, groups, 
     baseline_powers = {}
     if 0 in session_data_dict:
         ctrl_data = session_data_dict[0].get('broadband_post')
-        if ctrl_data is not None:
+        if ctrl_data is not None and ctrl_data.ndim == 3 and ctrl_data.shape[2] >= 8:
             nperseg = min(ctrl_data.shape[2], 256)
             f, Pxx_ctrl = signal.welch(ctrl_data, fs=fs, nperseg=nperseg, axis=2)
             
@@ -2470,11 +2820,15 @@ def generate_dose_response(session_data_dict, base_session_id, fig_dir, groups, 
                 
                 try:
                     bb_full, t_ms = get_broadband_full(data)
+                    _, (post_start, post_end) = get_clean_pre_post_windows(data, bb_full, t_ms)
                     bb_post, _ = slice_time_window(
                         bb_full, t_ms,
-                        TIME_WINDOWS['post_start'], TIME_WINDOWS['post_end']
+                        post_start, post_end
                     )
                 except KeyError:
+                    continue
+                
+                if bb_post.ndim != 3 or bb_post.shape[2] < 8 or post_start >= post_end:
                     continue
                 
                 valid_idx = [i for i in grp_idxs if i < bb_post.shape[1]]
@@ -3236,7 +3590,8 @@ def _plot_spectrogram_grid(all_spectrograms, grid_elec, elec_to_idx, n_ch,
 def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, fs=1000,
                                              ua_ids_1based=None, nsp_to_elec=None,
                                              region_grids=None, elec_to_idx=None,
-                                             control_median_baseline_norm=None):
+                                             control_median_baseline_norm=None,
+                                             return_raw_specs=False):
     """
     Generate one 4-panel figure per session.
 
@@ -3256,11 +3611,11 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
         bb_full, t_ms = get_broadband_full(data)
     except KeyError as e:
         print(f"    [Skip] No broadband data for per-UA array median spectrogram: {e}")
-        return None
+        return (None, None) if return_raw_specs else None
 
     if region_grids is None or elec_to_idx is None:
         print("    [Skip] Need electrode mapping for per-UA array median spectrogram")
-        return None
+        return (None, None) if return_raw_specs else None
 
     # Spectrogram settings
     spec_cfg = PLOT_CONFIG.get('spectrogram', {})
@@ -3322,7 +3677,7 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
 
     if not region_specs_raw:
         print("    [Skip] No valid raw array-level median spectrograms were computed")
-        return None
+        return (None, None) if return_raw_specs else None
 
     region_specs = {}
 
@@ -3369,7 +3724,7 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
 
     if not region_specs:
         print("    [Skip] No valid array-level median spectrograms were computed")
-        return None
+        return (None, None) if return_raw_specs else None
 
     # If raw mode and vmax is None, compute global 95th percentile
     if normalize_method == 'raw' and vmax is None:
@@ -3634,7 +3989,344 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
 
         print(f"    Saved control median-baseline normalized array-level median spectrogram -> {out_path_ctrl.relative_to(fig_dir)}")
 
+    if return_raw_specs:
+        return out_path, region_specs_raw
     return out_path
+
+
+def generate_causal_diagnostic(data, session_id, fig_dir, groups, fs=1000,
+                               region_grids=None, elec_to_idx=None,
+                               zoom_range_ms=(0, 50), cached_morlet_raw=None):
+    """
+    Perform strictly causal time-frequency analysis matching regular array-level
+    median spectrograms in frequencies, baseline normalization window, and channel/trial pooling,
+    zoomed into the 0 to 50 ms post-stimulus window.
+
+    Generates two figures:
+    1. Standalone 2x2 Causal Array-Level Median Spectrogram (Zoomed 0 to 50 ms):
+       Saved as 'array_median_causal_0_to_50ms.png' in per_UA_activity and Causal_Diagnostic.
+    2. Causal Diagnostic Comparison Figure:
+       Row 0: Acausal (Morlet Wavelet) [0, 50] ms
+       Row 1: Strictly Causal (Forward-Only Filterbank) [0, 50] ms
+       Saved as 'causal_diagnostic_{session_id}.png' in Causal_Diagnostic.
+    """
+    try:
+        bb_full, t_ms = get_broadband_full(data)
+    except KeyError as e:
+        print(f"    [Skip] No broadband data for causal diagnostic: {e}")
+        return None
+
+    t_ms_arr = np.asarray(t_ms)
+    zoom_mask = (t_ms_arr >= zoom_range_ms[0]) & (t_ms_arr <= zoom_range_ms[1])
+    if not zoom_mask.any():
+        print(f"    [Skip] Zoom window {zoom_range_ms} ms not within trial time array [{t_ms_arr[0]}, {t_ms_arr[-1]}]")
+        return None
+
+    # Discover condition name and directories
+    br_match = re.search(r'_(\d{3})(?:_|$|\.)', session_id)
+    target_match = re.search(r'target_([AB])$', session_id, re.IGNORECASE)
+    target_suffix = f"_{target_match.group(1).upper()}" if target_match else ""
+
+    if br_match:
+        br_idx = int(br_match.group(1))
+        condition_name = f"condition_{br_idx:02d}{target_suffix}"
+    else:
+        br_idx = data.get('br_idx', None)
+        if br_idx is not None:
+            if isinstance(br_idx, np.ndarray):
+                br_idx = int(br_idx.item())
+            condition_name = f"condition_{br_idx:02d}{target_suffix}"
+        else:
+            condition_name = session_id
+
+    out_dir_causal = fig_dir / "causal_diagnostic" / condition_name
+    out_dir_causal.mkdir(parents=True, exist_ok=True)
+
+    spec_cfg = PLOT_CONFIG.get('spectrogram', {})
+    freq_min = spec_cfg.get('freq_min', 1)
+    freq_max = spec_cfg.get('freq_max', 120)
+    freq_step = spec_cfg.get('freq_step', 1)
+    foi = get_foi_with_notch_gaps(freq_min, freq_max, freq_step)
+
+    normalize_method = spec_cfg.get('normalize', 'zscore')
+    baseline_win = ANALYSIS_CONFIG.get('baseline_window', (-950, -650))
+    notch_regions = ANALYSIS_CONFIG.get('notch_regions', [(55, 65), (115, 125)])
+    notch_str = ', '.join([f'{lo}-{hi} Hz' for lo, hi in notch_regions])
+    norm_str = "Z-scored" if normalize_method == 'zscore' else normalize_method.upper()
+
+    cmap = spec_cfg.get('cmap', 'jet')
+    if normalize_method == 'zscore':
+        vmin = spec_cfg.get('vmin_zscore', -3)
+        vmax = spec_cfg.get('vmax_zscore', 3)
+        cbar_label = 'Normalized Power (a.u.)'
+        cmap = 'jet'
+    elif normalize_method == 'dB':
+        vmin = spec_cfg.get('vmin_db', -6)
+        vmax = spec_cfg.get('vmax_db', 6)
+        cbar_label = 'Power (dB re: baseline)'
+        cmap = 'jet'
+    else:
+        vmin = spec_cfg.get('vmin_uV2', 0)
+        vmax = spec_cfg.get('vmax_uV2', None)
+        cbar_label = 'Power (µV²)'
+
+    # 1. Obtain raw Morlet spectrograms (reusing cached if passed)
+    morlet_specs_raw = cached_morlet_raw
+    if morlet_specs_raw is None:
+        print("      Computing raw Morlet spectrograms for causal comparison...")
+        morlet_specs_raw = compute_array_median_raw_spectrograms(
+            data=data,
+            groups=groups,
+            fs=fs,
+            region_grids=region_grids,
+            elec_to_idx=elec_to_idx,
+        )
+
+    # 2. Compute strictly causal forward-only filterbank spectrograms
+    print("      Computing strictly causal array-median spectrograms...")
+    causal_specs_raw = compute_array_median_causal_raw_spectrograms(
+        data=data,
+        groups=groups,
+        fs=fs,
+        region_grids=region_grids,
+        elec_to_idx=elec_to_idx,
+        order=2,
+        n_cycles=spec_cfg.get('wavelet_cycles', 5),
+    )
+
+    if not causal_specs_raw:
+        print("    [Skip] No valid causal spectrograms were computed")
+        return None
+
+    # Normalization helper using identical baseline window and method
+    def _normalize_dict(specs_raw_dict):
+        normalized = {}
+        for r_name, raw_spec in specs_raw_dict.items():
+            Sxx_raw = raw_spec['Sxx'].copy()
+            t_spec = raw_spec['t_ms']
+            bl_m = (t_spec >= baseline_win[0]) & (t_spec <= baseline_win[1])
+            if not bl_m.any():
+                bl_m = (t_spec >= t_spec[0]) & (t_spec <= t_spec[0] + 300)
+
+            if normalize_method == 'zscore':
+                Sxx_norm = zscore_normalize_spectrogram(Sxx_raw, baseline_mask=bl_m)
+            elif normalize_method == 'dB':
+                bl_power = np.nanmean(Sxx_raw[:, bl_m], axis=1, keepdims=True)
+                bl_power[bl_power < 1e-20] = 1e-20
+                Sxx_norm = 10.0 * np.log10(np.maximum(Sxx_raw, 1e-20) / bl_power)
+            else:
+                Sxx_norm = Sxx_raw
+
+            normalized[r_name] = {
+                **raw_spec,
+                'Sxx': Sxx_norm,
+            }
+        return normalized
+
+    causal_specs_norm = _normalize_dict(causal_specs_raw)
+    morlet_specs_norm = _normalize_dict(morlet_specs_raw) if morlet_specs_raw else None
+
+    # Frequency tick helper matching standard spectrograms
+    tick_freqs = [1, 10, 20, 30, 40, 55, 65, 80, 100, 115]
+
+    def _setup_spec_axes(ax, f_spec, is_bottom=False, is_first_col=False):
+        ax.axvline(0, color='white', ls='--', lw=1.5, alpha=0.95)
+        for notch_lo, notch_hi in notch_regions:
+            below_idx = np.where(f_spec < notch_lo)[0]
+            above_idx = np.where(f_spec > notch_hi)[0]
+            if len(below_idx) > 0 and len(above_idx) > 0:
+                gap_y = below_idx[-1] + 0.5
+                ax.axhline(gap_y, color='white', ls='-', lw=1.5, alpha=0.8)
+
+        tick_positions = []
+        tick_labels = []
+        for tf in tick_freqs:
+            if tf in f_spec:
+                idx = np.where(f_spec == tf)[0][0]
+                tick_positions.append(idx)
+                tick_labels.append(str(tf))
+            else:
+                idx = np.argmin(np.abs(f_spec - tf))
+                if np.abs(f_spec[idx] - tf) <= freq_step:
+                    tick_positions.append(idx)
+                    tick_labels.append(str(int(f_spec[idx])))
+
+        ax.set_yticks(tick_positions)
+        if is_first_col:
+            ax.set_yticklabels(tick_labels, fontsize=9)
+            ax.set_ylabel('Frequency (Hz)', fontsize=10)
+        else:
+            ax.set_yticklabels([])
+
+        ax.set_xlim(zoom_range_ms[0], zoom_range_ms[1])
+        if is_bottom:
+            ax.set_xlabel('Time relative to event onset (ms)', fontsize=10)
+        ax.tick_params(axis='both', labelsize=9)
+
+    # -------------------------------------------------------------------------
+    # 1. Standalone 2x2 Array-Level Causal Spectrogram (Zoomed 0 to 50 ms)
+    # -------------------------------------------------------------------------
+    fig_causal, axes_causal = plt.subplots(2, 2, figsize=(14, 10), sharex=True, sharey=True)
+    axes_causal = axes_causal.flatten()
+
+    fig_causal.suptitle(
+        f'{session_id}\n'
+        f'Array-Level Causal Spectrograms | Median Across All Trials and Channels\n'
+        f'Strictly Causal Filterbank (Forward-Only SOS) | {norm_str} | Zoom: [{zoom_range_ms[0]}, {zoom_range_ms[1]}] ms | Notch skipped: {notch_str}',
+        fontsize=14,
+        fontweight='bold'
+    )
+
+    im_cbar = None
+    plot_idx = 0
+
+    for grp_idxs, grp_name in groups:
+        region_name = grp_name.split(' (')[0]
+        if region_name not in causal_specs_norm:
+            continue
+        if plot_idx >= len(axes_causal):
+            break
+
+        ax = axes_causal[plot_idx]
+        spec = causal_specs_norm[region_name]
+
+        Sxx = spec['Sxx']
+        f_spec = spec['f']
+        t_spec = spec['t_ms']
+
+        z_mask = (t_spec >= zoom_range_ms[0]) & (t_spec <= zoom_range_ms[1])
+        t_z = t_spec[z_mask]
+        Sxx_z = Sxx[:, z_mask]
+
+        im = ax.pcolormesh(
+            t_z,
+            np.arange(len(f_spec)),
+            Sxx_z,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            shading='auto',
+            rasterized=True
+        )
+        im_cbar = im
+
+        _setup_spec_axes(ax, f_spec, is_bottom=(plot_idx >= 2), is_first_col=(plot_idx % 2 == 0))
+
+        ax.set_title(
+            f'{region_name}\n'
+            f'{spec["n_valid_channels"]} channels, '
+            f'{spec["n_valid_trial_channel_pairs"]} trial-channel spectra',
+            fontsize=11,
+            fontweight='bold'
+        )
+        plot_idx += 1
+
+    for idx in range(plot_idx, len(axes_causal)):
+        axes_causal[idx].axis('off')
+
+    if im_cbar is not None:
+        fig_causal.subplots_adjust(right=0.88)
+        cbar_ax = fig_causal.add_axes([0.90, 0.18, 0.02, 0.65])
+        cbar = fig_causal.colorbar(im_cbar, cax=cbar_ax)
+        cbar.set_label(cbar_label, fontsize=12)
+        cbar.ax.tick_params(labelsize=10)
+
+    plt.tight_layout(rect=[0, 0, 0.88, 0.92])
+
+    path_causal_diag = out_dir_causal / "array_median_causal_0_to_50ms.png"
+    plt.savefig(path_causal_diag, dpi=150, bbox_inches='tight')
+    plt.close(fig_causal)
+
+    print(f"    Saved causal array-level median spectrogram -> {path_causal_diag.relative_to(fig_dir)}")
+
+    # -------------------------------------------------------------------------
+    # 2. Causal Diagnostic Comparison Figure (Row 0: Morlet, Row 1: Causal)
+    # -------------------------------------------------------------------------
+    out_diag_path = out_dir_causal / f"causal_diagnostic_{session_id}.png"
+
+    comparison_regions = []
+    for grp_idxs, grp_name in groups:
+        r_name = grp_name.split(' (')[0]
+        if r_name in causal_specs_norm and (morlet_specs_norm is None or r_name in morlet_specs_norm):
+            comparison_regions.append(r_name)
+
+    comparison_regions = comparison_regions[:4]
+    n_comp = len(comparison_regions)
+
+    if n_comp > 0 and morlet_specs_norm is not None:
+        fig_diag, axes_diag = plt.subplots(
+            2, n_comp,
+            figsize=(4.0 * n_comp, 7.5),
+            sharex=True,
+            sharey=True,
+            squeeze=False
+        )
+
+        im_diag = None
+        for col_idx, r_name in enumerate(comparison_regions):
+            spec_m = morlet_specs_norm[r_name]
+            spec_c = causal_specs_norm[r_name]
+
+            f_spec = spec_c['f']
+            t_spec = spec_c['t_ms']
+            z_mask = (t_spec >= zoom_range_ms[0]) & (t_spec <= zoom_range_ms[1])
+            t_z = t_spec[z_mask]
+
+            # Row 0: Acausal (Morlet Wavelet)
+            ax0 = axes_diag[0, col_idx]
+            im0 = ax0.pcolormesh(
+                t_z,
+                np.arange(len(f_spec)),
+                spec_m['Sxx'][:, z_mask],
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                shading='auto',
+                rasterized=True
+            )
+            im_diag = im0
+            _setup_spec_axes(ax0, f_spec, is_bottom=False, is_first_col=(col_idx == 0))
+            ax0.set_title(f"{r_name}\nAcausal (Morlet Wavelet)", fontsize=11, fontweight='bold')
+
+            # Row 1: Strictly Causal (Forward-Only Filterbank)
+            ax1 = axes_diag[1, col_idx]
+            im1 = ax1.pcolormesh(
+                t_z,
+                np.arange(len(f_spec)),
+                spec_c['Sxx'][:, z_mask],
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                shading='auto',
+                rasterized=True
+            )
+            _setup_spec_axes(ax1, f_spec, is_bottom=True, is_first_col=(col_idx == 0))
+            ax1.set_title(f"{r_name}\nCausal (Forward-Only Filterbank)", fontsize=11, fontweight='bold')
+
+        if im_diag is not None:
+            fig_diag.subplots_adjust(right=0.89)
+            cbar_ax = fig_diag.add_axes([0.91, 0.18, 0.015, 0.65])
+            cbar = fig_diag.colorbar(im_diag, cax=cbar_ax)
+            cbar.set_label(cbar_label, fontsize=11)
+            cbar.ax.tick_params(labelsize=9)
+
+        fig_diag.suptitle(
+            f"{session_id} | Causal Diagnostic: Acausal (Morlet) vs Strictly Causal Filterbank\n"
+            f"Zoomed post-stimulus onset window [{zoom_range_ms[0]}, {zoom_range_ms[1]}] ms | {norm_str} | Baseline [{baseline_win[0]}, {baseline_win[1]}] ms",
+            fontsize=13,
+            fontweight='bold'
+        )
+
+        plt.tight_layout(rect=[0, 0, 0.89, 0.92])
+        plt.savefig(out_diag_path, dpi=180, bbox_inches='tight')
+        plt.close(fig_diag)
+        print(f"    Saved causal diagnostic -> {out_diag_path.relative_to(fig_dir)}")
+        return out_diag_path
+
+    return path_causal_per_ua
+
+# Alias for backward compatibility
+generate_causal_zoomed_spectrogram = generate_causal_diagnostic
 
 
 # =============================================================================
@@ -3703,11 +4395,12 @@ def process_session(data, session_id, fig_dir, groups, fs=1000,
 
     # 4c. Per-UA array-level median spectrogram
     # Median across all trials and all channels/electrodes within each Utah array.
+    morlet_specs_raw = None
     if (FIGURE_CONFIG.get('generate_per_ua_array_median', False) or
             FIGURE_CONFIG.get('generate_control_median_baseline_norm_array_median', False)):
         if elec_to_idx is not None and region_grids is not None:
             print("  Generating per-UA array-level median spectrograms...")
-            path = generate_per_ua_array_median_spectrogram(
+            path, morlet_specs_raw = generate_per_ua_array_median_spectrogram(
                 data=data,
                 session_id=session_id,
                 fig_dir=fig_dir,
@@ -3718,12 +4411,30 @@ def process_session(data, session_id, fig_dir, groups, fs=1000,
                 region_grids=region_grids,
                 elec_to_idx=elec_to_idx,
                 control_median_baseline_norm=control_median_baseline_norm,
+                return_raw_specs=True,
             )
             if path:
                 figure_paths.append(path)
-        else:
-            print("  [Skip] Per-UA array-level median spectrogram requires electrode mapping")
     
+    # 4d. Causal diagnostic (0 to 50 ms)
+    # Forward-only filtering diagnostic to compare causal vs acausal time-frequency representation.
+    causal_diag_enabled = (FIGURE_CONFIG.get('generate_causal_diagnostic', False) or 
+                          FIGURE_CONFIG.get('generate_causal_zoomed_spectrogram', False))
+    if causal_diag_enabled and not is_control and region_grids is not None:
+        print("  Generating causal diagnostic (0 to 50 ms)...")
+        path = generate_causal_diagnostic(
+            data=data,
+            session_id=session_id,
+            fig_dir=fig_dir,
+            groups=groups,
+            fs=fs,
+            region_grids=region_grids,
+            elec_to_idx=elec_to_idx,
+            zoom_range_ms=(0, 50),
+            cached_morlet_raw=morlet_specs_raw,
+        )
+        if path:
+            figure_paths.append(path)
     
     # 5. Coherence Matrix
     if FIGURE_CONFIG.get('generate_coherence_matrix', True):
@@ -3890,7 +4601,9 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
                 br_idx = int(br_match.group(1))
                 if br_idx not in SESSION_FILTER:
                     continue
-        
+            elif not ('baseline' in session_id.lower() or 'control' in session_id.lower()):
+                continue
+
         print(f"  Loading {npz_path.name}...")
         
         try:

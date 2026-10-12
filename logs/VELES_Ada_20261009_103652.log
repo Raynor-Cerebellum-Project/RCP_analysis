@@ -1,0 +1,15 @@
+================================================================================
+VELES RUN START: 10/09/2026 10:36:52
+Monkey: Ada
+Sessions to run: ['ANR_UA004']
+Process only: [17, 18, 25]
+Scripts:
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[10/09/2026 10:36:52] [ANR_UA004] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[10/09/2026 10:36:54] [ANR_UA004] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 10/09/2026 10:36:54
+[10/09/2026 10:36:55] [ANR_UA004] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[10/09/2026 10:36:57] [ANR_UA004] [preprocessing_scripts/extract_peri_stim.py] FAIL: 10/09/2026 10:36:57 (exit code 1)
