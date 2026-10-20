@@ -1,0 +1,28 @@
+================================================================================
+VELES RUN START: 10/19/2026 17:35:55
+Monkey: Nike
+Sessions to run: ['NRR_RW011']
+Process only: []
+Scripts:
+  - preprocessing_scripts/align_dlc_two_cams_to_br.py
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - analysis_scripts/plot_3d_kinematics.py
+================================================================================
+[10/19/2026 17:35:55] [NRR_RW011] [preprocessing_scripts/align_dlc_two_cams_to_br.py] IN-PROGRESS
+[10/19/2026 17:35:57] [NRR_RW011] [preprocessing_scripts/align_dlc_two_cams_to_br.py] FINISHED: 10/19/2026 17:35:57
+[10/19/2026 17:35:58] [NRR_RW011] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[10/19/2026 17:43:53] [NRR_RW011] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 10/19/2026 17:43:53
+[10/19/2026 17:43:53] [NRR_RW011] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[10/19/2026 18:40:29] [NRR_RW011] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 10/19/2026 18:40:29
+[10/19/2026 18:40:29] [NRR_RW011] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[10/19/2026 18:43:37] [NRR_RW011] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 10/19/2026 18:43:37
+[10/19/2026 18:43:37] [NRR_RW011] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[10/19/2026 19:00:57] [NRR_RW011] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 10/19/2026 19:00:57
+[10/19/2026 19:00:57] [NRR_RW011] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[10/19/2026 19:01:56] [NRR_RW011] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 10/19/2026 19:01:56
+[10/19/2026 19:01:56] [NRR_RW011] [analysis_scripts/plot_3d_kinematics.py] IN-PROGRESS
+[10/19/2026 19:05:57] [NRR_RW011] [analysis_scripts/plot_3d_kinematics.py] FINISHED: 10/19/2026 19:05:57

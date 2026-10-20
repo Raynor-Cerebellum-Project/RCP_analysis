@@ -70,7 +70,7 @@ def _find_aligned_DLC_for_br_idx(behv_root: Path, br_idx: int) -> tuple[Path | N
     br = f"{int(br_idx):03d}"
 
     def _newest(glob_pattern: str) -> Path | None:
-        cands = list(behv_root.rglob(glob_pattern))
+        cands = [p for p in behv_root.rglob(glob_pattern) if not p.name.startswith(".")]
         if not cands:
             return None
         return max(cands, key=lambda p: p.stat().st_mtime)
@@ -249,7 +249,7 @@ def main():
             ppm_corr = float(PARAMS.preprocessing.get("ppm_correction", -13.951))
 
             # load NPRW npz
-            cands = sorted(NPRW_CKPT_ROOT.glob(f"rates__{intan_filename}__*.npz"))
+            cands = sorted([f for f in NPRW_CKPT_ROOT.glob(f"rates__{intan_filename}__*.npz") if not f.name.startswith(".")])
             if cands:
                 nprw_rates_npz_loc = cands[0]
                 nprw_npz = np.load(nprw_rates_npz_loc, allow_pickle=True)
@@ -314,7 +314,7 @@ def main():
             
             if HAS_BR is True:
                 # load UA npz
-                cands = sorted(UA_CKPT_ROOT.glob(f"rates__*_{br_idx:03d}__*.npz"))
+                cands = sorted([f for f in UA_CKPT_ROOT.glob(f"rates__*_{br_idx:03d}__*.npz") if not f.name.startswith(".")])
                 if not cands: print(f"[warn] No UA rates for session {intan_filename} BR_{br_idx:03d}"); continue
                 ua_rates_npz_loc = cands[0]
                 
@@ -418,7 +418,7 @@ def main():
 
                 if vog_file_idx is not None:
                     cands_vog = sorted(
-                        VOG_CKPT_ROOT.glob(f"*_{vog_file_idx:03d}_VOG_aligned.csv")
+                        [f for f in VOG_CKPT_ROOT.glob(f"*_{vog_file_idx:03d}_VOG_aligned.csv") if not f.name.startswith(".")]
                     )
                     if cands_vog:
                         vog_csv = cands_vog[0]

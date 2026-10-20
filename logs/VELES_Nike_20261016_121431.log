@@ -1,0 +1,47 @@
+================================================================================
+VELES RUN START: 10/16/2026 12:14:31
+Monkey: Nike
+Sessions to run: ['NRR_RW022', 'NRR_RW012']
+Process only: []
+Scripts:
+  - preprocessing_scripts/align_dlc_two_cams_to_br.py
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - analysis_scripts/plot_plateau_analysis.py
+  - analysis_scripts/plot_3d_kinematics.py
+  - analysis_scripts/plot_behavioral_stim_perturbation.py
+================================================================================
+[10/16/2026 12:14:31] [NRR_RW022] [preprocessing_scripts/align_dlc_two_cams_to_br.py] IN-PROGRESS
+[10/16/2026 12:16:05] [NRR_RW022] [preprocessing_scripts/align_dlc_two_cams_to_br.py] FINISHED: 10/16/2026 12:16:05
+[10/16/2026 12:16:05] [NRR_RW022] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[10/16/2026 12:25:53] [NRR_RW022] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 10/16/2026 12:25:53
+[10/16/2026 12:27:04] [NRR_RW022] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[10/16/2026 12:29:12] [NRR_RW022] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 10/16/2026 12:29:12
+[10/16/2026 12:30:24] [NRR_RW022] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[10/16/2026 12:40:52] [NRR_RW022] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 10/16/2026 12:40:52
+[10/16/2026 12:46:11] [NRR_RW022] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[10/16/2026 12:47:07] [NRR_RW022] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 10/16/2026 12:47:07
+[10/16/2026 12:47:53] [NRR_RW022] [analysis_scripts/plot_plateau_analysis.py] IN-PROGRESS
+[10/16/2026 12:49:19] [NRR_RW022] [analysis_scripts/plot_plateau_analysis.py] FINISHED: 10/16/2026 12:49:19
+[10/16/2026 12:49:19] [NRR_RW022] [analysis_scripts/plot_3d_kinematics.py] IN-PROGRESS
+[10/16/2026 12:52:31] [NRR_RW022] [analysis_scripts/plot_3d_kinematics.py] FINISHED: 10/16/2026 12:52:31
+[10/16/2026 12:52:31] [NRR_RW022] [analysis_scripts/plot_behavioral_stim_perturbation.py] IN-PROGRESS
+[10/16/2026 13:37:07] [NRR_RW022] [analysis_scripts/plot_behavioral_stim_perturbation.py] FINISHED: 10/16/2026 13:37:07
+[10/16/2026 13:37:07] [NRR_RW012] [preprocessing_scripts/align_dlc_two_cams_to_br.py] IN-PROGRESS
+[10/16/2026 13:39:32] [NRR_RW012] [preprocessing_scripts/align_dlc_two_cams_to_br.py] FINISHED: 10/16/2026 13:39:32
+[10/16/2026 13:39:32] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[10/16/2026 13:49:17] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 10/16/2026 13:49:17
+[10/16/2026 13:56:24] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[10/16/2026 14:00:19] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 10/16/2026 14:00:19
+[10/16/2026 14:00:35] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[10/16/2026 14:20:48] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 10/16/2026 14:20:48
+[10/16/2026 14:26:38] [NRR_RW012] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[10/16/2026 14:28:04] [NRR_RW012] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 10/16/2026 14:28:04
+[10/16/2026 14:52:34] [NRR_RW012] [analysis_scripts/plot_plateau_analysis.py] IN-PROGRESS
+[10/16/2026 14:55:03] [NRR_RW012] [analysis_scripts/plot_plateau_analysis.py] FINISHED: 10/16/2026 14:55:03
+[10/16/2026 14:55:03] [NRR_RW012] [analysis_scripts/plot_3d_kinematics.py] IN-PROGRESS
+[10/16/2026 14:59:35] [NRR_RW012] [analysis_scripts/plot_3d_kinematics.py] FINISHED: 10/16/2026 14:59:35
+[10/16/2026 14:59:35] [NRR_RW012] [analysis_scripts/plot_behavioral_stim_perturbation.py] IN-PROGRESS
+[10/16/2026 15:14:27] [NRR_RW012] [analysis_scripts/plot_behavioral_stim_perturbation.py] FINISHED: 10/16/2026 15:14:27

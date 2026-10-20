@@ -1,34 +1,28 @@
 """
 plot_behavioral_stim_perturbation.py
+====================================
 
-Channel-Behavior Regression Analysis across Cerebellum (NPRW) and Motor Cortex (Utah Array).
+Spatiotemporal Neural-Behavioral Perturbation Mapping across Cerebellum (NPRW)
+and Motor Cortex (Utah Array).
 
-Scientific Question:
-    Which neural channels carry information relevant to the behavioral perturbation
-    induced by stimulation on a trial-by-trial basis?
+Scientific Objective:
+    Map single-trial neural firing dynamics across electrodes and time bins onto the 3D
+    behavioral reach perturbation components (Lateral ΔX, Forward ΔY, Height ΔZ) and
+    movement termination / plateau timing.
 
-Key Methodology:
-    1. Trial-Level Behavioral Perturbation Target:
-       - Extracts multi-camera 3D kinematics (cam0 and cam1) using extract_xy_coordinates.
-       - Concatenates camera axes into a unified 4D trajectory [x0, y0, x1, y1] per trial.
-       - Computes each trial's mean Euclidean distance from the control-mean trajectory
-         within a defined post-stimulus behavioral window (e.g. 100-400 ms).
-       - Provides a scalar behavioral score y_i measuring trial-by-trial deviation/perturbation.
-    2. Trial-Level Neural Feature Extraction:
-       - Firing rate per channel averaged across an early post-stimulus neural window
-         (e.g. 50-200 ms post-stimulus onset).
-       - Stacks both STIM and CTRL trials together without condition-level subtraction.
-    3. Ridge Regression with Cross-Validation:
-       - RidgeCV with 5-fold cross-validation predicting perturbation from neural features.
-       - Evaluates out-of-fold generalization (R² and Pearson r).
-    4. Exact Vectorized Permutation Testing:
-       - Shuffles behavioral targets across trials (B=1000 permutations) using precomputed
-         projection matrices for instantaneous exact null distributions and FDR q-values.
-    5. Modular & Consolidated Visualizations:
-       - plot_channel_weights: Bar chart with significance stars (* p<0.05, ** p<0.01).
-       - plot_prediction_scatter: Actual vs predicted perturbation scatter colored by STIM/CTRL.
-       - plot_top_channels_traces: Time-resolved firing rate traces for top-weight channels.
-       - plot_regression_summary_figure: Consolidated publication-grade 3-panel figure.
+Outputs per Condition:
+    1. behavioral_perturbation_summary.png & .svg:
+       - Panel A: Time-resolved directional reach deviations ΔX(t), ΔY(t), ΔZ(t) (Mean ± SEM).
+       - Panel B: Overhead reach endpoint perturbation vectors (ΔX vs ΔY) with confidence ellipse.
+       - Panel C: 3D endpoint dispersion (RMS distance) comparing Stim vs Control.
+       - Panel D: Plateau onset timing comparison (Stim vs Control jittered trials + Δt test).
+    2. spatiotemporal_projection_NPRW.png & .svg:
+       - 3-row map (Lateral ΔX, Forward ΔY, Height ΔZ) showing single-trial neural-behavior
+         projection r(c, t) across 128 cerebellar channels and time bins (20 ms each).
+    3. spatiotemporal_projection_UA.png & .svg:
+       - 3-row spatiotemporal map for Motor Cortex Utah Array.
+    4. spatiotemporal_neural_behavior_summary.csv:
+       - Channel-by-channel tuning statistics (peak correlation, latency, depth, and significance).
 """
 
 from __future__ import annotations
@@ -36,14 +30,14 @@ from __future__ import annotations
 import os
 import re
 import sys
+import copy
 import json
 import math
 import argparse
 import warnings
 import traceback
-from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any, Union, Sequence
+from typing import Dict, List, Tuple, Optional, Any, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -53,487 +47,313 @@ matplotlib.rcParams["svg.fonttype"] = "none"
 
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from matplotlib.patches import Patch
+from matplotlib.patches import Patch, Ellipse
 from scipy.ndimage import gaussian_filter1d
 from scipy import stats
 
-from sklearn.linear_model import Ridge, RidgeCV
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import cross_val_score, cross_val_predict
-
-# Suppress benign warnings
+# Suppress benign numerical runtime warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*Mean of empty slice.*")
 warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*Degrees of freedom <= 0 for slice.*")
 warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*All-NaN slice encountered.*")
 warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*invalid value encountered.*")
 warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
-warnings.filterwarnings("ignore", message=".*tight_layout.*")
+
+# Add analysis_scripts and root to sys.path
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPT_DIR.parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+try:
+    import plot_3d_kinematics as p3d
+    HAS_3D_KINEMATICS = True
+except Exception:
+    HAS_3D_KINEMATICS = False
+    p3d = None
 
 import RCP_analysis as rcp
-from RCP_analysis.python.functions.config_loading import *
+try:
+    from RCP_analysis.python.functions.config_loading import *
+    CONFIG_LOADED = True
+except Exception:
+    CONFIG_LOADED = False
+    PARAMS = None
+    OUT_BASE = None
+    PERI_ROOT = None
+    SESSION_LOC = None
+    METADATA_CSV = None
+
 from RCP_analysis.python.functions.kinematics_utils import extract_xy_coordinates
 
 # =============================================================================
-# Configuration & Analysis Parameters
+# Global Analysis & Display Parameters
 # =============================================================================
 
-# Time Windows (ms relative to stimulation / IR beam onset)
-WIN_PLOT_MS: Tuple[float, float] = (-800.0, 600.0)
-DEFAULT_NEURAL_WINDOW_MS: Tuple[float, float] = (50.0, 200.0)
-DEFAULT_BEHAVIOR_WINDOW_MS: Tuple[float, float] = (100.0, 400.0)
+WIN_PLOT_MS: Tuple[float, float] = (0.0, 500.0)
+BIN_WIDTH_MS: float = 20.0
+SMOOTH_SIGMA_MS: float = 20.0
+BEHAVIOR_WINDOW_MS: Tuple[float, float] = (0.0, 500.0)
+CONTROL_REF_STAT: str = "median"  # 'median' (recommended for reach kinematics) or 'mean'
 
-# Regression Settings
-DEFAULT_CV_FOLDS: int = 5
-DEFAULT_N_PERMUTATIONS: int = 1000
-DEFAULT_ALPHAS: np.ndarray = np.logspace(-2, 4, 20)
-FDR_ALPHA: float = 0.05
+# Plot output format selection (default PNG only)
+SAVE_PNG: bool = True
+SAVE_SVG: bool = False
+
+# 3D Kinematics Settings
+DEFAULT_KEYPOINT: str = "middle"
+SQUARE_SIZE_MM: float = 1.0  # Calibrated mm/unit
+ALIGN_TO_TASK_FRAME: bool = True
+
+# Stimulation Artifact Blanking Parameters
+NPRW_BLANK_PRE_MS: float = 20.0
+NPRW_BLANK_POST_MS: float = 20.0
+BLANK_UA_STIM_PERIOD: bool = False
+
 P_VAL_THRESH: float = 0.05
+FDR_ALPHA: float = 0.05
 
-# Stimulation Artifact Blanking Parameters - derived from params.yaml
-NPRW_BLANK_PRE_MS = float(PARAMS.NPRW_rate_est.get("remove_ms_before", 20.0)) if PARAMS else 20.0
-NPRW_BLANK_POST_MS = float(PARAMS.NPRW_rate_est.get("remove_tail_ms_after", 20.0)) if PARAMS else 20.0
-UA_BLANK_PRE_MS = float(PARAMS.UA_rate_est.get("remove_ms_before", 0.0)) if PARAMS else 0.0
-UA_BLANK_POST_MS = float(PARAMS.UA_rate_est.get("remove_tail_ms_after", 0.0)) if PARAMS else 0.0
-BLANK_UA_STIM_PERIOD = False
-
-# Display Binning & Smoothing - derived from rate_est in params.yaml
-NPRW_BIN_WIDTH_MS = float(PARAMS.NPRW_rate_est.get("bin_ms", 20.0)) if PARAMS else 20.0
-NPRW_SMOOTHING_SIGMA_MS = float(PARAMS.NPRW_rate_est.get("sigma_ms", 20.0)) if PARAMS else 20.0
-UA_BIN_WIDTH_MS = float(PARAMS.UA_rate_est.get("bin_ms", 20.0)) if PARAMS else 20.0
-UA_SMOOTHING_SIGMA_MS = float(PARAMS.UA_rate_est.get("sigma_ms", 20.0)) if PARAMS else 20.0
-
-
-def resolve_process_only() -> Optional[List[Any]]:
-    env_val = os.environ.get("RCP_PROCESS_ONLY")
-    if env_val:
-        try:
-            parsed = json.loads(env_val)
-            if isinstance(parsed, list) and len(parsed) > 0:
-                return parsed
-        except Exception:
-            pass
-    if PARAMS is not None:
-        po = getattr(PARAMS, "process_only", None)
-        if isinstance(po, list) and len(po) > 0:
-            return po
-        if hasattr(PARAMS, "preprocessing"):
-            po2 = PARAMS.preprocessing.get("process_only", None)
-            if isinstance(po2, list) and len(po2) > 0:
-                return po2
-    return None
-
-
-PROCESS_ONLY: Optional[List[Any]] = resolve_process_only()
-ANALYZE_COMBINED_UTAH: bool = True
-ANALYZE_INDIVIDUAL_UTAH_ARRAYS: bool = True
-
-REGION_ORDER = ["SMA", "PMd", "M1i", "M1s"]
-
-# File System Roots
-PERI_ROOT = OUT_BASE / "checkpoints" / "PeriStim" if OUT_BASE is not None else Path(".")
-REG_FIG_ROOT = OUT_BASE / "figures" / "channel_behavior_regression" if OUT_BASE is not None else Path(".")
-CLUST_FIG_ROOT = OUT_BASE / "figures" / "stim_response_clustering" if OUT_BASE is not None else Path(".")
-METADATA_PATH = METADATA_CSV if "METADATA_CSV" in globals() else None
-
-
-# =============================================================================
-# Helper Utilities
-# =============================================================================
 
 def _log(msg: str):
-    print(f"[channel_behavior_regression] {msg}", flush=True)
+    print(f"[spatiotemporal_perturbation] {msg}", flush=True)
 
 
-def ensure_dir(path: Path):
+def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def safe_get_npz(data: np.lib.npyio.NpzFile, key: str, default=None):
     if key in data.files:
-        return data[key]
+        val = data[key]
+        if hasattr(val, "shape") and val.ndim == 0:
+            return val.item()
+        return val
+    # Case-insensitive search
+    k_lower = key.lower()
+    for f in data.files:
+        if f.lower() == k_lower:
+            val = data[f]
+            if hasattr(val, "shape") and val.ndim == 0:
+                return val.item()
+            return val
     return default
 
 
 def scalarize(x, default=None):
     if x is None:
         return default
-    try:
-        arr = np.asarray(x)
-        if arr.size == 0:
-            return default
-        return arr.item()
-    except Exception:
+    if isinstance(x, (int, float, str, bool)):
         return x
+    if hasattr(x, "__len__") and len(x) == 1:
+        elem = x[0]
+        return scalarize(elem, default)
+    if hasattr(x, "item"):
+        try:
+            return x.item()
+        except Exception:
+            pass
+    return default
 
 
-def sanitize_name(s: Any) -> str:
-    return re.sub(r"[^\w\.-]", "_", str(s))
-
-
-def get_cond_type(npz_path: Path) -> str:
-    path_str = str(npz_path).lower()
-    if "control_reaches" in path_str or "target_control" in path_str:
-        return "CTRL"
-    if "stim_reaches" in path_str:
-        return "STIM"
-    if "at_rest" in path_str or "quiescent" in path_str or "no_reach" in path_str:
-        return "REST"
-    if "continuous_stim" in path_str:
-        return "CONTSTIM"
-
-    # Fallback checking file name without the 'peristim' prefix
-    name = npz_path.name.lower().replace("peristim__", "").replace("peristim_", "")
-    if "control" in name or "baseline" in name:
-        return "CTRL"
-    if "rest" in name:
-        return "REST"
-    if "stim" in name:
-        return "STIM"
-    return "OTHER"
-
-
-def get_target_folder(npz_path: Path) -> str:
-    path_str = str(npz_path).lower()
-    if "target_a" in path_str or "_target_a" in path_str:
-        return "Target_A"
-    if "target_b" in path_str or "_target_b" in path_str:
-        return "Target_B"
-    if "target_control" in path_str or "_target_control" in path_str:
-        return "Target_control"
-
-    stem = npz_path.stem
-    m = re.search(r"target_([A-Za-z0-9_-]+)", stem, re.IGNORECASE)
+def resolve_session_name_from_path(p: Path) -> str:
+    path_str = str(p)
+    m = re.search(r"(NRR_[A-Za-z0-9]+)", path_str)
     if m:
-        return f"Target_{m.group(1).upper()}"
-    for p in npz_path.parents:
-        m2 = re.search(r"target_([A-Za-z0-9_-]+)", p.name, re.IGNORECASE)
-        if m2:
-            return f"Target_{m2.group(1).upper()}"
-    return ""
+        return m.group(1)
+    if p.is_dir():
+        return p.name
+    return p.parent.name
+
+
+def extract_br_index(path: Optional[Path]) -> int:
+    if path is None:
+        return -1
+    m = re.search(r"BR_(\d+)", path.stem)
+    return int(m.group(1)) if m else -1
 
 
 def get_stim_duration_ms(data: np.lib.npyio.NpzFile) -> float:
-    for key in ("stim_dur_measured_ms", "stim_dur_nominal_ms", "stim_dur_ms"):
-        val = safe_get_npz(data, key, None)
+    for k in ["stim_dur_nominal_ms", "stim_dur_measured_ms", "stim_duration_ms", "stim_ms"]:
+        val = safe_get_npz(data, k, None)
         if val is not None:
-            arr = np.asarray(val, dtype=float).ravel()
-            valid = arr[np.isfinite(arr) & (arr > 0)]
-            if valid.size > 0:
-                return float(np.median(valid))
-
-    freq_val = safe_get_npz(data, "stim_freq_hz", None)
-    pulse_val = safe_get_npz(data, "stim_pulse_counts", None)
-    if freq_val is not None and pulse_val is not None:
-        try:
-            f = float(np.asarray(freq_val).ravel()[0])
-            p_arr = np.asarray(pulse_val, dtype=float).ravel()
-            p_arr = p_arr[np.isfinite(p_arr) & (p_arr > 0)]
-            if f > 0 and p_arr.size > 0:
-                p = float(np.median(p_arr))
-                dur = (p / f) * 1000.0
-                if dur > 0:
-                    return dur
-        except Exception:
-            pass
-
-    meta_raw = safe_get_npz(data, "align_meta_raw", None)
-    if meta_raw is not None:
-        try:
-            m_dict = meta_raw.item() if hasattr(meta_raw, "item") else dict(meta_raw)
-            if "stim_dur_nominal_ms" in m_dict:
-                d = float(m_dict["stim_dur_nominal_ms"])
-                if d > 0:
-                    return d
-        except Exception:
-            pass
-
-    return 0.0
+            s = scalarize(val, None)
+            if s is not None and float(s) > 0.0:
+                return float(s)
+    dur_s = safe_get_npz(data, "stim_duration_s", None)
+    if dur_s is not None:
+        val = scalarize(dur_s, None)
+        if val is not None and float(val) > 0.0:
+            return float(val) * 1000.0
+    return 100.0
 
 
-def get_ua_port(data: np.lib.npyio.NpzFile) -> str:
-    val = safe_get_npz(data, "ua_port", None)
-    if val is not None:
-        s = str(scalarize(val)).strip()
-        if s:
-            return s
-    val = safe_get_npz(data, "port", None)
-    if val is not None:
-        s = str(scalarize(val)).strip()
-        if s:
-            return s
-    return "A"
+# =============================================================================
+# Reference Condition Mapping (Stim -> Best Control)
+# =============================================================================
 
-
-def compute_pulse_count(freq_hz: Optional[float], dur_ms: Optional[float]) -> Optional[float]:
-    if freq_hz is None or dur_ms is None:
-        return None
-    try:
-        f = float(freq_hz)
-        d = float(dur_ms)
-        if f > 0 and d > 0:
-            return round((f * d) / 1000.0, 1)
-    except Exception:
-        pass
-    return None
-
-
-def load_reference_mapping(all_files: List[Path]) -> Dict[str, Any]:
-    ctrl_map: Dict[Tuple[str, str], Path] = {}
-    ctrl_by_target: Dict[str, Path] = {}
-    ctrl_fallback: Optional[Path] = None
-    rest_map: Dict[float, Path] = {}
-    rest_fallback: Optional[Path] = None
+def load_reference_mapping(all_files: List[Path]) -> Dict[Path, Path]:
+    """
+    Pairs each STIM peristim reach condition with the best target-matched CONTROL condition.
+    Selects the candidate control file with the maximum number of valid reaches.
+    """
+    ref_map: Dict[Path, Path] = {}
+    ctrl_files_by_target: Dict[str, List[Path]] = {"target_a": [], "target_b": []}
 
     for f in all_files:
-        ctype = get_cond_type(f)
-        target = get_target_folder(f)
-        try:
-            with np.load(f, allow_pickle=True) as d:
-                port = get_ua_port(d)
-                fh = scalarize(safe_get_npz(d, "stim_freq_hz", None))
-                dm = scalarize(safe_get_npz(d, "stim_dur_nominal_ms", None))
-                pc = compute_pulse_count(fh, dm)
-        except Exception:
-            port = "A"
-            pc = None
+        p_str = str(f).lower()
+        if "at_rest" in p_str:
+            continue
+        is_ctrl = "control_reaches" in p_str or "ctrl" in f.stem.lower() or "control" in f.stem.lower()
+        if is_ctrl:
+            target = "target_b" if "target_b" in p_str else "target_a"
+            ctrl_files_by_target[target].append(f)
 
-        if ctype == "CTRL":
-            if (target, port) not in ctrl_map:
-                ctrl_map[(target, port)] = f
-            if target and target not in ctrl_by_target:
-                ctrl_by_target[target] = f
-            if ctrl_fallback is None:
-                ctrl_fallback = f
-        elif ctype == "REST":
-            if pc is not None and pc not in rest_map:
-                rest_map[pc] = f
-            if rest_fallback is None:
-                rest_fallback = f
+    for f in all_files:
+        p_str = str(f).lower()
+        if "at_rest" in p_str:
+            continue
+        is_ctrl = "control_reaches" in p_str or "ctrl" in f.stem.lower() or "control" in f.stem.lower()
+        if is_ctrl:
+            continue
+        is_stim = "stim_reaches" in p_str or "stim" in f.stem.lower() or "target_" in f.stem.lower()
+        if not is_stim:
+            continue
 
-    return {
-        "ctrl": ctrl_map,
-        "ctrl_by_target": ctrl_by_target,
-        "ctrl_fallback": ctrl_fallback,
-        "rest": rest_map,
-        "rest_fallback": rest_fallback,
-    }
+        target = "target_b" if "target_b" in p_str else "target_a"
+        candidates = ctrl_files_by_target.get(target, [])
+        if not candidates:
+            continue
 
+        valid_candidates = []
+        for cand in candidates:
+            try:
+                with np.load(cand, allow_pickle=True) as cd:
+                    c_ev = safe_get_npz(cd, "event_ms")
+                    if c_ev is None:
+                        c_ev = safe_get_npz(cd, "event_timestamps_ms")
+                    reach_cnt = len(c_ev) if c_ev is not None else 0
+                    valid_candidates.append((reach_cnt, cand))
+            except Exception:
+                valid_candidates.append((0, cand))
+
+        if valid_candidates:
+            best_cand = max(valid_candidates, key=lambda x: x[0])[1]
+            ref_map[f] = best_cand
+
+    return ref_map
+
+
+# =============================================================================
+# Electrode Map & Array Utilities
+# =============================================================================
 
 def load_bad_channels(session_loc: Optional[Path] = None) -> Dict[str, set]:
-    base_loc = session_loc or (SESSION_LOC if "SESSION_LOC" in globals() else None)
-    out: Dict[str, set] = {"NPRW": set(), "UA": set()}
-    if base_loc is None:
-        return out
-
-    # Intan impedance check
-    intan_imp_files = list(base_loc.glob("**/Intan/**/*impedance*.csv")) + list(base_loc.glob("**/*impedance*intan*.csv"))
-    for f in intan_imp_files:
+    bad_dict = {"NPRW": set(), "UA": set()}
+    if session_loc is None:
+        return bad_dict
+    bad_f = session_loc / "bad_channels.json"
+    if bad_f.exists():
         try:
-            df = pd.read_csv(f)
-            ch_col = next((c for c in df.columns if "channel" in c.lower()), None)
-            val_col = next((c for c in df.columns if any(k in c.lower() for k in ("impedance", "magnitude", "value", "kohm", "ohm"))), None)
-            if ch_col and val_col:
-                for _, row in df.iterrows():
-                    val = pd.to_numeric(row[val_col], errors="coerce")
-                    if pd.notna(val) and (val > 2e6 or val < 1e3):
-                        ch_str = str(row[ch_col])
-                        digits = re.findall(r"\d+", ch_str)
-                        if digits:
-                            out["NPRW"].add(int(digits[-1]))
-        except Exception:
-            pass
-
-    # Blackrock impedance check
-    br_imp_files = list(base_loc.glob("**/Blackrock/**/*impedance*.txt")) + list(base_loc.glob("**/*impedance*.txt"))
-    for f in br_imp_files:
-        try:
-            with open(f, "r", encoding="utf-8", errors="ignore") as fh:
-                for line in fh:
-                    m = re.search(r"chan(?:nel)?\s*(\d+)[:\s]+([\d\.]+)", line, re.IGNORECASE)
-                    if m:
-                        ch = int(m.group(1))
-                        imp = float(m.group(2))
-                        if imp > 2000 or imp < 10:
-                            out["UA"].add(ch)
-        except Exception:
-            pass
-
-    return out
+            with open(bad_f, "r") as fp:
+                data = json.load(fp)
+            for k in ["NPRW", "UA"]:
+                if k in data:
+                    bad_dict[k] = set(data[k])
+        except Exception as e:
+            _log(f"Error reading bad_channels.json: {e}")
+    return bad_dict
 
 
-@lru_cache(maxsize=4)
-def get_electrode_mapping_csv(monkey: Optional[str] = None) -> Path:
-    if monkey is None:
-        monkey = PARAMS.monkey if PARAMS is not None else "Nike"
-    repo_cfg = (REPO_ROOT / "config" / f"electrode_port_mapping_{monkey}.csv") if "REPO_ROOT" in globals() else None
-    if repo_cfg and repo_cfg.exists():
-        return repo_cfg
-    local_cfg = Path(__file__).resolve().parent.parent / "config" / f"electrode_port_mapping_{monkey}.csv"
-    if local_cfg.exists():
-        return local_cfg
-    raise FileNotFoundError(f"Electrode mapping CSV not found for monkey {monkey}")
-
-
-@lru_cache(maxsize=4)
 def load_electrode_mapping(monkey: Optional[str] = None) -> Tuple[Dict[int, Dict[str, Any]], Dict[str, np.ndarray]]:
-    """
-    Load electrode mapping from CSV file.
+    mapping: Dict[int, Dict[str, Any]] = {}
+    banks: Dict[str, List[int]] = {"SMA": [], "PMd": [], "M1i": [], "M1s": []}
 
-    Returns:
-        tuple: (elec_info, region_grids)
-            - elec_info: dict mapping electrode_id -> {nsp_id, port, region, row, col}
-            - region_grids: dict mapping region_name -> 2D array of electrode IDs (8x8)
-    """
-    try:
-        csv_path = get_electrode_mapping_csv(monkey)
-        df = pd.read_csv(csv_path)
-        elec_info: Dict[int, Dict[str, Any]] = {}
-        region_grids: Dict[str, np.ndarray] = {}
-        for _, row in df.iterrows():
-            elec_id = int(row["ElectrodeID"])
-            nsp_id = int(row["NSP_ID"]) if "NSP_ID" in df.columns and pd.notna(row.get("NSP_ID")) else elec_id
-            port_str = str(row["Port"]) if "Port" in df.columns else "A"
-            port = "A" if "A" in port_str.upper() else "B"
-            region = str(row["Array"]) if "Array" in df.columns else "Unknown"
-            grid_row = int(row["GridRow"]) if "GridRow" in df.columns and pd.notna(row.get("GridRow")) else 0
-            grid_col = int(row["GridCol"]) if "GridCol" in df.columns and pd.notna(row.get("GridCol")) else 0
+    csv_candidates = [
+        _REPO_ROOT / "config" / f"electrode_mapping_{monkey}.csv" if monkey else None,
+        _REPO_ROOT / "config" / "electrode_mapping.csv",
+        _SCRIPT_DIR / "electrode_mapping.csv",
+    ]
+    csv_path = None
+    for c in csv_candidates:
+        if c and c.exists():
+            csv_path = c
+            break
 
-            elec_info[elec_id] = {
-                "nsp_id": nsp_id,
-                "port": port,
-                "region": region,
-                "row": grid_row,
-                "col": grid_col,
-            }
-            if region not in region_grids:
-                region_grids[region] = np.zeros((8, 8), dtype=int)
-            if 0 <= grid_row < 8 and 0 <= grid_col < 8:
-                region_grids[region][grid_row, grid_col] = elec_id
-
-        return elec_info, region_grids
-    except Exception as e:
-        _log(f"Warning: could not load electrode mapping CSV: {e}")
-        return {}, {}
-
-
-def extract_array_channel_indices(
-    ua_ids: Optional[np.ndarray],
-    elec_info: Dict[int, Dict[str, Any]],
-    recording_port: str,
-    target_region: str,
-    ua_region: Optional[np.ndarray] = None,
-    ua_region_names: Optional[np.ndarray] = None,
-    max_channels: Optional[int] = None,
-    bad_channels: Optional[set] = None,
-) -> Tuple[List[int], List[int]]:
-    if ua_ids is None:
-        return [], []
-    ua_ids_flat = np.asarray(ua_ids).ravel()
-    n_ch = len(ua_ids_flat)
-    if max_channels is not None:
-        n_ch = min(n_ch, max_channels)
-
-    bad = bad_channels or set()
-    matched_indices = []
-    matched_elecs = []
-
-    # Strategy 1: Check embedded region annotations in peristim NPZ
-    if ua_region is not None and ua_region_names is not None:
+    if csv_path:
         try:
-            reg_names_list = [str(x).strip().lower() for x in np.asarray(ua_region_names).ravel()]
-            target_lc = target_region.strip().lower()
-            target_code = next((idx for idx, name in enumerate(reg_names_list) if name == target_lc), None)
-            if target_code is not None:
-                codes_flat = np.asarray(ua_region).ravel()[:n_ch]
-                for i, code in enumerate(codes_flat):
-                    if code == target_code:
-                        elec = int(ua_ids_flat[i])
-                        if elec not in bad:
-                            matched_indices.append(i)
-                            matched_elecs.append(elec)
-                if matched_indices:
-                    return matched_indices, matched_elecs
-        except Exception:
-            pass
+            df = pd.read_csv(csv_path)
+            for _, row in df.iterrows():
+                ch = int(row.get("channel", row.get("Channel", 0)))
+                bank = str(row.get("bank", row.get("Bank", ""))).strip()
+                depth = float(row.get("depth", row.get("Depth", ch * 20.0)))
+                mapping[ch] = {"bank": bank, "depth": depth}
+                if bank in banks:
+                    banks[bank].append(ch)
+        except Exception as e:
+            _log(f"Failed to read electrode mapping CSV: {e}")
 
-    # Strategy 2: Check probe electrode mapping table
-    norm_port = (recording_port or "A").strip().upper()
-    target_norm = target_region.strip().lower()
+    bank_arrays = {k: np.array(v) for k, v in banks.items()}
+    return mapping, bank_arrays
 
-    for i in range(n_ch):
-        elec = int(ua_ids_flat[i])
-        if elec in bad:
-            continue
-        info = elec_info.get(elec, {})
-        elec_port = str(info.get("port", "")).strip().upper()
-        elec_reg = str(info.get("region", "")).strip().lower()
 
-        if elec_port and elec_port != norm_port:
-            continue
-        if elec_reg == target_norm:
-            matched_indices.append(i)
-            matched_elecs.append(elec)
-
-    return matched_indices, matched_elecs
-
+# =============================================================================
+# Neural Rate Processing
+# =============================================================================
 
 def prepare_counts_3d(counts_raw: Optional[np.ndarray]) -> Optional[np.ndarray]:
-    """Ensure neural count array is shaped (n_channels, n_trials, n_bins)."""
-    if counts_raw is None:
+    """
+    Standardizes neural count matrices to shape (n_channels, n_trials, n_time).
+    Transposes from (n_trials, n_channels, n_time) when appropriate.
+    """
+    if counts_raw is None or counts_raw.size == 0:
         return None
     arr = np.asarray(counts_raw, dtype=float)
     if arr.ndim == 2:
-        return arr[None, :, :]
-    if arr.ndim != 3:
-        return None
-    n0, n1, n2 = arr.shape
-    if n1 in (32, 64, 96, 128, 256) and n0 not in (32, 64, 96, 128, 256):
-        return np.transpose(arr, (1, 0, 2))
-    elif n0 in (32, 64, 96, 128, 256) and n1 not in (32, 64, 96, 128, 256):
+        return arr[np.newaxis, :, :]
+    if arr.ndim == 3:
+        # PeriStim format is (n_trials, n_channels, n_time)
+        if arr.shape[1] == 128 or (arr.shape[0] != 128 and arr.shape[1] > arr.shape[0]):
+            return np.transpose(arr, (1, 0, 2))
         return arr
-    if n1 in (32, 64, 96, 128, 256):
-        return np.transpose(arr, (1, 0, 2))
-    return arr
+    return None
 
 
 def nan_gaussian_filter1d(arr_3d: np.ndarray, sigma_bins: float) -> np.ndarray:
-    """Apply 1D Gaussian filter along axis=2, ignoring NaNs to prevent artifact bleed."""
-    if sigma_bins <= 0:
-        return arr_3d
-
-    val = arr_3d.copy()
-    nan_mask = np.isnan(val)
-    val[nan_mask] = 0.0
-    weights = (~nan_mask).astype(float)
-
-    smoothed_val = gaussian_filter1d(val, sigma=sigma_bins, axis=2, mode="nearest")
-    smoothed_w = gaussian_filter1d(weights, sigma=sigma_bins, axis=2, mode="nearest")
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        out = smoothed_val / smoothed_w
-        out[smoothed_w < 1e-5] = np.nan
-    out[nan_mask] = np.nan
+    if sigma_bins <= 0.0:
+        return arr_3d.copy()
+    out = np.empty_like(arr_3d, dtype=float)
+    n_ch, n_trials, _ = arr_3d.shape
+    for c in range(n_ch):
+        for tr in range(n_trials):
+            row = arr_3d[c, tr, :]
+            nan_mask = np.isnan(row)
+            if np.all(nan_mask):
+                out[c, tr, :] = np.nan
+                continue
+            if not np.any(nan_mask):
+                out[c, tr, :] = gaussian_filter1d(row, sigma=sigma_bins, mode="nearest")
+                continue
+            filled = row.copy()
+            valid_idx = np.where(~nan_mask)[0]
+            filled[nan_mask] = np.interp(np.where(nan_mask)[0], valid_idx, row[valid_idx])
+            smoothed = gaussian_filter1d(filled, sigma=sigma_bins, mode="nearest")
+            smoothed[nan_mask] = np.nan
+            out[c, tr, :] = smoothed
     return out
 
 
 def rebin_and_smooth(
     counts_3d: np.ndarray,
     centers_ms: np.ndarray,
-    orig_bin_w: Optional[float] = None,
-    target_bin_w: float = 20.0,
-    smooth_sigma_ms: float = 20.0,
+    target_bin_w: float = BIN_WIDTH_MS,
+    smooth_sigma_ms: float = SMOOTH_SIGMA_MS,
     win_ms: Tuple[float, float] = WIN_PLOT_MS,
     blank_win: Optional[Tuple[float, float]] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Rebin spike counts to target bin width, convert to firing rate (Hz), and smooth."""
     counts = np.asarray(counts_3d, dtype=float)
     centers = np.asarray(centers_ms, dtype=float)
-
-    if orig_bin_w is None:
-        if len(centers) > 1:
-            orig_bin_w = float(np.median(np.diff(centers)))
-        else:
-            orig_bin_w = target_bin_w
 
     t_min, t_max = win_ms
     start_edge = np.floor(t_min / target_bin_w) * target_bin_w
@@ -541,20 +361,16 @@ def rebin_and_smooth(
     out_edges = np.arange(start_edge, end_edge + target_bin_w * 0.5, target_bin_w)
     out_centers = 0.5 * (out_edges[:-1] + out_edges[1:])
 
-    n_ch, n_trials, n_src = counts.shape
+    n_ch, n_trials, _ = counts.shape
     n_out = len(out_centers)
 
-    src_edges = np.concatenate([[centers[0] - 0.5 * orig_bin_w], centers + 0.5 * orig_bin_w])
     bin_idx = np.digitize(centers, out_edges) - 1
-
     rebinned = np.zeros((n_ch, n_trials, n_out), dtype=float)
-    bin_counts_src = np.zeros(n_out, dtype=float)
 
     for b in range(n_out):
         mask = bin_idx == b
         if np.any(mask):
             rebinned[:, :, b] = np.sum(counts[:, :, mask], axis=2)
-            bin_counts_src[b] = np.sum(mask)
 
     rate_scale = 1000.0 / target_bin_w
     rates_hz = rebinned * rate_scale
@@ -566,1321 +382,1132 @@ def rebin_and_smooth(
 
     sigma_bins = smooth_sigma_ms / target_bin_w
     rates_smoothed = nan_gaussian_filter1d(rates_hz, sigma_bins)
-
-    win_mask = (out_centers >= t_min) & (out_centers <= t_max)
-    return rates_smoothed[:, :, win_mask], out_centers[win_mask]
-
-
-def compute_benjamini_hochberg_fdr(p_values: np.ndarray) -> np.ndarray:
-    """Benjamini-Hochberg FDR correction returning q-values in [0, 1]."""
-    p = np.asarray(p_values, dtype=float)
-    n = len(p)
-    if n == 0:
-        return np.array([])
-    valid_mask = np.isfinite(p)
-    q = np.ones(n, dtype=float)
-    if not np.any(valid_mask):
-        return q
-
-    p_valid = p[valid_mask]
-    n_valid = len(p_valid)
-    sort_idx = np.argsort(p_valid)
-    sorted_p = p_valid[sort_idx]
-
-    ranks = np.arange(1, n_valid + 1, dtype=float)
-    sorted_q = sorted_p * float(n_valid) / ranks
-
-    for i in range(n_valid - 2, -1, -1):
-        if sorted_q[i] > sorted_q[i + 1]:
-            sorted_q[i] = sorted_q[i + 1]
-
-    sorted_q = np.clip(sorted_q, 0.0, 1.0)
-    rev_idx = np.empty(n_valid, dtype=int)
-    rev_idx[sort_idx] = np.arange(n_valid)
-
-    q[valid_mask] = sorted_q[rev_idx]
-    return q
+    return rates_smoothed, out_centers
 
 
 # =============================================================================
-# Behavioral Target Computation
+# 3D Kinematics Ingestion & Plateau Integration
 # =============================================================================
 
-def compute_behavioral_perturbation_scores(
-    stim_cam0_segs: Optional[np.ndarray],
-    stim_cam0_names: Any,
-    stim_cam1_segs: Optional[np.ndarray],
-    stim_cam1_names: Any,
-    ctrl_cam0_segs: Optional[np.ndarray],
-    ctrl_cam0_names: Any,
-    ctrl_cam1_segs: Optional[np.ndarray],
-    ctrl_cam1_names: Any,
-    stim_beh_t: np.ndarray,
-    ctrl_beh_t: np.ndarray,
-    behavior_window_ms: Tuple[float, float] = DEFAULT_BEHAVIOR_WINDOW_MS,
-    preferred_keypoints: Tuple[str, ...] = ("middle", "wrist", "hand", "index"),
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Dict[str, Any]]:
-    """
-    Computes per-trial behavioral perturbation magnitude (Euclidean distance to control-mean trajectory)
-    concatenating cam0 and cam1 into a unified trajectory.
-
-    Returns
-    -------
-    y_stim : (n_stim_trials,) scalar perturbation score per STIM trial
-    y_ctrl : (n_ctrl_trials,) scalar deviation score per CTRL trial
-    meta : dict with trajectory curves, coordinates, and diagnostic data
-    """
-    # 1. Extract XY coordinates from both cameras using kinematics_utils
-    s_xy0 = rcp.extract_xy_coordinates(stim_cam0_segs, stim_cam0_names, preferred_keypoints)
-    s_xy1 = rcp.extract_xy_coordinates(stim_cam1_segs, stim_cam1_names, preferred_keypoints)
-    c_xy0 = rcp.extract_xy_coordinates(ctrl_cam0_segs, ctrl_cam0_names, preferred_keypoints)
-    c_xy1 = rcp.extract_xy_coordinates(ctrl_cam1_segs, ctrl_cam1_names, preferred_keypoints)
-
-    if c_xy0 is None and c_xy1 is None:
-        _log("Missing control camera kinematics; cannot construct control-mean trajectory.")
-        return None, None, {}
-
-    if s_xy0 is None and s_xy1 is None:
-        _log("Missing stim camera kinematics; cannot construct stim trajectory.")
-        return None, None, {}
-
-    # 2. Build multi-camera coordinate arrays: (n_trials, n_coords, n_timepoints)
-    s_coord_list = []
-    c_coord_list = []
-    coord_names = []
-
-    if s_xy0 is not None and c_xy0 is not None:
-        s_coord_list.extend([s_xy0[0], s_xy0[1]])
-        c_coord_list.extend([c_xy0[0], c_xy0[1]])
-        coord_names.extend(["cam0_x", "cam0_y"])
-
-    if s_xy1 is not None and c_xy1 is not None:
-        s_coord_list.extend([s_xy1[0], s_xy1[1]])
-        c_coord_list.extend([c_xy1[0], c_xy1[1]])
-        coord_names.extend(["cam1_x", "cam1_y"])
-
-    if not s_coord_list or not c_coord_list:
-        _log("No overlapping camera coordinates available between STIM and CTRL.")
-        return None, None, {}
-
-    # Stack along coordinate axis (axis=1) -> shape: (trials, coords, time)
-    s_coords = np.stack(s_coord_list, axis=1)
-    c_coords = np.stack(c_coord_list, axis=1)
-
-    t_beh = np.asarray(stim_beh_t, dtype=float)
-    c_t = np.asarray(ctrl_beh_t, dtype=float)
-
-    # 3. Control-mean trajectory across control trials: shape (n_coords, n_timepoints)
-    ctrl_mean_traj = np.nanmean(c_coords, axis=0)
-
-    # 4. Euclidean distance to control-mean trajectory per trial across time
-    # Stim trials distance
-    diff_s = s_coords - ctrl_mean_traj[None, :, :]
-    all_nan_s = np.all(np.isnan(diff_s), axis=1)
-    dist_s = np.sqrt(np.nansum(diff_s ** 2, axis=1))  # (n_stim_trials, n_timepoints)
-    dist_s[all_nan_s] = np.nan
-
-    # Control trials distance (deviation of each control trial from group control mean)
-    diff_c = c_coords - ctrl_mean_traj[None, :, :]
-    all_nan_c = np.all(np.isnan(diff_c), axis=1)
-    dist_c = np.sqrt(np.nansum(diff_c ** 2, axis=1))  # (n_ctrl_trials, n_timepoints)
-    dist_c[all_nan_c] = np.nan
-
-    # 5. Scalar summary score: mean Euclidean distance in behavior window
-    t0, t1 = behavior_window_ms
-    win_mask = (t_beh >= t0) & (t_beh <= t1)
-    if not np.any(win_mask):
-        _log(f"Behavior window [{t0}, {t1}] ms out of range ({t_beh[0]:.1f} to {t_beh[-1]:.1f} ms); using all post-0 ms.")
-        win_mask = (t_beh >= 0.0) & (t_beh <= 400.0)
-
-    y_stim = np.nanmean(dist_s[:, win_mask], axis=1)
-    y_ctrl = np.nanmean(dist_c[:, win_mask], axis=1)
-
-    meta = {
-        "coord_names": coord_names,
-        "n_coords": len(coord_names),
-        "dist_s_traces": dist_s,
-        "dist_c_traces": dist_c,
-        "ctrl_mean_traj": ctrl_mean_traj,
-        "beh_t": t_beh,
-        "win_mask": win_mask,
-        "behavior_window_ms": behavior_window_ms,
-    }
-
-    return y_stim, y_ctrl, meta
-
-
-# =============================================================================
-# Data Preparation Function
-# =============================================================================
-
-def prepare_regression_data(
-    session_data: Dict[str, Any],
-    neural_window_ms: Tuple[float, float] = DEFAULT_NEURAL_WINDOW_MS,
-    behavior_window_ms: Tuple[float, float] = DEFAULT_BEHAVIOR_WINDOW_MS,
-    preferred_keypoints: Tuple[str, ...] = ("middle", "wrist", "hand", "index"),
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Dict[str, Any]]:
-    """
-    Prepares trial-level neural features and behavioral targets by stacking STIM and CTRL trials together.
-    Do NOT subtract STIM minus CTRL; preserves single-trial observations.
-
-    Parameters
-    ----------
-    session_data : dict
-        Contains neural rates ('stim_rates', 'ctrl_rates', 'time_ms'),
-        behavioral segments ('stim_cam0_segs', 'ctrl_cam0_segs', etc.),
-        and channel identification ('channel_ids').
-    neural_window_ms : tuple of float
-        Time window (ms) to compute mean firing rate per channel.
-    behavior_window_ms : tuple of float
-        Time window (ms) to compute mean trajectory deviation from control mean.
-
-    Returns
-    -------
-    X_neural : (n_trials, n_channels)
-        Mean firing rate per channel in neural window across all trials.
-    y_behavior : (n_trials,)
-        Per-trial mean Euclidean distance from control-mean trajectory.
-    condition_labels : (n_trials,)
-        'stim' or 'control' condition labels.
-    trial_ids : (n_trials,)
-        Trial index tracking array.
-    info : dict
-        Metadata dictionary.
-    """
-    s_rates = session_data.get("stim_rates")  # (n_ch, n_stim_trials, n_bins)
-    c_rates = session_data.get("ctrl_rates")  # (n_ch, n_ctrl_trials, n_bins)
-    time_ms = session_data.get("time_ms")
-    channel_ids = session_data.get("channel_ids", [])
-
-    if s_rates is None or c_rates is None or time_ms is None:
-        _log("Missing neural rate matrices for regression data preparation.")
-        return None, None, None, None, {}
-
-    n_ch, n_s_trials, _ = s_rates.shape
-    _, n_c_trials, _ = c_rates.shape
-
-    # 1. Behavioral Target Computation
-    y_stim, y_ctrl, beh_meta = compute_behavioral_perturbation_scores(
-        stim_cam0_segs=session_data.get("stim_cam0_segs"),
-        stim_cam0_names=session_data.get("stim_cam0_names"),
-        stim_cam1_segs=session_data.get("stim_cam1_segs"),
-        stim_cam1_names=session_data.get("stim_cam1_names"),
-        ctrl_cam0_segs=session_data.get("ctrl_cam0_segs"),
-        ctrl_cam0_names=session_data.get("ctrl_cam0_names"),
-        ctrl_cam1_segs=session_data.get("ctrl_cam1_segs"),
-        ctrl_cam1_names=session_data.get("ctrl_cam1_names"),
-        stim_beh_t=session_data.get("stim_beh_t"),
-        ctrl_beh_t=session_data.get("ctrl_beh_t"),
-        behavior_window_ms=behavior_window_ms,
-        preferred_keypoints=preferred_keypoints,
-    )
-
-    if y_stim is None or y_ctrl is None:
-        _log("Failed to compute behavioral perturbation targets.")
-        return None, None, None, None, {}
-
-    # Ensure trial counts align with behavioral perturbation vectors
-    n_s = min(n_s_trials, len(y_stim))
-    n_c = min(n_c_trials, len(y_ctrl))
-    if n_s == 0 or n_c == 0:
-        _log(f"Zero trials available after alignment (stim={n_s}, ctrl={n_c}).")
-        return None, None, None, None, {}
-
-    s_rates = s_rates[:, :n_s, :]
-    c_rates = c_rates[:, :n_c, :]
-    y_stim = y_stim[:n_s]
-    y_ctrl = y_ctrl[:n_c]
-
-    # 2. Neural Feature Extraction: Mean firing rate per channel in neural window
-    n0, n1 = neural_window_ms
-    n_mask = (time_ms >= n0) & (time_ms <= n1)
-    if not np.any(n_mask):
-        _log(f"Neural window [{n0}, {n1}] ms out of range ({time_ms[0]:.1f} to {time_ms[-1]:.1f} ms); fallback to [50, 150] ms.")
-        n_mask = (time_ms >= 50.0) & (time_ms <= 150.0)
-
-    # X_stim shape: (n_s, n_channels)
-    X_stim = np.nanmean(s_rates[:, :, n_mask], axis=2).T
-    # X_ctrl shape: (n_c, n_channels)
-    X_ctrl = np.nanmean(c_rates[:, :, n_mask], axis=2).T
-
-    # 3. Stack both STIM and CTRL trials together
-    X_all = np.vstack([X_stim, X_ctrl])
-    y_all = np.concatenate([y_stim, y_ctrl])
-
-    stim_tids = session_data.get("stim_trial_ids", np.arange(n_s))[:n_s]
-    ctrl_tids = session_data.get("ctrl_trial_ids", np.arange(n_c))[:n_c]
-    trial_ids_all = np.concatenate([stim_tids, ctrl_tids])
-
-    cond_labels_all = np.array(["stim"] * n_s + ["control"] * n_c)
-
-    # Filter out channels that are >50% NaN across trials (e.g. inactive / blanked)
-    ch_finite_frac = np.mean(np.isfinite(X_all), axis=0)
-    valid_ch_mask = ch_finite_frac > 0.5
-    if not np.any(valid_ch_mask):
-        _log("No channels with sufficient finite firing rate data in neural window.")
-        return None, None, None, None, {}
-
-    X_all = X_all[:, valid_ch_mask]
-    s_rates = s_rates[valid_ch_mask, :, :]
-    c_rates = c_rates[valid_ch_mask, :, :]
-    channel_ids = [ch for ch, keep in zip(channel_ids, valid_ch_mask) if keep]
-
-    # Impute remaining sporadic NaNs with channel column mean
-    col_means = np.nanmean(X_all, axis=0)
-    for c in range(X_all.shape[1]):
-        nan_c = np.isnan(X_all[:, c])
-        if np.any(nan_c):
-            X_all[nan_c, c] = col_means[c] if np.isfinite(col_means[c]) else 0.0
-
-    # 4. Clean NaN trials
-    valid_trials = np.isfinite(y_all) & np.all(np.isfinite(X_all), axis=1)
-    n_valid = int(np.sum(valid_trials))
-    if n_valid < 4:
-        _log(f"Insufficient valid trials ({n_valid}) for regression.")
-        return None, None, None, None, {}
-
-    X_neural = X_all[valid_trials]
-    y_behavior = y_all[valid_trials]
-    condition_labels = cond_labels_all[valid_trials]
-    trial_ids = trial_ids_all[valid_trials]
-
-    info = {
-        "neural_window_ms": neural_window_ms,
-        "behavior_window_ms": behavior_window_ms,
-        "channel_ids": channel_ids,
-        "s_rates": s_rates,
-        "c_rates": c_rates,
-        "n_stim_valid": int(np.sum(condition_labels == "stim")),
-        "n_ctrl_valid": int(np.sum(condition_labels == "control")),
-        "beh_meta": beh_meta,
-    }
-
-    return X_neural, y_behavior, condition_labels, trial_ids, info
-
-
-# =============================================================================
-# Ridge Regression with Cross-Validation
-# =============================================================================
-
-def fit_channel_regression(
-    X_neural: np.ndarray,
-    y_behavior: np.ndarray,
-    cv_folds: int = DEFAULT_CV_FOLDS,
-    alphas: Optional[np.ndarray] = None,
-) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray, StandardScaler]:
-    """
-    Fit Ridge regression predicting behavior from neural activity.
-
-    Returns
-    -------
-    channel_weights : (n_channels,) - regression coefficients per channel
-    cv_r2_scores : (cv_folds,) cross-validated R² scores
-    best_alpha : selected regularization strength
-    y_pred_cv : (n_trials,) cross-validated predictions for every trial
-    scaler : fitted StandardScaler
-    """
-    if alphas is None:
-        alphas = DEFAULT_ALPHAS
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_neural)
-
-    # Replace any numerical 0-variance NaNs with 0.0
-    if np.any(np.isnan(X_scaled)):
-        X_scaled = np.nan_to_num(X_scaled, nan=0.0)
-
-    n_samples = len(y_behavior)
-    n_splits = min(cv_folds, max(2, n_samples // 2)) if n_samples >= 4 else 2
-
-    model = RidgeCV(alphas=alphas, cv=n_splits)
-    model.fit(X_scaled, y_behavior)
-
-    cv_scores = cross_val_score(model, X_scaled, y_behavior, cv=n_splits)
-    best_alpha = float(model.alpha_)
-
-    # Out-of-fold cross-validated prediction for every trial
-    y_pred_cv = cross_val_predict(Ridge(alpha=best_alpha), X_scaled, y_behavior, cv=n_splits)
-
-    return model.coef_, cv_scores, best_alpha, y_pred_cv, scaler
-
-
-# =============================================================================
-# Vectorized Permutation Testing for Significance
-# =============================================================================
-
-def permutation_test_weights(
-    X_neural: np.ndarray,
-    y_behavior: np.ndarray,
-    best_alpha: Optional[float] = None,
-    n_permutations: int = DEFAULT_N_PERMUTATIONS,
-    rng_seed: int = 42,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Shuffle behavior labels to build null distribution for each channel weight.
-    Uses precomputed Ridge projection matrix for instantaneous vectorized permutations.
-
-    Returns
-    -------
-    p_values : (n_channels,) empirical two-sided permutation p-values
-    q_values : (n_channels,) FDR Benjamini-Hochberg adjusted q-values
-    null_weights : (n_channels, n_permutations) null coefficient matrix
-    """
-    n_trials, n_channels = X_neural.shape
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_neural)
-    if np.any(np.isnan(X_scaled)):
-        X_scaled = np.nan_to_num(X_scaled, nan=0.0)
-
-    if best_alpha is None:
-        n_splits = min(5, max(2, n_trials // 2))
-        rcv = RidgeCV(alphas=DEFAULT_ALPHAS, cv=n_splits)
-        rcv.fit(X_scaled, y_behavior)
-        best_alpha = float(rcv.alpha_)
-
-    # Centered target
-    y_centered = y_behavior - np.mean(y_behavior)
-
-    # Ridge closed-form projection operator: K = (X^T X + α I)^(-1) X^T
-    XtX_alpha = (X_scaled.T @ X_scaled) + best_alpha * np.eye(n_channels)
-    try:
-        K = np.linalg.solve(XtX_alpha, X_scaled.T)  # shape: (n_channels, n_trials)
-    except np.linalg.LinAlgError:
-        K = np.linalg.pinv(XtX_alpha) @ X_scaled.T
-
-    # True weights on centered data
-    w_true = K @ y_centered  # (n_channels,)
-
-    # Vectorized permutations: generate shuffled target matrix (n_trials, n_permutations)
-    rng = np.random.default_rng(rng_seed)
-    perm_indices = np.column_stack([rng.permutation(n_trials) for _ in range(n_permutations)])
-    Y_perm = y_centered[perm_indices]  # (n_trials, n_permutations)
-
-    # Compute null weights via single matrix multiplication: shape (n_channels, n_permutations)
-    null_weights = K @ Y_perm
-
-    # Empirical two-sided p-values: |null| >= |true|
-    abs_true = np.abs(w_true)[:, None]
-    abs_null = np.abs(null_weights)
-    exceedances = np.sum(abs_null >= abs_true, axis=1)
-    p_values = (1.0 + exceedances.astype(float)) / (n_permutations + 1.0)
-
-    # FDR correction across channels
-    q_values = compute_benjamini_hochberg_fdr(p_values)
-
-    return p_values, q_values, null_weights
-
-
-# =============================================================================
-# Visualization Functions
-# =============================================================================
-
-def plot_channel_weights(
-    channel_weights: np.ndarray,
-    channel_ids: Sequence[Any],
-    p_values: np.ndarray,
-    q_values: Optional[np.ndarray] = None,
-    cv_r2: Optional[float] = None,
-    best_alpha: Optional[float] = None,
-    array_name: str = "",
-    condition_name: str = "",
-    out_path: Optional[Path] = None,
-    figsize: Tuple[float, float] = (14.0, 5.5),
-) -> plt.Figure:
-    """
-    Bar plot of regression weights across channels with statistical significance markers.
-    """
-    fig, ax = plt.subplots(figsize=figsize, dpi=300)
-
-    ch_ids = np.asarray(channel_ids)
-    n_ch = len(channel_weights)
-    x_pos = np.arange(n_ch)
-
-    # Distinct palettes: warm coral for positive weights, cool steel blue for negative weights
-    colors = []
-    alphas = []
-    for w, p in zip(channel_weights, p_values):
-        is_sig = p < P_VAL_THRESH
-        if w >= 0:
-            colors.append("#d9383a")  # Crimson / Coral
-        else:
-            colors.append("#2b7bba")  # Steel Blue
-        alphas.append(0.95 if is_sig else 0.35)
-
-    bars = ax.bar(x_pos, channel_weights, color=colors, alpha=0.85, edgecolor="none", width=0.8)
-
-    # Adjust individual bar alpha
-    for b, a in zip(bars, alphas):
-        b.set_alpha(a)
-
-    ax.axhline(0.0, color="#333333", linestyle="-", linewidth=1.0, alpha=0.7)
-
-    # Add significance markers above/below bars
-    y_max = np.nanmax(np.abs(channel_weights)) if n_ch > 0 else 1.0
-    offset = max(y_max * 0.04, 0.005)
-
-    n_sig_p = int(np.sum(p_values < P_VAL_THRESH))
-    n_sig_q = int(np.sum(q_values < FDR_ALPHA)) if q_values is not None else 0
-
-    for i, (w, p) in enumerate(zip(channel_weights, p_values)):
-        if p < 0.001:
-            star = "***"
-        elif p < 0.01:
-            star = "**"
-        elif p < 0.05:
-            star = "*"
-        else:
-            star = ""
-
-        if star:
-            y_annot = w + offset if w >= 0 else w - offset * 2.2
-            va = "bottom" if w >= 0 else "top"
-            ax.text(x_pos[i], y_annot, star, ha="center", va=va, fontsize=10, fontweight="bold", color="#111111")
-
-    # Channel ID ticks
-    step = max(1, n_ch // 32)
-    ax.set_xticks(x_pos[::step])
-    ax.set_xticklabels([str(ch_ids[i]) for i in range(0, n_ch, step)], rotation=45, ha="right", fontsize=8)
-    ax.set_xlabel("Electrode / Channel ID", fontsize=11, fontweight="medium")
-    ax.set_ylabel("Standardized Weight (β)", fontsize=11, fontweight="medium")
-
-    # Informative title banner
-    r2_str = f" | Cross-Val R² = {cv_r2:.3f}" if cv_r2 is not None else ""
-    alpha_str = f" | α = {best_alpha:.2g}" if best_alpha is not None else ""
-    ax.set_title(
-        f"{array_name} Channel Weights → Behavioral Perturbation\n"
-        f"Significant channels: {n_sig_p}/{n_ch} (p < 0.05), {n_sig_q}/{n_ch} (FDR q < 0.05){r2_str}{alpha_str}",
-        fontsize=12,
-        fontweight="bold",
-        pad=12,
-    )
-
-    # Legend
-    legend_elements = [
-        Patch(facecolor="#d9383a", alpha=0.95, label="Positive Weight (p < 0.05)"),
-        Patch(facecolor="#2b7bba", alpha=0.95, label="Negative Weight (p < 0.05)"),
-        Patch(facecolor="#888888", alpha=0.35, label="Non-Significant (p ≥ 0.05)"),
+def load_plateau_analysis_table(session: str, sess_dir: Path) -> Optional[pd.DataFrame]:
+    candidates = [
+        sess_dir / "results" / "figures" / "plateau_analysis" / "tables" / "plateau_detection_results_all_conditions.csv",
+        sess_dir / "results" / "figures" / "plateau_analysis" / "tables" / f"plateau_results_{session}.csv",
     ]
-    ax.legend(handles=legend_elements, loc="upper right", framealpha=0.9, fontsize=9)
-
-    ax.grid(axis="y", linestyle="--", alpha=0.3)
-    ax.set_axisbelow(True)
-    plt.tight_layout()
-
-    if out_path:
-        ensure_dir(out_path.parent)
-        fig.savefig(out_path, dpi=300, bbox_inches="tight")
-        fig.savefig(out_path.with_suffix(".svg"), bbox_inches="tight")
-
-    return fig
+    for cand in candidates:
+        if cand.exists():
+            try:
+                df = pd.read_csv(cand)
+                if "br_idx" in df.columns and "onset_ms" in df.columns:
+                    _log(f"Loaded plateau analysis table: {cand.name}")
+                    return df
+            except Exception:
+                pass
+    return None
 
 
-def plot_prediction_scatter(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    condition_labels: Sequence[str],
-    cv_r2: Optional[float] = None,
-    array_name: str = "",
-    condition_name: str = "",
-    out_path: Optional[Path] = None,
-    figsize: Tuple[float, float] = (7.5, 6.5),
-) -> plt.Figure:
-    """
-    Scatter of predicted vs actual behavioral perturbation magnitude, colored by STIM/CTRL condition.
-    """
-    fig, ax = plt.subplots(figsize=figsize, dpi=300)
-
-    cond_arr = np.asarray(condition_labels)
-    is_stim = cond_arr == "stim"
-    is_ctrl = cond_arr == "control"
-
-    # Scatter points
-    ax.scatter(
-        y_true[is_ctrl], y_pred[is_ctrl],
-        c="#2c3e50", s=45, alpha=0.80, edgecolors="#1a252f", linewidths=0.6,
-        label=f"Control ({int(np.sum(is_ctrl))} trials)", zorder=3,
-    )
-    ax.scatter(
-        y_true[is_stim], y_pred[is_stim],
-        c="#e74c3c", s=50, alpha=0.85, edgecolors="#901a1c", linewidths=0.6,
-        label=f"Stim ({int(np.sum(is_stim))} trials)", zorder=4,
-    )
-
-    # 45-degree Unity Reference Line
-    min_val = min(float(np.nanmin(y_true)), float(np.nanmin(y_pred)))
-    max_val = max(float(np.nanmax(y_true)), float(np.nanmax(y_pred)))
-    pad = (max_val - min_val) * 0.08
-    lims = (min_val - pad, max_val + pad)
-    ax.plot(lims, lims, color="#7f8c8d", linestyle="--", linewidth=1.2, label="Identity (y = x)", zorder=1)
-
-    # Empirical Regression Trendline
-    if len(y_true) > 2 and np.all(np.isfinite(y_true)) and np.all(np.isfinite(y_pred)):
-        slope, intercept, r_val, p_val, _ = stats.linregress(y_true, y_pred)
-        x_trend = np.linspace(min_val, max_val, 100)
-        ax.plot(x_trend, slope * x_trend + intercept, color="#2980b9", linestyle="-", linewidth=1.8, label=f"Fit (r = {r_val:.2f})", zorder=2)
-    else:
-        r_val, p_val = np.nan, np.nan
-
-    ax.set_xlim(lims)
-    ax.set_ylim(lims)
-
-    ax.set_xlabel("Observed Perturbation Magnitude (mm)", fontsize=11, fontweight="medium")
-    ax.set_ylabel("Cross-Validated Predicted Perturbation (mm)", fontsize=11, fontweight="medium")
-
-    # Stat annotation box
-    r2_val = cv_r2 if cv_r2 is not None else (r_val ** 2 if np.isfinite(r_val) else np.nan)
-    stat_text = (
-        f"Cross-Val R² = {r2_val:.3f}\n"
-        f"Pearson r = {r_val:.3f} (p = {p_val:.2e})\n"
-        f"Total Trials = {len(y_true)}"
-    )
-    ax.text(
-        0.05, 0.95, stat_text,
-        transform=ax.transAxes,
-        fontsize=9,
-        verticalalignment="top",
-        bbox=dict(boxstyle="round,pad=0.5", facecolor="#ffffff", edgecolor="#bdc3c7", alpha=0.9),
-    )
-
-    ax.set_title(
-        f"{array_name} Perturbation Prediction Performance\n{condition_name}",
-        fontsize=12,
-        fontweight="bold",
-        pad=10,
-    )
-    ax.legend(loc="lower right", framealpha=0.9, fontsize=9)
-    ax.grid(linestyle="--", alpha=0.3)
-    ax.set_axisbelow(True)
-    plt.tight_layout()
-
-    if out_path:
-        ensure_dir(out_path.parent)
-        fig.savefig(out_path, dpi=300, bbox_inches="tight")
-        fig.savefig(out_path.with_suffix(".svg"), bbox_inches="tight")
-
-    return fig
-
-
-def plot_top_channels_traces(
-    s_rates: np.ndarray,
-    c_rates: np.ndarray,
-    time_ms: np.ndarray,
-    channel_ids: Sequence[Any],
-    channel_weights: np.ndarray,
-    p_values: np.ndarray,
-    neural_window_ms: Tuple[float, float] = DEFAULT_NEURAL_WINDOW_MS,
-    top_n: int = 3,
-    array_name: str = "",
-    condition_name: str = "",
-    out_path: Optional[Path] = None,
-) -> Optional[plt.Figure]:
-    """
-    Time-resolved trial-averaged firing rate traces (mean ± SEM) for top positive and negative channels.
-    """
-    n_ch = len(channel_weights)
-    if n_ch == 0:
+def extract_plateau_times_from_table(
+    df_plat: Optional[pd.DataFrame],
+    br_idx: int,
+    target: str,
+    n_trials: int,
+) -> Optional[np.ndarray]:
+    if df_plat is None or df_plat.empty or br_idx < 0:
         return None
-
-    # Pick top positive and top negative weight channels
-    pos_order = np.argsort(channel_weights)[::-1]
-    neg_order = np.argsort(channel_weights)
-
-    selected_indices = []
-    # Add top positive
-    for idx in pos_order:
-        if len(selected_indices) >= top_n or channel_weights[idx] <= 0:
-            break
-        selected_indices.append(idx)
-    # Add top negative
-    for idx in neg_order:
-        if len(selected_indices) >= top_n * 2 or channel_weights[idx] >= 0:
-            break
-        if idx not in selected_indices:
-            selected_indices.append(idx)
-
-    # Fallback to top absolute weights if one-sided
-    if len(selected_indices) < min(4, n_ch):
-        abs_order = np.argsort(np.abs(channel_weights))[::-1]
-        for idx in abs_order:
-            if idx not in selected_indices:
-                selected_indices.append(idx)
-            if len(selected_indices) >= min(6, n_ch):
-                break
-
-    n_plots = len(selected_indices)
-    if n_plots == 0:
-        return None
-
-    n_cols = min(3, n_plots)
-    n_rows = math.ceil(n_plots / n_cols)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5.0 * n_cols, 3.8 * n_rows), dpi=300, sharex=True)
-    axes_flat = np.atleast_1d(axes).ravel()
-
-    for plot_idx, ch_idx in enumerate(selected_indices):
-        ax = axes_flat[plot_idx]
-        ch_id = channel_ids[ch_idx]
-        weight = channel_weights[ch_idx]
-        pval = p_values[ch_idx]
-
-        # STIM trace: mean ± SEM
-        s_trace = s_rates[ch_idx, :, :]  # (trials, bins)
-        s_mean = np.nanmean(s_trace, axis=0)
-        s_sem = np.nanstd(s_trace, axis=0) / math.sqrt(max(1, s_trace.shape[0]))
-
-        # CTRL trace: mean ± SEM
-        c_trace = c_rates[ch_idx, :, :]  # (trials, bins)
-        c_mean = np.nanmean(c_trace, axis=0)
-        c_sem = np.nanstd(c_trace, axis=0) / math.sqrt(max(1, c_trace.shape[0]))
-
-        # Plot shaded SEM and lines
-        ax.fill_between(time_ms, c_mean - c_sem, c_mean + c_sem, color="#2c3e50", alpha=0.18, edgecolor="none")
-        ax.plot(time_ms, c_mean, color="#2c3e50", linewidth=1.5, label="Control")
-
-        ax.fill_between(time_ms, s_mean - s_sem, s_mean + s_sem, color="#e74c3c", alpha=0.22, edgecolor="none")
-        ax.plot(time_ms, s_mean, color="#e74c3c", linewidth=1.8, label="Stim")
-
-        # Vertical line at t=0 ms (stim onset)
-        ax.axvline(0.0, color="#222222", linestyle="--", linewidth=1.0, alpha=0.7)
-
-        # Shaded neural feature window
-        ax.axvspan(
-            neural_window_ms[0], neural_window_ms[1],
-            color="#f39c12", alpha=0.15, label="Neural Window" if plot_idx == 0 else None,
-        )
-
-        sig_star = " ***" if pval < 0.001 else (" **" if pval < 0.01 else (" *" if pval < 0.05 else ""))
-        ax.set_title(f"Channel {ch_id} (β = {weight:+.2f}, p = {pval:.3f}{sig_star})", fontsize=10, fontweight="bold")
-        ax.set_ylabel("Firing Rate (Hz)", fontsize=9)
-        ax.grid(linestyle="--", alpha=0.25)
-
-        if plot_idx >= (n_rows - 1) * n_cols:
-            ax.set_xlabel("Time from Stim Onset (ms)", fontsize=9)
-        if plot_idx == 0:
-            ax.legend(loc="upper right", fontsize=8, framealpha=0.85)
-
-    # Hide unused subplots
-    for p_idx in range(n_plots, len(axes_flat)):
-        axes_flat[p_idx].axis("off")
-
-    fig.suptitle(f"{array_name} Top Channels Firing Rate Profiles: {condition_name}", fontsize=12, fontweight="bold", y=0.99)
-    plt.tight_layout()
-
-    if out_path:
-        ensure_dir(out_path.parent)
-        fig.savefig(out_path, dpi=300, bbox_inches="tight")
-        fig.savefig(out_path.with_suffix(".svg"), bbox_inches="tight")
-
-    return fig
+    try:
+        t_clean = f"target{target.strip().lower()}"
+        mask = (df_plat["br_idx"] == br_idx)
+        if "condition" in df_plat.columns:
+            mask = mask & df_plat["condition"].str.replace(" ", "").str.replace("_", "").str.lower().str.contains(t_clean)
+        sub = df_plat[mask]
+        if sub.empty:
+            return None
+        out = np.full(n_trials, np.nan, dtype=float)
+        for _, row in sub.iterrows():
+            t_idx = int(row["trial_idx"])
+            if 0 <= t_idx < n_trials and bool(row.get("plateau_found", True)):
+                out[t_idx] = float(row["onset_ms"])
+        if np.any(np.isfinite(out)):
+            return out
+    except Exception:
+        pass
+    return None
 
 
-def plot_regression_summary_figure(
-    channel_weights: np.ndarray,
-    channel_ids: Sequence[Any],
-    p_values: np.ndarray,
-    q_values: np.ndarray,
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    condition_labels: Sequence[str],
-    s_rates: np.ndarray,
-    c_rates: np.ndarray,
-    time_ms: np.ndarray,
-    cv_r2: float,
-    best_alpha: float,
-    array_name: str,
-    condition_name: str,
-    neural_window_ms: Tuple[float, float] = DEFAULT_NEURAL_WINDOW_MS,
-    out_path: Optional[Path] = None,
-) -> plt.Figure:
+def compute_trial_endpoints_3d(
+    coords: np.ndarray,
+    beh_t: np.ndarray,
+    search_window_ms: Tuple[float, float] = BEHAVIOR_WINDOW_MS,
+    override_plateau_times: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Consolidated 3-panel publication figure:
-    Panel A: Channel weights bar chart with significance stars.
-    Panel B: Actual vs predicted perturbation scatter.
-    Panel C: Top 2 channel traces across time.
+    Computes single-trial 3D reach endpoints and plateau onset times.
+    Samples endpoint coordinates specifically at movement termination / plateau onset.
     """
-    fig = plt.figure(figsize=(15.0, 10.0), dpi=300)
-    gs = gridspec.GridSpec(2, 2, height_ratios=[1.1, 1.0], hspace=0.35, wspace=0.25)
+    n_trials, n_coords, n_time = coords.shape
+    endpoints = np.full((n_trials, n_coords), np.nan, dtype=float)
+    plateau_times = np.full(n_trials, np.nan, dtype=float)
 
-    # Panel A: Channel Weights
-    ax_weights = fig.add_subplot(gs[0, :])
-    ch_ids = np.asarray(channel_ids)
-    n_ch = len(channel_weights)
-    x_pos = np.arange(n_ch)
+    if n_time < 3 or len(beh_t) != n_time:
+        return endpoints, plateau_times
 
-    colors = ["#d9383a" if w >= 0 else "#2b7bba" for w in channel_weights]
-    bars = ax_weights.bar(x_pos, channel_weights, color=colors, alpha=0.85, width=0.8)
-    for b, p in zip(bars, p_values):
-        b.set_alpha(0.95 if p < P_VAL_THRESH else 0.35)
+    dt_s = (beh_t[1] - beh_t[0]) / 1000.0 if len(beh_t) > 1 else 0.01
+    t0, t1 = search_window_ms
+    win_mask = (beh_t >= t0) & (beh_t <= t1)
+    if not np.any(win_mask):
+        win_mask = (beh_t >= 0.0) & (beh_t <= 500.0)
+    win_indices = np.where(win_mask)[0]
 
-    ax_weights.axhline(0.0, color="#333333", linestyle="-", linewidth=0.9, alpha=0.7)
-
-    y_max = np.nanmax(np.abs(channel_weights)) if n_ch > 0 else 1.0
-    offset = max(y_max * 0.04, 0.005)
-    for i, (w, p) in enumerate(zip(channel_weights, p_values)):
-        star = "***" if p < 0.001 else ("**" if p < 0.01 else ("*" if p < 0.05 else ""))
-        if star:
-            y_annot = w + offset if w >= 0 else w - offset * 2.2
-            va = "bottom" if w >= 0 else "top"
-            ax_weights.text(x_pos[i], y_annot, star, ha="center", va=va, fontsize=9, fontweight="bold")
-
-    step = max(1, n_ch // 28)
-    ax_weights.set_xticks(x_pos[::step])
-    ax_weights.set_xticklabels([str(ch_ids[i]) for i in range(0, n_ch, step)], rotation=45, ha="right", fontsize=8)
-    ax_weights.set_xlabel("Electrode / Channel ID", fontsize=10)
-    ax_weights.set_ylabel("Standardized Weight (β)", fontsize=10)
-    n_sig_p = int(np.sum(p_values < P_VAL_THRESH))
-    n_sig_q = int(np.sum(q_values < FDR_ALPHA))
-    ax_weights.set_title(
-        f"A. Channel Regression Weights ({array_name}) | Sig: {n_sig_p}/{n_ch} (p < 0.05), {n_sig_q}/{n_ch} (FDR q < 0.05)",
-        fontsize=11, fontweight="bold", loc="left",
-    )
-    ax_weights.grid(axis="y", linestyle="--", alpha=0.3)
-
-    # Panel B: Prediction Scatter
-    ax_scatter = fig.add_subplot(gs[1, 0])
-    cond_arr = np.asarray(condition_labels)
-    is_stim = cond_arr == "stim"
-    is_ctrl = cond_arr == "control"
-    ax_scatter.scatter(y_true[is_ctrl], y_pred[is_ctrl], c="#2c3e50", s=40, alpha=0.8, edgecolors="none", label=f"Control (N={int(np.sum(is_ctrl))})")
-    ax_scatter.scatter(y_true[is_stim], y_pred[is_stim], c="#e74c3c", s=45, alpha=0.85, edgecolors="none", label=f"Stim (N={int(np.sum(is_stim))})")
-
-    min_val = min(float(np.nanmin(y_true)), float(np.nanmin(y_pred)))
-    max_val = max(float(np.nanmax(y_true)), float(np.nanmax(y_pred)))
-    pad = (max_val - min_val) * 0.08
-    lims = (min_val - pad, max_val + pad)
-    ax_scatter.plot(lims, lims, color="#7f8c8d", linestyle="--", linewidth=1.1, label="Unity (y=x)")
-
-    if len(y_true) > 2:
-        slope, intercept, r_val, p_val, _ = stats.linregress(y_true, y_pred)
-        x_trend = np.linspace(min_val, max_val, 100)
-        ax_scatter.plot(x_trend, slope * x_trend + intercept, color="#2980b9", linestyle="-", linewidth=1.6, label=f"Fit (r={r_val:.2f})")
-    else:
-        r_val, p_val = np.nan, np.nan
-
-    ax_scatter.set_xlim(lims)
-    ax_scatter.set_ylim(lims)
-    ax_scatter.set_xlabel("Observed Perturbation Magnitude (mm)", fontsize=10)
-    ax_scatter.set_ylabel("Cross-Validated Predicted (mm)", fontsize=10)
-    ax_scatter.set_title(f"B. Prediction Quality | CV R² = {cv_r2:.3f}, r = {r_val:.2f} (p = {p_val:.2e})", fontsize=11, fontweight="bold", loc="left")
-    ax_scatter.legend(loc="lower right", fontsize=8, framealpha=0.85)
-    ax_scatter.grid(linestyle="--", alpha=0.3)
-
-    # Panel C: Top Channels Traces
-    ax_traces = fig.add_subplot(gs[1, 1])
-    top_pos_idx = int(np.argmax(channel_weights))
-    top_neg_idx = int(np.argmin(channel_weights))
-
-    # Show top positive channel
-    s_m = np.nanmean(s_rates[top_pos_idx, :, :], axis=0)
-    c_m = np.nanmean(c_rates[top_pos_idx, :, :], axis=0)
-    s_se = np.nanstd(s_rates[top_pos_idx, :, :], axis=0) / math.sqrt(max(1, s_rates.shape[1]))
-    c_se = np.nanstd(c_rates[top_pos_idx, :, :], axis=0) / math.sqrt(max(1, c_rates.shape[1]))
-
-    ax_traces.fill_between(time_ms, c_m - c_se, c_m + c_se, color="#2c3e50", alpha=0.18)
-    ax_traces.plot(time_ms, c_m, color="#2c3e50", linewidth=1.5, label="Control")
-    ax_traces.fill_between(time_ms, s_m - s_se, s_m + s_se, color="#e74c3c", alpha=0.22)
-    ax_traces.plot(time_ms, s_m, color="#e74c3c", linewidth=1.8, label="Stim")
-
-    ax_traces.axvline(0.0, color="#222222", linestyle="--", linewidth=1.0, alpha=0.7)
-    ax_traces.axvspan(neural_window_ms[0], neural_window_ms[1], color="#f39c12", alpha=0.15, label="Neural Window")
-    ax_traces.set_xlabel("Time from Stim Onset (ms)", fontsize=10)
-    ax_traces.set_ylabel("Firing Rate (Hz)", fontsize=10)
-    ax_traces.set_title(
-        f"C. Top Predictive Channel {ch_ids[top_pos_idx]} (β = {channel_weights[top_pos_idx]:+.2f}, p = {p_values[top_pos_idx]:.3f})",
-        fontsize=11, fontweight="bold", loc="left",
-    )
-    ax_traces.legend(loc="upper right", fontsize=8, framealpha=0.85)
-    ax_traces.grid(linestyle="--", alpha=0.3)
-
-    fig.suptitle(f"Channel-Behavior Regression: {condition_name} ({array_name})", fontsize=13, fontweight="bold", y=0.98)
-
-    if out_path:
-        ensure_dir(out_path.parent)
-        fig.savefig(out_path, dpi=300, bbox_inches="tight")
-        fig.savefig(out_path.with_suffix(".svg"), bbox_inches="tight")
-
-    return fig
-
-
-# =============================================================================
-# Single Condition Analysis Pipeline
-# =============================================================================
-
-def process_single_condition(
-    stim_path: Path,
-    ctrl_path: Optional[Path],
-    bad_channels: Dict[str, set],
-    out_dir: Path,
-    neural_window_ms: Tuple[float, float] = DEFAULT_NEURAL_WINDOW_MS,
-    behavior_window_ms: Tuple[float, float] = DEFAULT_BEHAVIOR_WINDOW_MS,
-    n_permutations: int = DEFAULT_N_PERMUTATIONS,
-    file_idx: Optional[int] = None,
-    total_files: Optional[int] = None,
-) -> Dict[str, Any]:
-    prefix = f"[{file_idx}/{total_files}] " if file_idx and total_files else ""
-    _log(f"{prefix}Processing condition: {stim_path.name}")
-    ensure_dir(out_dir)
-
-    condition_name = stim_path.stem
-    target = get_target_folder(stim_path)
-
-    # 1. Load data from NPZ files
-    with np.load(stim_path, allow_pickle=True) as stim_npz:
-        stim_dur_ms = get_stim_duration_ms(stim_npz)
-        port = get_ua_port(stim_npz)
-        stim_freq_hz = scalarize(safe_get_npz(stim_npz, "stim_freq_hz", None))
-        stim_dur_nominal_ms = scalarize(safe_get_npz(stim_npz, "stim_dur_nominal_ms", None))
-        pulse_count = compute_pulse_count(stim_freq_hz, stim_dur_nominal_ms)
-
-        nprw_counts = safe_get_npz(stim_npz, "NPRW_counts", None)
-        nprw_t = safe_get_npz(stim_npz, "NPRW_rel_t", None)
-        ua_counts = safe_get_npz(stim_npz, "UA_counts", None)
-        ua_t = safe_get_npz(stim_npz, "UA_rel_t", None)
-        ua_ids = safe_get_npz(stim_npz, "ua_ids_1based", None)
-        ua_region = safe_get_npz(stim_npz, "ua_region", None)
-        ua_region_names = safe_get_npz(stim_npz, "ua_region_names", None)
-
-        stim_beh_t = safe_get_npz(stim_npz, "beh_rel_t", None)
-        stim_cam0_segs = safe_get_npz(stim_npz, "beh_cam0_segs", None)
-        stim_cam1_segs = safe_get_npz(stim_npz, "beh_cam1_segs", None)
-        stim_cam0_names = safe_get_npz(stim_npz, "beh_cam0_names", None)
-        stim_cam1_names = safe_get_npz(stim_npz, "beh_cam1_names", None)
-        stim_trial_ids = safe_get_npz(stim_npz, "raw_trial_indices", None)
-
-    ctrl_nprw_counts = None
-    ctrl_nprw_t = None
-    ctrl_ua_counts = None
-    ctrl_ua_t = None
-    ctrl_ua_ids = None
-    ctrl_ua_reg = None
-    ctrl_ua_names = None
-    ctrl_port = None
-    ctrl_beh_t = None
-    ctrl_cam0_segs = None
-    ctrl_cam1_segs = None
-    ctrl_cam0_names = None
-    ctrl_cam1_names = None
-    ctrl_trial_ids = None
-
-    if ctrl_path and ctrl_path.exists():
-        _log(f"  Matched control: {ctrl_path.name}")
-        with np.load(ctrl_path, allow_pickle=True) as ctrl_npz:
-            ctrl_nprw_counts = safe_get_npz(ctrl_npz, "NPRW_counts", None)
-            ctrl_nprw_t = safe_get_npz(ctrl_npz, "NPRW_rel_t", None)
-            ctrl_ua_counts = safe_get_npz(ctrl_npz, "UA_counts", None)
-            ctrl_ua_t = safe_get_npz(ctrl_npz, "UA_rel_t", None)
-            ctrl_ua_ids = safe_get_npz(ctrl_npz, "ua_ids_1based", None)
-            ctrl_ua_reg = safe_get_npz(ctrl_npz, "ua_region", None)
-            ctrl_ua_names = safe_get_npz(ctrl_npz, "ua_region_names", None)
-            ctrl_port = get_ua_port(ctrl_npz)
-
-            ctrl_beh_t = safe_get_npz(ctrl_npz, "beh_rel_t", None)
-            ctrl_cam0_segs = safe_get_npz(ctrl_npz, "beh_cam0_segs", None)
-            ctrl_cam1_segs = safe_get_npz(ctrl_npz, "beh_cam1_segs", None)
-            ctrl_cam0_names = safe_get_npz(ctrl_npz, "beh_cam0_names", None)
-            ctrl_cam1_names = safe_get_npz(ctrl_npz, "beh_cam1_names", None)
-            ctrl_trial_ids = safe_get_npz(ctrl_npz, "raw_trial_indices", None)
-    else:
-        _log(f"  [Warning] No matched control file found for {stim_path.name} (target={target})")
-
-    elec_info, _ = load_electrode_mapping(PARAMS.monkey if PARAMS is not None else None)
-    bad_nprw = bad_channels.get("NPRW", set()) if bad_channels else set()
-    bad_ua = bad_channels.get("UA", set()) if bad_channels else set()
-
-    # 2. Extract arrays
-    array_data_list = []
-
-    # Cerebellum (NPRW)
-    if nprw_counts is not None and nprw_t is not None and ctrl_nprw_counts is not None:
-        s_nprw_3d = prepare_counts_3d(nprw_counts)
-        c_nprw_3d = prepare_counts_3d(ctrl_nprw_counts)
-        if s_nprw_3d is not None and c_nprw_3d is not None:
-            n_tot = s_nprw_3d.shape[0]
-            valid_idxs = [i for i in range(n_tot) if (i + 1) not in bad_nprw and i not in bad_nprw]
-            if valid_idxs:
-                ch_ids = [i + 1 for i in valid_idxs]
-                array_data_list.append(("NPRW", s_nprw_3d[valid_idxs, :, :], nprw_t, c_nprw_3d[valid_idxs, :, :], ctrl_nprw_t if ctrl_nprw_t is not None else nprw_t, ch_ids))
-
-    # Utah Array (Motor Cortex)
-    if ua_counts is not None and ua_t is not None and ctrl_ua_counts is not None:
-        s_ua_3d = prepare_counts_3d(ua_counts)
-        c_ua_3d = prepare_counts_3d(ctrl_ua_counts)
-        if s_ua_3d is not None and c_ua_3d is not None:
-            all_ua_ch = s_ua_3d.shape[0]
-            ua_ids_arr = ua_ids.ravel() if ua_ids is not None else np.arange(1, all_ua_ch + 1)
-
-            if ANALYZE_COMBINED_UTAH:
-                valid_ua_idxs = [i for i in range(all_ua_ch) if int(ua_ids_arr[i]) not in bad_ua]
-                if valid_ua_idxs:
-                    all_elecs = [int(ua_ids_arr[i]) for i in valid_ua_idxs]
-                    array_data_list.append(("UA_ALL", s_ua_3d[valid_ua_idxs, :, :], ua_t, c_ua_3d[valid_ua_idxs, :, :], ctrl_ua_t if ctrl_ua_t is not None else ua_t, all_elecs))
-
-            if ANALYZE_INDIVIDUAL_UTAH_ARRAYS:
-                for reg in REGION_ORDER:
-                    s_idxs, s_elecs = extract_array_channel_indices(
-                        ua_ids, elec_info, port, reg,
-                        ua_region=ua_region, ua_region_names=ua_region_names,
-                        max_channels=all_ua_ch, bad_channels=bad_ua,
-                    )
-                    c_idxs, _ = extract_array_channel_indices(
-                        ctrl_ua_ids if ctrl_ua_ids is not None else ua_ids,
-                        elec_info, ctrl_port or port, reg,
-                        ua_region=ctrl_ua_reg if ctrl_ua_reg is not None else ua_region,
-                        ua_region_names=ctrl_ua_names if ctrl_ua_names is not None else ua_region_names,
-                        max_channels=c_ua_3d.shape[0], bad_channels=bad_ua,
-                    )
-                    if s_idxs and c_idxs and len(s_idxs) == len(c_idxs):
-                        array_data_list.append((f"UA_{reg}", s_ua_3d[s_idxs, :, :], ua_t, c_ua_3d[c_idxs, :, :], ctrl_ua_t if ctrl_ua_t is not None else ua_t, s_elecs))
-
-    summary_rows = []
-    channel_rows = []
-
-    # 3. Analyze each array modality
-    for arr_name, s_3d, s_t, c_3d, c_t, ch_ids in array_data_list:
-        _log(f"  Fitting Channel-Behavior Regression for {arr_name} ({len(ch_ids)} channels)")
-
-        # Blanking parameters
-        is_stim_cond = stim_dur_ms > 0
-        blank_pre = NPRW_BLANK_PRE_MS if arr_name == "NPRW" else (UA_BLANK_PRE_MS if BLANK_UA_STIM_PERIOD else 0.0)
-        blank_post = NPRW_BLANK_POST_MS if arr_name == "NPRW" else (UA_BLANK_POST_MS if BLANK_UA_STIM_PERIOD else 0.0)
-        has_blanking = is_stim_cond and (blank_pre > 0 or blank_post > 0)
-        blank_win = (-blank_pre, stim_dur_ms + blank_post) if has_blanking else None
-
-        bin_w = NPRW_BIN_WIDTH_MS if arr_name == "NPRW" else UA_BIN_WIDTH_MS
-        sigma = NPRW_SMOOTHING_SIGMA_MS if arr_name == "NPRW" else UA_SMOOTHING_SIGMA_MS
-
-        s_rates, time_ms = rebin_and_smooth(s_3d, s_t, target_bin_w=bin_w, smooth_sigma_ms=sigma, win_ms=WIN_PLOT_MS, blank_win=blank_win)
-        c_rates, _ = rebin_and_smooth(c_3d, c_t, target_bin_w=bin_w, smooth_sigma_ms=sigma, win_ms=WIN_PLOT_MS, blank_win=None)
-
-        session_dict = {
-            "stim_rates": s_rates,
-            "ctrl_rates": c_rates,
-            "time_ms": time_ms,
-            "channel_ids": ch_ids,
-            "stim_cam0_segs": stim_cam0_segs,
-            "stim_cam0_names": stim_cam0_names,
-            "stim_cam1_segs": stim_cam1_segs,
-            "stim_cam1_names": stim_cam1_names,
-            "ctrl_cam0_segs": ctrl_cam0_segs,
-            "ctrl_cam0_names": ctrl_cam0_names,
-            "ctrl_cam1_segs": ctrl_cam1_segs,
-            "ctrl_cam1_names": ctrl_cam1_names,
-            "stim_beh_t": stim_beh_t,
-            "ctrl_beh_t": ctrl_beh_t,
-            "stim_trial_ids": stim_trial_ids,
-            "ctrl_trial_ids": ctrl_trial_ids,
-        }
-
-        # Step 1: Prepare trial-level regression data
-        X_neural, y_behavior, condition_labels, trial_ids, prep_info = prepare_regression_data(
-            session_dict,
-            neural_window_ms=neural_window_ms,
-            behavior_window_ms=behavior_window_ms,
-        )
-
-        if X_neural is None or len(y_behavior) < 4:
-            _log(f"  [Skip] Inadequate observations for {arr_name}")
+    for i in range(n_trials):
+        tr_coords = coords[i]
+        if np.all(np.isnan(tr_coords)):
             continue
 
-        ch_ids = prep_info["channel_ids"]
-        s_rates = prep_info["s_rates"]
-        c_rates = prep_info["c_rates"]
+        if override_plateau_times is not None and i < len(override_plateau_times) and np.isfinite(override_plateau_times[i]):
+            t_plat = float(override_plateau_times[i])
+            k_end = int(np.argmin(np.abs(beh_t - t_plat)))
+            endpoints[i, :] = tr_coords[:, k_end]
+            plateau_times[i] = t_plat
+            continue
 
-        # Step 2: Fit Ridge Regression with Cross-Validation
-        channel_weights, cv_scores, best_alpha, y_pred_cv, scaler = fit_channel_regression(X_neural, y_behavior)
-        cv_r2 = float(np.mean(cv_scores))
+        # Deceleration fallback from continuous 3D speed into reach apex
+        vel = np.gradient(tr_coords, dt_s, axis=1)
+        speed = np.sqrt(np.nansum(vel ** 2, axis=0))
 
-        # Step 3: Permutation Testing for Significance
-        p_values, q_values, null_weights = permutation_test_weights(
-            X_neural, y_behavior, best_alpha=best_alpha, n_permutations=n_permutations
+        fwd_axis = 1 if n_coords >= 2 else 0
+        fwd_trace = tr_coords[fwd_axis]
+        win_fwd = fwd_trace[win_indices]
+        if np.all(np.isnan(win_fwd)):
+            continue
+
+        k_local_peak_y = int(np.nanargmax(win_fwd))
+        k_peak_y = win_indices[k_local_peak_y]
+        win_speed = speed[win_indices[: k_local_peak_y + 1]]
+        v_max = float(np.nanmax(win_speed)) if len(win_speed) > 0 and np.any(np.isfinite(win_speed)) else 20.0
+        v_thresh = max(15.0, v_max * 0.20)
+
+        k_end = k_peak_y
+        if len(win_speed) > 3:
+            k_local_peak_v = int(np.nanargmax(win_speed))
+            k_peak_v = win_indices[k_local_peak_v]
+            for k in range(k_peak_v, min(k_peak_y + 4, n_time - 2)):
+                if speed[k] <= v_thresh:
+                    k_end = k
+                    break
+
+        endpoints[i, :] = tr_coords[:, k_end]
+        plateau_times[i] = beh_t[k_end]
+
+    return endpoints, plateau_times
+
+
+def load_condition_3d_task_kinematics(
+    npz_path: Path,
+    session_name: str,
+    dlc_3d_dir: Optional[Path] = None,
+    session_landmarks: Optional[Dict[str, np.ndarray]] = None,
+    meta_csv: Optional[Path] = None,
+    aligned_ckpt_dir: Optional[Path] = None,
+    behv_ckpt_dir: Optional[Path] = None,
+    raw_trial_indices: Optional[Sequence[int]] = None,
+    keypoint: str = DEFAULT_KEYPOINT,
+    square_size_mm: float = SQUARE_SIZE_MM,
+    align_task_frame: bool = ALIGN_TO_TASK_FRAME,
+) -> Optional[Dict[str, Any]]:
+    """Loads calibrated 3D task-frame reach coordinates [X_lateral, Y_forward, Z_height] in mm."""
+    if not HAS_3D_KINEMATICS or p3d is None:
+        return None
+
+    try:
+        with np.load(npz_path, allow_pickle=True) as data:
+            event_ms = safe_get_npz(data, "event_ms")
+            if event_ms is None:
+                event_ms = safe_get_npz(data, "event_timestamps_ms")
+            if event_ms is None or len(event_ms) == 0:
+                return None
+            peri_meta = safe_get_npz(data, "meta", None)
+            br_idx = int(safe_get_npz(data, "br_idx", extract_br_index(npz_path)))
+
+        if dlc_3d_dir is None or not dlc_3d_dir.exists():
+            return None
+
+        vid_idx = p3d.resolve_video_index_for_br(br_idx, meta_csv, peri_meta) if meta_csv else br_idx
+        if vid_idx is None:
+            vid_idx = br_idx
+
+        dlc_csv_path = p3d.find_3d_dlc_csv(dlc_3d_dir, session_name, vid_idx, br_idx)
+        if dlc_csv_path is None or not dlc_csv_path.exists():
+            return None
+
+        df_dlc, bodyparts = p3d.load_dlc_3d_file(dlc_csv_path, square_size_mm=square_size_mm)
+        if df_dlc is None:
+            return None
+
+        frame_t_ms = p3d.load_frame_timeline_ms(
+            br_idx=br_idx,
+            vid_idx=vid_idx,
+            session=session_name,
+            aligned_ckpt_root=aligned_ckpt_dir,
+            behv_ckpt_root=behv_ckpt_dir,
+        )
+        if frame_t_ms is None:
+            frame_t_ms = np.arange(len(df_dlc)) * 10.0
+
+        rel_t, x_all, y_all, z_all, valid_mask = p3d.segment_condition_3d_reaches(
+            dlc_df=df_dlc,
+            frame_t_ms=frame_t_ms,
+            event_ms=event_ms,
+            keypoint=keypoint,
+            pre_zero_ms=getattr(p3d, "PRE_ZERO_MS", -800.0),
+            post_zero_ms=getattr(p3d, "POST_ZERO_MS", 600.0),
+            step_ms=getattr(p3d, "STEP_MS", 10.0),
         )
 
-        n_sig_p = int(np.sum(p_values < P_VAL_THRESH))
-        n_sig_q = int(np.sum(q_values < FDR_ALPHA))
-
-        _log(f"    -> {arr_name}: CV R² = {cv_r2:.3f}, best α = {best_alpha:.2g}, sig channels: {n_sig_p}/{len(ch_ids)} (p<0.05), {n_sig_q}/{len(ch_ids)} (q<0.05)")
-
-        base_name = f"{stim_path.stem}_{arr_name}"
-
-        # Step 4: Visualizations
-        # 1. Channel Weights Bar Plot
-        fig_w = plot_channel_weights(
-            channel_weights, ch_ids, p_values, q_values,
-            cv_r2=cv_r2, best_alpha=best_alpha,
-            array_name=arr_name, condition_name=condition_name,
-            out_path=out_dir / f"{base_name}_channel_weights.png",
-        )
-        plt.close(fig_w)
-
-        # 2. Prediction Scatter Plot
-        fig_s = plot_prediction_scatter(
-            y_behavior, y_pred_cv, condition_labels,
-            cv_r2=cv_r2, array_name=arr_name, condition_name=condition_name,
-            out_path=out_dir / f"{base_name}_prediction_scatter.png",
-        )
-        plt.close(fig_s)
-
-        # 3. Top Channels Firing Rate Traces
-        fig_t = plot_top_channels_traces(
-            s_rates, c_rates, time_ms, ch_ids, channel_weights, p_values,
-            neural_window_ms=neural_window_ms,
-            array_name=arr_name, condition_name=condition_name,
-            out_path=out_dir / f"{base_name}_top_channels_traces.png",
-        )
-        if fig_t is not None:
-            plt.close(fig_t)
-
-        # 4. Consolidated 3-Panel Figure
-        fig_all = plot_regression_summary_figure(
-            channel_weights, ch_ids, p_values, q_values,
-            y_behavior, y_pred_cv, condition_labels,
-            s_rates, c_rates, time_ms,
-            cv_r2=cv_r2, best_alpha=best_alpha,
-            array_name=arr_name, condition_name=condition_name,
-            neural_window_ms=neural_window_ms,
-            out_path=out_dir / f"{base_name}_regression_summary.png",
-        )
-        plt.close(fig_all)
-
-        # Save per-channel results CSV
-        df_chan = pd.DataFrame({
-            "condition_name": condition_name,
-            "target": target,
-            "array_name": arr_name,
-            "channel_id": ch_ids,
-            "weight": channel_weights,
-            "p_value": p_values,
-            "q_value": q_values,
-            "is_sig_p05": p_values < P_VAL_THRESH,
-            "is_sig_fdr": q_values < FDR_ALPHA,
-        })
-        chan_csv_path = out_dir / f"{base_name}_regression_channels.csv"
-        df_chan.to_csv(chan_csv_path, index=False)
-
-        for _, row in df_chan.iterrows():
-            channel_rows.append(row.to_dict())
-
-        # Array summary record
-        top_pos_ch = ch_ids[int(np.argmax(channel_weights))]
-        top_neg_ch = ch_ids[int(np.argmin(channel_weights))]
-        summary_rows.append({
-            "condition_name": condition_name,
-            "target": target,
-            "array_name": arr_name,
-            "stim_freq_hz": stim_freq_hz,
-            "stim_dur_nominal_ms": stim_dur_nominal_ms,
-            "pulse_count": pulse_count,
-            "n_trials_stim": prep_info["n_stim_valid"],
-            "n_trials_control": prep_info["n_ctrl_valid"],
-            "n_channels": len(ch_ids),
-            "cv_r2": cv_r2,
-            "best_alpha": best_alpha,
-            "n_sig_channels_p05": n_sig_p,
-            "n_sig_channels_fdr": n_sig_q,
-            "top_positive_channel": top_pos_ch,
-            "top_positive_weight": float(np.max(channel_weights)),
-            "top_negative_channel": top_neg_ch,
-            "top_negative_weight": float(np.min(channel_weights)),
-            "neural_window_start_ms": neural_window_ms[0],
-            "neural_window_end_ms": neural_window_ms[1],
-            "behavior_window_start_ms": behavior_window_ms[0],
-            "behavior_window_end_ms": behavior_window_ms[1],
-        })
-
-    return {
-        "summary_rows": summary_rows,
-        "channel_rows": channel_rows,
-    }
-
-
-# =============================================================================
-# Main Analysis Loop
-# =============================================================================
-
-def parse_condition_specifier(item: Any) -> Tuple[Optional[int], str]:
-    s = str(item).strip()
-    m_num = re.search(r"^\d+$", s)
-    if m_num:
-        return int(m_num.group(0)), s
-    m_br = re.search(r"(?:br|cond)[_-]?(\d+)", s, re.IGNORECASE)
-    if m_br:
-        return int(m_br.group(1)), s
-    return None, s
-
-
-def is_stim_file_matching(stim_f: Path, targets: List[Any]) -> bool:
-    if not targets:
-        return True
-    file_name = stim_f.name
-    file_path_str = str(stim_f)
-    br_match = re.search(r"BR_(\d+)", file_name, re.IGNORECASE)
-    file_br = int(br_match.group(1)) if br_match else None
-
-    for target in targets:
-        target_int, str_val = parse_condition_specifier(target)
-        if target_int is not None:
-            if file_br is not None and target_int == file_br:
-                return True
+        if align_task_frame:
+            if session_landmarks is None:
+                session_landmarks = p3d.scan_session_landmarks(dlc_3d_dir, square_size_mm=square_size_mm)
+            R_task, p_start = p3d.compute_task_rotation_matrix(
+                dlc_df=df_dlc,
+                session_landmarks=session_landmarks,
+                square_size_mm=square_size_mm,
+            )
+            pts_cam = np.stack([x_all, y_all, z_all], axis=0) - p_start.reshape(3, 1, 1)
+            pts_task = np.einsum("ji,jkl->ikl", R_task, pts_cam)
+            coords_3d = np.transpose(pts_task, (1, 0, 2))
         else:
-            str_lower = str_val.lower()
-            if str_lower in file_name.lower() or str_lower in file_path_str.lower():
-                return True
-    return False
+            coords_3d = np.stack([x_all, y_all, z_all], axis=1)
+
+        raw_tids = np.asarray(raw_trial_indices) if raw_trial_indices is not None else np.arange(len(event_ms))
+
+        return {
+            "beh_t": rel_t,
+            "coords": coords_3d,
+            "valid_mask": valid_mask,
+            "raw_trial_indices": raw_tids,
+            "is_3d": True,
+            "coord_names": ["X_lateral", "Y_forward", "Z_height"],
+        }
+    except Exception as e:
+        _log(f"3D kinematics loading failed for {npz_path.name}: {e}")
+        return None
 
 
-def run_channel_behavior_analysis(
-    sessions: Optional[List[Path]] = None,
-    config: Optional[Dict[str, Any]] = None,
+# =============================================================================
+# Confidence Ellipse Drawing Utility
+# =============================================================================
+
+def draw_confidence_ellipse(ax: plt.Axes, x: np.ndarray, y: np.ndarray, n_std: float = 1.5, **kwargs):
+    valid = np.isfinite(x) & np.isfinite(y)
+    if np.sum(valid) < 3:
+        return
+    xv, yv = x[valid], y[valid]
+    q_x = np.nanpercentile(xv, [2, 98])
+    q_y = np.nanpercentile(yv, [2, 98])
+    in_box = (xv >= q_x[0]) & (xv <= q_x[1]) & (yv >= q_y[0]) & (yv <= q_y[1])
+    if np.sum(in_box) >= 3:
+        xv_e, yv_e = xv[in_box], yv[in_box]
+    else:
+        xv_e, yv_e = xv, yv
+
+    cov = np.cov(xv_e, yv_e)
+    if not np.all(np.isfinite(cov)):
+        return
+    vals, vecs = np.linalg.eigh(cov)
+    if np.any(np.isnan(vals)):
+        return
+    vals = np.maximum(vals, 1e-4)
+    order = vals.argsort()[::-1]
+    vals, vecs = vals[order], vecs[:, order]
+    theta = np.degrees(np.arctan2(*vecs[:, 0][::-1]))
+    w, h = 2 * n_std * np.sqrt(vals)
+    ell = Ellipse(xy=(float(np.nanmedian(xv_e)), float(np.nanmedian(yv_e))), width=w, height=h, angle=theta, **kwargs)
+    ax.add_patch(ell)
+
+
+# =============================================================================
+# Visualizations
+# =============================================================================
+
+def plot_behavioral_perturbation_summary(
+    beh_t: np.ndarray,
+    delta_traces: np.ndarray,       # (n_trials, 3, n_time)
+    endpoints_s: np.ndarray,        # (n_s, 3)
+    endpoints_c: np.ndarray,        # (n_c, 3)
+    plateau_t_s: np.ndarray,        # (n_s,)
+    plateau_t_c: np.ndarray,        # (n_c,)
+    stim_pulse_ms: float = 100.0,
+    condition_title: str = "",
+    out_path: Optional[Path] = None,
+) -> plt.Figure:
+    """
+    Consolidated publication summary of 3D reach perturbation kinematics.
+        Panel A: Time-resolved directional reach deviations ΔX(t), ΔY(t), ΔZ(t) (Mean ± SEM).
+        Panel B: Overhead reach endpoint perturbation vectors (ΔX vs ΔY) with confidence ellipse.
+        Panel C: 3D endpoint dispersion (RMS distance) comparing Stim vs Control.
+        Panel D: Plateau onset timing comparison (Stim vs Control jittered trials + Δt test).
+    """
+    fig = plt.figure(figsize=(14.0, 10.0), dpi=300)
+    gs = gridspec.GridSpec(2, 2, hspace=0.35, wspace=0.28)
+
+    # 1. Panel A: Time-Resolved Directional Deviations
+    ax_a = fig.add_subplot(gs[0, 0])
+    t_mask = (beh_t >= 0.0) & (beh_t <= 500.0)
+    t_sub = beh_t[t_mask]
+    colors = {"Lateral (ΔX)": "#2980b9", "Forward (ΔY)": "#e74c3c", "Height (ΔZ)": "#27ae60"}
+
+    for dim_idx, (dim_name, color) in enumerate(colors.items()):
+        traces = delta_traces[:, dim_idx, t_mask]
+        m = np.nanmean(traces, axis=0)
+        sem = stats.sem(traces, axis=0, nan_policy="omit")
+        ax_a.plot(t_sub, m, color=color, linewidth=2.0, label=dim_name)
+        ax_a.fill_between(t_sub, m - sem, m + sem, color=color, alpha=0.18)
+
+    ax_a.axhline(0.0, color="#555555", linestyle="--", linewidth=1.0)
+    ax_a.axvspan(0.0, stim_pulse_ms, color="#f39c12", alpha=0.15, label=f"Stim ({stim_pulse_ms:.0f} ms)")
+    ax_a.set_xlabel("Time Relative to Stim (ms)", fontsize=11, fontweight="bold")
+    ax_a.set_ylabel("Perturbation Displacement (mm)", fontsize=11, fontweight="bold")
+    ax_a.set_title("A. Time-Resolved Directional Deviations (Mean ± SEM)", fontsize=12, fontweight="bold")
+    ax_a.legend(loc="upper left", frameon=True, fontsize=9)
+    ax_a.grid(True, linestyle="--", alpha=0.4)
+
+    # 2. Panel B: Overhead Reach Endpoint Perturbations (ΔX vs ΔY)
+    ax_b = fig.add_subplot(gs[0, 1])
+    c_ref = np.nanmedian(endpoints_c, axis=0)
+    dx_s = endpoints_s[:, 0] - c_ref[0]
+    dy_s = endpoints_s[:, 1] - c_ref[1]
+    dx_c = endpoints_c[:, 0] - c_ref[0]
+    dy_c = endpoints_c[:, 1] - c_ref[1]
+
+    ax_b.scatter(dx_c, dy_c, color="#34495e", s=45, alpha=0.7, edgecolors="none", label=f"Control (N={len(dx_c)})")
+    ax_b.scatter(dx_s, dy_s, color="#e74c3c", s=55, alpha=0.8, edgecolors="none", label=f"Stim (N={len(dx_s)})")
+    ax_b.scatter(0, 0, marker="D", s=100, color="#2c3e50", label="Control Median Origin (0,0)")
+
+    m_dx_s, m_dy_s = float(np.nanmedian(dx_s)), float(np.nanmedian(dy_s))
+    ax_b.annotate(
+        "", xy=(m_dx_s, m_dy_s), xytext=(0, 0),
+        arrowprops=dict(arrowstyle="->", color="#8e44ad", lw=2.5)
+    )
+    draw_confidence_ellipse(ax_b, dx_c, dy_c, n_std=1.5, edgecolor="#34495e", facecolor="none", linestyle=":", lw=1.2)
+    draw_confidence_ellipse(ax_b, dx_s, dy_s, n_std=1.5, edgecolor="#e74c3c", facecolor="none", linestyle="--", lw=1.5)
+
+    ax_b.axhline(0.0, color="#7f8c8d", linestyle="--", linewidth=1.0)
+    ax_b.axvline(0.0, color="#7f8c8d", linestyle="--", linewidth=1.0)
+    ax_b.set_xlabel("Lateral Endpoint Shift ΔX (mm, left < 0 < right)", fontsize=11, fontweight="bold")
+    ax_b.set_ylabel("Forward Endpoint Shift ΔY (mm, under < 0 < over)", fontsize=11, fontweight="bold")
+    ax_b.set_title("B. Overhead Endpoint Perturbations (ΔX vs ΔY)", fontsize=12, fontweight="bold")
+    ax_b.legend(loc="lower left", frameon=True, fontsize=9)
+    ax_b.grid(True, linestyle="--", alpha=0.4)
+
+    # 3. Panel C: Endpoint Dispersion (RMS Distance to Condition Median)
+    ax_c = fig.add_subplot(gs[1, 0])
+    s_med = np.nanmedian(endpoints_s, axis=0)
+    disp_s = np.sqrt(np.nansum((endpoints_s - s_med[None, :]) ** 2, axis=1))
+    disp_c = np.sqrt(np.nansum((endpoints_c - c_ref[None, :]) ** 2, axis=1))
+    rms_s = float(np.sqrt(np.nanmean(disp_s ** 2)))
+    rms_c = float(np.sqrt(np.nanmean(disp_c ** 2)))
+
+    bars = ax_c.bar([0, 1], [rms_c, rms_s], color=["#4c5c68", "#e76f51"], width=0.55, edgecolor="#222222")
+    ax_c.set_xticks([0, 1])
+    ax_c.set_xticklabels([f"Control (N={len(disp_c)})", f"Stim (N={len(disp_s)})"], fontsize=10, fontweight="bold")
+    ax_c.set_ylabel("3D Endpoint Dispersion (RMS mm)", fontsize=11, fontweight="bold")
+    ax_c.set_title("C. Endpoint Dispersion & Precision", fontsize=12, fontweight="bold")
+
+    ratio = rms_s / max(rms_c, 1e-4)
+    _, p_levene = stats.levene(disp_s[np.isfinite(disp_s)], disp_c[np.isfinite(disp_c)]) if len(disp_s) > 2 else (0, 1.0)
+    ax_c.text(0.5, 0.85, f"Dispersion Ratio: {ratio:.2f}x\nLevene p = {p_levene:.3f}",
+              transform=ax_c.transAxes, ha="center", va="center",
+              bbox=dict(boxstyle="round,pad=0.5", facecolor="#ffffff", edgecolor="#bdc3c7", alpha=0.9), fontsize=10)
+    ax_c.grid(True, axis="y", linestyle="--", alpha=0.4)
+
+    # 4. Panel D: Plateau Onset Delay Comparison
+    ax_d = fig.add_subplot(gs[1, 1])
+    np.random.seed(42)
+    jit_c = np.random.normal(0, 0.04, size=len(plateau_t_c))
+    jit_s = np.random.normal(0, 0.04, size=len(plateau_t_s))
+
+    ax_d.scatter(np.zeros(len(plateau_t_c)) + jit_c, plateau_t_c, color="#34495e", s=45, alpha=0.7, edgecolors="none")
+    ax_d.scatter(np.ones(len(plateau_t_s)) + jit_s, plateau_t_s, color="#e74c3c", s=55, alpha=0.8, edgecolors="none")
+
+    m_plat_c = float(np.nanmedian(plateau_t_c))
+    m_plat_s = float(np.nanmedian(plateau_t_s))
+    sem_plat_c = stats.sem(plateau_t_c, nan_policy="omit")
+    sem_plat_s = stats.sem(plateau_t_s, nan_policy="omit")
+
+    ax_d.errorbar(0, m_plat_c, yerr=sem_plat_c, fmt="D", color="#111111", markersize=9, capsize=6, lw=2.0)
+    ax_d.errorbar(1, m_plat_s, yerr=sem_plat_s, fmt="D", color="#111111", markersize=9, capsize=6, lw=2.0)
+
+    delta_plat = m_plat_s - m_plat_c
+    try:
+        _, p_plat = stats.mannwhitneyu(plateau_t_s[np.isfinite(plateau_t_s)], plateau_t_c[np.isfinite(plateau_t_c)])
+    except Exception:
+        p_plat = 1.0
+
+    star_str = "***" if p_plat < 0.001 else ("**" if p_plat < 0.01 else ("*" if p_plat < 0.05 else "n.s."))
+    y_max = max(np.nanmax(plateau_t_s), np.nanmax(plateau_t_c)) + 40
+    ax_d.plot([0, 0, 1, 1], [y_max - 10, y_max, y_max, y_max - 10], color="#222222", lw=1.5)
+    ax_d.text(0.5, y_max + 8, f"{star_str} (Δt = {delta_plat:+.0f} ms, p = {p_plat:.3f})", ha="center", va="bottom", fontsize=10, fontweight="bold")
+
+    ax_d.set_xticks([0, 1])
+    ax_d.set_xticklabels([f"Control (med={m_plat_c:.0f} ms)", f"Stim (med={m_plat_s:.0f} ms)"], fontsize=10, fontweight="bold")
+    ax_d.set_ylabel("Plateau Onset Time from Stim (ms)", fontsize=11, fontweight="bold")
+    ax_d.set_title("D. Plateau Timing Delay", fontsize=12, fontweight="bold")
+    ax_d.grid(True, axis="y", linestyle="--", alpha=0.4)
+
+    fig.suptitle(f"Behavioral Perturbation Summary: {condition_title}", fontsize=14, fontweight="bold", y=0.98)
+
+    if out_path:
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if SAVE_PNG:
+            fig.savefig(out_path, dpi=300, bbox_inches="tight")
+        if SAVE_SVG:
+            svg_path = out_path.with_suffix(".svg")
+            fig.savefig(svg_path, bbox_inches="tight")
+        _log(f"Saved behavioral perturbation figure: {out_path.name}")
+
+    return fig
+
+
+def compute_stim_vs_ctrl_modulation(
+    rates_stim: np.ndarray,      # (n_ch, n_trials_stim, n_bins)
+    rates_ctrl: np.ndarray,      # (n_ch, n_trials_ctrl, n_bins)
+    time_ms: np.ndarray,         # (n_bins,)
+    blank_window: Optional[Tuple[float, float]] = None,
+    alpha: float = FDR_ALPHA,
 ) -> Dict[str, Any]:
     """
-    Main analysis pipeline for Channel-Behavior Regression.
-
-    Parameters
-    ----------
-    sessions : list of Path, optional
-        List of peristim NPZ files to analyze. Defaults to all STIM files under PERI_ROOT.
-    config : dict, optional
-        Analysis configuration dictionary.
+    Computes channel-level Welch's two-sample t-test comparing STIM vs target-matched CONTROL
+    neural firing rates across all electrodes in the non-blanked analysis window.
+    Applies Benjamini-Hochberg FDR control across channels to identify stim-responsive channels.
+    Unresponsive channels are masked out in visualization and prediction.
+    Computes single-trial stim expression scores S_i using ONLY the responsive channels.
     """
-    cfg = config or {}
-    neural_win = cfg.get("neural_window_ms", DEFAULT_NEURAL_WINDOW_MS)
-    behavior_win = cfg.get("behavior_window_ms", DEFAULT_BEHAVIOR_WINDOW_MS)
-    n_perms = cfg.get("n_permutations", DEFAULT_N_PERMUTATIONS)
-    out_root = Path(cfg.get("out_root", REG_FIG_ROOT))
+    n_ch, n_s, n_bins = rates_stim.shape
+    _, n_c, _ = rates_ctrl.shape
 
-    _log("Starting Channel-Behavior Regression Analysis")
-    ensure_dir(out_root)
+    # Identify non-blanked analysis time bins
+    valid_bins = np.ones(n_bins, dtype=bool)
+    if blank_window is not None:
+        b0, b1 = blank_window
+        valid_bins = (time_ms < b0) | (time_ms > b1)
 
-    bad_channels = load_bad_channels()
-    all_files = sorted(PERI_ROOT.rglob("peristim__*.npz"))
-    if not all_files:
-        _log(f"No peristim files found under {PERI_ROOT}")
-        return {}
+    # For each channel and trial, compute mean firing rate across valid time bins
+    s_trial_rates = np.nanmean(rates_stim[:, :, valid_bins], axis=2)
+    c_trial_rates = np.nanmean(rates_ctrl[:, :, valid_bins], axis=2)
 
-    _log(f"Discovered {len(all_files)} total peristim files.")
-    refs = load_reference_mapping(all_files)
+    ch_tvals = np.zeros(n_ch, dtype=float)
+    ch_pvals = np.ones(n_ch, dtype=float)
 
-    stim_files = [f for f in all_files if get_cond_type(f) == "STIM"]
-    targets = cfg.get("targets", PROCESS_ONLY)
-    if targets:
-        stim_files = [f for f in stim_files if is_stim_file_matching(f, targets)]
+    for c in range(n_ch):
+        s_v = s_trial_rates[c, :]
+        c_v = c_trial_rates[c, :]
+        val_s = np.isfinite(s_v)
+        val_c = np.isfinite(c_v)
+        if np.sum(val_s) >= 3 and np.sum(val_c) >= 3:
+            if np.std(s_v[val_s]) > 1e-4 or np.std(c_v[val_c]) > 1e-4:
+                tv, pv = stats.ttest_ind(s_v[val_s], c_v[val_c], equal_var=False)
+                ch_tvals[c] = float(tv) if np.isfinite(tv) else 0.0
+                ch_pvals[c] = float(pv) if np.isfinite(pv) else 1.0
 
-    target_filter = cfg.get("target_filter", None)
-    if target_filter:
-        t_clean = target_filter.strip().lower()
-        stim_files = [f for f in stim_files if t_clean in get_target_folder(f).lower() or t_clean in str(f).lower()]
+    # Multiple testing correction across channels (Benjamini-Hochberg FDR)
+    sorted_idx = np.argsort(ch_pvals)
+    sorted_p = ch_pvals[sorted_idx]
+    fdr_thresh = alpha * np.arange(1, n_ch + 1) / float(n_ch)
+    sig_fdr = sorted_p <= fdr_thresh
 
-    if sessions is not None:
-        stim_files = [f for f in stim_files if f in sessions or any(s.name == f.name for s in sessions)]
+    if np.any(sig_fdr):
+        p_crit = float(sorted_p[np.max(np.where(sig_fdr)[0])])
+        resp_channels = (ch_pvals <= p_crit) & (ch_pvals < alpha)
+        mask_type = f"FDR q<{alpha:.2f}"
+    else:
+        p_crit = alpha
+        resp_channels = (ch_pvals < alpha)
+        mask_type = f"Uncorr p<{alpha:.2f}"
 
-    _log(f"Evaluating {len(stim_files)} STIM condition(s)...")
+    # Fallback to uncorrected p < 0.05 if FDR yields fewer than 3 channels
+    if np.sum(resp_channels) < 3 and mask_type.startswith("FDR"):
+        uncorr = ch_pvals < alpha
+        if np.sum(uncorr) >= 3:
+            resp_channels = uncorr
+            mask_type = f"Uncorr p<{alpha:.2f} (FDR<3)"
 
-    all_summary_rows = []
-    all_channel_rows = []
+    n_resp = int(np.sum(resp_channels))
 
-    for idx, stim_f in enumerate(stim_files):
-        target = get_target_folder(stim_f)
-        try:
-            with np.load(stim_f, allow_pickle=True) as d:
-                port = get_ua_port(d)
-        except Exception:
-            port = "A"
+    # Single-Trial Stim Expression Score S_i computed using ONLY responsive channels
+    ctrl_ch_mean = np.nanmean(c_trial_rates, axis=1)  # (n_ch,)
+    stim_scores = np.zeros(n_s, dtype=float)
+    if n_resp > 0:
+        weights = np.sign(ch_tvals[resp_channels])
+        weights[weights == 0.0] = 1.0
+        for i in range(n_s):
+            diff = s_trial_rates[resp_channels, i] - ctrl_ch_mean[resp_channels]
+            stim_scores[i] = float(np.nansum(diff * weights) / max(np.sum(np.abs(weights)), 1.0))
 
-        matched_ctrl = (
-            refs["ctrl"].get((target, port))
-            or refs["ctrl"].get((target, "A"))
-            or refs["ctrl_by_target"].get(target)
-            or refs["ctrl_fallback"]
-        )
-        sub_dir = out_root / target if target else out_root / "other"
-
-        try:
-            res = process_single_condition(
-                stim_path=stim_f,
-                ctrl_path=matched_ctrl,
-                bad_channels=bad_channels,
-                out_dir=sub_dir,
-                neural_window_ms=neural_win,
-                behavior_window_ms=behavior_win,
-                n_permutations=n_perms,
-                file_idx=idx + 1,
-                total_files=len(stim_files),
-            )
-            if res:
-                all_summary_rows.extend(res.get("summary_rows", []))
-                all_channel_rows.extend(res.get("channel_rows", []))
-        except Exception as err:
-            warnings.warn(f"Error processing {stim_f.name}: {err}\n{traceback.format_exc()}")
-
-    # Save consolidated summaries
-    df_summary = pd.DataFrame(all_summary_rows)
-    df_channels = pd.DataFrame(all_channel_rows)
-
-    if not df_summary.empty:
-        summary_csv = out_root / "channel_behavior_regression_summary.csv"
-        df_summary.to_csv(summary_csv, index=False)
-        _log(f"Saved consolidated summary to: {summary_csv}")
-        if CLUST_FIG_ROOT != out_root:
-            try:
-                ensure_dir(CLUST_FIG_ROOT)
-                df_summary.to_csv(CLUST_FIG_ROOT / "channel_behavior_regression_summary.csv", index=False)
-            except Exception:
-                pass
-
-    if not df_channels.empty:
-        channels_csv = out_root / "channel_behavior_regression_weights.csv"
-        df_channels.to_csv(channels_csv, index=False)
-        _log(f"Saved consolidated weights to: {channels_csv}")
-        if CLUST_FIG_ROOT != out_root:
-            try:
-                ensure_dir(CLUST_FIG_ROOT)
-                df_channels.to_csv(CLUST_FIG_ROOT / "channel_behavior_regression_weights.csv", index=False)
-            except Exception:
-                pass
-
-    _log("Channel-behavior regression analysis completed successfully.")
     return {
-        "summary_df": df_summary,
-        "channels_df": df_channels,
+        "resp_channels": resp_channels,
+        "ch_tvals": ch_tvals,
+        "ch_pvals": ch_pvals,
+        "mask_type": mask_type,
+        "n_resp": n_resp,
+        "p_crit": p_crit,
+        "stim_scores": stim_scores,
     }
 
+
+def plot_spatiotemporal_projection_map(
+    rates: np.ndarray,                  # (n_ch, n_trials, n_bins) STIM
+    rates_ctrl: Optional[np.ndarray],     # (n_ch, n_ctrl_trials, n_bins) CONTROL
+    time_ms: np.ndarray,                # (n_bins,)
+    delta_x_traj: np.ndarray,           # (n_trials, n_bins)
+    delta_y_traj: np.ndarray,           # (n_trials, n_bins)
+    delta_z_traj: np.ndarray,           # (n_trials, n_bins)
+    dx_s: np.ndarray,                   # (n_trials,)
+    dy_s: np.ndarray,                   # (n_trials,)
+    dz_s: np.ndarray,                   # (n_trials,)
+    dr_s: np.ndarray,                   # (n_trials,)
+    dt_s: np.ndarray,                   # (n_trials,)
+    channel_ids: Sequence[int],
+    channel_depths: Optional[Sequence[float]] = None,
+    array_name: str = "NPRW",
+    condition_title: str = "",
+    stim_pulse_ms: float = 100.0,
+    blank_window: Optional[Tuple[float, float]] = None,
+    out_path: Optional[Path] = None,
+) -> Tuple[plt.Figure, List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Spatiotemporal Neural-Behavior Projection Map with Channel-Level Masking of
+    Unresponsive Electrodes and Single-Trial Behavioral Prediction.
+
+    Layout:
+        3-row x 3-column consolidated figure:
+        - Col 0: Spatiotemporal correlation heatmap r(c, t) with unresponsive channels masked out in light gray.
+        - Col 1: Marginal tuning profile (horizontal bars for responsive channels showing Mean |r|).
+        - Col 2: Single-trial perturbation prediction scatter plot from Stim Expression Score S_i
+                 Row 1: S_i vs Lateral Endpoint Shift ΔX
+                 Row 2: S_i vs Forward Endpoint Shift ΔY
+                 Row 3: S_i vs Plateau Timing Delay Δt
+    """
+    n_ch, n_s, n_bins = rates.shape
+
+    # 1. Compute Stim vs Control Channel Responsiveness
+    if rates_ctrl is not None and rates_ctrl.shape[0] == n_ch and rates_ctrl.shape[2] == n_bins:
+        stim_mod = compute_stim_vs_ctrl_modulation(rates, rates_ctrl, time_ms, blank_window=blank_window)
+    else:
+        stim_mod = {
+            "resp_channels": np.ones(n_ch, dtype=bool),
+            "ch_tvals": np.zeros(n_ch),
+            "ch_pvals": np.ones(n_ch),
+            "mask_type": "None",
+            "n_resp": n_ch,
+            "p_crit": 0.05,
+            "stim_scores": np.zeros(n_s),
+        }
+
+    resp_channels = stim_mod["resp_channels"]
+    stim_scores = stim_mod["stim_scores"]
+    mask_type = stim_mod["mask_type"]
+    n_resp = stim_mod["n_resp"]
+    p_crit = stim_mod["p_crit"]
+
+    components = [
+        ("Lateral Perturbation Component ΔX(t)", "Lateral_dX", delta_x_traj, dx_s, "Lateral Shift ΔX (mm)", "#2980b9"),
+        ("Forward Perturbation Component ΔY(t)", "Forward_dY", delta_y_traj, dy_s, "Forward Shift ΔY (mm)", "#e74c3c"),
+        ("Height Perturbation Component ΔZ(t)", "Height_dZ", delta_z_traj, dt_s, "Plateau Timing Delay Δt (ms)", "#8e44ad"),
+    ]
+
+    fig = plt.figure(figsize=(18.0, 12.0), dpi=300)
+    gs = gridspec.GridSpec(3, 3, width_ratios=[4.2, 0.9, 1.8], height_ratios=[1.0, 1.0, 1.0], hspace=0.34, wspace=0.22)
+
+    summary_records: List[Dict[str, Any]] = []
+    is_ua = "utah" in array_name.lower() or "ua" in array_name.lower()
+
+    cmap = copy.copy(plt.get_cmap("RdBu_r"))
+    cmap.set_bad(color="#dfe4ea")  # clean light gray for unresponsive channels
+
+    for row_idx, (comp_title, comp_tag, beh_traj, beh_target, target_label, col_color) in enumerate(components):
+        corr_map = np.full((n_ch, n_bins), np.nan, dtype=float)
+        pval_map = np.ones((n_ch, n_bins), dtype=float)
+
+        for c in range(n_ch):
+            if not resp_channels[c]:
+                continue  # Masked out!
+            for t in range(n_bins):
+                r_c = rates[c, :, t]
+                b_t = beh_traj[:, t]
+                valid = np.isfinite(r_c) & np.isfinite(b_t)
+                if np.sum(valid) >= 4 and np.std(r_c[valid]) > 1e-6 and np.std(b_t[valid]) > 1e-6:
+                    r_val, p_val = stats.pearsonr(r_c[valid], b_t[valid])
+                    corr_map[c, t] = r_val if np.isfinite(r_val) else 0.0
+                    pval_map[c, t] = p_val if np.isfinite(p_val) else 1.0
+
+            ch_abs = np.abs(corr_map[c])
+            best_t = int(np.nanargmax(ch_abs)) if np.any(np.isfinite(ch_abs)) else 0
+            peak_r = float(corr_map[c, best_t]) if np.isfinite(corr_map[c, best_t]) else 0.0
+            peak_lat = float(time_ms[best_t])
+            p_peak = float(pval_map[c, best_t]) if np.isfinite(pval_map[c, best_t]) else 1.0
+            sig_cnt = int(np.sum(pval_map[c] < P_VAL_THRESH))
+
+            summary_records.append({
+                "array": array_name,
+                "channel": channel_ids[c] if c < len(channel_ids) else c + 1,
+                "component": comp_tag,
+                "is_responsive": bool(resp_channels[c]),
+                "peak_r": peak_r,
+                "peak_latency_ms": peak_lat,
+                "p_val_at_peak": p_peak,
+                "sig_bins_count": sig_cnt,
+            })
+
+        # Col 0: Main Heatmap (Channels x Time Bins)
+        ax_map = fig.add_subplot(gs[row_idx, 0])
+        vmax = max(0.40, float(np.nanpercentile(np.abs(corr_map[np.isfinite(corr_map)]), 99))) if np.any(np.isfinite(corr_map)) else 0.40
+        im = ax_map.imshow(
+            corr_map,
+            aspect="auto",
+            cmap=cmap,
+            vmin=-vmax,
+            vmax=vmax,
+            extent=[time_ms[0], time_ms[-1], n_ch + 0.5, 0.5],
+            origin="upper",
+            interpolation="nearest",
+        )
+
+        # Stim shading
+        ax_map.axvspan(0.0, stim_pulse_ms, color="#f39c12", alpha=0.18, label="Stim Pulse")
+        ax_map.axvline(0.0, color="#222222", linestyle="--", linewidth=1.0)
+
+        if is_ua:
+            for boundary in [30.5, 62.5, 93.5]:
+                ax_map.axhline(boundary, color="white", linewidth=1.2, linestyle="-")
+
+            ax_map.set_yticks([15.5, 46.5, 78.0, 111.0])
+            ax_map.set_yticklabels(["SMA (1-30)", "PMd (31-62)", "M1 inf (63-93)", "M1 sup (94-128)"], fontsize=8.5, fontweight="bold")
+            ax_map.set_ylabel("Utah Array Region", fontsize=10, fontweight="bold")
+        else:
+            ax_map.set_yticks([1, 32, 64, 96, 128])
+            ax_map.set_yticklabels([1, 32, 64, 96, 128], fontsize=9)
+            ax_map.set_ylabel(f"{array_name} Electrode", fontsize=10, fontweight="bold")
+
+        ax_map.set_title(f"{comp_title} | Responsive Channels (N={n_resp}/{n_ch}, Gray=Masked)", fontsize=11, fontweight="bold")
+        if row_idx == 2:
+            ax_map.set_xlabel("Time from Stim Onset (ms)", fontsize=11, fontweight="bold")
+        else:
+            ax_map.set_xticklabels([])
+
+        # Colorbar
+        cb = plt.colorbar(im, ax=ax_map, pad=0.018, fraction=0.028)
+        cb.set_label("Pearson r", fontsize=9, fontweight="bold")
+
+        # Col 1: Marginal Channel Tuning Profile (Horizontal Bars for Responsive Channels)
+        ax_prof = fig.add_subplot(gs[row_idx, 1], sharey=ax_map)
+        if is_ua:
+            for boundary in [30.5, 62.5, 93.5]:
+                ax_prof.axhline(boundary, color="#7f8c8d", linewidth=1.0, linestyle=":")
+        mean_abs_r = np.nanmean(np.abs(corr_map), axis=1)
+        ch_y = np.arange(1, n_ch + 1)
+        if np.any(resp_channels):
+            ax_prof.barh(ch_y[resp_channels], mean_abs_r[resp_channels], height=0.75, color="#2c3e50", alpha=0.85, label="Mean |r|")
+        ax_prof.axvline(0.0, color="#7f8c8d", linestyle="--", linewidth=0.8)
+        max_x = max(0.35, float(np.nanmax(mean_abs_r[resp_channels]) * 1.25)) if np.any(np.isfinite(mean_abs_r[resp_channels])) else 0.35
+        ax_prof.set_xlim(-0.02, max_x)
+        ax_prof.grid(True, linestyle="--", alpha=0.3)
+        if row_idx == 2:
+            ax_prof.set_xlabel("Mean |r|", fontsize=10, fontweight="bold")
+        else:
+            ax_prof.set_xticklabels([])
+        ax_prof.tick_params(labelleft=False)
+        if row_idx == 0:
+            ax_prof.legend(loc="lower right", fontsize=8, frameon=True)
+
+        # Col 2: Single-Trial Behavioral Prediction Scatter Plot (Only Responsive Channels)
+        ax_pred = fig.add_subplot(gs[row_idx, 2])
+        valid_pred = np.isfinite(stim_scores) & np.isfinite(beh_target)
+        x_pts = stim_scores[valid_pred]
+        y_pts = beh_target[valid_pred]
+        n_pts = len(x_pts)
+
+        if n_pts >= 4 and np.std(x_pts) > 1e-4 and np.std(y_pts) > 1e-4:
+            r_pred, p_pred = stats.pearsonr(x_pts, y_pts)
+            rho_pred, p_rho = stats.spearmanr(x_pts, y_pts)
+
+            ax_pred.scatter(x_pts, y_pts, color=col_color, s=55, edgecolors="#2c3e50", linewidths=0.9, alpha=0.85, zorder=3)
+            # OLS regression fit line & 95% confidence interval
+            poly_fit = np.polyfit(x_pts, y_pts, 1)
+            x_grid = np.linspace(np.min(x_pts), np.max(x_pts), 100)
+            y_fit = np.polyval(poly_fit, x_grid)
+            ax_pred.plot(x_grid, y_fit, color="#2c3e50", linewidth=1.8, linestyle="-", zorder=2)
+
+            residuals = y_pts - np.polyval(poly_fit, x_pts)
+            s_err = np.sqrt(np.sum(residuals ** 2) / max(n_pts - 2, 1))
+            ci = 1.96 * s_err * np.sqrt(1.0 / n_pts + (x_grid - np.mean(x_pts)) ** 2 / max(np.sum((x_pts - np.mean(x_pts)) ** 2), 1e-6))
+            ax_pred.fill_between(x_grid, y_fit - ci, y_fit + ci, color=col_color, alpha=0.15, zorder=1)
+
+            star_s = "***" if p_pred < 0.001 else ("**" if p_pred < 0.01 else ("*" if p_pred < 0.05 else "n.s."))
+            stat_txt = (
+                f"Pearson r = {r_pred:+.2f} ({star_s}, p={p_pred:.3f})\n"
+                f"Spearman ρ = {rho_pred:+.2f} (p={p_rho:.3f})\n"
+                f"Trials N = {n_pts}\n"
+                f"Predictor: Firing Rate of\n{n_resp}/{n_ch} Stim-Responsive Chs\n({mask_type})"
+            )
+        else:
+            r_pred, p_pred, rho_pred, p_rho = 0.0, 1.0, 0.0, 1.0
+            stat_txt = f"Insufficient variance / trials\n({n_pts} trials, {n_resp} resp channels)"
+
+        ax_pred.text(
+            0.05, 0.94, stat_txt, transform=ax_pred.transAxes, va="top", ha="left",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="#ffffff", edgecolor="#bdc3c7", alpha=0.9),
+            fontsize=8.5, fontweight="bold"
+        )
+        ax_pred.set_ylabel(target_label, fontsize=10, fontweight="bold")
+        ax_pred.set_title(f"Single-Trial Prediction ({target_label.split('(')[0].strip()})", fontsize=11, fontweight="bold")
+        ax_pred.grid(True, linestyle="--", alpha=0.4)
+        if row_idx == 2:
+            ax_pred.set_xlabel("Single-Trial Stim Score $S_i$ (a.u.)", fontsize=10, fontweight="bold")
+        else:
+            ax_pred.set_xticklabels([])
+
+    fig.suptitle(f"{array_name} Channel-Masked Spatiotemporal Map & Behavioral Prediction: {condition_title}",
+                 fontsize=14, fontweight="bold", y=0.99)
+
+    # Centered global legend below title
+    legend_elements = [
+        Patch(facecolor="#dfe4ea", edgecolor="#999999", label=f"Unresponsive Channels (Masked Out, {n_ch - n_resp} ch)"),
+        Patch(facecolor="#e74c3c", edgecolor="#2c3e50", label=f"Stim-Responsive Channels ({n_resp}/{n_ch} ch, {mask_type})"),
+        Patch(facecolor="#f39c12", alpha=0.3, label=f"Stimulation ({stim_pulse_ms:.0f} ms)"),
+    ]
+    fig.legend(handles=legend_elements, loc="upper center", ncol=3, bbox_to_anchor=(0.5, 0.965),
+               frameon=True, fontsize=9.5)
+
+    if out_path:
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if SAVE_PNG:
+            fig.savefig(out_path, dpi=300, bbox_inches="tight")
+        if SAVE_SVG:
+            svg_path = out_path.with_suffix(".svg")
+            fig.savefig(svg_path, bbox_inches="tight")
+        _log(f"Saved spatiotemporal projection map: {out_path.name}")
+
+    # Compute overall prediction record
+    def _corr_pair(x, y):
+        val = np.isfinite(x) & np.isfinite(y)
+        if np.sum(val) >= 4 and np.std(x[val]) > 1e-4 and np.std(y[val]) > 1e-4:
+            rp, pp = stats.pearsonr(x[val], y[val])
+            rs, ps = stats.spearmanr(x[val], y[val])
+            return float(rp), float(pp), float(rs), float(ps)
+        return 0.0, 1.0, 0.0, 1.0
+
+    r_dx, p_dx, rho_dx, ps_dx = _corr_pair(stim_scores, dx_s)
+    r_dy, p_dy, rho_dy, ps_dy = _corr_pair(stim_scores, dy_s)
+    r_dz, p_dz, rho_dz, ps_dz = _corr_pair(stim_scores, dz_s)
+    r_dr, p_dr, rho_dr, ps_dr = _corr_pair(stim_scores, dr_s)
+    r_dt, p_dt, rho_dt, ps_dt = _corr_pair(stim_scores, dt_s)
+
+    pred_metrics = {
+        "array": array_name,
+        "condition": condition_title,
+        "n_stim_trials": n_s,
+        "n_ctrl_trials": rates_ctrl.shape[1] if rates_ctrl is not None else 0,
+        "mask_type": mask_type,
+        "n_resp_channels": n_resp,
+        "n_total_channels": n_ch,
+        "pct_resp_channels": float(100.0 * n_resp / max(n_ch, 1)),
+        "p_crit": p_crit,
+        "r_lateral_dx": r_dx,
+        "p_lateral_dx": p_dx,
+        "rho_lateral_dx": rho_dx,
+        "r_forward_dy": r_dy,
+        "p_forward_dy": p_dy,
+        "rho_forward_dy": rho_dy,
+        "r_height_dz": r_dz,
+        "p_height_dz": p_dz,
+        "r_3d_total_dr": r_dr,
+        "p_3d_total_dr": p_dr,
+        "r_plateau_dt": r_dt,
+        "p_plateau_dt": p_dt,
+        "rho_plateau_dt": rho_dt,
+    }
+
+    return fig, summary_records, pred_metrics
+
+
+# =============================================================================
+# Main Pipeline Processing Single Session
+# =============================================================================
+
+def process_condition(
+    stim_path: Path,
+    ctrl_path: Path,
+    session_name: str,
+    out_dir: Path,
+    dlc_3d_dir: Optional[Path] = None,
+    session_landmarks: Optional[Dict[str, np.ndarray]] = None,
+    meta_csv: Optional[Path] = None,
+    aligned_ckpt_dir: Optional[Path] = None,
+    behv_ckpt_dir: Optional[Path] = None,
+    df_plat: Optional[pd.DataFrame] = None,
+    elec_info: Optional[Dict[int, Dict[str, Any]]] = None,
+    bad_channels: Optional[Dict[str, set]] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Processes one STIM condition and pairs it with target-matched CONTROL."""
+    _log(f"Processing condition: {stim_path.name}")
+    _log(f"  Matched control: {ctrl_path.name}")
+
+    with np.load(stim_path, allow_pickle=True) as sd, np.load(ctrl_path, allow_pickle=True) as cd:
+        stim_ev = safe_get_npz(sd, "event_ms")
+        if stim_ev is None:
+            stim_ev = safe_get_npz(sd, "event_timestamps_ms")
+        ctrl_ev = safe_get_npz(cd, "event_ms")
+        if ctrl_ev is None:
+            ctrl_ev = safe_get_npz(cd, "event_timestamps_ms")
+        stim_dur_ms = get_stim_duration_ms(sd)
+
+        # Neural arrays
+        s_nprw = safe_get_npz(sd, "NPRW_counts")
+        if s_nprw is None:
+            s_nprw = safe_get_npz(sd, "nprw_counts")
+        c_nprw = safe_get_npz(cd, "NPRW_counts")
+        if c_nprw is None:
+            c_nprw = safe_get_npz(cd, "nprw_counts")
+        s_nprw_t = safe_get_npz(sd, "NPRW_rel_t")
+        if s_nprw_t is None:
+            s_nprw_t = safe_get_npz(sd, "nprw_t")
+        c_nprw_t = safe_get_npz(cd, "NPRW_rel_t")
+        if c_nprw_t is None:
+            c_nprw_t = safe_get_npz(cd, "nprw_t")
+
+        s_ua = safe_get_npz(sd, "UA_counts")
+        c_ua = safe_get_npz(cd, "UA_counts")
+        s_ua_t = safe_get_npz(sd, "UA_rel_t")
+        if s_ua_t is None:
+            s_ua_t = safe_get_npz(sd, "UA_t")
+        c_ua_t = safe_get_npz(cd, "UA_rel_t")
+        if c_ua_t is None:
+            c_ua_t = safe_get_npz(cd, "UA_t")
+
+        stim_tids = safe_get_npz(sd, "raw_trial_indices", safe_get_npz(sd, "stim_trial_ids", np.arange(len(stim_ev)) if stim_ev is not None else np.array([])))
+        ctrl_tids = safe_get_npz(cd, "raw_trial_indices", safe_get_npz(cd, "ctrl_trial_ids", np.arange(len(ctrl_ev)) if ctrl_ev is not None else np.array([])))
+
+    target = "Target_B" if "target_b" in stim_path.stem.lower() else "Target_A"
+    cond_title = f"{stim_path.stem} ({target})"
+
+    # 1. Ingest 3D Kinematics
+    stim_kin = load_condition_3d_task_kinematics(
+        npz_path=stim_path,
+        session_name=session_name,
+        dlc_3d_dir=dlc_3d_dir,
+        session_landmarks=session_landmarks,
+        meta_csv=meta_csv,
+        aligned_ckpt_dir=aligned_ckpt_dir,
+        behv_ckpt_dir=behv_ckpt_dir,
+        raw_trial_indices=stim_tids,
+    )
+    ctrl_kin = load_condition_3d_task_kinematics(
+        npz_path=ctrl_path,
+        session_name=session_name,
+        dlc_3d_dir=dlc_3d_dir,
+        session_landmarks=session_landmarks,
+        meta_csv=meta_csv,
+        aligned_ckpt_dir=aligned_ckpt_dir,
+        behv_ckpt_dir=behv_ckpt_dir,
+        raw_trial_indices=ctrl_tids,
+    )
+
+    if stim_kin is None or ctrl_kin is None:
+        _log(f"  [Skip] 3D kinematics unavailable for {stim_path.name}")
+        return None
+
+    s_valid = stim_kin["valid_mask"]
+    c_valid = ctrl_kin["valid_mask"]
+    s_coords = stim_kin["coords"]  # (n_s, 3, n_time)
+    c_coords = ctrl_kin["coords"]  # (n_c, 3, n_time)
+    beh_t = stim_kin["beh_t"]
+
+    stim_br = extract_br_index(stim_path)
+    ctrl_br = extract_br_index(ctrl_path)
+    target_str = "B" if "target_b" in stim_path.stem.lower() else "A"
+
+    plat_s_table = extract_plateau_times_from_table(df_plat, stim_br, target_str, s_coords.shape[0])
+    plat_c_table = extract_plateau_times_from_table(df_plat, ctrl_br, target_str, c_coords.shape[0])
+
+    endpoints_s, plateau_t_s = compute_trial_endpoints_3d(s_coords, beh_t, override_plateau_times=plat_s_table)
+    endpoints_c, plateau_t_c = compute_trial_endpoints_3d(c_coords, beh_t, override_plateau_times=plat_c_table)
+
+    # 2. Resample 3D Kinematics onto Uniform 20-ms Neural Grid
+    t_min, t_max = WIN_PLOT_MS
+    time_ms = np.arange(t_min + BIN_WIDTH_MS * 0.5, t_max, BIN_WIDTH_MS)
+    n_bins = len(time_ms)
+
+    s_coords_rebinned = np.full((s_coords.shape[0], 3, n_bins), np.nan, dtype=float)
+    c_coords_rebinned = np.full((c_coords.shape[0], 3, n_bins), np.nan, dtype=float)
+
+    for i in range(s_coords.shape[0]):
+        for d in range(3):
+            val = np.isfinite(s_coords[i, d])
+            if np.sum(val) > 1:
+                s_coords_rebinned[i, d] = np.interp(time_ms, beh_t[val], s_coords[i, d, val], left=np.nan, right=np.nan)
+
+    for i in range(c_coords.shape[0]):
+        for d in range(3):
+            val = np.isfinite(c_coords[i, d])
+            if np.sum(val) > 1:
+                c_coords_rebinned[i, d] = np.interp(time_ms, beh_t[val], c_coords[i, d, val], left=np.nan, right=np.nan)
+
+    # Median Control Baseline Trajectory & Single-Trial Perturbation Shifts
+    ctrl_ref_traj = np.nanmedian(c_coords_rebinned, axis=0)  # (3, n_bins)
+    delta_s_traj = s_coords_rebinned - ctrl_ref_traj[None, :, :]  # (n_s, 3, n_bins)
+
+    c_ref = np.nanmedian(endpoints_c, axis=0)
+    dx_s = endpoints_s[:, 0] - c_ref[0]
+    dy_s = endpoints_s[:, 1] - c_ref[1]
+    dz_s = endpoints_s[:, 2] - c_ref[2]
+    dr_s = np.sqrt(dx_s ** 2 + dy_s ** 2 + dz_s ** 2)
+    dt_s = plateau_t_s - np.nanmedian(plateau_t_c)
+
+    # Generate Behavioral Perturbation Summary Figure
+    base_name = stim_path.stem
+    fig_beh = plot_behavioral_perturbation_summary(
+        beh_t=time_ms,
+        delta_traces=delta_s_traj,
+        endpoints_s=endpoints_s,
+        endpoints_c=endpoints_c,
+        plateau_t_s=plateau_t_s,
+        plateau_t_c=plateau_t_c,
+        stim_pulse_ms=stim_dur_ms,
+        condition_title=cond_title,
+        out_path=out_dir / f"{base_name}_behavioral_perturbation_summary.png",
+    )
+    plt.close(fig_beh)
+
+    # 3. Spatiotemporal Neural-Behavior Mapping & Prediction
+    all_summary_rows = []
+    all_pred_rows: List[Dict[str, Any]] = []
+
+    # A. Cerebellum: NPRW (128 Channels)
+    if s_nprw is not None and s_nprw_t is not None and c_nprw is not None and c_nprw_t is not None:
+        s_nprw_3d = prepare_counts_3d(s_nprw)
+        c_nprw_3d = prepare_counts_3d(c_nprw)
+        if s_nprw_3d is not None and c_nprw_3d is not None and s_nprw_3d.shape[1] == s_coords.shape[0]:
+            rates_nprw_s, _ = rebin_and_smooth(
+                s_nprw_3d, s_nprw_t, target_bin_w=BIN_WIDTH_MS, smooth_sigma_ms=SMOOTH_SIGMA_MS,
+                win_ms=WIN_PLOT_MS, blank_win=(0.0, stim_dur_ms + NPRW_BLANK_POST_MS)
+            )
+            rates_nprw_c, _ = rebin_and_smooth(
+                c_nprw_3d, c_nprw_t, target_bin_w=BIN_WIDTH_MS, smooth_sigma_ms=SMOOTH_SIGMA_MS,
+                win_ms=WIN_PLOT_MS, blank_win=(0.0, stim_dur_ms + NPRW_BLANK_POST_MS)
+            )
+
+            fig_nprw, recs_nprw, pred_nprw = plot_spatiotemporal_projection_map(
+                rates=rates_nprw_s,
+                rates_ctrl=rates_nprw_c,
+                time_ms=time_ms,
+                delta_x_traj=delta_s_traj[:, 0, :],
+                delta_y_traj=delta_s_traj[:, 1, :],
+                delta_z_traj=delta_s_traj[:, 2, :],
+                dx_s=dx_s,
+                dy_s=dy_s,
+                dz_s=dz_s,
+                dr_s=dr_s,
+                dt_s=dt_s,
+                channel_ids=np.arange(1, rates_nprw_s.shape[0] + 1),
+                array_name="NPRW",
+                condition_title=cond_title,
+                stim_pulse_ms=stim_dur_ms,
+                blank_window=(0.0, stim_dur_ms + NPRW_BLANK_POST_MS),
+                out_path=out_dir / f"{base_name}_spatiotemporal_projection_NPRW.png",
+            )
+            plt.close(fig_nprw)
+            all_summary_rows.extend(recs_nprw)
+            all_pred_rows.append(pred_nprw)
+
+    # B. Motor Cortex: Utah Array (128 Channels)
+    if s_ua is not None and s_ua_t is not None and c_ua is not None and c_ua_t is not None:
+        s_ua_3d = prepare_counts_3d(s_ua)
+        c_ua_3d = prepare_counts_3d(c_ua)
+        if s_ua_3d is not None and c_ua_3d is not None and s_ua_3d.shape[1] == s_coords.shape[0]:
+            rates_ua_s, _ = rebin_and_smooth(
+                s_ua_3d, s_ua_t, target_bin_w=BIN_WIDTH_MS, smooth_sigma_ms=SMOOTH_SIGMA_MS,
+                win_ms=WIN_PLOT_MS, blank_win=(0.0, stim_dur_ms) if BLANK_UA_STIM_PERIOD else None
+            )
+            rates_ua_c, _ = rebin_and_smooth(
+                c_ua_3d, c_ua_t, target_bin_w=BIN_WIDTH_MS, smooth_sigma_ms=SMOOTH_SIGMA_MS,
+                win_ms=WIN_PLOT_MS, blank_win=(0.0, stim_dur_ms) if BLANK_UA_STIM_PERIOD else None
+            )
+
+            fig_ua, recs_ua, pred_ua = plot_spatiotemporal_projection_map(
+                rates=rates_ua_s,
+                rates_ctrl=rates_ua_c,
+                time_ms=time_ms,
+                delta_x_traj=delta_s_traj[:, 0, :],
+                delta_y_traj=delta_s_traj[:, 1, :],
+                delta_z_traj=delta_s_traj[:, 2, :],
+                dx_s=dx_s,
+                dy_s=dy_s,
+                dz_s=dz_s,
+                dr_s=dr_s,
+                dt_s=dt_s,
+                channel_ids=np.arange(1, rates_ua_s.shape[0] + 1),
+                array_name="Utah_Array",
+                condition_title=cond_title,
+                stim_pulse_ms=stim_dur_ms,
+                blank_window=(0.0, stim_dur_ms) if BLANK_UA_STIM_PERIOD else None,
+                out_path=out_dir / f"{base_name}_spatiotemporal_projection_UA.png",
+            )
+            plt.close(fig_ua)
+            all_summary_rows.extend(recs_ua)
+            all_pred_rows.append(pred_ua)
+
+    # Save summary tables
+    if all_summary_rows:
+        df_sum = pd.DataFrame(all_summary_rows)
+        csv_path = out_dir / f"{base_name}_spatiotemporal_neural_behavior_summary.csv"
+        df_sum.to_csv(csv_path, index=False)
+        _log(f"Saved spatiotemporal tuning table: {csv_path.name}")
+
+    if all_pred_rows:
+        df_pred = pd.DataFrame(all_pred_rows)
+        pred_csv = out_dir / f"{base_name}_stim_behavior_prediction_summary.csv"
+        df_pred.to_csv(pred_csv, index=False)
+        _log(f"Saved stim behavior prediction summary: {pred_csv.name}")
+
+    return all_pred_rows
+
+
+def run_spatiotemporal_perturbation_pipeline(
+    session: str,
+    peri_root: Path,
+    out_dir: Path,
+    sess_dir: Optional[Path] = None,
+    dlc_3d_dir: Optional[Path] = None,
+    process_only: Optional[List[int]] = None,
+):
+    ensure_dir(out_dir)
+    all_files = sorted(list(peri_root.rglob("*.npz")))
+    ref_map = load_reference_mapping(all_files)
+
+    stim_files = [f for f in all_files if f in ref_map]
+
+    if process_only:
+        filtered = []
+        for f in stim_files:
+            br_i = extract_br_index(f)
+            if br_i in process_only:
+                filtered.append(f)
+        stim_files = filtered
+
+    _log(f"Discovered {len(stim_files)} STIM condition(s) for session {session}.")
+    if sess_dir is None:
+        sess_dir = peri_root.parent.parent
+
+    df_plat = load_plateau_analysis_table(session, sess_dir)
+    meta_csv = p3d.find_metadata_csv(session=session, metadata_csv=sess_dir, peri_root=peri_root) if (HAS_3D_KINEMATICS and p3d) else None
+    if meta_csv is not None and not Path(meta_csv).is_file():
+        meta_csv = None
+    aligned_ckpt = sess_dir / "results" / "checkpoints" / "aligned_dlc_br"
+    behv_ckpt = sess_dir / "results" / "checkpoints" / "behavior"
+
+    session_landmarks = None
+    if dlc_3d_dir and dlc_3d_dir.exists() and HAS_3D_KINEMATICS and p3d:
+        try:
+            session_landmarks = p3d.scan_session_landmarks(dlc_3d_dir, square_size_mm=SQUARE_SIZE_MM)
+        except Exception as e:
+            _log(f"Session landmarks scan skipped: {e}")
+
+    session_preds: List[Dict[str, Any]] = []
+
+    for stim_path in stim_files:
+        ctrl_path = ref_map[stim_path]
+        try:
+            cond_preds = process_condition(
+                stim_path=stim_path,
+                ctrl_path=ctrl_path,
+                session_name=session,
+                out_dir=out_dir,
+                dlc_3d_dir=dlc_3d_dir,
+                session_landmarks=session_landmarks,
+                meta_csv=meta_csv,
+                aligned_ckpt_dir=aligned_ckpt if aligned_ckpt.exists() else None,
+                behv_ckpt_dir=behv_ckpt if behv_ckpt.exists() else None,
+                df_plat=df_plat,
+            )
+            if cond_preds:
+                session_preds.extend(cond_preds)
+        except Exception as e:
+            _log(f"Error processing {stim_path.name}: {e}")
+            traceback.print_exc()
+
+    if session_preds:
+        df_sess_pred = pd.DataFrame(session_preds)
+        sess_pred_csv = out_dir / f"{session}_session_stim_behavior_prediction_summary.csv"
+        df_sess_pred.to_csv(sess_pred_csv, index=False)
+        _log(f"Saved session-level stim prediction summary: {sess_pred_csv.name}")
+
+    _log("Spatiotemporal perturbation pipeline complete.")
+
+
+# =============================================================================
+# CLI Entrypoint
+# =============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Trial-by-trial channel-behavior regression analysis predicting behavioral perturbation from neural activity."
-    )
-    parser.add_argument(
-        "--process-only", "--condition", "--br", "-c",
-        nargs="+", dest="process_only", default=None,
-        help="Condition(s) or BR index(es) to process (e.g. 12, BR_012, Target_A).",
-    )
-    parser.add_argument(
-        "--target", "-t", type=str, default=None,
-        help="Optional target folder filter (e.g. Target_A, Target_B).",
-    )
-    parser.add_argument(
-        "--neural-win", nargs=2, type=float, default=DEFAULT_NEURAL_WINDOW_MS,
-        help="Neural feature window in ms post-stim (e.g. 50 200).",
-    )
-    parser.add_argument(
-        "--behavior-win", nargs=2, type=float, default=DEFAULT_BEHAVIOR_WINDOW_MS,
-        help="Behavioral perturbation window in ms post-stim (e.g. 100 400).",
-    )
-    parser.add_argument(
-        "--permutations", "-p", type=int, default=DEFAULT_N_PERMUTATIONS,
-        help="Number of permutations for significance testing (default: 1000).",
-    )
-    args, _ = parser.parse_known_args()
+    parser = argparse.ArgumentParser(description="Spatiotemporal Neural-Behavioral Perturbation Analysis")
+    parser.add_argument("--session", type=str, default=None)
+    parser.add_argument("--process-only", nargs="+", type=int, default=None)
+    parser.add_argument("--svg", action="store_true", default=False, help="Save SVG vector plots in addition to PNG")
+    args = parser.parse_args()
 
-    cfg = {
-        "targets": args.process_only or PROCESS_ONLY,
-        "target_filter": args.target,
-        "neural_window_ms": tuple(args.neural_win),
-        "behavior_window_ms": tuple(args.behavior_win),
-        "n_permutations": args.permutations,
-        "out_root": REG_FIG_ROOT,
-    }
-    run_channel_behavior_analysis(config=cfg)
+    global SAVE_SVG
+    if args.svg:
+        SAVE_SVG = True
+
+    session_name = args.session or os.environ.get("RCP_SESSION", "NRR_RW012")
+    process_only = args.process_only
+    if process_only is None and os.environ.get("RCP_PROCESS_ONLY"):
+        try:
+            val = os.environ["RCP_PROCESS_ONLY"]
+            process_only = json.loads(val) if val.startswith("[") else [int(x) for x in val.split(",")]
+        except Exception:
+            process_only = None
+
+    # Resolve Session Directory
+    sess_dir = p3d.resolve_session_dir(session=session_name) if (HAS_3D_KINEMATICS and p3d) else None
+    if sess_dir is None:
+        base_nike = Path(r"\\cullenstor.win.ad.jhu.edu\data\Current Project Databases - NHP\2025 Cerebellum prosthesis\Nike")
+        matches = [d for d in base_nike.glob(f"*{session_name}*") if d.is_dir() and not d.name.startswith(".")]
+        if matches:
+            sess_dir = matches[0]
+        else:
+            sess_dir = base_nike / session_name
+
+    peri_root = sess_dir / "results" / "checkpoints" / "PeriStim"
+    if not peri_root.exists() and (sess_dir / "checkpoints" / "PeriStim").exists():
+        peri_root = sess_dir / "checkpoints" / "PeriStim"
+
+    dlc_3d_dir = None
+    if (sess_dir / "Video" / "DLC_3D_new").exists():
+        dlc_3d_dir = sess_dir / "Video" / "DLC_3D_new"
+    elif (sess_dir / "Video" / "DLC_3D").exists():
+        dlc_3d_dir = sess_dir / "Video" / "DLC_3D"
+    elif (sess_dir / "DLC_3D").exists():
+        dlc_3d_dir = sess_dir / "DLC_3D"
+
+    out_dir = sess_dir / "results" / "figures" / "channel_behavior_regression"
+
+    _log(f"Starting Spatiotemporal Perturbation Analysis for {session_name}")
+    _log(f"  Session Dir: {sess_dir}")
+    _log(f"  PeriStim:    {peri_root}")
+    _log(f"  DLC 3D Dir:  {dlc_3d_dir}")
+    _log(f"  Out Dir:     {out_dir}")
+    _log(f"  Filter:      {process_only}")
+
+    run_spatiotemporal_perturbation_pipeline(
+        session=session_name,
+        peri_root=peri_root,
+        out_dir=out_dir,
+        sess_dir=sess_dir,
+        dlc_3d_dir=dlc_3d_dir,
+        process_only=process_only,
+    )
 
 
 if __name__ == "__main__":

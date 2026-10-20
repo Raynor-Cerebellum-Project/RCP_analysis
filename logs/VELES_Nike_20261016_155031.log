@@ -1,0 +1,10 @@
+================================================================================
+VELES RUN START: 10/16/2026 15:50:31
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [3, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31]
+Scripts:
+  - analysis_scripts/plot_behavioral_rsa.py
+================================================================================
+[10/16/2026 15:50:31] [NRR_RW012] [analysis_scripts/plot_behavioral_rsa.py] IN-PROGRESS
+[10/16/2026 15:50:59] [NRR_RW012] [analysis_scripts/plot_behavioral_rsa.py] FINISHED: 10/16/2026 15:50:59

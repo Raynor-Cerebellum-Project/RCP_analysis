@@ -1,0 +1,28 @@
+================================================================================
+VELES RUN START: 10/19/2026 16:58:56
+Monkey: Nike
+Sessions to run: ['NRR_RW011']
+Process only: []
+Scripts:
+  - preprocessing_scripts/align_dlc_two_cams_to_br.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - analysis_scripts/plot_3d_kinematics.py
+  - analysis_scripts/plot_behavioral_rsa.py
+  - scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py
+================================================================================
+[10/19/2026 16:58:56] [NRR_RW011] [preprocessing_scripts/align_dlc_two_cams_to_br.py] IN-PROGRESS
+[10/19/2026 16:58:59] [NRR_RW011] [preprocessing_scripts/align_dlc_two_cams_to_br.py] FINISHED: 10/19/2026 16:58:59
+[10/19/2026 16:59:10] [NRR_RW011] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[10/19/2026 17:02:18] [NRR_RW011] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 10/19/2026 17:02:18
+[10/19/2026 17:02:18] [NRR_RW011] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[10/19/2026 17:19:50] [NRR_RW011] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 10/19/2026 17:19:50
+[10/19/2026 17:19:51] [NRR_RW011] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[10/19/2026 17:20:52] [NRR_RW011] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 10/19/2026 17:20:52
+[10/19/2026 17:20:52] [NRR_RW011] [analysis_scripts/plot_3d_kinematics.py] IN-PROGRESS
+[10/19/2026 17:24:53] [NRR_RW011] [analysis_scripts/plot_3d_kinematics.py] FINISHED: 10/19/2026 17:24:53
+[10/19/2026 17:24:53] [NRR_RW011] [analysis_scripts/plot_behavioral_rsa.py] IN-PROGRESS
+[10/19/2026 17:25:34] [NRR_RW011] [analysis_scripts/plot_behavioral_rsa.py] FINISHED: 10/19/2026 17:25:34
+[10/19/2026 17:25:34] [NRR_RW011] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] IN-PROGRESS
+[10/19/2026 17:26:11] [NRR_RW011] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] FINISHED: 10/19/2026 17:26:11

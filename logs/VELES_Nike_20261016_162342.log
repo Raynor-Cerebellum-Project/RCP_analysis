@@ -1,0 +1,13 @@
+================================================================================
+VELES RUN START: 10/16/2026 16:23:42
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [19, 3, 22]
+Scripts:
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+================================================================================
+[10/16/2026 16:23:44] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[10/16/2026 16:26:45] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 10/16/2026 16:26:45
+[10/16/2026 16:26:45] [NRR_RW012] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[10/16/2026 16:28:28] [NRR_RW012] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 10/16/2026 16:28:28

@@ -1,0 +1,10 @@
+================================================================================
+VELES RUN START: 10/16/2026 15:18:36
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [3, 7, 8, 9, 10, 11, 12]
+Scripts:
+  - analysis_scripts/plot_behavioral_rsa.py
+================================================================================
+[10/16/2026 15:19:04] [NRR_RW012] [analysis_scripts/plot_behavioral_rsa.py] IN-PROGRESS
+[10/16/2026 15:19:12] [NRR_RW012] [analysis_scripts/plot_behavioral_rsa.py] FAIL: 10/16/2026 15:19:12 (exit code 1)

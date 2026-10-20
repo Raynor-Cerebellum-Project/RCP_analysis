@@ -60,7 +60,7 @@ SESSION_ID_PATTERN = None      # None = all, or regex like r'.*control.*'
 FIGURE_CONFIG = {
     # Core visualizations
     'generate_session_summary': True,       # PSD overview (1-120 Hz)
-    'generate_waveform_raster': True,       # Raw LFP traces across trials
+    'generate_waveform_raster': False,       # Raw LFP traces across trials
     'generate_trial_heatmaps': False,        # Per-trial band power heatmaps
 
     # Spectrograms
@@ -70,8 +70,8 @@ FIGURE_CONFIG = {
     'generate_per_ua_trial_average': False,
     'generate_per_ua_array_median': True,  # Median across all trials AND channels per Utah array
     'generate_control_median_baseline_norm_array_median': True,
-    'generate_causal_diagnostic': True,      # Causal filterbank vs acausal Morlet comparison (0 to 50 ms)
-    'generate_causal_zoomed_spectrogram': True,  # Alias for backward compatibility
+    'generate_causal_diagnostic': False,      # Causal filterbank vs acausal Morlet comparison (0 to 50 ms)
+    'generate_causal_zoomed_spectrogram': False,  # Alias for backward compatibility
     
 
     # Inter-regional analyses
@@ -173,8 +173,9 @@ PLOT_CONFIG = {
         # Options:
         #   'morlet'          = fixed-cycle Morlet
         #   'morlet_adaptive' = frequency-adaptive Morlet
+        #   'multitaper'      = sliding-window DPSS multitaper (GPU-accelerated)
         'use_wavelet': True,
-        'tfr_method': 'morlet_adaptive',
+        'tfr_method': 'multitaper',  # 'multitaper', 'morlet_adaptive', or 'morlet'
 
         # Fixed Morlet fallback/default
         'wavelet_cycles': 5,
@@ -187,6 +188,14 @@ PLOT_CONFIG = {
         'adaptive_cycles_high': 7,
         'adaptive_freq_low_max': 15,
         'adaptive_freq_high_min': 16,
+
+        # Multitaper settings
+        # Window duration (win_ms), time-halfbandwidth (NW), number of tapers (K)
+        # Optimal trade-off: win_ms=100, nw=2.0, k=2
+        'multitaper_win_ms': 100,           # Window length in ms
+        'multitaper_nw': 2.0,               # Time-halfbandwidth product NW
+        'multitaper_k': 2,                  # Number of tapers (typically <= 2*NW - 1)
+        'multitaper_step_ms': 10,           # Sliding window step in ms
         
         # Frequency settings
         'freq_min': 1,
@@ -195,7 +204,7 @@ PLOT_CONFIG = {
         
         # Display settings
         'cmap': 'jet', #viridis
-        'normalize': 'zscore',              # 'zscore', 'dB', or 'raw'
+        'normalize': 'dB',                  # 'dB', 'zscore', or 'raw'
         'vmin_zscore': -6,                  # z-score limits
         'vmax_zscore': 6,                   # z-score limits
         'vmin_uV2': 0,                      # For absolute power
@@ -209,6 +218,29 @@ PLOT_CONFIG = {
     
     # Selected band for spatial analysis
     'selected_band': 'Low Gamma',
+}
+
+# =============================================================================
+# MULTITAPER PARAMETER SWEEP CONFIGURATION
+# =============================================================================
+# Set MULTITAPER_SWEEP_CONFIG['enabled'] = True to run a multi-parameter multitaper
+# sweep across conditions (e.g. 11, 17, 18) generating comparison figures.
+MULTITAPER_SWEEP_CONFIG = {
+    'enabled': True,
+    'conditions': [17, 18],     # Cond 11 (1 pulse), 17 (40 pulse), 18 (control)
+    'target': 'target_A',
+    'regions': ['M1i', 'PMd'],
+    'normalize': 'dB',              # Default to dB to prevent high-frequency noise blowout
+    'plot_difference': True,        # Include Stim minus Control difference panel
+    'param_configs': [
+        {'win_ms': 100, 'nw': 2.0, 'k': 3, 'label': 'Window = 100 ms | NW = 2.0 | K = 3 tapers'},
+        {'win_ms': 100, 'nw': 3.0, 'k': 3, 'label': 'Window = 100 ms | NW = 3.0 | K = 3 tapers'},
+        {'win_ms': 100, 'nw': 2.0, 'k': 4, 'label': 'Window = 100 ms | NW = 2.0 | K = 4 tapers'},
+        {'win_ms': 100, 'nw': 3.0, 'k': 4, 'label': 'Window = 100 ms | NW = 3.0 | K = 4 tapers'},
+        {'win_ms': 100, 'nw': 2.0, 'k': 2, 'label': 'Window = 100 ms | NW = 2.0 | K = 2 tapers'},
+        {'win_ms': 100, 'nw': 3.0, 'k': 2, 'label': 'Window = 100 ms | NW = 3.0 | K = 2 tapers'},
+    ],
+    'output_subdir': 'multitaper_parameter_sweep',
 }
 
 # =============================================================================
@@ -238,6 +270,9 @@ WAVELET_TEST_CONFIG = {
         {'label': 'Morlet adaptive', 'method': 'morlet_adaptive',
          'n_cycles_low': 3, 'n_cycles_high': 7,
          'freq_low_max': 15, 'freq_high_min': 16},
+        # Multitaper
+        {'label': 'Multitaper 200ms', 'method': 'multitaper',
+         'win_ms': 200, 'nw': 3.0, 'k': 5, 'step_ms': 10},
         # STFT: uniform time-frequency resolution, no wavelet smearing
         {'label': 'STFT 250ms',  'method': 'stft', 'window_ms': 250},
         {'label': 'STFT 100ms',  'method': 'stft', 'window_ms': 100},
@@ -517,10 +552,15 @@ def compute_array_median_raw_spectrograms(data, groups, fs=1000,
 
     foi = get_foi_with_notch_gaps(freq_min, freq_max, freq_step)
 
+    multitaper_win_ms = spec_cfg.get('multitaper_win_ms', 100)
+    multitaper_nw = spec_cfg.get('multitaper_nw', 2.0)
+    multitaper_k = spec_cfg.get('multitaper_k', 2)
+    multitaper_step_ms = spec_cfg.get('multitaper_step_ms', 10)
+
     # Adaptive Morlet uses CPU path unless/until Torch adaptive support is added.
-    # Torch GPU path supports fixed-cycle Morlet and adaptive Morlet.
+    # Torch GPU path supports fixed-cycle Morlet, adaptive Morlet, and Multitaper.
     use_gpu = (
-        tfr_method in ('morlet', 'morlet_adaptive')
+        tfr_method in ('morlet', 'morlet_adaptive', 'multitaper')
         and ANALYSIS_CONFIG.get('use_gpu_wavelet', False)
         and ANALYSIS_CONFIG.get('gpu_backend', 'torch').lower() == 'torch'
         and TORCH_AVAILABLE
@@ -543,6 +583,13 @@ def compute_array_median_raw_spectrograms(data, groups, fs=1000,
                 f"{adaptive_freq_low_max}-{adaptive_freq_high_min} Hz transition, "
                 f"batch_size={gpu_batch_size}"
             )
+        elif tfr_method == 'multitaper':
+            half_bw = multitaper_nw / (multitaper_win_ms / 1000.0)
+            print(
+                f"    Torch GPU Multitaper enabled: {gpu_name}, "
+                f"win={multitaper_win_ms}ms, NW={multitaper_nw}, K={multitaper_k} tapers (W=±{half_bw:.1f} Hz), "
+                f"step={multitaper_step_ms}ms, batch_size={gpu_batch_size}"
+            )
         else:
             print(
                 f"    Torch GPU fixed Morlet enabled: {gpu_name}, "
@@ -555,6 +602,12 @@ def compute_array_median_raw_spectrograms(data, groups, fs=1000,
                 f"{adaptive_cycles_low}->{adaptive_cycles_high} cycles, "
                 f"{adaptive_freq_low_max}-{adaptive_freq_high_min} Hz transition "
                 "(CPU path)"
+            )
+        elif tfr_method == 'multitaper':
+            half_bw = multitaper_nw / (multitaper_win_ms / 1000.0)
+            print(
+                f"    Multitaper enabled: win={multitaper_win_ms}ms, NW={multitaper_nw}, "
+                f"K={multitaper_k} tapers (W=±{half_bw:.1f} Hz), step={multitaper_step_ms}ms (CPU path)"
             )
         else:
             print("    Torch GPU Morlet not enabled/available; using CPU fixed Morlet.")
@@ -650,6 +703,18 @@ def compute_array_median_raw_spectrograms(data, groups, fs=1000,
                         batch_size=gpu_batch_size,
                         device="cuda",
                     )
+                elif tfr_method == 'multitaper':
+                    Sxx_all, f_out, t_out = compute_multitaper_spectrogram_batch_torch(
+                        traces_arr,
+                        fs=fs,
+                        foi=foi,
+                        win_ms=multitaper_win_ms,
+                        nw=multitaper_nw,
+                        k=multitaper_k,
+                        step_ms=multitaper_step_ms,
+                        batch_size=gpu_batch_size,
+                        device="cuda",
+                    )
                 else:
                     Sxx_all, f_out, t_out = compute_wavelet_spectrogram_batch_torch(
                         traces_arr,
@@ -693,6 +758,14 @@ def compute_array_median_raw_spectrograms(data, groups, fs=1000,
                     'n_cycles_high': adaptive_cycles_high,
                     'freq_low_max': adaptive_freq_low_max,
                     'freq_high_min': adaptive_freq_high_min,
+                }
+            elif tfr_method == 'multitaper':
+                method_cfg = {
+                    'method': 'multitaper',
+                    'win_ms': multitaper_win_ms,
+                    'nw': multitaper_nw,
+                    'k': multitaper_k,
+                    'step_ms': multitaper_step_ms,
                 }
             else:
                 method_cfg = {
@@ -1517,6 +1590,191 @@ def compute_wavelet_spectrogram_batch_torch_adaptive(
 
     return Sxx_all, foi.astype(np.float32), t_out
 
+
+def compute_multitaper_spectrogram_batch_torch(
+    traces, fs, foi=None, win_ms=200, nw=3.0, k=5, step_ms=10, batch_size=64, device=None
+):
+    """
+    GPU PyTorch sliding-window DPSS multitaper spectrogram for a batch of traces.
+
+    Parameters
+    ----------
+    traces : array-like, shape (n_signals, n_time)
+        Raw LFP traces.
+    fs : float
+        Sampling frequency in Hz.
+    foi : array-like or None
+        Frequencies of interest (Hz). If None, uses get_foi_with_notch_gaps().
+    win_ms : float
+        Window duration in milliseconds.
+    nw : float
+        Time-halfbandwidth product NW.
+    k : int
+        Number of DPSS tapers to average (typically <= 2*NW - 1).
+    step_ms : float
+        Sliding window time step in milliseconds.
+    batch_size : int
+        Number of traces processed per GPU batch.
+    device : str or torch.device or None
+        Target device ("cuda" or "cpu").
+
+    Returns
+    -------
+    Sxx_all : np.ndarray, shape (n_signals, n_freqs, n_steps)
+        Multitaper power spectrogram.
+    foi : np.ndarray, shape (n_freqs,)
+        Frequencies of interest.
+    t_out : np.ndarray, shape (n_steps,)
+        Time centers of windows in seconds relative to trace start.
+    """
+    if torch is None:
+        raise RuntimeError("Torch is not available for compute_multitaper_spectrogram_batch_torch.")
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(device)
+
+    traces = np.asarray(traces)
+    if traces.ndim != 2:
+        raise ValueError(f"traces must be 2D, got shape {traces.shape}")
+
+    n_signals, n_time = traces.shape
+
+    if foi is None:
+        spec_cfg = PLOT_CONFIG.get('spectrogram', {})
+        freq_min = spec_cfg.get('freq_min', 1)
+        freq_max = spec_cfg.get('freq_max', 120)
+        freq_step = spec_cfg.get('freq_step', 1)
+        foi = get_foi_with_notch_gaps(freq_min, freq_max, freq_step)
+    else:
+        foi = np.asarray(foi, dtype=np.float32)
+
+    Nw = int(win_ms / 1000.0 * fs)
+    if Nw % 2 == 0:
+        Nw += 1
+    Nw = max(Nw, 7)
+
+    step = int(step_ms / 1000.0 * fs)
+    step = max(step, 1)
+
+    # Compute DPSS tapers on CPU and transfer to device
+    tapers, _ = signal.windows.dpss(Nw, nw, k, return_ratios=True)
+    tapers_torch = torch.tensor(np.ascontiguousarray(tapers), device=device, dtype=torch.float32)
+
+    n_steps = (n_time - Nw) // step + 1
+    window_starts = np.arange(n_steps) * step
+    window_centers = window_starts + (Nw - 1) / 2.0
+    t_out = window_centers / float(fs)
+
+    n_fft = max(1024, _next_power_of_two(Nw * 2))
+    fft_freqs = np.fft.rfftfreq(n_fft, d=1.0/fs)
+    freq_indices = [np.argmin(np.abs(fft_freqs - f)) for f in foi]
+
+    # Clean traces on CPU
+    cleaned = []
+    for i in range(n_signals):
+        xi = interpolate_nans_1d(traces[i])
+        if xi is None:
+            xi = np.zeros(n_time, dtype=np.float32)
+        cleaned.append(xi)
+    traces_clean = np.stack(cleaned, axis=0).astype(np.float32)
+
+    Sxx_all = np.empty((n_signals, len(foi), n_steps), dtype=np.float32)
+
+    for start in range(0, n_signals, batch_size):
+        stop = min(start + batch_size, n_signals)
+        x_np = traces_clean[start:stop]
+        x = torch.as_tensor(x_np, dtype=torch.float32, device=device)
+
+        # Shape of windows: (batch_size, n_steps, Nw)
+        windows = x.unfold(dimension=-1, size=Nw, step=step)
+        # Apply tapers: (batch_size, K, n_steps, Nw)
+        tapered = windows.unsqueeze(1) * tapers_torch.unsqueeze(0).unsqueeze(2)
+        # FFT across time window dimension
+        fft_res = torch.fft.rfft(tapered, n=n_fft, dim=-1)
+        power = torch.abs(fft_res) ** 2
+        spec_avg = power.mean(dim=1)  # average across K tapers -> (batch_size, n_steps, n_rfft_bins)
+
+        spec_foi = spec_avg[:, :, freq_indices].permute(0, 2, 1)  # -> (batch_size, n_freqs, n_steps)
+        Sxx_all[start:stop] = spec_foi.detach().cpu().numpy()
+
+        del x, windows, tapered, fft_res, power, spec_avg, spec_foi
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    return Sxx_all, foi.astype(np.float32), t_out.astype(np.float32)
+
+
+def compute_multitaper_spectrogram(trace, fs, foi=None, win_ms=200, nw=3.0, k=5, step_ms=10, t_ms=None):
+    """
+    CPU sliding-window DPSS multitaper spectrogram for a single 1D trace.
+
+    Parameters
+    ----------
+    trace : 1D array-like
+        Raw LFP signal.
+    fs : float
+        Sampling frequency in Hz.
+    foi : array-like or None
+        Frequencies of interest.
+    win_ms : float
+        Window duration in milliseconds.
+    nw : float
+        Time-halfbandwidth product NW.
+    k : int
+        Number of DPSS tapers.
+    step_ms : float
+        Sliding step in milliseconds.
+    t_ms : array-like or None
+        Raw trace time axis in ms.
+
+    Returns
+    -------
+    Sxx : np.ndarray, shape (n_freqs, n_steps)
+    foi : np.ndarray
+    t_sec : np.ndarray
+    """
+    if foi is None:
+        foi = get_foi_with_notch_gaps()
+    foi = np.asarray(foi, dtype=np.float32)
+
+    trace_clean = interpolate_nans_1d(trace)
+    if trace_clean is None:
+        return None, None, None
+
+    n_time = len(trace_clean)
+    Nw = int(win_ms / 1000.0 * fs)
+    if Nw % 2 == 0:
+        Nw += 1
+    Nw = max(Nw, 7)
+
+    step = int(step_ms / 1000.0 * fs)
+    step = max(step, 1)
+
+    tapers, _ = signal.windows.dpss(Nw, nw, k, return_ratios=True)
+
+    n_steps = (n_time - Nw) // step + 1
+    window_starts = np.arange(n_steps) * step
+    window_centers = window_starts + (Nw - 1) / 2.0
+    t_sec = window_centers / float(fs)
+
+    n_fft = max(1024, _next_power_of_two(Nw * 2))
+    fft_freqs = np.fft.rfftfreq(n_fft, d=1.0/fs)
+    freq_indices = [np.argmin(np.abs(fft_freqs - f)) for f in foi]
+
+    Sxx = np.zeros((len(foi), n_steps), dtype=np.float64)
+
+    for step_i, w_start in enumerate(window_starts):
+        seg = trace_clean[w_start:w_start + Nw]
+        tapered = seg[None, :] * tapers
+        fft_res = np.fft.rfft(tapered, n=n_fft, axis=-1)
+        power = np.abs(fft_res) ** 2
+        spec_avg = power.mean(axis=0)
+        Sxx[:, step_i] = spec_avg[freq_indices]
+
+    return Sxx, foi, t_sec
+
+
 # =============================================================================
 # ALTERNATIVE TFR METHODS FOR WAVELET COMPARISON
 # =============================================================================
@@ -1790,6 +2048,15 @@ def compute_tfr_method(trace, fs, method_cfg, foi=None, t_ms=None):
             n_cycles_high=method_cfg.get('n_cycles_high', 7),
             freq_low_max=method_cfg.get('freq_low_max', 8),
             freq_high_min=method_cfg.get('freq_high_min', 30),
+        )
+    elif method == 'multitaper':
+        return compute_multitaper_spectrogram(
+            trace, fs, foi=foi,
+            win_ms=method_cfg.get('win_ms', 200),
+            nw=method_cfg.get('nw', 3.0),
+            k=method_cfg.get('k', 5),
+            step_ms=method_cfg.get('step_ms', 10),
+            t_ms=t_ms,
         )
     elif method == 'stft':
         return compute_stft_spectrogram(
@@ -2221,6 +2488,227 @@ def run_wavelet_comparison(lfp_dir, fig_dir, label=""):
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"\n  Saved wavelet comparison -> {out_path}")
+
+
+def run_multitaper_parameter_sweep(lfp_dir, fig_dir, config=None):
+    """
+    Run a parameter sweep of Multitaper Spectral Analysis across conditions (e.g. 11, 17, 18)
+    and Utah Array regions (e.g. M1i, PMd, SMA, M1s).
+
+    For each parameter configuration (window duration, NW, K tapers), generates a 3-panel figure:
+      Panel 1: Condition 11 (1 pulse stim, 2.5 ms)
+      Panel 2: Condition 17 (40 pulse stim, 100 ms)
+      Panel 3: Condition 18 (Control reach, no stim)
+    """
+    if config is None:
+        config = MULTITAPER_SWEEP_CONFIG
+
+    target = config.get('target', 'target_A')
+    conditions = config.get('conditions', [11, 17, 18])
+    regions = config.get('regions', ['M1i', 'PMd'])
+    param_configs = config.get('param_configs', [
+        {'win_ms': 100, 'nw': 2.0, 'k': 3, 'label': 'Window = 100 ms | NW = 2.0 | K = 3 tapers'},
+        {'win_ms': 150, 'nw': 2.0, 'k': 3, 'label': 'Window = 150 ms | NW = 2.0 | K = 3 tapers'},
+        {'win_ms': 200, 'nw': 2.0, 'k': 3, 'label': 'Window = 200 ms | NW = 2.0 | K = 3 tapers'},
+        {'win_ms': 200, 'nw': 3.0, 'k': 5, 'label': 'Window = 200 ms | NW = 3.0 | K = 5 tapers'},
+        {'win_ms': 250, 'nw': 2.5, 'k': 4, 'label': 'Window = 250 ms | NW = 2.5 | K = 4 tapers'},
+        {'win_ms': 300, 'nw': 3.0, 'k': 5, 'label': 'Window = 300 ms | NW = 3.0 | K = 5 tapers'},
+    ])
+
+    out_dir = fig_dir / config.get('output_subdir', 'multitaper_parameter_sweep')
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"MULTITAPER PARAMETER SWEEP MODE")
+    print(f"  Target: {target}")
+    print(f"  Conditions: {conditions}")
+    print(f"  Regions: {regions}")
+    print(f"  Output: {out_dir}")
+    print(f"{'='*60}")
+
+    # Locate condition files in lfp_dir
+    cond_files = {}
+    for f in lfp_dir.rglob("aligned_lfp__*.npz"):
+        fname = f.name
+        if target not in fname:
+            continue
+        for c in conditions:
+            if c in (18, '18', 'control') and ('baseline' in fname.lower() or '_018_' in fname or '_18_' in fname):
+                if 18 not in cond_files:
+                    cond_files[18] = f
+            elif f"_{int(c):03d}_" in fname or f"_{int(c)}_" in fname:
+                cond_files[int(c)] = f
+
+    missing = [c for c in conditions if c not in cond_files]
+    if missing:
+        print(f"  [Warn] Missing condition files for: {missing}; found: {list(cond_files.keys())}")
+        if len(cond_files) < 2:
+            print("  [Error] Need at least 2 conditions to run sweep comparison. Aborting.")
+            return
+
+    cond_data = {c: dict(np.load(p, allow_pickle=True)) for c, p in cond_files.items()}
+    ref_data = next(iter(cond_data.values()))
+    _, _, elec_to_idx, region_grids, _ = _build_groups(ref_data, 128)
+
+    t_raw_ms = get_time_axis(ref_data)
+    fs = int(ref_data.get('fs_lfp', 1000))
+    foi = get_foi_with_notch_gaps()
+    notch_regions = ANALYSIS_CONFIG.get('notch_regions', [(55, 65), (115, 125)])
+    baseline_win = ANALYSIS_CONFIG.get('baseline_window', (-950, -650))
+    cmap = PLOT_CONFIG['spectrogram'].get('cmap', 'jet')
+    normalize_method = config.get('normalize', 'dB')
+    plot_difference = config.get('plot_difference', True)
+
+    if normalize_method == 'dB':
+        vmin = config.get('vmin_db', -6.0)
+        vmax = config.get('vmax_db', 6.0)
+        cbar_label = "Power (dB re baseline)"
+    else:
+        vmin = PLOT_CONFIG['spectrogram'].get('vmin_zscore', -3.5)
+        vmax = PLOT_CONFIG['spectrogram'].get('vmax_zscore', 3.5)
+        cbar_label = "Z-score Normalized Power (a.u.)"
+
+    def extract_traces(d, r_name):
+        bb = np.asarray(d['broadband_full'])
+        grid = np.asarray(region_grids[r_name])
+        tr_list = []
+        for elec_id in grid.ravel():
+            if elec_id is None or np.isnan(elec_id):
+                continue
+            ch_idx = elec_to_idx.get(int(elec_id), None)
+            if ch_idx is None or ch_idx < 0 or ch_idx >= bb.shape[1]:
+                continue
+            for tr_idx in range(bb.shape[0]):
+                sig = bb[tr_idx, ch_idx, :]
+                if np.isfinite(sig).any():
+                    clean = interpolate_nans_1d(sig)
+                    if clean is not None:
+                        tr_list.append(clean)
+        return np.stack(tr_list, axis=0).astype(np.float32)
+
+    active_conds = sorted(list(cond_data.keys()))
+
+    for region_name in regions:
+        if region_grids is None or region_name not in region_grids:
+            continue
+        print(f"\nProcessing region {region_name}...")
+        traces_by_cond = {c: extract_traces(cond_data[c], region_name) for c in active_conds}
+
+        for p_cfg in param_configs:
+            w_ms = p_cfg['win_ms']
+            nw = p_cfg['nw']
+            k = p_cfg['k']
+            lbl = p_cfg.get('label', f"Win={w_ms}ms, NW={nw}, K={k}")
+            half_bw = nw / (w_ms / 1000.0)
+
+            norm_by_cond = {}
+            t_spec_ms = None
+            for c in active_conds:
+                if torch is not None and torch.cuda.is_available():
+                    sxx, _, t_sec = compute_multitaper_spectrogram_batch_torch(
+                        traces_by_cond[c], fs=fs, foi=foi, win_ms=w_ms, nw=nw, k=k, step_ms=10, device="cuda"
+                    )
+                else:
+                    specs = [compute_multitaper_spectrogram(tr, fs=fs, foi=foi, win_ms=w_ms, nw=nw, k=k, step_ms=10)[0]
+                             for tr in traces_by_cond[c]]
+                    sxx = np.stack(specs, axis=0)
+                    t_sec = np.arange(sxx.shape[-1]) * 0.010
+
+                med_sxx = np.nanmedian(sxx, axis=0)
+                if t_spec_ms is None:
+                    t_spec_ms = t_sec * 1000.0 + float(t_raw_ms[0])
+                bl_mask = (t_spec_ms >= baseline_win[0]) & (t_spec_ms <= baseline_win[1])
+                if normalize_method == 'dB':
+                    p_base = np.nanmean(med_sxx[:, bl_mask], axis=1, keepdims=True)
+                    eps = 1e-12
+                    norm_by_cond[c] = 10.0 * np.log10(np.maximum(med_sxx, eps) / np.maximum(p_base, eps))
+                else:
+                    norm_by_cond[c] = zscore_normalize_spectrogram(med_sxx, baseline_mask=bl_mask)
+
+            has_diff = plot_difference and (18 in active_conds) and (17 in active_conds)
+            n_cols = len(active_conds) + (1 if has_diff else 0)
+            fig, axes = plt.subplots(1, n_cols, figsize=(5.5 * n_cols, 5.2),
+                                     sharey=True, sharex=True, dpi=180)
+            if n_cols == 1:
+                axes = [axes]
+
+            im_cbar = None
+            for idx, c in enumerate(active_conds):
+                ax = axes[idx]
+                dur = 2.5 if c == 11 else (100.0 if c == 17 else 0.0)
+                c_title = f"Condition {c} (1 Pulse Stim | 2.5 ms)" if c == 11 else (
+                    f"Condition {c} (40 Pulse Stim | 100 ms)" if c == 17 else f"Condition {c} (Control Reach | No Stim)"
+                )
+                im = ax.pcolormesh(t_spec_ms, np.arange(len(foi)), norm_by_cond[c],
+                                   cmap=cmap, vmin=vmin, vmax=vmax, shading='auto', rasterized=True)
+                im_cbar = im
+                ax.axvline(0, color='white', ls='--', lw=1.5, alpha=0.9)
+                if dur > 0:
+                    ax.axvline(dur, color='white', ls=':', lw=1.2, alpha=0.7)
+                    ax.axvspan(0, dur, color='#ffffff', alpha=0.15)
+                for notch_lo, notch_hi in notch_regions:
+                    b_idx = np.where(foi < notch_lo)[0]
+                    a_idx = np.where(foi > notch_hi)[0]
+                    if len(b_idx) > 0 and len(a_idx) > 0:
+                        ax.axhline(b_idx[-1] + 0.5, color='white', ls='-', lw=1.2, alpha=0.8)
+                tick_freqs = [1, 10, 20, 30, 40, 55, 65, 80, 100, 115]
+                tick_pos = [np.argmin(np.abs(foi - tf)) for tf in tick_freqs]
+                ax.set_yticks(tick_pos)
+                ax.set_yticklabels([str(tf) for tf in tick_freqs])
+                ax.set_title(c_title, fontsize=11, fontweight='bold', pad=8)
+                ax.set_xlabel("Time from Event Onset (ms)", fontsize=10, fontweight='bold')
+                ax.set_xlim(-500, 500)
+                ax.grid(True, linestyle=":", alpha=0.3, color="white")
+
+            im_diff = None
+            if has_diff:
+                ax_diff = axes[-1]
+                diff_data = norm_by_cond[17] - norm_by_cond[18]
+                vlim_diff = 6.0 if normalize_method == 'dB' else 4.0
+                diff_lbl = "Excess Perturbation (dB)" if normalize_method == 'dB' else "Excess Z-score"
+                im_diff = ax_diff.pcolormesh(t_spec_ms, np.arange(len(foi)), diff_data,
+                                             cmap='RdBu_r', vmin=-vlim_diff, vmax=vlim_diff, shading='auto', rasterized=True)
+                ax_diff.axvline(0, color='black', ls='--', lw=1.5, alpha=0.9)
+                ax_diff.axvline(100.0, color='black', ls=':', lw=1.2, alpha=0.7)
+                ax_diff.axvspan(0, 100.0, color='black', alpha=0.10)
+                for notch_lo, notch_hi in notch_regions:
+                    b_idx = np.where(foi < notch_lo)[0]
+                    a_idx = np.where(foi > notch_hi)[0]
+                    if len(b_idx) > 0 and len(a_idx) > 0:
+                        ax_diff.axhline(b_idx[-1] + 0.5, color='black', ls='-', lw=1.2, alpha=0.8)
+                ax_diff.set_title(f"STIM MINUS CONTROL (40p - Reach)\n{diff_lbl}", fontsize=11, fontweight='bold', pad=8, color='navy')
+                ax_diff.set_xlabel("Time from Event Onset (ms)", fontsize=10, fontweight='bold')
+                ax_diff.set_xlim(-500, 500)
+                ax_diff.grid(True, linestyle=":", alpha=0.3, color="gray")
+
+            axes[0].set_ylabel("Frequency (Hz)", fontsize=11, fontweight='bold')
+
+            if has_diff and im_diff is not None:
+                fig.subplots_adjust(top=0.78, bottom=0.15, left=0.05, right=0.93, wspace=0.14)
+                cbar_ax1 = fig.add_axes([0.69, 0.82, 0.08, 0.025])
+                cb1 = fig.colorbar(im_cbar, cax=cbar_ax1, orientation='horizontal')
+                cb1.set_label(cbar_label, fontsize=9, fontweight='bold')
+                cb1.ax.tick_params(labelsize=8)
+
+                cbar_ax2 = fig.add_axes([0.83, 0.82, 0.09, 0.025])
+                cb2 = fig.colorbar(im_diff, cax=cbar_ax2, orientation='horizontal')
+                cb2.set_label("Stim - Control (dB)", fontsize=9, fontweight='bold')
+                cb2.ax.tick_params(labelsize=8)
+            else:
+                fig.subplots_adjust(top=0.79, bottom=0.15, left=0.06, right=0.90, wspace=0.12)
+                cbar_ax = fig.add_axes([0.915, 0.17, 0.015, 0.60])
+                cb = fig.colorbar(im_cbar, cax=cbar_ax)
+                cb.set_label(cbar_label, fontsize=11, fontweight='bold')
+
+            fig.suptitle(
+                f"Multitaper Spectrogram Exploration | Region: {region_name}\n"
+                f"{lbl} | Frequency blur: plus or minus {half_bw:.1f} Hz | Smearing Bound: plus or minus {w_ms/2:.0f} ms | Artifact visible (unmasked)",
+                fontsize=12, fontweight='bold', y=0.95
+            )
+            out_file = out_dir / f"multitaper_sweep_{region_name}_win{w_ms}ms_NW{nw}_K{k}.png"
+            fig.savefig(out_file, dpi=180)
+            plt.close(fig)
+            print(f"  Saved: {out_file.name}")
 
 
 # =============================================================================
@@ -3479,6 +3967,12 @@ def _plot_spectrogram_grid(all_spectrograms, grid_elec, elec_to_idx, n_ch,
             f"{spec_cfg.get('adaptive_freq_low_max', 15)}-"
             f"{spec_cfg.get('adaptive_freq_high_min', 30)} Hz transition)"
         )
+    elif tfr_method == 'multitaper':
+        win_ms = spec_cfg.get('multitaper_win_ms', 100)
+        nw = spec_cfg.get('multitaper_nw', 2.0)
+        k = spec_cfg.get('multitaper_k', 2)
+        half_bw = nw / (win_ms / 1000.0)
+        tfr_label = f"Multitaper (win={win_ms}ms, NW={nw}, K={k}, W=±{half_bw:.1f}Hz)"
     else:
         tfr_label = f"Morlet Wavelets ({spec_cfg.get('wavelet_cycles', 5)} cycles)"
     
@@ -3765,6 +4259,12 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
             f"({adaptive_cycles_low}-{adaptive_cycles_high} cycles, "
             f"{adaptive_freq_low_max}-{adaptive_freq_high_min} Hz transition)"
         )
+    elif tfr_method == 'multitaper':
+        win_ms = spec_cfg.get('multitaper_win_ms', 100)
+        nw = spec_cfg.get('multitaper_nw', 2.0)
+        k = spec_cfg.get('multitaper_k', 2)
+        half_bw = nw / (win_ms / 1000.0)
+        tfr_label = f"Multitaper (win={win_ms}ms, NW={nw}, K={k}, W=±{half_bw:.1f}Hz)"
     else:
         tfr_label = f"Morlet Wavelets ({spec_cfg.get('wavelet_cycles', 5)} cycles)"
 
@@ -4939,12 +5439,20 @@ if __name__ == "__main__":
     UA_FIG_DIR = cfg.OUT_BASE / "figures" / "UA_LFP"
 
     # -------------------------------------------------------------------------
+    # MULTITAPER PARAMETER SWEEP MODE
+    # If MULTITAPER_SWEEP_CONFIG['enabled'] is True, run the parameter sweep
+    # comparing conditions (e.g. 11, 17, 18) with 3-panel figures.
+    # -------------------------------------------------------------------------
+    if MULTITAPER_SWEEP_CONFIG.get('enabled', False):
+        print("\n[MULTITAPER PARAMETER SWEEP MODE ACTIVE]")
+        run_multitaper_parameter_sweep(UA_LFP_DIR, UA_FIG_DIR, MULTITAPER_SWEEP_CONFIG)
+    # -------------------------------------------------------------------------
     # WAVELET COMPARISON MODE
     # If WAVELET_TEST_CONFIG['enabled'] is True, run the wavelet comparison
     # instead of (or in addition to) the normal pipeline.
     # Edit WAVELET_TEST_CONFIG at the top of this file to configure.
     # -------------------------------------------------------------------------
-    if WAVELET_TEST_CONFIG.get('enabled', False):
+    elif WAVELET_TEST_CONFIG.get('enabled', False):
         print("\n[WAVELET TEST MODE ACTIVE]")
         run_wavelet_comparison(NPRW_LFP_DIR, NPRW_FIG_DIR, label="NPRW_Intan")
         run_wavelet_comparison(UA_LFP_DIR, UA_FIG_DIR, label="Utah_Array")

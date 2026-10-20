@@ -1,0 +1,12 @@
+================================================================================
+VELES RUN START: 10/20/2026 11:16:34
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+================================================================================
+[10/20/2026 11:16:40] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[10/20/2026 11:36:46] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 10/20/2026 11:36:46
+[10/20/2026 12:05:32] [NRR_RW012] [preprocessing_scripts/inspect_kinematics_trajectories.py] SKIPPED: Dependency discrepancy not approved by user
