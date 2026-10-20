@@ -295,6 +295,91 @@ def _normalize_metadata(df_raw: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _get_stim_params_for_br(br_idx: int, is_stim_cat: bool = True) -> tuple[int, float, float]:
+    """Robustly resolve n_pulses, stim_dur_ms, and stim_freq_hz for a given Blackrock condition."""
+    if not is_stim_cat:
+        return 0, 0.0, 0.0
+
+    n_pulses = None
+    stim_freq_hz = 400.0
+    stim_dur_ms = None
+
+    # 1. Check PeriStim checkpoint files for true detected pulses
+    try:
+        peri_files = find_peristim_files(br_idx)
+        if peri_files:
+            for _, _, p_path in peri_files:
+                p_data = np.load(p_path, allow_pickle=True)
+                if "stim_pulse_counts" in p_data and p_data["stim_pulse_counts"].size > 0:
+                    n_pulses = int(p_data["stim_pulse_counts"].flat[0])
+                if "stim_freq_hz" in p_data:
+                    stim_freq_hz = float(p_data["stim_freq_hz"])
+                if "stim_dur_nominal_ms" in p_data:
+                    stim_dur_ms = float(p_data["stim_dur_nominal_ms"])
+                if n_pulses is not None and n_pulses > 0:
+                    break
+    except Exception:
+        pass
+
+    # 2. Check metadata CSV via parse_session_metadata_from_csv
+    if n_pulses is None or stim_dur_ms is None:
+        try:
+            sess_parsed = rcp.parse_session_metadata_from_csv(METADATA_CSV, br_file=br_idx)
+            if sess_parsed:
+                sf = sess_parsed.get("stim_freq_hz")
+                if sf is not None and not np.isnan(sf) and sf > 0:
+                    stim_freq_hz = float(sf)
+                sd = sess_parsed.get("stim_dur_nominal_ms")
+                if sd is not None and not np.isnan(sd) and sd > 0:
+                    stim_dur_ms = float(sd)
+                    if n_pulses is None and stim_freq_hz > 0:
+                        n_pulses = int(round(stim_dur_ms * stim_freq_hz / 1000.0))
+        except Exception:
+            pass
+
+    # 3. Direct normalized metadata search for pulse count
+    if n_pulses is None and METADATA_CSV.exists():
+        try:
+            df_m = pd.read_csv(METADATA_CSV)
+            df_norm = _normalize_metadata(df_m)
+            br_col = None
+            for c in ["br_file", "br_idx", "br", "condition"]:
+                if c in df_norm.columns:
+                    br_col = c
+                    break
+            if br_col:
+                mask = pd.to_numeric(df_norm[br_col], errors="coerce") == br_idx
+                if mask.any():
+                    row = df_norm.loc[mask].iloc[0]
+                    for pk in ["pulse_count", "pulses", "n_pulses", "pulse"]:
+                        if pk in row and pd.notna(row[pk]):
+                            n_pulses = int(float(row[pk]))
+                            break
+                    for fk in ["stim_frequency_hz", "stim_freq_hz", "frequency", "freq_hz"]:
+                        if fk in row and pd.notna(row[fk]):
+                            stim_freq_hz = float(row[fk])
+                            break
+                    for dk in ["stim_duration_nominal_ms", "stim_duration_ms", "stim_dur_ms", "duration_ms"]:
+                        if dk in row and pd.notna(row[dk]):
+                            stim_dur_ms = float(row[dk])
+                            break
+        except Exception:
+            pass
+
+    # Calculate duration from pulses if needed
+    if n_pulses is not None and (stim_dur_ms is None or stim_dur_ms <= 0) and stim_freq_hz > 0:
+        stim_dur_ms = float(n_pulses * 1000.0 / stim_freq_hz)
+
+    # Defaults if completely undetermined
+    if n_pulses is None:
+        n_pulses = 40
+    if stim_dur_ms is None or stim_dur_ms <= 0:
+        stim_dur_ms = float(n_pulses * 1000.0 / stim_freq_hz) if (n_pulses and stim_freq_hz > 0) else 100.0
+
+    return n_pulses, stim_dur_ms, stim_freq_hz
+
+
+
 def _find_baseline_groups(df_norm: pd.DataFrame) -> dict:
     """
     Return mapping (ua_port_norm, depth_mm_norm) -> row indices of baseline rows.
@@ -1280,8 +1365,7 @@ def process_utah_session(
         _, t_post = slice_epoch(segs_bb_clean, rel_t_epoch, WIN_POST)
 
         is_stim_cat = "stim" in cat.lower()
-        stim_dur_nominal = float(rcp.get_metadata_mapping(METADATA_CSV, 'BR_File', 'Stim_Duration_Nominal_ms').get(br_idx, 100.0))
-        n_pulses = int(round(stim_dur_nominal / 2.5)) if is_stim_cat else 0
+        n_pulses, stim_dur_nominal, _ = _get_stim_params_for_br(br_idx, is_stim_cat=is_stim_cat)
 
         save_dict = {
             "fs_lfp": TARGET_FS,
@@ -1428,7 +1512,7 @@ def process_nprw_session(
                     durs = (b_bounds[:, 1] - b_bounds[:, 0]) * 1000.0 / fs_native
                     stim_dur_ms = float(np.median(durs))
             else:
-                stim_dur_ms = float(rcp.get_metadata_mapping(METADATA_CSV, 'BR_File', 'Stim_Duration_Nominal_ms').get(br_idx, 100.0))
+                _, stim_dur_ms, _ = _get_stim_params_for_br(br_idx, is_stim_cat=True)
 
             loaded_recordings[i_fn] = {
                 "rec_proc": rec_proc,
@@ -1570,7 +1654,7 @@ def process_nprw_session(
             'broadband_full_raw': bb_full,
         }
 
-        n_pulses = int(round(stim_dur_ms / 2.5)) if is_stim_cat else 0
+        n_pulses, stim_dur_ms, _ = _get_stim_params_for_br(br_idx, is_stim_cat=is_stim_cat)
 
         save_dict = {
             "fs_lfp": TARGET_FS,

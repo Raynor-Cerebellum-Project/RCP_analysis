@@ -172,6 +172,7 @@ def find_and_extract_missing_trials(
     t_peri: np.ndarray,
     keypoint: str = "middle",
     camera: str = "cam1",
+    condition_type: str = "stim",
 ) -> list[dict]:
     """
     Search aligned checkpoint for trials that were removed/gated out of PeriStim,
@@ -191,12 +192,19 @@ def find_and_extract_missing_trials(
         cam_cols = [str(c) for c in aligned[cols_key]] if has_cam else []
         beh_t = aligned["beh_t_ms"] if "beh_t_ms" in aligned.files else None
 
-        # Determine event times (stim_ms or ir_ms)
+        # Determine event times (stim_ms or ir_ms) based on condition
         event_ms = None
-        if "stim_ms" in aligned.files and aligned["stim_ms"].size:
-            event_ms = aligned["stim_ms"]
-        elif "ir_ms" in aligned.files and aligned["ir_ms"].size:
-            event_ms = aligned["ir_ms"]
+        use_ir = (condition_type in ("control", "continuous_stim"))
+        if use_ir:
+            if "ir_ms" in aligned.files and aligned["ir_ms"].size:
+                event_ms = aligned["ir_ms"]
+            elif "stim_ms" in aligned.files and aligned["stim_ms"].size:
+                event_ms = aligned["stim_ms"]
+        else:
+            if "stim_ms" in aligned.files and aligned["stim_ms"].size:
+                event_ms = aligned["stim_ms"]
+            elif "ir_ms" in aligned.files and aligned["ir_ms"].size:
+                event_ms = aligned["ir_ms"]
 
         if event_ms is None or len(event_ms) == 0:
             return []
@@ -248,11 +256,17 @@ def find_and_extract_missing_trials(
         missing_trials = []
         for r_idx in range(n_events):
             # Target check
-            if target_letter is not None and trial_targets[r_idx] in ("A", "B"):
-                if trial_targets[r_idx] != target_letter:
-                    continue
-            elif target_letter is not None and (trial_targets == "N").all():
-                # If target labeling is unavailable, only include missing trials explicitly in manual_rules
+            if target_letter is not None:
+                if trial_targets[r_idx] in ("A", "B"):
+                    if trial_targets[r_idx] != target_letter:
+                        continue
+                else:
+                    # Target is 'N' or unknown; only include if explicitly in manual_rules
+                    if r_idx not in manual_rules:
+                        continue
+            else:
+                # No target letter (e.g. continuous_stim, at_rest, grasp, imu):
+                # Only add missing events if explicitly listed in manual_rules
                 if r_idx not in manual_rules:
                     continue
 
@@ -580,6 +594,7 @@ def process_single_file(
             t_peri=t,
             keypoint=KEYPOINT,
             camera=CAMERA,
+            condition_type=condition_type,
         )
         for tr in missing_from_aligned:
             if tr["raw_idx"] not in raw_in_peristim:
@@ -638,85 +653,96 @@ def process_single_file(
 
         print(f"[IKT] Total trials: {n_trials} ({n_kept} kept, {n_removed} highlighted removed)")
 
-        # Create figure grid
-        n_rows = math.ceil(n_trials / N_COLS)
-        fig, axes = plt.subplots(
-            n_rows, N_COLS,
-            figsize=(FIG_WIDTH_PER_COL * N_COLS, FIG_HEIGHT_PER_ROW * n_rows),
-            constrained_layout=True
-        )
+        # Cap trials to prevent matplotlib / PIL image dimension overflow (max 65500 px)
+        MAX_TRIALS_PER_FIG = 180  # 30 rows of 6 = 180 subplots (~78 inches tall = 11700 px at 150 DPI)
+        if n_trials > MAX_TRIALS_PER_FIG:
+            print(f"[IKT] Warning: {n_trials} trials exceeds maximum display limit ({MAX_TRIALS_PER_FIG}). Capping to first {MAX_TRIALS_PER_FIG} trials to avoid figure overflow.")
+            all_trials = all_trials[:MAX_TRIALS_PER_FIG]
+            n_trials = len(all_trials)
 
-        # Ensure axes is 2D array
-        if n_rows == 1:
-            axes = np.array([axes])
-        if axes.ndim == 1:
-            axes = axes.reshape(1, -1)
+        fig = None
+        try:
+            # Create figure grid
+            n_rows = math.ceil(n_trials / N_COLS)
+            fig, axes = plt.subplots(
+                n_rows, N_COLS,
+                figsize=(FIG_WIDTH_PER_COL * N_COLS, FIG_HEIGHT_PER_ROW * n_rows),
+                constrained_layout=True
+            )
 
-        axes_flat = axes.flatten()
+            # Ensure axes is 2D array
+            if n_rows == 1:
+                axes = np.array([axes])
+            if axes.ndim == 1:
+                axes = axes.reshape(1, -1)
 
-        # Plot each trial
-        for i, tr in enumerate(all_trials):
-            ax = axes_flat[i]
-            x = tr["x"]
-            y = tr["y"]
-            raw_idx = tr["raw_idx"]
-            is_rem = tr["is_removed"]
-            rem_reason = tr["reason"]
+            axes_flat = axes.flatten()
 
-            sess_display = intan_filename[:16] if len(intan_filename) >= 16 else intan_filename
-            if is_rem:
-                rem_display = rem_reason if len(rem_reason) <= 28 else (rem_reason[:25] + "...")
-                reason_str = f"\n[REMOVED: {rem_display}]" if rem_display else "\n[REMOVED]"
+            # Plot each trial
+            for i, tr in enumerate(all_trials):
+                ax = axes_flat[i]
+                x = tr["x"]
+                y = tr["y"]
+                raw_idx = tr["raw_idx"]
+                is_rem = tr["is_removed"]
+                rem_reason = tr["reason"]
+
+                sess_display = intan_filename[:16] if len(intan_filename) >= 16 else intan_filename
+                if is_rem:
+                    rem_display = rem_reason if len(rem_reason) <= 28 else (rem_reason[:25] + "...")
+                    reason_str = f"\n[REMOVED: {rem_display}]" if rem_display else "\n[REMOVED]"
+                else:
+                    reason_str = ""
+
+                title = f"{sess_display}\nBR:{br_idx} | Trial:{i+1} (Raw:{raw_idx}){reason_str}"
+                plot_xy_trajectory(ax, x, y, t, title, is_removed=is_rem, removal_reason=rem_reason)
+
+            # Hide unused axes
+            for i in range(n_trials, len(axes_flat)):
+                axes_flat[i].axis('off')
+
+            # Main overall title
+            if "overall_title" in data.files:
+                raw_title = data["overall_title"]
+                overall_title = str(raw_title.item()) if raw_title.shape == () else str(raw_title)
             else:
-                reason_str = ""
+                overall_title = npz_path.stem
 
-            title = f"{sess_display}\nBR:{br_idx} | Trial:{i+1} (Raw:{raw_idx}){reason_str}"
-            plot_xy_trajectory(ax, x, y, t, title, is_removed=is_rem, removal_reason=rem_reason)
+            if n_kept == 0:
+                status_info = f"n={n_trials} (NO VALID TRIALS - all {n_removed} removed)"
+            elif n_removed > 0:
+                status_info = f"n={n_trials} ({n_kept} kept, {n_removed} removed)"
+            else:
+                status_info = f"n={n_trials} (all kept)"
 
-        # Hide unused axes
-        for i in range(n_trials, len(axes_flat)):
-            axes_flat[i].axis('off')
+            fig.suptitle(
+                f"{overall_title}\n{KEYPOINT.title()} Finger X-Y | {condition_type} / {target_label} | {status_info}\n"
+                f"Session: {intan_filename} | BR: {br_idx}  —  Red box = Removed trials | Put Raw:# in manual_trial_remove.csv",
+                fontsize=10
+            )
 
-        # Main overall title
-        if "overall_title" in data.files:
-            raw_title = data["overall_title"]
-            overall_title = str(raw_title.item()) if raw_title.shape == () else str(raw_title)
-        else:
-            overall_title = npz_path.stem
+            # Add colorbar for time
+            t_min = float(np.nanmin(t)) if np.isfinite(t).any() else -800.0
+            t_max = float(np.nanmax(t)) if np.isfinite(t).any() else 600.0
+            if t_min >= t_max:
+                t_min, t_max = -800.0, 600.0
+            sm = plt.cm.ScalarMappable(cmap='viridis', norm=Normalize(vmin=t_min, vmax=t_max))
+            sm.set_array([])
+            cbar = fig.colorbar(sm, ax=axes_flat[:n_trials], shrink=0.6, pad=0.02, aspect=30)
+            cbar.set_label('Time (ms)', fontsize=8)
 
-        if n_kept == 0:
-            status_info = f"n={n_trials} (NO VALID TRIALS - all {n_removed} removed)"
-        elif n_removed > 0:
-            status_info = f"n={n_trials} ({n_kept} kept, {n_removed} removed)"
-        else:
-            status_info = f"n={n_trials} (all kept)"
+            # Save output figure
+            out_dir = FIG_ROOT / condition_type / target_label
+            out_dir.mkdir(parents=True, exist_ok=True)
 
-        fig.suptitle(
-            f"{overall_title}\n{KEYPOINT.title()} Finger X-Y | {condition_type} / {target_label} | {status_info}\n"
-            f"Session: {intan_filename} | BR: {br_idx}  —  Red box = Removed trials | Put Raw:# in manual_trial_remove.csv",
-            fontsize=10
-        )
+            file_name = f"BR_{br_idx:03d}_xy.jpg" if br_idx else f"{npz_path.stem}_xy.jpg"
+            out_path = out_dir / file_name
 
-        # Add colorbar for time
-        t_min = float(np.nanmin(t)) if np.isfinite(t).any() else -800.0
-        t_max = float(np.nanmax(t)) if np.isfinite(t).any() else 600.0
-        if t_min >= t_max:
-            t_min, t_max = -800.0, 600.0
-        sm = plt.cm.ScalarMappable(cmap='viridis', norm=Normalize(vmin=t_min, vmax=t_max))
-        sm.set_array([])
-        cbar = fig.colorbar(sm, ax=axes_flat[:n_trials], shrink=0.6, pad=0.02, aspect=30)
-        cbar.set_label('Time (ms)', fontsize=8)
-
-        # Save output figure
-        out_dir = FIG_ROOT / condition_type / target_label
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        file_name = f"BR_{br_idx:03d}_xy.jpg" if br_idx else f"{npz_path.stem}_xy.jpg"
-        out_path = out_dir / file_name
-
-        fig.savefig(out_path, dpi=150)
-        plt.close(fig)
-        print(f"[IKT] Saved {out_path}")
+            fig.savefig(out_path, dpi=150)
+            print(f"[IKT] Saved {out_path}")
+        finally:
+            if fig is not None:
+                plt.close(fig)
 
     except Exception as e:
         print(f"[IKT] Error: {e}")

@@ -191,6 +191,88 @@ def p_stars_label(p_val: float) -> str:
 # Data Extraction & Condition Organization
 # =============================================================================
 
+def extract_stim_channels_info(
+    peri: Any,
+    csv_meta: Optional[Dict[str, Any]] = None,
+    notes: str = "",
+    cond_str: str = "",
+) -> Optional[str]:
+    """
+    Extract stimulation channel specification (e.g. '1-32', '1-8', '16-24', '17-24')
+    from peristim npz metadata, session metadata CSV row, notes, or title string.
+    """
+    stim_list = []
+    if hasattr(peri, "__getitem__"):
+        for meta_k in ("nprw_meta", "meta"):
+            if meta_k in peri:
+                try:
+                    obj = peri[meta_k]
+                    m_dict = obj.item() if hasattr(obj, "item") else obj
+                    if isinstance(m_dict, dict):
+                        for ch_k in ("stim_channels", "active_channels", "stim_channel", "channels"):
+                            if ch_k in m_dict and m_dict[ch_k] is not None:
+                                stim_list = m_dict[ch_k]
+                                if np.size(stim_list) > 0:
+                                    break
+                except Exception:
+                    pass
+            if np.size(stim_list) > 0:
+                break
+
+        if np.size(stim_list) == 0:
+            for direct_k in ("stim_channels", "stim_channels_0based", "active_channels"):
+                if direct_k in peri:
+                    stim_list = peri[direct_k]
+                    break
+
+    if np.size(stim_list) > 0:
+        try:
+            sl = [int(x) for x in np.asarray(stim_list).ravel() if np.isfinite(x)]
+            if len(sl) > 0:
+                chs = sorted(list(set(sl)))
+                ranges = []
+                start = chs[0]
+                end = chs[0]
+                for ch in chs[1:]:
+                    if ch == end + 1:
+                        end = ch
+                    else:
+                        ranges.append(f"{start}-{end}" if end > start else f"{start}")
+                        start = ch
+                        end = ch
+                ranges.append(f"{start}-{end}" if end > start else f"{start}")
+                return ", ".join(ranges)
+        except Exception:
+            pass
+
+    if csv_meta:
+        for ch_k in ("stim_channels", "stim_chs", "channels", "channel", "stim_ch", "active_channels", "probe_channels"):
+            if ch_k in csv_meta and pd.notna(csv_meta[ch_k]):
+                val_str = str(csv_meta[ch_k]).strip()
+                if val_str and val_str.lower() not in ("nan", "none", ""):
+                    m_range = re.findall(r"\d+", val_str)
+                    if len(m_range) >= 2:
+                        return f"{m_range[0]}-{m_range[-1]}"
+                    elif len(m_range) == 1:
+                        return m_range[0]
+                    return val_str
+
+    for text_cand in (notes, cond_str):
+        if not text_cand:
+            continue
+        m_explicit = re.search(r"(?:chs?|channels?)\.?\s*[:=]?\s*([0-9]+\s*[-–]\s*[0-9]+)", text_cand, re.IGNORECASE)
+        if m_explicit:
+            return m_explicit.group(1).replace(" ", "").replace("–", "-")
+        m_dash = re.search(r"\b([0-9]+\s*[-–]\s*[0-9]+)\b", text_cand)
+        if m_dash:
+            return m_dash.group(1).replace(" ", "").replace("–", "-")
+        m_single = re.search(r"(?:chs?|channels?)\.?\s*[:=]?\s*([0-9]+)\b", text_cand, re.IGNORECASE)
+        if m_single:
+            return m_single.group(1)
+
+    return None
+
+
 class ReachCondition:
     """Container holding calibrated 3D reaches and metadata for one experimental condition."""
     def __init__(
@@ -210,6 +292,7 @@ class ReachCondition:
         stim_dur_ms: Optional[float] = None,
         notes: str = "",
         base_label: Optional[str] = None,
+        stim_channels: Optional[str] = None,
     ):
         self.cond_num = cond_num
         self.br_idx = br_idx
@@ -226,6 +309,7 @@ class ReachCondition:
         self.stim_freq_hz = stim_freq_hz
         self.stim_dur_ms = stim_dur_ms if stim_dur_ms is not None else 0.0
         self.notes = notes
+        self.stim_channels = stim_channels
 
     @property
     def n_trials(self) -> int:
@@ -263,6 +347,7 @@ class ReachCondition:
             stim_dur_ms=self.stim_dur_ms,
             notes=self.notes,
             base_label=self.base_label,
+            stim_channels=self.stim_channels,
         )
 
 
@@ -410,6 +495,13 @@ def load_conditions_for_target(
         if (stim_dur_nominal_ms is None or stim_dur_nominal_ms <= 0) and pulse_count and stim_freq_hz and stim_freq_hz > 0:
             stim_dur_nominal_ms = float(pulse_count * 1000.0 / stim_freq_hz)
 
+        stim_channels = extract_stim_channels_info(
+            peri=peri,
+            csv_meta=csv_meta,
+            notes=notes,
+            cond_str=cond_str,
+        )
+
         notes_clean = notes.lower() if notes else ""
         cond_clean = cond_str.lower() if cond_str else ""
         stem_clean = peri_path.stem.lower()
@@ -480,6 +572,7 @@ def load_conditions_for_target(
             "pulse_count": pulse_count,
             "stim_freq_hz": stim_freq_hz,
             "stim_dur_nominal_ms": stim_dur_nominal_ms,
+            "stim_channels": stim_channels,
             "n_events": len(event_ms),
         })
 
@@ -537,6 +630,7 @@ def load_conditions_for_target(
         pulse_count = cand["pulse_count"]
         stim_freq_hz = cand["stim_freq_hz"]
         stim_dur_nominal_ms = cand["stim_dur_nominal_ms"]
+        stim_channels = cand.get("stim_channels")
 
         vid_idx = p3d.resolve_video_index_for_br(br_idx, metadata_csv, peri_meta)
         if vid_idx is None:
@@ -612,16 +706,42 @@ def load_conditions_for_target(
         y_sub = y_val[:, win_mask]
         z_sub = z_val[:, win_mask]
 
+        cond_info_dict = {
+            "is_control": is_control,
+            "pulse_count": pulse_count,
+            "stim_freq_hz": stim_freq_hz,
+            "notes": notes,
+            "stim_channels": stim_channels,
+            "cond_str": cond_str,
+        }
         base_label = p3d.format_condition_label(
             cond_num=br_idx,
-            cond_info={"is_control": is_control, "pulse_count": pulse_count, "stim_freq_hz": stim_freq_hz, "notes": notes},
+            cond_info=cond_info_dict,
             control_br_indices=control_br_indices,
             include_target=False,
         )
-        if not is_control and stim_dur_nominal_ms is not None and stim_dur_nominal_ms > 0:
-            dur_txt = f"{stim_dur_nominal_ms:.1f} ms" if stim_dur_nominal_ms < 10 and stim_dur_nominal_ms % 1 != 0 else f"{int(stim_dur_nominal_ms)} ms"
-            if "ms" not in base_label.lower():
-                base_label = f"{base_label} ({dur_txt})"
+
+        if not is_control:
+            # Check for continuous stimulation
+            is_cont = any(kw in f"{notes} {cond_str}".lower() for kw in ("cont", "continuous")) or (stim_freq_hz is not None and stim_freq_hz <= 2.5)
+            if is_cont and "cont" not in base_label.lower():
+                f_txt = f"{int(stim_freq_hz)} Hz-cont" if stim_freq_hz else "2Hz-cont"
+                if "pulse" in base_label.lower():
+                    base_label = re.sub(r"\d+\s*pulses?(?:,\s*[\d.]+\s*Hz)?", f"{f_txt}", base_label, flags=re.IGNORECASE)
+                elif "hz" in base_label.lower():
+                    base_label = re.sub(r"[\d.]+\s*Hz", f"{f_txt}", base_label, flags=re.IGNORECASE)
+                else:
+                    base_label = f"{base_label}, {f_txt}"
+
+            if stim_channels:
+                ch_tag = f"ch {stim_channels}"
+                if ch_tag.lower() not in base_label.lower() and f"ch{stim_channels}".lower() not in base_label.lower():
+                    base_label = f"{base_label}, {ch_tag}"
+
+            if not is_cont and stim_dur_nominal_ms is not None and stim_dur_nominal_ms > 0:
+                dur_txt = f"{stim_dur_nominal_ms:.1f} ms" if stim_dur_nominal_ms < 10 and stim_dur_nominal_ms % 1 != 0 else f"{int(stim_dur_nominal_ms)} ms"
+                if "ms" not in base_label.lower():
+                    base_label = f"{base_label} ({dur_txt})"
 
         # Label including trial count
         label = f"{base_label} (n={n_valid})"
@@ -642,6 +762,7 @@ def load_conditions_for_target(
             stim_freq_hz=stim_freq_hz,
             stim_dur_ms=stim_dur_nominal_ms,
             notes=notes,
+            stim_channels=stim_channels,
         )
         conditions.append(rc)
 
@@ -1170,17 +1291,74 @@ def get_rdm_colormap() -> LinearSegmentedColormap:
 
 
 def to_short_condition_label(lbl: str, n_tri: Optional[int] = None) -> str:
-    """Shorten condition label for matrix tick display while showing trial count."""
+    """
+    Shorten condition label for matrix tick display while showing:
+    - Condition prefix: BR X
+    - Control vs Stim parameters:
+        * Control: BR X (Ctrl, n=N)
+        * Stim: BR X (40p, 400Hz, ch 1-8, n=N) or BR X (2Hz-cont, ch 1-32, n=N)
+    """
     m = re.match(r"(BR\s*\d+)", lbl, re.IGNORECASE)
     prefix = m.group(1) if m else lbl
-    n_str = f", n={n_tri}" if n_tri is not None else ""
+
+    # Extract trial count if not provided
+    if n_tri is None:
+        m_n = re.search(r"\(n=(\d+)\)", lbl)
+        if m_n:
+            n_tri = int(m_n.group(1))
+    n_str = f"n={n_tri}" if n_tri is not None else ""
+
     if "control" in lbl.lower():
-        return f"{prefix} (Ctrl{n_str})"
-    p_match = re.search(r"(\d+)\s*pulse", lbl, re.IGNORECASE)
-    if p_match:
-        return f"{prefix} ({p_match.group(1)}p{n_str})"
-    if n_tri is not None:
-        return f"{prefix} (n={n_tri})"
+        parts = ["Ctrl"]
+        if n_str:
+            parts.append(n_str)
+        return f"{prefix} ({', '.join(parts)})"
+
+    parts = []
+
+    # 1. Continuous / Pulse count
+    is_cont = any(kw in lbl.lower() for kw in ("cont", "continuous", "2hz-cont"))
+
+    # Check frequency first
+    f_match = re.search(r"(\d+(?:\.\d+)?)\s*Hz(?:-cont)?", lbl, re.IGNORECASE)
+    freq_str = None
+    if f_match:
+        val_f = float(f_match.group(1))
+        if is_cont or val_f <= 2.5:
+            freq_str = f"{int(val_f) if val_f.is_integer() else val_f}Hz-cont"
+            is_cont = True
+        else:
+            freq_str = f"{int(val_f) if val_f.is_integer() else val_f}Hz"
+    elif is_cont:
+        freq_str = "2Hz-cont"
+
+    if is_cont:
+        parts.append(freq_str if freq_str else "2Hz-cont")
+    else:
+        p_match = re.search(r"(\d+)\s*pulse", lbl, re.IGNORECASE)
+        if not p_match:
+            p_match = re.search(r"\b(\d+)p\b", lbl, re.IGNORECASE)
+        if p_match:
+            parts.append(f"{p_match.group(1)}p")
+        if freq_str:
+            parts.append(freq_str)
+
+    # 2. Channels (e.g. ch 1-8, ch 1-32, ch 16-24)
+    ch_match = re.search(r"(?:ch(?:annels?)?\.?\s*[:=]?\s*)([0-9]+(?:\s*[-–]\s*[0-9]+)?)", lbl, re.IGNORECASE)
+    if ch_match:
+        ch_clean = ch_match.group(1).replace(" ", "").replace("–", "-")
+        parts.append(f"ch {ch_clean}")
+    else:
+        m_dash = re.search(r",\s*([0-9]+[-–][0-9]+)\b", lbl)
+        if m_dash:
+            ch_clean = m_dash.group(1).replace(" ", "").replace("–", "-")
+            parts.append(f"ch {ch_clean}")
+
+    if n_str:
+        parts.append(n_str)
+
+    if parts:
+        return f"{prefix} ({', '.join(parts)})"
     return prefix
 
 
@@ -1371,7 +1549,7 @@ def plot_dual_window_rsa_comparison_figure(
         cmap=cmap_rdm, vmin=0.0, vmax=vmax_rdm,
     )
     ax_a.set_title(
-        f"A. Early Kinematic RDM ({int(window_early[0])}–{int(window_early[1])} ms) — Control-Like Phase",
+        f"A. Early Kinematic RDM ({int(window_early[0])}–{int(window_early[1])} ms)",
         fontsize=10.5, fontweight="bold", loc="left",
     )
     ax_a.set_xticks(boundaries, minor=True)
@@ -1443,7 +1621,7 @@ def plot_dual_window_rsa_comparison_figure(
         cmap=cmap_rdm, vmin=0.0, vmax=vmax_rdm,
     )
     ax_c.set_title(
-        f"C. Perturbation Kinematic RDM ({int(window_late[0])}–{int(window_late[1])} ms) — Divergence Phase",
+        f"C. Perturbation Kinematic RDM ({int(window_late[0])}–{int(window_late[1])} ms)",
         fontsize=10.5, fontweight="bold", loc="left",
     )
     ax_c.set_xticks(boundaries, minor=True)
@@ -1498,7 +1676,15 @@ def plot_dual_window_rsa_comparison_figure(
     cb_d.set_label("Pairwise Silhouette S", fontsize=8.5)
 
     # Full condition details legend line placed outside the plots at bottom of figure
-    if len(block_labels) > 7:
+    if len(block_labels) > 8:
+        chunk_size = 4 if len(block_labels) > 10 else int(np.ceil(len(block_labels) / 2))
+        lines = []
+        for i in range(0, len(block_labels), chunk_size):
+            lines.append("   |   ".join(block_labels[i:i + chunk_size]))
+        full_legend_text = "\n".join(lines)
+        fig.text(0.5, 0.045, full_legend_text, ha="center", va="top", fontsize=6.8, color="#2c3e50", fontweight="medium")
+        fig.tight_layout(rect=[0, 0.09, 1, 0.95])
+    elif len(block_labels) > 4:
         mid = int(np.ceil(len(block_labels) / 2))
         line1 = "   |   ".join(block_labels[:mid])
         line2 = "   |   ".join(block_labels[mid:])
@@ -1517,7 +1703,7 @@ def plot_dual_window_rsa_comparison_figure(
 
     fig.text(
         0.98, 0.01,
-        "Early: pre-divergence (control-like). Perturbation: active deflection (divergent). Off-diagonal: S (FDR * q<0.05, ** q<0.01, *** q<0.001). Diagonal: [Within mm].",
+        "Off-diagonal: Pairwise Silhouette S (FDR * q<0.05, ** q<0.01, *** q<0.001). Diagonal: [Within-condition mean pairwise distance mm].",
         ha="right", va="bottom", fontsize=7.2, color="#5d6d7e", style="italic",
     )
 
@@ -1594,9 +1780,30 @@ def plot_time_resolved_variability_figure(
         if not is_ctrl:
             ax_b.plot(t, div_m, color=color, linestyle="-", linewidth=lw, label=label, zorder=zorder)
             ax_b.fill_between(t, div_m - div_sem, div_m + div_sem, color=color, alpha=0.15, zorder=zorder - 1)
+        else:
+            ax_b.plot(t, div_m, color=color, linestyle="--", linewidth=1.5, alpha=0.7, label=f"{label} (Baseline)", zorder=2)
+            ax_b.fill_between(t, np.maximum(0, div_m - div_sem), div_m + div_sem, color=color, alpha=0.10, zorder=1)
 
-    # Apply Staggered Stim Windows and clean styling to both panels
+    # 20 mm Significance / Heuristic Threshold Line on Panel B
+    ax_b.axhline(
+        20.0,
+        color="#c0392b",
+        linestyle="--",
+        linewidth=1.3,
+        alpha=0.85,
+        zorder=2,
+        label="Significance Threshold (20 mm)",
+    )
+
+    # Ensure Y-max accommodates 20 mm line
+    c_ymin_b, c_ymax_b = ax_b.get_ylim()
+    if c_ymax_b < 25.0:
+        ax_b.set_ylim(c_ymin_b, 25.0)
+
+    # Apply Staggered Stim Windows, despine, and clean styling to both panels
     for ax in [ax_a, ax_b]:
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
         ax.axvline(0.0, color="#7f8c8d", linestyle=":", linewidth=1.2, zorder=1)
         ax.grid(True, linestyle="--", alpha=0.35)
         # Expand Y-max slightly to accommodate top-margin duration ladder without clipping curves
@@ -1613,7 +1820,14 @@ def plot_time_resolved_variability_figure(
     ax_b.set_title("B. Net 3D Trajectory Deflection from Control Reference", fontsize=10.5, fontweight="bold", loc="left")
 
     # Single unified figure legend placed cleanly OUTSIDE the plots at top
-    handles, labels = ax_a.get_legend_handles_labels()
+    h_a, l_a = ax_a.get_legend_handles_labels()
+    h_b, l_b = ax_b.get_legend_handles_labels()
+    by_label = {}
+    for h, l in zip(h_a + h_b, l_a + l_b):
+        if l not in by_label:
+            by_label[l] = h
+    handles = list(by_label.values())
+    labels = list(by_label.keys())
     ncol = min(7, int(np.ceil(len(labels) / 2))) if len(labels) > 7 else len(labels)
     fig.legend(
         handles, labels,
@@ -1701,6 +1915,8 @@ def plot_target_directional_deviation_traces(
         (ax_z, "B. Vertical Deviation ΔZ(t) (Dip < 0 < Lift)", "Vertical Shift ΔZ (mm)"),
         (ax_y, "C. Forward Deviation ΔY(t) (Undershoot < 0 < Overshoot)", "Forward Shift ΔY (mm)"),
     ]:
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
         ax.axhline(0.0, color="#7f8c8d", linestyle="--", linewidth=1.1, alpha=0.8)
         ax.axvline(0.0, color="#7f8c8d", linestyle=":", linewidth=1.1)
         ax.set_title(title, fontsize=10.0, fontweight="bold", loc="left")
@@ -2061,12 +2277,12 @@ def run_behavioral_rsa_for_target(
         target=target_str,
         metric_label="Mean 3D Distance (mm)",
         window_ms=rsa_early_window,
-        window_description="Early Window (Pre-Divergence / Control-Like)",
+        window_description="Early Window",
         save_path=out_rsa_early,
     )
 
     # -------------------------------------------------------------------------
-    # 2b. Region 2: Perturbation Window RSA (100 to 350 ms) — Expected Divergent
+    # 2b. Region 2: Perturbation Window RSA (100 to 350 ms)
     # -------------------------------------------------------------------------
     conds_late = [c.slice_to_window(rsa_late_window) for c in conditions]
     RDM_late, block_sizes_late, block_labels_late = build_behavioral_rdm(conds_late, metric="euclidean")
@@ -2085,7 +2301,7 @@ def run_behavioral_rsa_for_target(
         target=target_str,
         metric_label="Mean 3D Distance (mm)",
         window_ms=rsa_late_window,
-        window_description="Perturbation Window (Active Deflection / Divergent)",
+        window_description="Perturbation Window",
         save_path=out_rsa_late,
     )
 
@@ -2101,7 +2317,7 @@ def run_behavioral_rsa_for_target(
         target=target_str,
         metric_label="Mean 3D Distance (mm)",
         window_ms=rsa_late_window,
-        window_description="Perturbation Window (Active Deflection / Divergent)",
+        window_description="Perturbation Window",
         save_path=out_rsa_std,
     )
 

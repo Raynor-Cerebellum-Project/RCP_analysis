@@ -30,7 +30,7 @@ matplotlib.rcParams["svg.fonttype"] = "none"
 NORMALIZE_FIRST_MS = 150.0
 
 # plot raw or z-scored firing rates
-Z_SCORE_FR   = False
+Z_SCORE_FR   = True
 
 # Neural heatmap vmin/vmax for median
 VMIN_NPRW, VMAX_NPRW = -150, 150

@@ -1,0 +1,12 @@
+================================================================================
+VELES RUN START: 10/20/2026 15:39:55
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: []
+Scripts:
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - preprocessing_scripts/analyze_lfp_bands.py
+================================================================================
+[10/20/2026 15:39:55] [NRR_RW022] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[10/20/2026 15:41:19] [NRR_RW022] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 10/20/2026 15:41:19
+[10/20/2026 15:41:19] [NRR_RW022] [preprocessing_scripts/analyze_lfp_bands.py] IN-PROGRESS

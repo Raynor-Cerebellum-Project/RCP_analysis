@@ -1437,6 +1437,12 @@ def format_condition_label(
     elif notes and notes.lower() not in ("baseline", "control", "ctrl", "nan", "none", ""):
         base_label = f"{base_label}, {notes}"
 
+    stim_channels = cond_info.get("stim_channels")
+    if stim_channels and not is_control:
+        ch_str = f"ch {stim_channels}"
+        if ch_str.lower() not in base_label.lower():
+            base_label = f"{base_label}, {ch_str}"
+
     if include_target and cond_info:
         tgt = cond_info.get("target")
         if tgt:

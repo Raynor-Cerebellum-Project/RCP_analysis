@@ -18,3 +18,9 @@ Scripts:
 [10/20/2026 12:08:01] [NRR_RW022] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
 [10/20/2026 12:18:46] [NRR_RW022] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 10/20/2026 12:18:46
 [10/20/2026 12:18:46] [NRR_RW022] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[10/20/2026 13:13:06] [NRR_RW022] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 10/20/2026 13:13:06
+[10/20/2026 13:13:06] [NRR_RW022] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[10/20/2026 13:15:14] [NRR_RW022] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 10/20/2026 13:15:14
+[10/20/2026 13:15:14] [NRR_RW022] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[10/20/2026 13:25:39] [NRR_RW022] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 10/20/2026 13:25:39
+[10/20/2026 13:25:39] [NRR_RW022] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS

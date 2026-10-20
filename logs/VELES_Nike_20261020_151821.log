@@ -1,0 +1,18 @@
+================================================================================
+VELES RUN START: 10/20/2026 15:18:21
+Monkey: Nike
+Sessions to run: ['NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - preprocessing_scripts/align_dlc_two_cams_to_br.py
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+================================================================================
+[10/20/2026 15:18:21] [NRR_RW012] [preprocessing_scripts/align_dlc_two_cams_to_br.py] IN-PROGRESS
+[10/20/2026 15:20:49] [NRR_RW012] [preprocessing_scripts/align_dlc_two_cams_to_br.py] FINISHED: 10/20/2026 15:20:49
+[10/20/2026 15:20:49] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[10/20/2026 15:30:33] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 10/20/2026 15:30:33
+[10/20/2026 15:30:33] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
