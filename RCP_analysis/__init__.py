@@ -87,6 +87,7 @@ from .python.functions.impedance_utils import (
 # plotting
 from .python.plotting.plotting import (
     stacked_heatmaps_plus_behv,
+    sort_matrix_by_peak,
 )
 
 from .python.functions.subspace_detector import (
@@ -209,6 +210,7 @@ __all__ = [
     
     # plotting    
     "stacked_heatmaps_plus_behv",
+    "sort_matrix_by_peak",
     
     # RSA
     "run_rsa",

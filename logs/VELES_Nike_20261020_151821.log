@@ -16,3 +16,22 @@ Scripts:
 [10/20/2026 15:20:49] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
 [10/20/2026 15:30:33] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 10/20/2026 15:30:33
 [10/20/2026 15:30:33] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[10/20/2026 16:39:37] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 10/20/2026 16:39:37
+[10/20/2026 16:39:37] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[10/20/2026 16:43:25] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 10/20/2026 16:43:25
+[10/20/2026 16:43:25] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[10/20/2026 17:04:02] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 10/20/2026 17:04:02
+[10/20/2026 17:04:02] [NRR_RW012] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[10/20/2026 17:06:26] [NRR_RW012] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 10/20/2026 17:06:26
+[10/20/2026 17:06:26] [NRR_RW011] [preprocessing_scripts/align_dlc_two_cams_to_br.py] IN-PROGRESS
+[10/20/2026 17:08:29] [NRR_RW011] [preprocessing_scripts/align_dlc_two_cams_to_br.py] FINISHED: 10/20/2026 17:08:29
+[10/20/2026 17:08:29] [NRR_RW011] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[10/20/2026 17:18:05] [NRR_RW011] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 10/20/2026 17:18:05
+[10/20/2026 17:18:05] [NRR_RW011] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[10/20/2026 18:20:28] [NRR_RW011] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 10/20/2026 18:20:28
+[10/20/2026 18:20:28] [NRR_RW011] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[10/20/2026 18:23:35] [NRR_RW011] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 10/20/2026 18:23:35
+[10/20/2026 18:23:35] [NRR_RW011] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[10/20/2026 18:41:07] [NRR_RW011] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 10/20/2026 18:41:07
+[10/20/2026 18:41:07] [NRR_RW011] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[10/20/2026 18:43:04] [NRR_RW011] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 10/20/2026 18:43:04

@@ -29,8 +29,27 @@ matplotlib.rcParams["svg.fonttype"] = "none"
 # ---------------------------------------------------------------------
 NORMALIZE_FIRST_MS = 150.0
 
-# plot raw or z-scored firing rates
+# Plot metric: False for firing rates (Hz), True for binned spike counts
+PLOT_SPIKE_COUNTS = False
+
+# Plot raw or z-scored values (applies to both firing rates and spike counts)
 Z_SCORE_FR   = True
+
+# Channel ordering by peak latency
+ORDER_BY_PEAK = False
+# Direction of peak ordering: "top_to_bottom" (earliest peak at top of plot) or "bottom_to_top"
+PEAK_ORDER_DIRECTION = "top_to_bottom"
+# Optional search window (ms) for finding peak latency (None = search whole time epoch, or e.g. (-600.0, 600.0))
+PEAK_SEARCH_WINDOW_MS = None
+
+# Sorting strategy for NPRW and UA
+NPRW_SORT = "peak" if ORDER_BY_PEAK else "none"
+UA_SORT   = "region_then_peak" if ORDER_BY_PEAK else "region_then_elec"
+
+# Output folder routing:
+# If False: Saves directly into standard "median_fr_plots" and "mean_MWT_plots" so your existing viewer updates.
+# If True:  Saves into separate dedicated folders (e.g. "zscore_counts_peak_ordered_plots").
+USE_SEPARATE_OUTPUT_FOLDERS = False
 
 # Neural heatmap vmin/vmax for median
 VMIN_NPRW, VMAX_NPRW = -150, 150
@@ -48,12 +67,17 @@ COLORMAP = "RdBu_r"
 # Center 0 at white using TwoSlopeNorm when vmin < 0 < vmax (e.g. NPRW [-25, 200] and UA [-50, 150])
 CENTER_ZERO = True
 
-# Override color ranges for z-scored firing rates
+# Override color ranges for z-scored or raw counts
 if Z_SCORE_FR:
-    VMIN_NPRW, VMAX_NPRW = -3.0, 3.0
-    VMIN_UA,   VMAX_UA   = -3.0, 3.0
+    VMIN_NPRW, VMAX_NPRW = -2.0, 2.0
+    VMIN_UA,   VMAX_UA   = -2.0, 2.0
     COLORMAP = "RdBu_r"
     CENTER_ZERO = True
+elif PLOT_SPIKE_COUNTS:
+    VMIN_NPRW, VMAX_NPRW = VMIN_NPRW_COUNTS, VMAX_NPRW_COUNTS
+    VMIN_UA,   VMAX_UA   = VMIN_UA_COUNTS,   VMAX_UA_COUNTS
+    COLORMAP = "viridis"
+    CENTER_ZERO = False
 
 
 
@@ -63,7 +87,10 @@ KINEMATICS_YLIM_NORMDIST = (-0.1, 1.1)
 
 KIN_KEYPOINT_INCLUDE = ("middle",) #, "wrist", "ALL")
 
-NORMALIZED_DISTANCE = True # False if we want individual x and y positions plotted instead
+# Toggles for Behavior Plots
+PLOT_NORMALIZED_DISTANCE = True # Set to True to plot normalized distance
+PLOT_TRAJECTORY_VARIABILITY = False # Set to True to plot trajectory variability
+NORMALIZED_DISTANCE = PLOT_NORMALIZED_DISTANCE # Alias for backwards compatibility
 NORMALIZED_DISTANCE_KEYPOINT = "middle"
 NORMALIZED_DISTANCE_REF_TIME_MS = -600.0 # -600 used in plot_plateau_analysis.py
 
@@ -73,12 +100,19 @@ NORMALIZED_DISTANCE_REF_TIME_MS = -600.0 # -600 used in plot_plateau_analysis.py
 NORMALIZED_DISTANCE_MODE = "max_abs"
 
 PLOT_CAM0 = False
-PLOT_TRAJECTORY_VARIABILITY = True
 TRAJECTORY_VARIABILITY_KEYPOINT = "middle"
 TRAJECTORY_VARIABILITY_AGG = "median"
 
 PLOT_POSITION = True
 PLOT_VELOCITY = False
+
+# Options for styling / ticks
+SHOW_NPRW_Y_TICKS = False      # Option to hide/show NPRW read-write probe y-axis ticks and numbers
+BEH_SHOW_BOX = False           # False to remove box outline (spines) around variability & distance plots
+BEH_SHOW_Y_AXIS = False        # False to remove y-axis label and ticks for variability & distance plots
+BEH_LINE_WIDTH = 2.4           # Plotted behavior line thickness
+BEH_SCALE_BAR_MS = 200.0       # Replaces x-axis with a 200 ms scale bar on behavior panel (or None)
+BEH_IN_PLOT_LABEL = "Position" # In-plot label on behavior panel (or None)
 
 # Layout knobs (passed into stacked_heatmaps_plus_behv)
 BEH_RATIO = 0.6               # height ratio for behavior rows (position/velocity); adjust as needed
@@ -101,10 +135,31 @@ SKIP_EXISTING        = False   # If True, skip sessions where the first plot alr
 
 # Figures
 FIG_ROOT   = OUT_BASE / "figures/shaded_BT_svg"; FIG_ROOT.mkdir(parents=True, exist_ok=True)
+
+if USE_SEPARATE_OUTPUT_FOLDERS:
+    if PLOT_SPIKE_COUNTS:
+        prefix = "zscore_counts" if Z_SCORE_FR else "median_counts"
+        if ORDER_BY_PEAK:
+            prefix += "_peak_ordered"
+        med_folder = f"{prefix}_plots"
+        mwt_folder = f"{prefix}_MWT_plots"
+    elif ORDER_BY_PEAK:
+        prefix = "zscore_fr" if Z_SCORE_FR else "median_fr"
+        med_folder = f"{prefix}_peak_ordered_plots"
+        mwt_folder = f"{prefix}_peak_ordered_MWT_plots"
+    else:
+        med_folder = "median_fr_plots"
+        mwt_folder = "mean_MWT_plots"
+else:
+    med_folder = "median_fr_plots"
+    mwt_folder = "mean_MWT_plots"
+
 FIG = SimpleNamespace(
-    peri_posvel_median  = FIG_ROOT / "median_fr_plots",
-    peri_posvel_meanMWT = FIG_ROOT / "mean_MWT_plots",
+    peri_posvel_median  = FIG_ROOT / med_folder,
+    peri_posvel_meanMWT = FIG_ROOT / mwt_folder,
 )
+print(f"[plot_firing_rates] Saving median plots to: {FIG.peri_posvel_median}")
+print(f"[plot_firing_rates] Saving MWT plots to:    {FIG.peri_posvel_meanMWT}")
 FIG.peri_posvel_median.mkdir(parents=True, exist_ok=True)
 FIG.peri_posvel_meanMWT.mkdir(parents=True, exist_ok=True)
 FIG.peri_var_median    = FIG_ROOT / "variance_fr_plots"; FIG.peri_var_median.mkdir(parents=True, exist_ok=True)
@@ -480,17 +535,54 @@ def main():
         UA_width_ms   = peri_stim_npz["UA_width_ms"]
         ua_ids_1based = peri_stim_npz["ua_ids_1based"] if "ua_ids_1based" in peri_stim_npz.files else None
 
+        NPRW_counts = (
+            peri_stim_npz["NPRW_counts"]
+            if "NPRW_counts" in peri_stim_npz.files
+            else np.zeros((0, 0, 0), float)
+        )
+        UA_counts = (
+            peri_stim_npz["UA_counts"]
+            if "UA_counts" in peri_stim_npz.files
+            else np.zeros((0, 0, 0), float)
+        )
 
-        # --- Optional z-score normalization ---
-        if Z_SCORE_FR:
-            if NPRW_rates_zeroed.ndim == 3 and NPRW_rates_zeroed.shape[0] > 0:
-                mu  = np.nanmean(NPRW_rates_zeroed, axis=2, keepdims=True)
-                sig = np.clip(np.nanstd(NPRW_rates_zeroed, axis=2, keepdims=True), 1e-6, None)
-                NPRW_med = np.nanmean((NPRW_rates_zeroed - mu) / sig, axis=0)
-            if UA_rates_zeroed.ndim == 3 and UA_rates_zeroed.shape[0] > 0:
-                mu  = np.nanmean(UA_rates_zeroed, axis=2, keepdims=True)
-                sig = np.clip(np.nanstd(UA_rates_zeroed, axis=2, keepdims=True), 1e-6, None)
-                UA_med = np.nanmean((UA_rates_zeroed - mu) / sig, axis=0)
+        # --- Neural activity metric: Spike counts vs Firing rates (raw or z-scored) ---
+        if PLOT_SPIKE_COUNTS:
+            if Z_SCORE_FR:
+                if NPRW_counts.ndim == 3 and NPRW_counts.shape[0] > 0:
+                    mu  = np.nanmean(NPRW_counts, axis=2, keepdims=True)
+                    sig = np.clip(np.nanstd(NPRW_counts, axis=2, keepdims=True), 1e-6, None)
+                    NPRW_med = np.nanmean((NPRW_counts - mu) / sig, axis=0)
+                elif NPRW_med_counts.size > 0:
+                    mu  = np.nanmean(NPRW_med_counts, axis=1, keepdims=True)
+                    sig = np.clip(np.nanstd(NPRW_med_counts, axis=1, keepdims=True), 1e-6, None)
+                    NPRW_med = (NPRW_med_counts - mu) / sig
+                else:
+                    NPRW_med = np.zeros((0, 0), float)
+
+                if UA_counts.ndim == 3 and UA_counts.shape[0] > 0:
+                    mu  = np.nanmean(UA_counts, axis=2, keepdims=True)
+                    sig = np.clip(np.nanstd(UA_counts, axis=2, keepdims=True), 1e-6, None)
+                    UA_med = np.nanmean((UA_counts - mu) / sig, axis=0)
+                elif UA_med_counts.size > 0:
+                    mu  = np.nanmean(UA_med_counts, axis=1, keepdims=True)
+                    sig = np.clip(np.nanstd(UA_med_counts, axis=1, keepdims=True), 1e-6, None)
+                    UA_med = (UA_med_counts - mu) / sig
+                else:
+                    UA_med = np.zeros((0, 0), float)
+            else:
+                NPRW_med = np.copy(NPRW_med_counts)
+                UA_med   = np.copy(UA_med_counts)
+        else:
+            if Z_SCORE_FR:
+                if NPRW_rates_zeroed.ndim == 3 and NPRW_rates_zeroed.shape[0] > 0:
+                    mu  = np.nanmean(NPRW_rates_zeroed, axis=2, keepdims=True)
+                    sig = np.clip(np.nanstd(NPRW_rates_zeroed, axis=2, keepdims=True), 1e-6, None)
+                    NPRW_med = np.nanmean((NPRW_rates_zeroed - mu) / sig, axis=0)
+                if UA_rates_zeroed.ndim == 3 and UA_rates_zeroed.shape[0] > 0:
+                    mu  = np.nanmean(UA_rates_zeroed, axis=2, keepdims=True)
+                    sig = np.clip(np.nanstd(UA_rates_zeroed, axis=2, keepdims=True), 1e-6, None)
+                    UA_med = np.nanmean((UA_rates_zeroed - mu) / sig, axis=0)
             
         # -----------------------------------------------------------------
         # Labels
@@ -518,7 +610,7 @@ def main():
             beh_variability_for_plot = None
             beh_variability_std_for_plot = None
 
-        if NORMALIZED_DISTANCE:
+        if PLOT_NORMALIZED_DISTANCE:
             if PLOT_CAM0:
                 cam0_dist_trials = rcp.compute_normalized_distance_from_xy_3d(
                     cam0_pos_segs,
@@ -544,7 +636,6 @@ def main():
 
             beh_cam1_pos_for_plot = rcp.median_from_trial_traces(cam1_dist_trials)
 
-
             kin_med_plot = _select_kinematics_for_plot(
                 beh_labels_display=[""],
                 beh_cam0_pos=beh_cam0_pos_for_plot,
@@ -558,7 +649,7 @@ def main():
             target_pos_cam0_for_plot = None
             target_pos_cam1_for_plot = None
 
-        else:
+        elif PLOT_POSITION:
             cam0_dist_trials = None
             cam1_dist_trials = None
 
@@ -572,21 +663,42 @@ def main():
 
             target_pos_cam0_for_plot = target_pos_cam0 if PLOT_CAM0 else None
             target_pos_cam1_for_plot = target_pos_cam1
+        else:
+            cam0_dist_trials = None
+            cam1_dist_trials = None
+            kin_med_plot = {
+                "beh_cam0_pos": None,
+                "beh_cam1_pos": None,
+                "beh_cam0_vel": beh_cam0_vel_med if (PLOT_VELOCITY and PLOT_CAM0) else None,
+                "beh_cam1_vel": beh_cam1_vel_med if PLOT_VELOCITY else None,
+                "beh_labels": [],
+            }
+            target_pos_cam0_for_plot = None
+            target_pos_cam1_for_plot = None
 
-        beh_ylim_for_plot = KINEMATICS_YLIM_NORMDIST if NORMALIZED_DISTANCE else KINEMATICS_YLIM
+        beh_ylim_for_plot = KINEMATICS_YLIM_NORMDIST if PLOT_NORMALIZED_DISTANCE else KINEMATICS_YLIM
 
         beh_pos_ylabel_for_plot = (
             "Normalized distance"
-            if NORMALIZED_DISTANCE
+            if PLOT_NORMALIZED_DISTANCE
             else "Position Δ (z)"
         )
 
         # Titles
         base_kin_title = f"Kinematics / n={n_events} events"
+        metric_str = "spike counts" if PLOT_SPIKE_COUNTS else "FR"
         neural_type = "z-scored" if Z_SCORE_FR else "median"
-        base_neural_title = f"Neural Activity ({neural_type} Δ) / Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
+        if PLOT_SPIKE_COUNTS:
+            base_neural_title = f"Neural Activity ({neural_type} {metric_str}/bin)"
+            cb_label = "z-score (std)" if Z_SCORE_FR else "Spike count"
+        else:
+            base_neural_title = f"Neural Activity ({neural_type} Δ) / Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
+            cb_label = "z-score (std)" if Z_SCORE_FR else "Δ FR (Hz)"
+
+        if ORDER_BY_PEAK:
+            base_neural_title += " (peak ordered)"
+
         full_overall_title = f"{overall_title} {target_label.replace('_', ' ').replace('/', ' - ')}"
-        cb_label = "z-score (std)" if Z_SCORE_FR else "Δ FR (Hz)"
 
         # ---- stim site detection (probe inset) ---- TODO this can be extracted from active_channels
         stim_npz = NPRW_AUX_DATA / f"{sess}_Intan_streams" / "stim_stream.npz"
@@ -646,7 +758,10 @@ def main():
             stim_idx=stim_locs,
             probe_title="NPRW probe (stim sites highlighted)",
             ua_ids_1based=ua_ids_1based,
-            ua_sort="region_then_elec",
+            ua_sort=UA_SORT,
+            nprw_sort=NPRW_SORT,
+            peak_order_direction=PEAK_ORDER_DIRECTION,
+            peak_search_window_ms=PEAK_SEARCH_WINDOW_MS,
             beh_rel_time=beh_time_for_both,
             beh_cam0_pos=kin_med_plot["beh_cam0_pos"],
             beh_cam1_pos=kin_med_plot["beh_cam1_pos"],
@@ -679,6 +794,12 @@ def main():
             probe_width_ratio=PROBE_WIDTH_RATIO,
             nprw_blank_ms=nprw_blank_ms,
             stim_dur_ms=None if is_control else stim_dur_ms,
+            nprw_show_y_ticks=SHOW_NPRW_Y_TICKS,
+            beh_show_box=BEH_SHOW_BOX,
+            beh_show_y_axis=BEH_SHOW_Y_AXIS,
+            beh_line_width=BEH_LINE_WIDTH,
+            beh_scale_bar_ms=BEH_SCALE_BAR_MS,
+            beh_in_plot_label=BEH_IN_PLOT_LABEL,
         )
         # -----------------------------------------------------------------
         # FIGURE 2: ALL VARIANCE TRACES (no shading, all keypoints)
@@ -751,6 +872,12 @@ def main():
             probe_width_ratio=PROBE_WIDTH_RATIO,
             nprw_blank_ms=nprw_blank_ms,
             stim_dur_ms=None if is_control else stim_dur_ms,
+            nprw_show_y_ticks=SHOW_NPRW_Y_TICKS,
+            beh_show_box=BEH_SHOW_BOX,
+            beh_show_y_axis=BEH_SHOW_Y_AXIS,
+            beh_line_width=BEH_LINE_WIDTH,
+            beh_scale_bar_ms=BEH_SCALE_BAR_MS,
+            beh_in_plot_label=BEH_IN_PLOT_LABEL,
         )
 
         # -----------------------------------------------------------------
@@ -812,7 +939,7 @@ def main():
             c0_pos_sd   = None
             c1_pos_sd   = None
 
-        if NORMALIZED_DISTANCE:
+        if PLOT_NORMALIZED_DISTANCE:
             if PLOT_CAM0 and cam0_dist_trials is not None:
                 c0_pos_mean, c0_pos_sd = rcp.mean_ci95_from_trial_traces(cam0_dist_trials)
             else:
@@ -820,6 +947,9 @@ def main():
             c1_pos_mean, c1_pos_sd = rcp.mean_ci95_from_trial_traces(cam1_dist_trials)
 
             labels_sel = [""]
+        elif not PLOT_POSITION:
+            c0_pos_mean, c0_pos_sd = None, None
+            c1_pos_mean, c1_pos_sd = None, None
 
         # Apply position/velocity display toggles
         if (not PLOT_POSITION) or (not PLOT_CAM0):
@@ -836,9 +966,14 @@ def main():
             c1_vel_mean = None
             c1_vel_sd = None
 
-        band_label = "95% CI" if NORMALIZED_DISTANCE else "std"
+        band_label = "95% CI" if PLOT_NORMALIZED_DISTANCE else "std"
         title_MWT_kin = f"Kinematics (mean ± {band_label}) / n={n_events} events"
-        title_MWT_neural = f"Neural Activity (mean Δ) / Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
+        if PLOT_SPIKE_COUNTS:
+            title_MWT_neural = f"Neural Activity ({neural_type} spike counts/bin)"
+        else:
+            title_MWT_neural = f"Neural Activity (mean Δ) / Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
+        if ORDER_BY_PEAK:
+            title_MWT_neural += " (peak ordered)"
 
         rcp.stacked_heatmaps_plus_behv(
             NPRW_med, UA_med,          # same med heatmaps; metric is just for behavior here
@@ -872,7 +1007,10 @@ def main():
             stim_idx=stim_locs,
             probe_title="NPRW probe (stim sites highlighted)",
             ua_ids_1based=ua_ids_1based,
-            ua_sort="region_then_elec",
+            ua_sort=UA_SORT,
+            nprw_sort=NPRW_SORT,
+            peak_order_direction=PEAK_ORDER_DIRECTION,
+            peak_search_window_ms=PEAK_SEARCH_WINDOW_MS,
             beh_rel_time=beh_time_for_both,
             beh_cam0_pos=c0_pos_mean,
             beh_cam1_pos=c1_pos_mean,
@@ -905,6 +1043,12 @@ def main():
             probe_width_ratio=PROBE_WIDTH_RATIO,
             nprw_blank_ms=nprw_blank_ms,
             stim_dur_ms=None if is_control else stim_dur_ms,
+            nprw_show_y_ticks=SHOW_NPRW_Y_TICKS,
+            beh_show_box=BEH_SHOW_BOX,
+            beh_show_y_axis=BEH_SHOW_Y_AXIS,
+            beh_line_width=BEH_LINE_WIDTH,
+            beh_scale_bar_ms=BEH_SCALE_BAR_MS,
+            beh_in_plot_label=BEH_IN_PLOT_LABEL,
         )
         # -----------------------------------------------------------------
         # FIGURE 4: MWT ONLY VARIANCE (same behavior subset)
@@ -977,6 +1121,12 @@ def main():
             probe_width_ratio=PROBE_WIDTH_RATIO,
             nprw_blank_ms=nprw_blank_ms,
             stim_dur_ms=None if is_control else stim_dur_ms,
+            nprw_show_y_ticks=SHOW_NPRW_Y_TICKS,
+            beh_show_box=BEH_SHOW_BOX,
+            beh_show_y_axis=BEH_SHOW_Y_AXIS,
+            beh_line_width=BEH_LINE_WIDTH,
+            beh_scale_bar_ms=BEH_SCALE_BAR_MS,
+            beh_in_plot_label=BEH_IN_PLOT_LABEL,
         )
         # -----------------------------------------------------------------
         # FIGURE 5: MWT ONLY MEDIAN BIN COUNTS (same behavior subset as MWT fig)
@@ -986,7 +1136,7 @@ def main():
         out_path_counts_MWT = out_dir_counts_MWT_parent / f"{file_name}__counts_MWT.svg"
 
         title_MWT_neural_counts = (
-            f"Median spike counts per bin (across {n_events} events)"
+            f"Median spike counts per bin (across {n_events} events)" + (" (peak ordered)" if ORDER_BY_PEAK else "")
         )
 
         rcp.stacked_heatmaps_plus_behv(
@@ -1018,7 +1168,10 @@ def main():
             stim_idx=stim_locs,
             probe_title="NPRW probe (stim sites highlighted)",
             ua_ids_1based=ua_ids_1based,
-            ua_sort="region_then_elec",
+            ua_sort=UA_SORT,
+            nprw_sort=NPRW_SORT,
+            peak_order_direction=PEAK_ORDER_DIRECTION,
+            peak_search_window_ms=PEAK_SEARCH_WINDOW_MS,
             beh_rel_time=beh_time_for_both,
             beh_cam0_pos=c0_pos_mean,
             beh_cam1_pos=c1_pos_mean,
@@ -1051,6 +1204,12 @@ def main():
             probe_width_ratio=PROBE_WIDTH_RATIO,
             nprw_blank_ms=nprw_blank_ms,
             stim_dur_ms=None if is_control else stim_dur_ms,
+            nprw_show_y_ticks=SHOW_NPRW_Y_TICKS,
+            beh_show_box=BEH_SHOW_BOX,
+            beh_show_y_axis=BEH_SHOW_Y_AXIS,
+            beh_line_width=BEH_LINE_WIDTH,
+            beh_scale_bar_ms=BEH_SCALE_BAR_MS,
+            beh_in_plot_label=BEH_IN_PLOT_LABEL,
         )
 
         # -----------------------------------------------------------------
@@ -1088,12 +1247,32 @@ def main():
             single_dir.mkdir(parents=True, exist_ok=True)
 
             for i_trial in range(n_single):
-                nprw_single = NPRW_rates_zeroed[i_trial, :, :]  # (n_ch, T)
-                ua_single = (
-                    UA_rates_zeroed[i_trial, :, :]
-                    if UA_rates_zeroed.ndim == 3 and UA_rates_zeroed.shape[0] > i_trial
-                    else np.zeros((0, 0), float)
-                )
+                if PLOT_SPIKE_COUNTS:
+                    if Z_SCORE_FR:
+                        if NPRW_counts.ndim == 3 and NPRW_counts.shape[0] > i_trial:
+                            nprw_raw = NPRW_counts[i_trial, :, :]
+                            mu = np.nanmean(nprw_raw, axis=1, keepdims=True)
+                            sig = np.clip(np.nanstd(nprw_raw, axis=1, keepdims=True), 1e-6, None)
+                            nprw_single = (nprw_raw - mu) / sig
+                        else:
+                            nprw_single = np.zeros((0, 0), float)
+                        if UA_counts.ndim == 3 and UA_counts.shape[0] > i_trial:
+                            ua_raw = UA_counts[i_trial, :, :]
+                            mu = np.nanmean(ua_raw, axis=1, keepdims=True)
+                            sig = np.clip(np.nanstd(ua_raw, axis=1, keepdims=True), 1e-6, None)
+                            ua_single = (ua_raw - mu) / sig
+                        else:
+                            ua_single = np.zeros((0, 0), float)
+                    else:
+                        nprw_single = NPRW_counts[i_trial, :, :] if NPRW_counts.ndim == 3 and NPRW_counts.shape[0] > i_trial else np.zeros((0, 0), float)
+                        ua_single   = UA_counts[i_trial, :, :]   if UA_counts.ndim == 3 and UA_counts.shape[0] > i_trial else np.zeros((0, 0), float)
+                else:
+                    nprw_single = NPRW_rates_zeroed[i_trial, :, :]  # (n_ch, T)
+                    ua_single = (
+                        UA_rates_zeroed[i_trial, :, :]
+                        if UA_rates_zeroed.ndim == 3 and UA_rates_zeroed.shape[0] > i_trial
+                        else np.zeros((0, 0), float)
+                    )
 
                 # Per-trial behavior if possible; otherwise fall back to medians
                 if cam0_pos_segs is not None and cam0_pos_segs.size and i_trial < cam0_pos_segs.shape[0]:
@@ -1116,7 +1295,7 @@ def main():
                 c1_pos_single = _select_single_trial(c1_pos_single, idx_subset)
                 c1_vel_single = _select_single_trial(c1_vel_single, idx_subset)
 
-                if NORMALIZED_DISTANCE:
+                if PLOT_NORMALIZED_DISTANCE:
                     c0_pos_single = (
                         cam0_dist_trials[i_trial, :][None, :]
                         if cam0_dist_trials is not None and i_trial < cam0_dist_trials.shape[0]
@@ -1143,10 +1322,15 @@ def main():
                     c1_vel_single = None
 
                 title_single_kin = f"Kinematics (MWT, single trial {i_trial+1})"
-                title_single_neural = (
-                    f"Neural Activity (single trial {i_trial+1}) / "
-                    f"Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
-                )
+                if PLOT_SPIKE_COUNTS:
+                    title_single_neural = f"Neural Activity (single trial {i_trial+1} spike counts/bin)"
+                else:
+                    title_single_neural = (
+                        f"Neural Activity (single trial {i_trial+1}) / "
+                        f"Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
+                    )
+                if ORDER_BY_PEAK:
+                    title_single_neural += " (peak ordered)"
 
                 if peri_stim_npz_loc.name.startswith('baseline'):
                     base_fn = f"{peri_stim_npz_loc.name}"
@@ -1168,6 +1352,8 @@ def main():
                     beh_pos_ylabel=beh_pos_ylabel_for_plot,
                     cmap=COLORMAP,
                     center_zero=CENTER_ZERO,
+                    cb_label_nprw=cb_label,
+                    cb_label_ua=cb_label,
                     vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
                     vmin_ua={
                         "M1i": VMIN_UA,
@@ -1186,7 +1372,10 @@ def main():
                     stim_idx=stim_locs,
                     probe_title="NPRW probe (stim sites highlighted)",
                     ua_ids_1based=ua_ids_1based,
-                    ua_sort="region_then_elec",
+                    ua_sort=UA_SORT,
+                    nprw_sort=NPRW_SORT,
+                    peak_order_direction=PEAK_ORDER_DIRECTION,
+                    peak_search_window_ms=PEAK_SEARCH_WINDOW_MS,
                     beh_rel_time=beh_time_for_both,
                     beh_cam0_pos=c0_pos_single,
                     beh_cam1_pos=c1_pos_single,
@@ -1219,6 +1408,12 @@ def main():
                     probe_width_ratio=PROBE_WIDTH_RATIO,
                     nprw_blank_ms=nprw_blank_ms,
                     stim_dur_ms=None if is_control else stim_dur_ms,
+                    nprw_show_y_ticks=SHOW_NPRW_Y_TICKS,
+                    beh_show_box=BEH_SHOW_BOX,
+                    beh_show_y_axis=BEH_SHOW_Y_AXIS,
+                    beh_line_width=BEH_LINE_WIDTH,
+                    beh_scale_bar_ms=BEH_SCALE_BAR_MS,
+                    beh_in_plot_label=BEH_IN_PLOT_LABEL,
                 )
 
 

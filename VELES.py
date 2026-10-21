@@ -38,19 +38,26 @@ SESSIONS_TO_RUN_ADA = [
     "ANR_UA004",
 ]
 
-# PROCESS_ONLY = [3, 7, 8, 9, 10, 11, 12] # 12
-# PROCESS_ONLY = [3, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31] # 12
-# PROCESS_ONLY = [3, 12] # 12
-# PROCESS_ONLY = [3, 19, 22, 25, 39]
-# PROCESS_ONLY = [1, 3, 4, 5, 6, 7, 8, 9, 10] # 22
-# PROCESS_ONLY = [1, 11, 12, 14, 15, 16, 17, 18] # 22
-# PROCESS_ONLY = [11, 17, 18] # 22
+# PROCESS_ONLY = [3, 7, 8, 9, 10, 11, 12] # s12 - 1to40 pulse stim vs control
+PROCESS_ONLY = [1, 11, 12, 14, 15, 16, 17, 18] # s22 - 1to40 pulse stim vs control
+
+# PROCESS_ONLY = [4, 5, 6, 7, 10, 11] # s11 - 400 Hz vs 130 Hz
+
+# PROCESS_ONLY = [2, 4, 22, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] # s11 - 8 ch walk vs control
+
+# PROCESS_ONLY = [3, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31] # s12 - 1-4 pulse stim across different channels
+
+# PROCESS_ONLY = [1, 3, 4, 5, 6, 7, 8, 9, 10] # s22 - continuous stim vs control
+
+# PROCESS_ONLY = [3, 12] # s12 - 40p stim vs control
+# PROCESS_ONLY = [1, 17, 18] # s22 - 40p stim vs control
+
+
+# PROCESS_ONLY = [18]
+
 # PROCESS_ONLY = []
-# PROCESS_ONLY = [2, 4, 22, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] # 11
-# PROCESS_ONLY = []
-PROCESS_ONLY = [17]
-# PROCESS_ONLY = []
-# PROCESS_ONLY = []
+# PROCESS_ONLY = [6, 7]
+# PROCESS_ONLY = [8, 9, 10]
 
 
 SCRIPTS = [
@@ -71,9 +78,9 @@ SCRIPTS = [
     # "analysis_scripts/plot_3d_kinematics.py",
     # "analysis_scripts/plot_behavioral_stim_perturbation.py",
     # "analysis_scripts/plot_behavioral_rsa.py",
-    # "analysis_scripts/plot_lfp_rsa.py",
+    "analysis_scripts/plot_lfp_rsa.py",
     # "analysis_scripts/RSA_calculation.py",
-    "analysis_scripts/plot_firing_rates.py",
+    # "analysis_scripts/plot_firing_rates.py",
     # "analysis_scripts/plot_peri_stim_raster.py",
     # "analysis_scripts/plot_stim_group_responses.py",
     # "analysis_scripts/plot_stim_response_overlays.py",

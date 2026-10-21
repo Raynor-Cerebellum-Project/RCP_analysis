@@ -1354,13 +1354,14 @@ def format_condition_label(
     control_br_indices: Optional[List[int]] = None,
     pulse_width_ms: float = PULSE_WIDTH_MS,
     include_target: bool = False,
+    show_indices: bool = True,
 ) -> str:
     """
     Format publication-quality condition label based on metadata and BR index.
     
     Examples:
-        - Control: 'BR 1: Control', 'BR 18: Control'
-        - Stim: 'BR 17: 40 pulses, 400 Hz'
+        - Control: 'BR 1: Control', 'Control'
+        - Stim: 'BR 17: 40 pulses, 400 Hz', '40 pulses, 400 Hz'
         - Current Steering: 'BR 25: 40 pulses, 400 Hz, Current Steering'
         - Multi-target: 'BR 1: Control (Target A)', 'BR 1: Control (Target B)'
     """
@@ -1394,8 +1395,16 @@ def format_condition_label(
             is_curr_steering = True
             break
 
+    comb_brs = cond_info.get("combined_br_indices")
+    if comb_brs and len(comb_brs) > 1 and show_indices:
+        prefix = f"BR {','.join(map(str, comb_brs))}: "
+        prefix_only = f"BR {','.join(map(str, comb_brs))}"
+    else:
+        prefix = f"BR {cond_num}: " if show_indices else ""
+        prefix_only = f"BR {cond_num}" if show_indices else ""
+
     if is_control:
-        base_label = f"BR {cond_num}: Control"
+        base_label = f"{prefix}Control" if prefix else "Control"
     else:
         pulse_count = cond_info.get("pulse_count")
         freq_hz = cond_info.get("stim_freq_hz")
@@ -1422,15 +1431,15 @@ def format_condition_label(
         if pulse_count is not None and freq_hz is not None and not np.isnan(freq_hz):
             p_str = f"{pulse_count} pulse" if pulse_count == 1 else f"{pulse_count} pulses"
             f_str = f"{int(freq_hz)} Hz" if float(freq_hz).is_integer() else f"{freq_hz:.1f} Hz"
-            base_label = f"BR {cond_num}: {p_str}, {f_str}"
+            base_label = f"{prefix}{p_str}, {f_str}"
         elif pulse_count is not None:
             p_str = f"{pulse_count} pulse" if pulse_count == 1 else f"{pulse_count} pulses"
-            base_label = f"BR {cond_num}: {p_str}"
+            base_label = f"{prefix}{p_str}"
         elif freq_hz is not None and not np.isnan(freq_hz):
             f_str = f"{int(freq_hz)} Hz" if float(freq_hz).is_integer() else f"{freq_hz:.1f} Hz"
-            base_label = f"BR {cond_num}: {f_str}"
+            base_label = f"{prefix}{f_str}"
         else:
-            base_label = f"BR {cond_num}"
+            base_label = prefix_only or "Stim"
 
     if is_curr_steering:
         base_label = f"{base_label}, Current Steering"
@@ -1499,26 +1508,61 @@ def assign_condition_colors_and_styles(
             return "B"
         return "A"
 
-    unique_cnums = sorted(list(set(_get_cnum(k) for k in keys)))
-    ctrl_cnums = [c for c in unique_cnums if any(_is_c(k) for k in keys if _get_cnum(k) == c)]
-    stim_cnums = [c for c in unique_cnums if c not in ctrl_cnums]
+    seen = []
+    for k in keys:
+        c = _get_cnum(k)
+        if c not in seen:
+            seen.append(c)
+    ctrl_cnums = [c for c in seen if any(_is_c(k) for k in keys if _get_cnum(k) == c)]
+    stim_cnums = [c for c in seen if c not in ctrl_cnums]
 
-    # Target A Palettes: Gold for Control, Grey (bone) for Stim
+    # If conditions have varying pulse counts or durations, sort them so lower pulses/durations come first (lighter)
+    # and higher pulses/durations come last (darkest).
+    has_varying_pulses = False
+    if cond_info_dict:
+        pulses = [
+            float(info.get("pulse_count") or info.get("stim_pulses") or 0.0)
+            for k, info in cond_info_dict.items()
+            if isinstance(info, dict) and not _is_c(k)
+        ]
+        if len(set(pulses)) > 1:
+            has_varying_pulses = True
+
+    if has_varying_pulses:
+        def _stim_order_key(c: int) -> Tuple[float, float, int]:
+            matching = [info for k, info in cond_info_dict.items() if _get_cnum(k) == c and isinstance(info, dict)]
+            if matching:
+                p = float(matching[0].get("pulse_count") or matching[0].get("stim_pulses") or 0.0)
+                dur = float(matching[0].get("stim_dur_nominal_ms") or matching[0].get("stim_dur_ms") or 0.0)
+                return (p, dur, c)
+            return (0.0, 0.0, c)
+        stim_cnums = sorted(stim_cnums, key=_stim_order_key)
+    else:
+        stim_cnums = sorted(stim_cnums)
+
+    # Target A Palettes: Gold for Control, Grey (bone) for Stim (lighter for early conditions, darker for later conditions)
     ctrl_palette_a = ["goldenrod", "gold", "darkgoldenrod", "#E6A817"]
     n_stim = max(1, len(stim_cnums))
-    stim_lo = 0.35
-    stim_hi = min(0.72, 0.35 + 0.20 * n_stim)
-    stim_colors_a = list(plt.get_cmap("bone")(np.linspace(stim_lo, stim_hi, n_stim)))
+    stim_light_a = 0.72
+    stim_dark_a = 0.25
+    if n_stim == 1:
+        stim_colors_a = [plt.get_cmap("bone")(0.35)]
+    else:
+        # bone colormap: 0.0 is black, 1.0 is white -> linspace from light (0.72) to dark (0.25)
+        stim_colors_a = list(plt.get_cmap("bone")(np.linspace(stim_light_a, stim_dark_a, n_stim)))
 
-    # Target B Palettes: Orange for Control, Dark Green for Stim
+    # Target B Palettes: Orange for Control, Dark Green for Stim (lighter for early conditions, darker for later conditions)
     ctrl_palette_b = ["darkorange", "chocolate", "coral", "orangered"]
-    stim_colors_b = list(plt.get_cmap("Greens")(np.linspace(0.85, 0.55, n_stim)))
+    if n_stim == 1:
+        stim_colors_b = [plt.get_cmap("Greens")(0.80)]
+    else:
+        # Greens colormap: 0.0 is white, 1.0 is dark green -> linspace from light (0.48) to dark (0.88)
+        stim_colors_b = list(plt.get_cmap("Greens")(np.linspace(0.48, 0.88, n_stim)))
 
     # Check if multiple targets exist across keys
     targets = set(_get_tgt(k) for k in keys)
     is_multi_target = len(targets) > 1
 
-    ctrl_styles = ["--", "-.", ":", "--"]
     colors = {}
     linestyles = {}
 
@@ -1539,14 +1583,8 @@ def assign_condition_colors_and_styles(
             else:
                 colors[k] = stim_colors_a[stim_cnums.index(c) % len(stim_colors_a)] if c in stim_cnums else matplotlib.colors.to_rgba("dimgray")
 
-        # When plotting both A and B together, do not use dashed lines (both are solid)
-        if is_multi_target:
-            linestyles[k] = "-"
-        else:
-            if is_control:
-                linestyles[k] = ctrl_styles[ctrl_cnums.index(c) % len(ctrl_styles)] if c in ctrl_cnums else "--"
-            else:
-                linestyles[k] = "-"
+        # All condition traces are plotted as solid lines for clean visibility
+        linestyles[k] = "-"
 
     return colors, linestyles
 
@@ -1651,7 +1689,7 @@ def plot_trajectory_variability_comparison_3d(
     ax_var.legend(loc="upper left", frameon=False, fontsize=9)
     ax_var.spines["top"].set_visible(False)
     ax_var.spines["right"].set_visible(False)
-    ax_var.grid(True, alpha=0.15, linestyle=":")
+    ax_var.grid(False)
 
     # Bottom Subplot: 3D Normalized Distance
     for k in keys:
@@ -1689,7 +1727,7 @@ def plot_trajectory_variability_comparison_3d(
     ax_dist.axvline(0, color="black", linestyle="--", linewidth=1.2, alpha=0.7)
     ax_dist.set_xlim(left=t_min_val, right=t_max_val)
     ax_dist.set_ylim(-0.05, 1.15)
-    ax_dist.set_xlabel(f"Time from Stim Onset / IR (ms)  [{t_min_val:.0f} to {t_max_val:.0f} ms]", fontsize=10)
+    ax_dist.set_xlabel("Time (ms)", fontsize=10)
     ax_dist.set_ylabel("Normalized 3D Distance", fontsize=10)
     ax_dist.set_title(
         f"3D Kinematics: Normalized Distance from Start (Target {target}, {t_min_val:.0f} to {t_max_val:.0f} ms)",
@@ -1698,7 +1736,7 @@ def plot_trajectory_variability_comparison_3d(
     )
     ax_dist.spines["top"].set_visible(False)
     ax_dist.spines["right"].set_visible(False)
-    ax_dist.grid(True, alpha=0.15, linestyle=":")
+    ax_dist.grid(False)
 
     fig.tight_layout()
     return fig
@@ -2692,9 +2730,19 @@ def run_3d_kinematics_analysis(
             or (notes and notes.lower() in ("baseline", "control", "ctrl"))
         )
 
-        # If comparing specific conditions, only process those specified
-        if compare_conditions and (br_idx not in compare_conditions):
-            continue
+        # If comparing specific conditions, process requested conditions plus control candidates if none in compare_conditions
+        if compare_conditions:
+            has_ctrl_in_req = any(
+                (control_br_indices and c in control_br_indices)
+                or (session_meta.get(c, {}).get("notes", "").strip().lower() in ("baseline", "control", "ctrl"))
+                for c in compare_conditions
+            )
+            if has_ctrl_in_req:
+                if br_idx not in compare_conditions:
+                    continue
+            else:
+                if (br_idx not in compare_conditions) and not is_ctrl_candidate:
+                    continue
 
         # Extract event timestamps
         event_ms = None
@@ -2911,7 +2959,58 @@ def run_3d_kinematics_analysis(
         _log(f"No valid trajectory rows available for Target {target}.")
         return {}
 
-    trajectory_rows_for_overlay = sorted(trajectory_rows_for_overlay, key=lambda r: r["cond_num"])
+    # Combine multiple control conditions for this target into a single consolidated Control row
+    ctrl_rows = [r for r in trajectory_rows_for_overlay if r.get("is_control")]
+    stim_rows = [r for r in trajectory_rows_for_overlay if not r.get("is_control")]
+
+    if len(ctrl_rows) > 1:
+        min_t = min(r["x"].shape[1] for r in ctrl_rows)
+        min_t_full = min(r["x_full"].shape[1] for r in ctrl_rows)
+
+        x_comb = np.vstack([r["x"][:, :min_t] for r in ctrl_rows])
+        y_comb = np.vstack([r["y"][:, :min_t] for r in ctrl_rows])
+        z_comb = np.vstack([r["z"][:, :min_t] for r in ctrl_rows])
+
+        x_full_comb = np.vstack([r["x_full"][:, :min_t_full] for r in ctrl_rows])
+        y_full_comb = np.vstack([r["y_full"][:, :min_t_full] for r in ctrl_rows])
+        z_full_comb = np.vstack([r["z_full"][:, :min_t_full] for r in ctrl_rows])
+
+        total_trials = sum(r["x"].shape[0] for r in ctrl_rows)
+        dist_means = [r.get("dist_mean", np.zeros(min_t))[:min_t] * r["x"].shape[0] for r in ctrl_rows]
+        dist_mean_comb = np.sum(dist_means, axis=0) / max(1, total_trials)
+        dist_stds = [r.get("dist_std", np.zeros(min_t))[:min_t] for r in ctrl_rows]
+        dist_std_comb = np.mean(dist_stds, axis=0)
+        dist_sem_comb = dist_std_comb / np.sqrt(max(1, total_trials))
+
+        br_list = sorted(list(set(r["cond_num"] for r in ctrl_rows)))
+        primary_cnum = br_list[0]
+
+        comb_row = {
+            "cond_num": primary_cnum,
+            "target": target,
+            "time": ctrl_rows[0]["time"][:min_t],
+            "x": x_comb,
+            "y": y_comb,
+            "z": z_comb,
+            "time_full": ctrl_rows[0]["time_full"][:min_t_full],
+            "x_full": x_full_comb,
+            "y_full": y_full_comb,
+            "z_full": z_full_comb,
+            "dist_mean": dist_mean_comb,
+            "dist_std": dist_std_comb,
+            "dist_sem": dist_sem_comb,
+            "is_control": True,
+            "notes": f"Combined Control (BR {', '.join(map(str, br_list))})",
+            "pulse_count": 0,
+            "stim_freq_hz": 0.0,
+            "stim_dur_nominal_ms": 0.0,
+            "cond_str": "Control",
+            "combined_br_indices": br_list,
+        }
+        _log(f"Target {target}: Combined {len(ctrl_rows)} control conditions (BR {br_list}) into 1 unified Control row ({total_trials} total reaches).")
+        trajectory_rows_for_overlay = [comb_row] + stim_rows
+
+    trajectory_rows_for_overlay = sorted(trajectory_rows_for_overlay, key=lambda r: (0 if r.get("is_control") else 1, r["cond_num"]))
 
     # 6. Trajectory Variability Analysis
     variability_results: Dict[int, Dict[str, Any]] = {}

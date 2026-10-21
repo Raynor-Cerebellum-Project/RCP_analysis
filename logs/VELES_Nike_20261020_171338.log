@@ -1,0 +1,13 @@
+================================================================================
+VELES RUN START: 10/20/2026 17:13:38
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: [17]
+Scripts:
+  - analysis_scripts/plot_firing_rates.py
+  - scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py
+================================================================================
+[10/20/2026 17:13:38] [NRR_RW022] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[10/20/2026 17:14:11] [NRR_RW022] [analysis_scripts/plot_firing_rates.py] FINISHED: 10/20/2026 17:14:11
+[10/20/2026 17:14:11] [NRR_RW022] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] IN-PROGRESS
+[10/20/2026 17:17:09] [NRR_RW022] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] FINISHED: 10/20/2026 17:17:09

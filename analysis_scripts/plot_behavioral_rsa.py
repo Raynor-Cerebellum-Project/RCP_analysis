@@ -56,7 +56,7 @@ matplotlib.rcParams["svg.fonttype"] = "none"
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.patches import Patch, Ellipse
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, to_hex
 from scipy import stats
 
 # Suppress benign numerical runtime warnings
@@ -138,6 +138,15 @@ FIG_DPI: int = 300
 COLOR_CTRL: str = "#2c3e50"
 COLOR_CTRL_LIGHT: str = "#7f8c8d"
 COLOR_STIM_DEFAULT: str = "#e74c3c"
+
+# Condition Label Display Options
+SHOW_CONDITION_INDICES: bool = False  # If False, omit condition index prefixes (e.g. 'BR 1', 'BR 17')
+SHOW_TRIAL_COUNTS: bool = False       # If False, omit trial count annotations (e.g. 'n=16')
+
+# Figure Output & Display Options
+PLOT_STANDALONE_RSA_MATRICES: bool = False  # If False (default), plot only the dual-window comparison figure and omit individual RDM/RSA matrices
+VARIABILITY_PLOT_MODE: str = "both"         # Options: "both" (default), "variability", or "deflection"
+VARIABILITY_LEGEND_ORIENTATION: str = "column"  # Options: "column" (default) or "row"
 
 
 # =============================================================================
@@ -293,6 +302,9 @@ class ReachCondition:
         notes: str = "",
         base_label: Optional[str] = None,
         stim_channels: Optional[str] = None,
+        short_label: Optional[str] = None,
+        fixed_params_summary: str = "",
+        combined_br_indices: Optional[List[int]] = None,
     ):
         self.cond_num = cond_num
         self.br_idx = br_idx
@@ -310,6 +322,9 @@ class ReachCondition:
         self.stim_dur_ms = stim_dur_ms if stim_dur_ms is not None else 0.0
         self.notes = notes
         self.stim_channels = stim_channels
+        self.short_label = short_label or label
+        self.fixed_params_summary = fixed_params_summary
+        self.combined_br_indices = combined_br_indices
 
     @property
     def n_trials(self) -> int:
@@ -348,7 +363,231 @@ class ReachCondition:
             notes=self.notes,
             base_label=self.base_label,
             stim_channels=self.stim_channels,
+            short_label=self.short_label,
+            fixed_params_summary=self.fixed_params_summary,
+            combined_br_indices=self.combined_br_indices,
         )
+
+
+def _get_cond_attr(c: Any, key: str, default: Any = None) -> Any:
+    """Helper to retrieve attributes from either ReachCondition objects or dictionaries."""
+    if isinstance(c, dict):
+        return c.get(key, default)
+    return getattr(c, key, default)
+
+
+def build_adaptive_condition_labels(
+    conditions: Sequence[Any],
+    show_indices: Optional[bool] = None,
+    show_trial_counts: Optional[bool] = None,
+) -> Tuple[Dict[Any, str], Dict[Any, str], str]:
+    """
+    Construct publication-quality condition labels displaying only what is unique across conditions.
+
+    Rules:
+      1. If all stim conditions have the same stimulation channels, omit channels from condition labels.
+      2. If all stim conditions have the same stimulation frequency, omit frequency from condition labels.
+      3. If all stim conditions have the same pulse count, omit pulse count from condition labels.
+      4. Place identical/fixed parameters in a summary string for figure-level display (e.g. 'Fixed parameters: 400 Hz, ch 1-32').
+      5. Configurable options:
+         - show_indices (default False): Toggle condition index prefix (e.g. 'BR 1', 'BR 17').
+         - show_trial_counts (default False): Toggle trial counts (e.g. 'n=16').
+
+    Returns:
+      full_labels: Dict mapping cond_num -> full descriptive label (e.g. '40 pulses')
+      short_labels: Dict mapping cond_num -> abbreviated label for RDM matrix ticks (e.g. '40p')
+      fixed_summary: String summarizing identical parameters (e.g. 'Fixed parameters: 400 Hz, ch 1-32')
+    """
+    if show_indices is None:
+        show_indices = SHOW_CONDITION_INDICES
+    if show_trial_counts is None:
+        show_trial_counts = SHOW_TRIAL_COUNTS
+
+    ctrl_conds = [c for c in conditions if _get_cond_attr(c, "is_control", False)]
+    stim_conds = [c for c in conditions if not _get_cond_attr(c, "is_control", False)]
+
+    # Extract stimulation parameters across all stim conditions
+    pulses = [_get_cond_attr(c, "pulse_count") for c in stim_conds]
+    valid_pulses = [p for p in pulses if p is not None]
+    unique_pulses = sorted(list(set(valid_pulses)))
+
+    freqs = [_get_cond_attr(c, "stim_freq_hz") for c in stim_conds]
+    valid_freqs = [f for f in freqs if f is not None and not np.isnan(f)]
+    unique_freqs = sorted(list(set(valid_freqs)))
+
+    channels = [_get_cond_attr(c, "stim_channels") for c in stim_conds]
+    valid_channels = [str(ch).strip() for ch in channels if ch and str(ch).strip() and str(ch).lower() not in ("none", "nan")]
+    unique_channels = sorted(list(set(valid_channels)))
+
+    # Check for continuous stimulation
+    cont_flags = [
+        bool(
+            any(kw in f"{_get_cond_attr(c, 'notes', '')} {_get_cond_attr(c, 'label', '')}".lower() for kw in ("cont", "continuous"))
+            or (_get_cond_attr(c, "stim_freq_hz") is not None and _get_cond_attr(c, "stim_freq_hz") <= 2.5)
+        )
+        for c in stim_conds
+    ]
+    any_cont = any(cont_flags)
+    all_cont = all(cont_flags) and len(cont_flags) > 0
+
+    # Check for current steering
+    curr_steer_flags = [
+        bool("curr steer" in f"{_get_cond_attr(c, 'notes', '')} {_get_cond_attr(c, 'label', '')}".lower() or
+             "current steer" in f"{_get_cond_attr(c, 'notes', '')} {_get_cond_attr(c, 'label', '')}".lower())
+        for c in stim_conds
+    ]
+    vary_steer = any(curr_steer_flags) and not all(curr_steer_flags)
+
+    # Determine what varies vs what is identical across stim conditions
+    if len(stim_conds) <= 1:
+        # Only 1 stim condition (or none): display its parameters fully, no fixed parameter stripping needed
+        vary_pulses = True
+        vary_freqs = True
+        vary_channels = True
+        constant_pulses = False
+        constant_freqs = False
+        constant_channels = False
+    else:
+        vary_pulses = (len(unique_pulses) > 1) or (any_cont and not all_cont)
+        vary_freqs = (len(unique_freqs) > 1)
+        vary_channels = (len(unique_channels) > 1)
+
+        constant_pulses = (len(unique_pulses) == 1 and len(valid_pulses) == len(stim_conds) and not any_cont)
+        constant_freqs = (len(unique_freqs) == 1 and len(valid_freqs) == len(stim_conds))
+        constant_channels = (len(unique_channels) == 1 and len(valid_channels) == len(stim_conds))
+
+    # Guard: If nothing varies among stim conditions, don't strip everything into blank labels
+    if len(stim_conds) > 1 and not (vary_pulses or vary_freqs or vary_channels or vary_steer):
+        vary_pulses = True
+        vary_freqs = True
+        vary_channels = True
+
+    # Build fixed parameters summary string
+    fixed_parts = []
+    if constant_freqs and not vary_freqs and len(unique_freqs) == 1:
+        fv = unique_freqs[0]
+        fixed_parts.append(f"{int(fv)} Hz" if float(fv).is_integer() else f"{fv:.1f} Hz")
+    if constant_pulses and not vary_pulses and len(unique_pulses) == 1:
+        pv = unique_pulses[0]
+        fixed_parts.append(f"{pv} pulse" if pv == 1 else f"{pv} pulses")
+    if constant_channels and not vary_channels and len(unique_channels) == 1:
+        fixed_parts.append(f"ch {unique_channels[0]}")
+
+    if len(fixed_parts) > 1:
+        fixed_summary = f"Fixed parameters: {', '.join(fixed_parts)}"
+    elif len(fixed_parts) == 1:
+        fixed_summary = f"Fixed parameter: {fixed_parts[0]}"
+    else:
+        fixed_summary = ""
+
+    # Build condition-specific labels
+    full_labels: Dict[Any, str] = {}
+    short_labels: Dict[Any, str] = {}
+
+    for c in conditions:
+        cond_num = _get_cond_attr(c, "cond_num", _get_cond_attr(c, "br_idx", 0))
+        is_ctrl = _get_cond_attr(c, "is_control", False)
+        n_tri = _get_cond_attr(c, "n_trials", 0)
+
+        if is_ctrl:
+            base_full = "Control"
+            base_short = "Ctrl"
+        else:
+            p_full: List[str] = []
+            p_short: List[str] = []
+
+            # Check continuous
+            is_c_cont = (
+                any(kw in f"{_get_cond_attr(c, 'notes', '')} {_get_cond_attr(c, 'label', '')}".lower() for kw in ("cont", "continuous"))
+                or (_get_cond_attr(c, "stim_freq_hz") is not None and _get_cond_attr(c, "stim_freq_hz") <= 2.5)
+            )
+
+            if is_c_cont:
+                p_full.append("2Hz-cont")
+                p_short.append("2Hz-cont")
+            elif vary_pulses:
+                p_val = _get_cond_attr(c, "pulse_count")
+                if p_val is not None:
+                    p_full.append(f"{p_val} pulse" if p_val == 1 else f"{p_val} pulses")
+                    p_short.append(f"{p_val}p")
+
+            if vary_freqs and not is_c_cont:
+                f_val = _get_cond_attr(c, "stim_freq_hz")
+                if f_val is not None and not np.isnan(f_val):
+                    f_txt = f"{int(f_val)} Hz" if float(f_val).is_integer() else f"{f_val:.1f} Hz"
+                    f_short = f"{int(f_val)}Hz" if float(f_val).is_integer() else f"{f_val:.1f}Hz"
+                    p_full.append(f_txt)
+                    p_short.append(f_short)
+
+            if vary_channels:
+                ch_val = _get_cond_attr(c, "stim_channels")
+                if ch_val and str(ch_val).strip() and str(ch_val).lower() not in ("none", "nan"):
+                    p_full.append(f"ch {str(ch_val).strip()}")
+                    p_short.append(f"ch {str(ch_val).strip()}")
+
+            # Current steering
+            is_cs = (
+                "curr steer" in f"{_get_cond_attr(c, 'notes', '')} {_get_cond_attr(c, 'label', '')}".lower()
+                or "current steer" in f"{_get_cond_attr(c, 'notes', '')} {_get_cond_attr(c, 'label', '')}".lower()
+            )
+            if is_cs:
+                p_full.append("Current Steering")
+                p_short.append("Curr Steer")
+
+            # Additional notes if unique
+            notes_str = str(_get_cond_attr(c, "notes", "")).strip()
+            if notes_str and notes_str.lower() not in ("baseline", "control", "ctrl", "nan", "none", "") and "curr steer" not in notes_str.lower():
+                p_full.append(notes_str)
+                p_short.append(notes_str)
+
+            if not p_full:
+                p_full.append("Stim")
+                p_short.append("Stim")
+
+            base_full = ", ".join(p_full)
+            base_short = ", ".join(p_short)
+
+        # Apply SHOW_CONDITION_INDICES
+        if show_indices:
+            comb_brs = _get_cond_attr(c, "combined_br_indices", None)
+            if comb_brs and len(comb_brs) > 1:
+                br_tag = f"BR {','.join(map(str, comb_brs))}"
+            else:
+                br_tag = f"BR {cond_num}"
+            full_lbl = f"{br_tag}: {base_full}"
+            short_lbl = f"{br_tag} ({base_short})"
+        else:
+            full_lbl = base_full
+            short_lbl = base_short
+
+        # Apply SHOW_TRIAL_COUNTS
+        if show_trial_counts and n_tri > 0:
+            full_lbl = f"{full_lbl} (n={n_tri})"
+            short_lbl = f"{short_lbl} (n={n_tri})"
+
+        full_labels[cond_num] = full_lbl
+        short_labels[cond_num] = short_lbl
+
+    return full_labels, short_labels, fixed_summary
+
+
+def apply_adaptive_condition_labels(
+    conditions: List[ReachCondition],
+    show_indices: Optional[bool] = None,
+    show_trial_counts: Optional[bool] = None,
+) -> str:
+    """Apply adaptive labels directly to ReachCondition objects in place and return fixed_summary."""
+    if not conditions:
+        return ""
+    full_labels, short_labels, fixed_summary = build_adaptive_condition_labels(
+        conditions, show_indices=show_indices, show_trial_counts=show_trial_counts
+    )
+    for c in conditions:
+        c.label = full_labels.get(c.cond_num, c.label)
+        c.base_label = full_labels.get(c.cond_num, c.base_label)
+        c.short_label = short_labels.get(c.cond_num, c.label)
+        c.fixed_params_summary = fixed_summary
+    return fixed_summary
 
 
 def load_conditions_for_target(
@@ -584,27 +823,27 @@ def load_conditions_for_target(
 
         if ctrl_in_req:
             # Control is provided in process_only and has valid reaches for this target!
-            # Use that control and keep strictly requested conditions.
-            _log(f"Target {target_str}: Control condition(s) {sorted(set(c['br_idx'] for c in ctrl_in_req))} provided in process_only with reaches for Target {target_str}. Using requested control.")
+            # Use requested control condition(s) (will be combined into 1 unified Control group if multiple).
+            _log(f"Target {target_str}: Control condition(s) {sorted(set(c['br_idx'] for c in ctrl_in_req))} provided in process_only with reaches for Target {target_str}. (Will be combined into 1 group).")
             selected_candidates = req_matched
         else:
             # Control NOT provided in process_only, or target is not available in the process_only control session.
-            # Look for the control session with the largest amount of trials for this target!
+            # Look for all available control sessions with reaches for this target to combine!
             avail_ctrls = [c for c in parsed_candidates if c["is_control"] and c["n_events"] > 0]
             if avail_ctrls:
-                best_ctrl = max(avail_ctrls, key=lambda c: c["n_events"])
-                _log(f"Target {target_str}: Control not in process_only or target unavailable in requested control; selected BR {best_ctrl['br_idx']} as control ({best_ctrl['n_events']} trials for Target {target_str}).")
-                selected_candidates = req_matched + [best_ctrl]
+                ctrl_idxs = sorted(set(c['br_idx'] for c in avail_ctrls))
+                _log(f"Target {target_str}: Control not in process_only; including all {len(avail_ctrls)} available control condition(s) (BR {ctrl_idxs}) to combine for Target {target_str}.")
+                selected_candidates = req_matched + avail_ctrls
             else:
                 _log(f"Target {target_str}: No control conditions available with reaches for Target {target_str}; proceeding with requested conditions.")
                 selected_candidates = req_matched
     else:
-        # No process_only filtering: take control session with largest amount of trials for this target + all stim conditions
+        # No process_only filtering: take all available control conditions to combine + all stim conditions
         avail_ctrls = [c for c in parsed_candidates if c["is_control"] and c["n_events"] > 0]
         if avail_ctrls:
-            best_ctrl = max(avail_ctrls, key=lambda c: c["n_events"])
-            _log(f"Target {target_str}: Selected BR {best_ctrl['br_idx']} as control with largest trials ({best_ctrl['n_events']}) for Target {target_str}.")
-            selected_candidates = [best_ctrl] + [c for c in parsed_candidates if not c["is_control"]]
+            ctrl_idxs = sorted(set(c['br_idx'] for c in avail_ctrls))
+            _log(f"Target {target_str}: Including all {len(avail_ctrls)} available control condition(s) (BR {ctrl_idxs}) to combine for Target {target_str}.")
+            selected_candidates = avail_ctrls + [c for c in parsed_candidates if not c["is_control"]]
         else:
             selected_candidates = parsed_candidates
 
@@ -766,9 +1005,55 @@ def load_conditions_for_target(
         )
         conditions.append(rc)
 
+    # Combine multiple control conditions for this target into a single unified Control group
+    ctrl_conds = [c for c in conditions if c.is_control]
+    stim_conds = [c for c in conditions if not c.is_control]
+
+    if len(ctrl_conds) > 1:
+        min_t = min(c.x.shape[1] for c in ctrl_conds)
+        x_comb = np.vstack([c.x[:, :min_t] for c in ctrl_conds])
+        y_comb = np.vstack([c.y[:, :min_t] for c in ctrl_conds])
+        z_comb = np.vstack([c.z[:, :min_t] for c in ctrl_conds])
+
+        raw_idx_list = [c.raw_trial_indices for c in ctrl_conds if c.raw_trial_indices is not None]
+        raw_idx_comb = np.concatenate(raw_idx_list) if len(raw_idx_list) == len(ctrl_conds) else None
+
+        br_list = sorted(list(set(c.br_idx for c in ctrl_conds)))
+        primary_br = br_list[0]
+        n_tot = x_comb.shape[0]
+
+        comb_notes = f"Combined Control (BR {', '.join(map(str, br_list))})"
+        comb_base = "Control"
+        comb_label = f"Control (n={n_tot})"
+
+        combined_ctrl = ReachCondition(
+            cond_num=primary_br,
+            br_idx=primary_br,
+            label=comb_label,
+            base_label=comb_base,
+            target=target_str,
+            is_control=True,
+            time=ctrl_conds[0].time[:min_t],
+            x=x_comb,
+            y=y_comb,
+            z=z_comb,
+            raw_trial_indices=raw_idx_comb,
+            pulse_count=0,
+            stim_freq_hz=0.0,
+            stim_dur_ms=0.0,
+            notes=comb_notes,
+            stim_channels=None,
+            combined_br_indices=br_list,
+        )
+        _log(f"Target {target_str}: Combined {len(ctrl_conds)} control conditions (BR {br_list}) into 1 unified Control group ({n_tot} total reaches).")
+        conditions = [combined_ctrl] + stim_conds
+
     # Sort conditions: Control conditions first, followed by stim conditions sorted by BR index
     conditions.sort(key=lambda c: (0 if c.is_control else 1, c.br_idx))
+    fixed_summary = apply_adaptive_condition_labels(conditions)
     _log(f"Loaded {len(conditions)} valid conditions for Target {target_str} (Control count: {sum(c.is_control for c in conditions)}):")
+    if fixed_summary:
+        _log(f"   [{fixed_summary}]")
     for c in conditions:
         ctrl_mark = " [CONTROL]" if c.is_control else ""
         _log(f"   • {c.label}{ctrl_mark}")
@@ -1162,6 +1447,16 @@ def compute_directional_perturbations(
 # Visualizations & Plotting Functions
 # =============================================================================
 
+def _safe_color_hex(col: Any) -> str:
+    """Safely convert any color representation (string, tuple, numpy array) to a hex string."""
+    try:
+        return to_hex(col)
+    except Exception:
+        if isinstance(col, (np.ndarray, list, tuple)):
+            return str(tuple(col))
+        return str(col)
+
+
 def draw_staggered_stim_block(
     ax: plt.Axes,
     stim_conditions: List[Dict[str, Any]],
@@ -1199,14 +1494,22 @@ def draw_staggered_stim_block(
             ax.axvspan(prev_d, d, color="#f9e79f", alpha=alpha_step, zorder=0)
             prev_d = d
 
-    # 2. Condition-specific drop-lines at stimulus termination
+    # 2. Condition-specific drop-lines at stimulus termination (deduplicated by duration)
     if show_drop_lines:
-        for c in sorted_stims:
-            dur = float(c["stim_dur_ms"])
-            color = c.get("color", "#e74c3c")
+        for dur in unique_durs:
+            matching_c = [c for c in sorted_stims if abs(float(c.get("stim_dur_ms", 0.0)) - dur) < 1e-3]
+            unique_colors = []
+            seen_hex = set()
+            for c in matching_c:
+                raw_col = c.get("color", "#e74c3c")
+                hex_col = _safe_color_hex(raw_col)
+                if hex_col not in seen_hex:
+                    seen_hex.add(hex_col)
+                    unique_colors.append(raw_col)
+            color = unique_colors[0] if len(unique_colors) == 1 else "#7f8c8d"
             ax.axvline(dur, color=color, linestyle=":", linewidth=1.1, alpha=0.55, zorder=1)
 
-    # 3. Top-margin duration ladder
+    # 3. Top-margin duration ladder (deduplicated: exactly one bar per unique stim duration)
     if show_ladder:
         cur_ylim = ax.get_ylim()
         ymin = y_min if y_min is not None else cur_ylim[0]
@@ -1215,14 +1518,22 @@ def draw_staggered_stim_block(
         if yrange <= 0:
             yrange = 1.0
 
-        n_bars = len(sorted_stims)
+        n_bars = len(unique_durs)
         bar_height_total = yrange * ladder_height_ratio
         bar_step = bar_height_total / max(1, n_bars)
         y_top = ymax - (yrange * 0.02)
 
-        for i, c in enumerate(reversed(sorted_stims)):
-            dur = float(c["stim_dur_ms"])
-            color = c.get("color", "#e74c3c")
+        for i, dur in enumerate(reversed(unique_durs)):
+            matching_c = [c for c in sorted_stims if abs(float(c.get("stim_dur_ms", 0.0)) - dur) < 1e-3]
+            unique_colors = []
+            seen_hex = set()
+            for c in matching_c:
+                raw_col = c.get("color", "#e74c3c")
+                hex_col = _safe_color_hex(raw_col)
+                if hex_col not in seen_hex:
+                    seen_hex.add(hex_col)
+                    unique_colors.append(raw_col)
+            color = unique_colors[0] if len(unique_colors) == 1 else "#4a6572"
             y_bar = y_top - (i * bar_step)
             # Horizontal bar
             ax.plot([0.0, dur], [y_bar, y_bar], color=color, linewidth=2.4, solid_capstyle="butt", zorder=7)
@@ -1292,27 +1603,26 @@ def get_rdm_colormap() -> LinearSegmentedColormap:
 
 def to_short_condition_label(lbl: str, n_tri: Optional[int] = None) -> str:
     """
-    Shorten condition label for matrix tick display while showing:
-    - Condition prefix: BR X
-    - Control vs Stim parameters:
-        * Control: BR X (Ctrl, n=N)
-        * Stim: BR X (40p, 400Hz, ch 1-8, n=N) or BR X (2Hz-cont, ch 1-32, n=N)
+    Shorten condition label for matrix tick display respecting SHOW_CONDITION_INDICES
+    and SHOW_TRIAL_COUNTS.
     """
     m = re.match(r"(BR\s*\d+)", lbl, re.IGNORECASE)
-    prefix = m.group(1) if m else lbl
+    prefix = m.group(1) if m else ""
 
     # Extract trial count if not provided
     if n_tri is None:
         m_n = re.search(r"\(n=(\d+)\)", lbl)
         if m_n:
             n_tri = int(m_n.group(1))
-    n_str = f"n={n_tri}" if n_tri is not None else ""
+    n_str = f"n={n_tri}" if (SHOW_TRIAL_COUNTS and n_tri is not None) else ""
 
-    if "control" in lbl.lower():
+    if "control" in lbl.lower() or "ctrl" in lbl.lower():
         parts = ["Ctrl"]
         if n_str:
             parts.append(n_str)
-        return f"{prefix} ({', '.join(parts)})"
+        if SHOW_CONDITION_INDICES and prefix:
+            return f"{prefix} ({', '.join(parts)})"
+        return ", ".join(parts)
 
     parts = []
 
@@ -1357,9 +1667,17 @@ def to_short_condition_label(lbl: str, n_tri: Optional[int] = None) -> str:
     if n_str:
         parts.append(n_str)
 
-    if parts:
+    if not parts:
+        clean_lbl = re.sub(r"^BR\s*\d+:\s*", "", lbl, flags=re.IGNORECASE).strip()
+        if not SHOW_TRIAL_COUNTS:
+            clean_lbl = re.sub(r"\s*\(n=\d+\)", "", clean_lbl).strip()
+        if SHOW_CONDITION_INDICES and prefix:
+            return f"{prefix} ({clean_lbl})" if clean_lbl else prefix
+        return clean_lbl
+
+    if SHOW_CONDITION_INDICES and prefix:
         return f"{prefix} ({', '.join(parts)})"
-    return prefix
+    return ", ".join(parts)
 
 
 def plot_behavioral_rsa_matrix_figure(
@@ -1373,6 +1691,8 @@ def plot_behavioral_rsa_matrix_figure(
     metric_label: str = "Euclidean Distance (mm)",
     window_ms: Optional[Tuple[float, float]] = None,
     window_description: str = "",
+    block_short_labels: Optional[List[str]] = None,
+    fixed_params_summary: str = "",
     save_path: Optional[Path] = None,
 ) -> plt.Figure:
     """
@@ -1393,7 +1713,7 @@ def plot_behavioral_rsa_matrix_figure(
         cmap=cmap_rdm, vmin=0.0, vmax=vmax_a,
     )
     win_tag = f" ({int(window_ms[0])}–{int(window_ms[1])} ms)" if window_ms else ""
-    ax_a.set_title(f"A. Trial-by-Trial Kinematic RDM (Target {target}{win_tag})", fontsize=11, fontweight="bold", loc="left")
+    ax_a.set_title(f"A. Trial-by-Trial Kinematic RDM{win_tag}", fontsize=11, fontweight="bold", loc="left")
 
     cum = np.cumsum(block_sizes)
     starts = np.r_[0, cum[:-1]]
@@ -1406,7 +1726,7 @@ def plot_behavioral_rsa_matrix_figure(
     ax_a.set_xticks([])
     ax_a.set_yticks([])
 
-    short_labels = [to_short_condition_label(l, sz) for l, sz in zip(block_labels, block_sizes)]
+    short_labels = block_short_labels if block_short_labels is not None else [to_short_condition_label(l, sz) for l, sz in zip(block_labels, block_sizes)]
 
     for c, lab in zip(centers, short_labels):
         ax_a.text(c, -0.02, lab, transform=ax_a.get_xaxis_transform(),
@@ -1432,7 +1752,7 @@ def plot_behavioral_rsa_matrix_figure(
         np.ma.masked_invalid(S), cmap=cmap_b, vmin=-vmax_b, vmax=vmax_b,
         origin="upper", interpolation="nearest", aspect="equal",
     )
-    ax_b.set_title(f"B. Condition Separation (Silhouette) & Consistency (Target {target}{win_tag})", fontsize=11, fontweight="bold", loc="left")
+    ax_b.set_title(f"B. Condition Separation (Silhouette) & Consistency{win_tag}", fontsize=11, fontweight="bold", loc="left")
 
     ax_b.set_xticks(range(K))
     ax_b.set_yticks(range(K))
@@ -1455,11 +1775,16 @@ def plot_behavioral_rsa_matrix_figure(
                 val = S[i, j]
                 q_val = Q[i, j]
                 star = p_stars_label(q_val)
-                txt = f"{val:+.2f}"
-                if star and star != "n.s.":
-                    txt += f"\n{star}"
                 color = "white" if abs(val) > 0.55 * vmax_b else "black"
-                ax_b.text(j, i, txt, ha="center", va="center", fontsize=7.5, color=color)
+                val_str = f"{val:+.2f}"
+                if star and star != "n.s.":
+                    num_font = max(6.0, min(8.0, 9.0 - 0.15 * K))
+                    star_font = max(10.5, min(14.0, 16.0 - 0.25 * K))
+                    ax_b.text(j, i - 0.13, val_str, ha="center", va="center", fontsize=num_font, color=color)
+                    ax_b.text(j, i + 0.16, star, ha="center", va="center", fontsize=star_font, fontweight="bold", color=color)
+                else:
+                    num_font = max(6.5, min(8.5, 9.5 - 0.15 * K))
+                    ax_b.text(j, i, val_str, ha="center", va="center", fontsize=num_font, color=color)
 
     cb_b = fig.colorbar(im_b, ax=ax_b, fraction=0.046, pad=0.04)
     cb_b.set_label("Pairwise Silhouette Score (Separation)", fontsize=9)
@@ -1471,17 +1796,20 @@ def plot_behavioral_rsa_matrix_figure(
         line2 = "   |   ".join(block_labels[mid:])
         full_legend_text = f"{line1}\n{line2}"
         fig.text(0.5, 0.045, full_legend_text, ha="center", va="top", fontsize=7.2, color="#2c3e50", fontweight="medium")
-        fig.tight_layout(rect=[0, 0.08, 1, 0.94 if window_description else 1.0])
+        fig.tight_layout(rect=[0, 0.08, 1, 0.93])
     else:
         full_legend_text = "   |   ".join(block_labels)
         fig.text(0.5, 0.04, full_legend_text, ha="center", va="top", fontsize=7.5, color="#2c3e50", fontweight="medium")
-        fig.tight_layout(rect=[0, 0.06, 1, 0.94 if window_description else 1.0])
+        fig.tight_layout(rect=[0, 0.06, 1, 0.93])
 
-    if window_description and window_ms:
-        fig.suptitle(
-            f"Behavioral RSA & Condition Separation — Target {target} ({int(window_ms[0])}–{int(window_ms[1])} ms : {window_description})",
-            fontsize=12.0, fontweight="bold", y=0.985,
-        )
+    desc_tag = f" : {window_description}" if window_description else ""
+    suptitle_text = f"Behavioral RSA & Condition Separation — Target {target}{win_tag}{desc_tag}"
+    if fixed_params_summary:
+        suptitle_text += f"\n[{fixed_params_summary}]"
+    fig.suptitle(
+        suptitle_text,
+        fontsize=12.0, fontweight="bold", y=0.985,
+    )
 
     fig.text(
         0.98, 0.01,
@@ -1511,6 +1839,8 @@ def plot_dual_window_rsa_comparison_figure(
     window_early: Tuple[float, float] = RSA_EARLY_WINDOW_MS,
     window_late: Tuple[float, float] = RSA_LATE_WINDOW_MS,
     metric_label: str = "Mean 3D Distance (mm)",
+    block_short_labels: Optional[List[str]] = None,
+    fixed_params_summary: str = "",
     save_path: Optional[Path] = None,
 ) -> plt.Figure:
     """
@@ -1518,9 +1848,9 @@ def plot_dual_window_rsa_comparison_figure(
         Top Row (Early Window: 0–100 ms, Pre-Divergence / Control-Like):
             Panel A: Trial-by-Trial Kinematic RDM
             Panel B: Condition Separation (Pairwise Silhouette)
-        Bottom Row (Perturbation Window: 100–350 ms, Active Deflection / Divergent):
-            Panel C: Trial-by-Trial Kinematic RDM
-            Panel D: Condition Separation (Pairwise Silhouette)
+        Bottom Row (Late Window: 100–350 ms, Active Deflection / Divergent):
+            Panel C: Trial-by-Trial Late Kinematic RDM
+            Panel D: Late Condition Separation (Pairwise Silhouette)
     """
     fig, axes = plt.subplots(2, 2, figsize=(15.5, 12.5), dpi=FIG_DPI)
     ax_a = axes[0, 0]
@@ -1539,7 +1869,7 @@ def plot_dual_window_rsa_comparison_figure(
     starts = np.r_[0, cum[:-1]]
     boundaries = cum[:-1] - 0.5
     centers = starts + (np.asarray(block_sizes) / 2.0) - 0.5
-    short_labels = [to_short_condition_label(l, sz) for l, sz in zip(block_labels, block_sizes)]
+    short_labels = block_short_labels if block_short_labels is not None else [to_short_condition_label(l, sz) for l, sz in zip(block_labels, block_sizes)]
 
     # -------------------------------------------------------------
     # Panel A: Early RDM (0–100 ms)
@@ -1583,7 +1913,7 @@ def plot_dual_window_rsa_comparison_figure(
         origin="upper", interpolation="nearest", aspect="equal",
     )
     ax_b.set_title(
-        f"B. Early Condition Separation ({int(window_early[0])}–{int(window_early[1])} ms) — Target {target}",
+        f"B. Early Condition Separation ({int(window_early[0])}–{int(window_early[1])} ms)",
         fontsize=10.5, fontweight="bold", loc="left",
     )
     ax_b.set_xticks(range(K))
@@ -1604,24 +1934,29 @@ def plot_dual_window_rsa_comparison_figure(
                 val = S_early[i, j]
                 q_val = Q_early[i, j]
                 star = p_stars_label(q_val)
-                txt = f"{val:+.2f}"
-                if star and star != "n.s.":
-                    txt += f"\n{star}"
                 color = "white" if abs(val) > 0.55 * vmax_s else "black"
-                ax_b.text(j, i, txt, ha="center", va="center", fontsize=7.0, color=color)
+                val_str = f"{val:+.2f}"
+                if star and star != "n.s.":
+                    num_font = max(5.8, min(7.5, 8.5 - 0.15 * K))
+                    star_font = max(10.0, min(13.5, 15.5 - 0.25 * K))
+                    ax_b.text(j, i - 0.13, val_str, ha="center", va="center", fontsize=num_font, color=color)
+                    ax_b.text(j, i + 0.16, star, ha="center", va="center", fontsize=star_font, fontweight="bold", color=color)
+                else:
+                    num_font = max(6.0, min(8.0, 9.0 - 0.15 * K))
+                    ax_b.text(j, i, val_str, ha="center", va="center", fontsize=num_font, color=color)
 
     cb_b = fig.colorbar(im_b, ax=ax_b, fraction=0.046, pad=0.04)
     cb_b.set_label("Pairwise Silhouette S", fontsize=8.5)
 
     # -------------------------------------------------------------
-    # Panel C: Late / Perturbation RDM (100–350 ms)
+    # Panel C: Late Kinematic RDM (100–350 ms)
     # -------------------------------------------------------------
     im_c = ax_c.imshow(
         RDM_late, aspect="equal", origin="upper", interpolation="nearest",
         cmap=cmap_rdm, vmin=0.0, vmax=vmax_rdm,
     )
     ax_c.set_title(
-        f"C. Perturbation Kinematic RDM ({int(window_late[0])}–{int(window_late[1])} ms)",
+        f"C. Late Kinematic RDM ({int(window_late[0])}–{int(window_late[1])} ms)",
         fontsize=10.5, fontweight="bold", loc="left",
     )
     ax_c.set_xticks(boundaries, minor=True)
@@ -1638,14 +1973,14 @@ def plot_dual_window_rsa_comparison_figure(
     cb_c.set_label(f"Dissimilarity: {metric_label}", fontsize=8.5)
 
     # -------------------------------------------------------------
-    # Panel D: Late / Perturbation Silhouette Matrix (100–350 ms)
+    # Panel D: Late Condition Separation (100–350 ms)
     # -------------------------------------------------------------
     im_d = ax_d.imshow(
         np.ma.masked_invalid(S_late), cmap=cmap_b, vmin=-vmax_s, vmax=vmax_s,
         origin="upper", interpolation="nearest", aspect="equal",
     )
     ax_d.set_title(
-        f"D. Perturbation Condition Separation ({int(window_late[0])}–{int(window_late[1])} ms) — Target {target}",
+        f"D. Late Condition Separation ({int(window_late[0])}–{int(window_late[1])} ms)",
         fontsize=10.5, fontweight="bold", loc="left",
     )
     ax_d.set_xticks(range(K))
@@ -1666,11 +2001,16 @@ def plot_dual_window_rsa_comparison_figure(
                 val = S_late[i, j]
                 q_val = Q_late[i, j]
                 star = p_stars_label(q_val)
-                txt = f"{val:+.2f}"
-                if star and star != "n.s.":
-                    txt += f"\n{star}"
                 color = "white" if abs(val) > 0.55 * vmax_s else "black"
-                ax_d.text(j, i, txt, ha="center", va="center", fontsize=7.0, color=color)
+                val_str = f"{val:+.2f}"
+                if star and star != "n.s.":
+                    num_font = max(5.8, min(7.5, 8.5 - 0.15 * K))
+                    star_font = max(10.0, min(13.5, 15.5 - 0.25 * K))
+                    ax_d.text(j, i - 0.13, val_str, ha="center", va="center", fontsize=num_font, color=color)
+                    ax_d.text(j, i + 0.16, star, ha="center", va="center", fontsize=star_font, fontweight="bold", color=color)
+                else:
+                    num_font = max(6.0, min(8.0, 9.0 - 0.15 * K))
+                    ax_d.text(j, i, val_str, ha="center", va="center", fontsize=num_font, color=color)
 
     cb_d = fig.colorbar(im_d, ax=ax_d, fraction=0.046, pad=0.04)
     cb_d.set_label("Pairwise Silhouette S", fontsize=8.5)
@@ -1683,21 +2023,24 @@ def plot_dual_window_rsa_comparison_figure(
             lines.append("   |   ".join(block_labels[i:i + chunk_size]))
         full_legend_text = "\n".join(lines)
         fig.text(0.5, 0.045, full_legend_text, ha="center", va="top", fontsize=6.8, color="#2c3e50", fontweight="medium")
-        fig.tight_layout(rect=[0, 0.09, 1, 0.95])
+        fig.tight_layout(rect=[0, 0.09, 1, 0.93])
     elif len(block_labels) > 4:
         mid = int(np.ceil(len(block_labels) / 2))
         line1 = "   |   ".join(block_labels[:mid])
         line2 = "   |   ".join(block_labels[mid:])
         full_legend_text = f"{line1}\n{line2}"
         fig.text(0.5, 0.045, full_legend_text, ha="center", va="top", fontsize=7.2, color="#2c3e50", fontweight="medium")
-        fig.tight_layout(rect=[0, 0.08, 1, 0.95])
+        fig.tight_layout(rect=[0, 0.08, 1, 0.93])
     else:
         full_legend_text = "   |   ".join(block_labels)
         fig.text(0.5, 0.04, full_legend_text, ha="center", va="top", fontsize=7.5, color="#2c3e50", fontweight="medium")
-        fig.tight_layout(rect=[0, 0.06, 1, 0.95])
+        fig.tight_layout(rect=[0, 0.06, 1, 0.93])
 
+    suptitle_text = f"Behavioral RSA Temporal Epoch Comparison: Early ({int(window_early[0])}–{int(window_early[1])} ms) vs. Late ({int(window_late[0])}–{int(window_late[1])} ms) — Target {target}"
+    if fixed_params_summary:
+        suptitle_text += f"\n[{fixed_params_summary}]"
     fig.suptitle(
-        f"Behavioral RSA Temporal Epoch Comparison: Early ({int(window_early[0])}–{int(window_early[1])} ms) vs. Perturbation ({int(window_late[0])}–{int(window_late[1])} ms) — Target {target}",
+        suptitle_text,
         fontsize=12.5, fontweight="bold", y=0.985,
     )
 
@@ -1718,14 +2061,46 @@ def plot_dual_window_rsa_comparison_figure(
 def plot_time_resolved_variability_figure(
     var_results: Dict[int, Dict[str, Any]],
     target: str = "A",
+    fixed_params_summary: str = "",
     save_path: Optional[Path] = None,
+    mode: Optional[str] = None,
+    legend_orientation: Optional[str] = None,
 ) -> plt.Figure:
     """
-    Consolidated 2-Panel Trajectory Variability & Net Deflection Figure:
+    Consolidated Trajectory Variability & Control Deflection Figure:
         Panel A: Within-Condition 3D Trajectory Variability V(t) in mm.
         Panel B: Net 3D Trajectory Deflection from Control Reference D_to_ctrl(t) in mm.
+
+    Options:
+        mode: "both" (default, 2 panels), "variability" (Panel A only), or "deflection" (Panel B only).
+        legend_orientation: "column" (default, vertical list on the right), or "row" (horizontal banner across top).
     """
-    fig, (ax_a, ax_b) = plt.subplots(2, 1, figsize=(10.5, 7.5), sharex=True, dpi=FIG_DPI)
+    if mode is None:
+        mode = VARIABILITY_PLOT_MODE
+    mode_clean = str(mode).lower().strip()
+    if mode_clean in ("var", "variability"):
+        plot_var = True
+        plot_def = False
+    elif mode_clean in ("def", "deflection", "dev", "deviation"):
+        plot_var = False
+        plot_def = True
+    else:  # "both"
+        plot_var = True
+        plot_def = True
+
+    if legend_orientation is None:
+        legend_orientation = VARIABILITY_LEGEND_ORIENTATION
+    legend_orientation = str(legend_orientation).lower().strip()
+
+    # Figure & subplot geometry
+    if plot_var and plot_def:
+        fig, (ax_a, ax_b) = plt.subplots(2, 1, figsize=(11.0, 7.5), sharex=True, dpi=FIG_DPI)
+    elif plot_var:
+        fig, ax_a = plt.subplots(1, 1, figsize=(11.0, 4.8), dpi=FIG_DPI)
+        ax_b = None
+    else:
+        fig, ax_b = plt.subplots(1, 1, figsize=(11.0, 4.8), dpi=FIG_DPI)
+        ax_a = None
 
     # Assign distinct colors
     cond_keys = sorted(var_results.keys(), key=lambda k: (0 if var_results[k]["is_control"] else 1, k))
@@ -1772,82 +2147,149 @@ def plot_time_resolved_variability_figure(
             lw = 1.8
             zorder = 3
 
-        # Panel A: Within-Condition Variability V(t)
-        ax_a.plot(t, v_med, color=color, linestyle=ls, linewidth=lw, label=label, zorder=zorder)
-        ax_a.fill_between(t, v_med - v_sem, v_med + v_sem, color=color, alpha=0.15, zorder=zorder - 1)
+        # Variability plot (ax_a)
+        if ax_a is not None:
+            ax_a.plot(t, v_med, color=color, linestyle=ls, linewidth=lw, label=label, zorder=zorder)
+            ax_a.fill_between(t, v_med - v_sem, v_med + v_sem, color=color, alpha=0.15, zorder=zorder - 1)
 
-        # Panel B: Divergence from Control Trajectory
-        if not is_ctrl:
-            ax_b.plot(t, div_m, color=color, linestyle="-", linewidth=lw, label=label, zorder=zorder)
-            ax_b.fill_between(t, div_m - div_sem, div_m + div_sem, color=color, alpha=0.15, zorder=zorder - 1)
-        else:
-            ax_b.plot(t, div_m, color=color, linestyle="--", linewidth=1.5, alpha=0.7, label=f"{label} (Baseline)", zorder=2)
-            ax_b.fill_between(t, np.maximum(0, div_m - div_sem), div_m + div_sem, color=color, alpha=0.10, zorder=1)
+        # Deflection / Divergence from Control plot (ax_b)
+        if ax_b is not None:
+            if not is_ctrl:
+                ax_b.plot(t, div_m, color=color, linestyle="-", linewidth=lw, label=label, zorder=zorder)
+                ax_b.fill_between(t, div_m - div_sem, div_m + div_sem, color=color, alpha=0.15, zorder=zorder - 1)
+            else:
+                ax_b.plot(t, div_m, color=color, linestyle="--", linewidth=1.5, alpha=0.7, label=f"{label} (Baseline)", zorder=2)
+                ax_b.fill_between(t, np.maximum(0, div_m - div_sem), div_m + div_sem, color=color, alpha=0.10, zorder=1)
 
-    # 20 mm Significance / Heuristic Threshold Line on Panel B
-    ax_b.axhline(
-        20.0,
-        color="#c0392b",
-        linestyle="--",
-        linewidth=1.3,
-        alpha=0.85,
-        zorder=2,
-        label="Significance Threshold (20 mm)",
-    )
-
-    # Ensure Y-max accommodates 20 mm line
-    c_ymin_b, c_ymax_b = ax_b.get_ylim()
-    if c_ymax_b < 25.0:
-        ax_b.set_ylim(c_ymin_b, 25.0)
-
-    # Apply Staggered Stim Windows, despine, and clean styling to both panels
+    # Style axes: Despine, zero line, and remove grid completely
     for ax in [ax_a, ax_b]:
+        if ax is None:
+            continue
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         ax.axvline(0.0, color="#7f8c8d", linestyle=":", linewidth=1.2, zorder=1)
-        ax.grid(True, linestyle="--", alpha=0.35)
-        # Expand Y-max slightly to accommodate top-margin duration ladder without clipping curves
-        c_ymin, c_ymax = ax.get_ylim()
-        n_ymax = c_ymax + (c_ymax - c_ymin) * 0.14
-        ax.set_ylim(c_ymin, n_ymax)
-        draw_staggered_stim_block(ax, stim_info, y_min=c_ymin, y_max=n_ymax)
+        ax.grid(False)
 
-    ax_a.set_ylabel("3D Variability (mm)", fontsize=9.5, fontweight="medium")
-    ax_a.set_title(f"A. Within-Condition Trajectory Variability Across Time (Target {target})", fontsize=10.5, fontweight="bold", loc="left")
+    # Stim duration ladders & shading:
+    # If both are plotted: ladder bar ONLY on top plot (ax_a), still shade and draw drop lines on both.
+    # If only one is plotted: ladder on the active plot.
+    if plot_var and plot_def:
+        # Top plot: ax_a (Variability)
+        c_ymin_a, c_ymax_a = ax_a.get_ylim()
+        n_ymax_a = c_ymax_a + (c_ymax_a - c_ymin_a) * 0.14
+        ax_a.set_ylim(c_ymin_a, n_ymax_a)
+        draw_staggered_stim_block(
+            ax_a, stim_info, y_min=c_ymin_a, y_max=n_ymax_a,
+            show_ladder=True, show_stepped_shading=True, show_drop_lines=True,
+        )
 
-    ax_b.set_ylabel("3D Deflection from Ctrl (mm)", fontsize=9.5, fontweight="medium")
-    ax_b.set_xlabel("Time Relative to Stim Onset (ms)", fontsize=10, fontweight="medium")
-    ax_b.set_title("B. Net 3D Trajectory Deflection from Control Reference", fontsize=10.5, fontweight="bold", loc="left")
+        # Bottom plot: ax_b (Deflection) — no ladder bar, but stepped shading and drop lines preserved
+        c_ymin_b, c_ymax_b = ax_b.get_ylim()
+        n_ymax_b = c_ymax_b + (c_ymax_b - c_ymin_b) * 0.05
+        ax_b.set_ylim(c_ymin_b, n_ymax_b)
+        draw_staggered_stim_block(
+            ax_b, stim_info, y_min=c_ymin_b, y_max=n_ymax_b,
+            show_ladder=False, show_stepped_shading=True, show_drop_lines=True,
+        )
+    elif plot_var:
+        c_ymin_a, c_ymax_a = ax_a.get_ylim()
+        n_ymax_a = c_ymax_a + (c_ymax_a - c_ymin_a) * 0.14
+        ax_a.set_ylim(c_ymin_a, n_ymax_a)
+        draw_staggered_stim_block(
+            ax_a, stim_info, y_min=c_ymin_a, y_max=n_ymax_a,
+            show_ladder=True, show_stepped_shading=True, show_drop_lines=True,
+        )
+    else:  # plot_def only
+        c_ymin_b, c_ymax_b = ax_b.get_ylim()
+        n_ymax_b = c_ymax_b + (c_ymax_b - c_ymin_b) * 0.14
+        ax_b.set_ylim(c_ymin_b, n_ymax_b)
+        draw_staggered_stim_block(
+            ax_b, stim_info, y_min=c_ymin_b, y_max=n_ymax_b,
+            show_ladder=True, show_stepped_shading=True, show_drop_lines=True,
+        )
 
-    # Single unified figure legend placed cleanly OUTSIDE the plots at top
-    h_a, l_a = ax_a.get_legend_handles_labels()
-    h_b, l_b = ax_b.get_legend_handles_labels()
+    # Titles and axis labels
+    # Note: "Across Time" removed from variability title; X-axis says "Time (ms)" only.
+    if ax_a is not None:
+        ax_a.set_ylabel("3D Variability (mm)", fontsize=9.5, fontweight="medium")
+        if plot_def:
+            ax_a.set_title("A. Within-Condition Trajectory Variability", fontsize=10.5, fontweight="bold", loc="left")
+        else:
+            ax_a.set_title("Within-Condition Trajectory Variability", fontsize=10.5, fontweight="bold", loc="left")
+            ax_a.set_xlabel("Time (ms)", fontsize=10, fontweight="medium")
+
+    if ax_b is not None:
+        ax_b.set_ylabel("3D Deflection from Ctrl (mm)", fontsize=9.5, fontweight="medium")
+        ax_b.set_xlabel("Time (ms)", fontsize=10, fontweight="medium")
+        if plot_var:
+            ax_b.set_title("B. Net 3D Trajectory Deflection from Control Reference", fontsize=10.5, fontweight="bold", loc="left")
+        else:
+            ax_b.set_title("Net 3D Trajectory Deflection from Control Reference", fontsize=10.5, fontweight="bold", loc="left")
+
+    # Unified Figure Legend: Consolidated in a vertical column by default
+    active_axes = [ax for ax in [ax_a, ax_b] if ax is not None]
     by_label = {}
-    for h, l in zip(h_a + h_b, l_a + l_b):
-        if l not in by_label:
-            by_label[l] = h
+    for ax in active_axes:
+        h_list, l_list = ax.get_legend_handles_labels()
+        for h, l in zip(h_list, l_list):
+            if l not in by_label:
+                by_label[l] = h
     handles = list(by_label.values())
     labels = list(by_label.keys())
-    ncol = min(7, int(np.ceil(len(labels) / 2))) if len(labels) > 7 else len(labels)
-    fig.legend(
-        handles, labels,
-        loc="upper center", bbox_to_anchor=(0.5, 0.99),
-        ncol=ncol,
-        frameon=True, framealpha=0.95, fontsize=8,
-    )
-    fig.subplots_adjust(top=0.85 if len(labels) > 7 else 0.89, hspace=0.22, left=0.08, right=0.96, bottom=0.09)
+
+    if legend_orientation == "column":
+        ncol = 2 if len(labels) > 9 else 1
+        right_margin = 0.80 if ncol == 1 else 0.74
+        fig.legend(
+            handles, labels,
+            loc="center left",
+            bbox_to_anchor=(0.82 if ncol == 1 else 0.76, 0.5),
+            ncol=ncol,
+            frameon=True, framealpha=0.95, fontsize=8.5,
+        )
+        if plot_var and plot_def:
+            fig.subplots_adjust(left=0.08, right=right_margin, top=0.90 if fixed_params_summary else 0.92, bottom=0.09, hspace=0.22)
+        else:
+            fig.subplots_adjust(left=0.08, right=right_margin, top=0.88 if fixed_params_summary else 0.90, bottom=0.13)
+    else:  # row
+        ncol = min(7, int(np.ceil(len(labels) / 2))) if len(labels) > 7 else len(labels)
+        fig.legend(
+            handles, labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.94 if (len(labels) > 7 or fixed_params_summary) else 0.95),
+            ncol=ncol,
+            frameon=True, framealpha=0.95, fontsize=8,
+        )
+        if plot_var and plot_def:
+            fig.subplots_adjust(top=0.81 if (len(labels) > 7 or fixed_params_summary) else 0.85, hspace=0.22, left=0.08, right=0.96, bottom=0.09)
+        else:
+            fig.subplots_adjust(top=0.79 if (len(labels) > 7 or fixed_params_summary) else 0.83, left=0.08, right=0.96, bottom=0.12)
+
+    # Suptitle
+    if plot_var and plot_def:
+        suptitle_text = f"3D Trajectory Variability & Control Deflection — Target {target}"
+    elif plot_var:
+        suptitle_text = f"3D Trajectory Variability — Target {target}"
+    else:
+        suptitle_text = f"3D Control Deflection — Target {target}"
+
+    if fixed_params_summary:
+        suptitle_text += f"\n[{fixed_params_summary}]"
+    fig.suptitle(suptitle_text, fontsize=11.5, fontweight="bold", y=0.995)
 
     if save_path:
         out_file = save_path.with_suffix(f".{FIG_FORMAT.lower()}")
         fig.savefig(out_file, format=FIG_FORMAT.lower(), dpi=FIG_DPI, bbox_inches="tight")
-        _log(f"Saved Time-Resolved Variability figure: {out_file.name}")
+        _log(f"Saved Time-Resolved figure: {out_file.name}")
         plt.close(fig)
     return fig
+
 
 
 def plot_target_directional_deviation_traces(
     dir_results: Dict[int, Dict[str, Any]],
     target: str = "A",
+    fixed_params_summary: str = "",
     save_path: Optional[Path] = None,
 ) -> plt.Figure:
     """
@@ -1921,7 +2363,7 @@ def plot_target_directional_deviation_traces(
         ax.axvline(0.0, color="#7f8c8d", linestyle=":", linewidth=1.1)
         ax.set_title(title, fontsize=10.0, fontweight="bold", loc="left")
         ax.set_ylabel(ylab, fontsize=9.0)
-        ax.set_xlabel("Time Relative to Stim Onset (ms)", fontsize=9.0)
+        ax.set_xlabel("Time (ms)", fontsize=9.0)
         ax.grid(True, linestyle="--", alpha=0.35)
 
         # Expand Y-max slightly and draw staggered stim window block
@@ -1939,7 +2381,10 @@ def plot_target_directional_deviation_traces(
         ncol=ncol,
         frameon=True, framealpha=0.95, fontsize=8,
     )
-    fig.suptitle(f"3D Directional Perturbation Time Profiles — Target {target}", fontsize=11.5, fontweight="bold", y=1.03 if len(labels) > 7 else 1.02)
+    suptitle_text = f"3D Directional Perturbation Time Profiles — Target {target}"
+    if fixed_params_summary:
+        suptitle_text += f"\n[{fixed_params_summary}]"
+    fig.suptitle(suptitle_text, fontsize=11.5, fontweight="bold", y=1.03 if len(labels) > 7 else 1.02)
     fig.subplots_adjust(top=0.82 if len(labels) > 7 else 0.86, left=0.06, right=0.96, bottom=0.12, wspace=0.24)
 
     if save_path:
@@ -1952,6 +2397,7 @@ def plot_target_directional_deviation_traces(
 
 def plot_combined_spatial_perturbations_figure(
     dir_results_by_target: Dict[str, Dict[int, Dict[str, Any]]],
+    fixed_params_summary: str = "",
     save_path: Optional[Path] = None,
 ) -> plt.Figure:
     """
@@ -2012,8 +2458,9 @@ def plot_combined_spatial_perturbations_figure(
                 label=f"Control (Tgt {tgt})",
             )
             # Target banner label near button location
+            tgt_banner = f"Target {tgt} (Ctrl n={ctrl_d['n_trials']})" if SHOW_TRIAL_COUNTS else f"Target {tgt}"
             ax_face.text(
-                ctrl_x, ctrl_z + 14.0, f"Target {tgt} (Ctrl n={ctrl_d['n_trials']})",
+                ctrl_x, ctrl_z + 14.0, tgt_banner,
                 ha="center", va="bottom", fontsize=9.5, fontweight="bold",
                 color="#1a252f",
                 bbox=dict(boxstyle="round,pad=0.28", fc="#f2f4f4", ec="#bdc3c7", alpha=0.9),
@@ -2045,11 +2492,15 @@ def plot_combined_spatial_perturbations_figure(
                     zorder=6,
                 )
             # Stim mean endpoint marker
+            lbl_tag = v["label"] if SHOW_TRIAL_COUNTS else v.get("base_label", v["label"])
             ax_face.scatter(
                 mx, mz, color=color, s=75, edgecolors="#1b2631", linewidths=1.2,
-                zorder=7, label=f"BR {cond_num} (Tgt {tgt})" if len(targets_present) > 1 else v["label"],
+                zorder=7, label=f"{lbl_tag} (Tgt {tgt})" if len(targets_present) > 1 else lbl_tag,
             )
 
+    # Despine and format touchscreen face
+    ax_face.spines["top"].set_visible(False)
+    ax_face.spines["right"].set_visible(False)
     ax_face.set_xlabel("Lateral Physical Position X (mm) [Left <-> Right]", fontsize=9.5, fontweight="medium")
     ax_face.set_ylabel("Vertical Physical Position Z (mm) [Height]", fontsize=9.5, fontweight="medium")
     ax_face.set_title(
@@ -2058,9 +2509,9 @@ def plot_combined_spatial_perturbations_figure(
     )
     ax_face.grid(True, linestyle="--", alpha=0.35)
 
-    # -------------------------------------------------------------------------
+    # -------------------------------------------------------------
     # Panel B: True 3D Spatial Trajectories & Perturbation Vectors
-    # -------------------------------------------------------------------------
+    # -------------------------------------------------------------
     for tgt in targets_present:
         d_tgt = dir_results_by_target[tgt]
         ctrl_d = next((v for v in d_tgt.values() if v["is_control"]), None)
@@ -2094,9 +2545,9 @@ def plot_combined_spatial_perturbations_figure(
     # Viewpoint oriented such that lateral X is exactly parallel to the bottom of the figure
     ax_3d.view_init(elev=18, azim=-90)
 
-    # -------------------------------------------------------------------------
+    # -------------------------------------------------------------
     # Panels C & D: Net 3D Perturbation Magnitude ||Delta r(t)|| for Targets A & B
-    # -------------------------------------------------------------------------
+    # -------------------------------------------------------------
     for ax, tgt, panel_letter in [
         (ax_norm_a, "A", "C"),
         (ax_norm_b, "B", "D"),
@@ -2104,7 +2555,8 @@ def plot_combined_spatial_perturbations_figure(
         if tgt in dir_results_by_target:
             d_tgt = dir_results_by_target[tgt]
             tot_reaches = sum(v["n_trials"] for v in d_tgt.values())
-            title = f"{panel_letter}. Net 3D Perturbation Magnitude ||Δr(t)|| (Target {tgt}, {tot_reaches} reaches)"
+            reaches_tag = f", {tot_reaches} reaches" if SHOW_TRIAL_COUNTS else ""
+            title = f"{panel_letter}. Net 3D Perturbation Magnitude ||Δr(t)|| (Target {tgt}{reaches_tag})"
             for cond_num, v in sorted(d_tgt.items(), key=lambda x: x[0]):
                 if v["is_control"]:
                     continue
@@ -2117,7 +2569,7 @@ def plot_combined_spatial_perturbations_figure(
 
             ax.axvline(0.0, color="#7f8c8d", linestyle=":", linewidth=1.1)
             ax.set_title(title, fontsize=10.0, fontweight="bold", loc="left")
-            ax.set_xlabel("Time Relative to Stim Onset (ms)", fontsize=9.0)
+            ax.set_xlabel("Time (ms)", fontsize=9.0)
             ax.set_ylabel("3D Deflection ||Δr|| (mm)", fontsize=9.0)
             ax.grid(True, linestyle="--", alpha=0.35)
         else:
@@ -2125,7 +2577,14 @@ def plot_combined_spatial_perturbations_figure(
                 0.5, 0.5, f"Target {tgt} not analyzed or no valid reaches",
                 ha="center", va="center", transform=ax.transAxes, fontsize=10, color="#7f8c8d",
             )
+            title = f"{panel_letter}. Net 3D Perturbation Magnitude ||Δr(t)|| (Target {tgt})"
             ax.set_title(title, fontsize=10.0, fontweight="bold", loc="left")
+
+    # Despine Panels C and D
+    ax_norm_a.spines["top"].set_visible(False)
+    ax_norm_a.spines["right"].set_visible(False)
+    ax_norm_b.spines["top"].set_visible(False)
+    ax_norm_b.spines["right"].set_visible(False)
 
     # Match Y-axis limits across Panels C and D for direct comparison and draw staggered stim blocks
     max_ylim = max(ax_norm_a.get_ylim()[1], ax_norm_b.get_ylim()[1])
@@ -2153,12 +2612,15 @@ def plot_combined_spatial_perturbations_figure(
 
     ctrl_a = next((v for v in dir_results_by_target.get("A", {}).values() if v["is_control"]), None)
     ctrl_b = next((v for v in dir_results_by_target.get("B", {}).values() if v["is_control"]), None)
-    if ctrl_a and ctrl_b:
-        ctrl_lbl = f"Control (Tgt A n={ctrl_a['n_trials']}, Tgt B n={ctrl_b['n_trials']})"
-    elif ctrl_a:
-        ctrl_lbl = f"Control (n={ctrl_a['n_trials']})"
-    elif ctrl_b:
-        ctrl_lbl = f"Control (n={ctrl_b['n_trials']})"
+    if SHOW_TRIAL_COUNTS:
+        if ctrl_a and ctrl_b:
+            ctrl_lbl = f"Control (Tgt A n={ctrl_a['n_trials']}, Tgt B n={ctrl_b['n_trials']})"
+        elif ctrl_a:
+            ctrl_lbl = f"Control (n={ctrl_a['n_trials']})"
+        elif ctrl_b:
+            ctrl_lbl = f"Control (n={ctrl_b['n_trials']})"
+        else:
+            ctrl_lbl = "Control"
     else:
         ctrl_lbl = "Control"
 
@@ -2175,16 +2637,19 @@ def plot_combined_spatial_perturbations_figure(
         # Clean base_lbl from any leftover trial string if present
         base_lbl = re.sub(r"\s*\(n=\d+\)", "", base_lbl).strip()
 
-        if v_a is not None and v_b is not None:
-            n_str = f"n_A={v_a['n_trials']}, n_B={v_b['n_trials']}"
-        elif v_a is not None:
-            n_str = f"n={v_a['n_trials']}"
-        elif v_b is not None:
-            n_str = f"n={v_b['n_trials']}"
+        if SHOW_TRIAL_COUNTS:
+            if v_a is not None and v_b is not None:
+                n_str = f"n_A={v_a['n_trials']}, n_B={v_b['n_trials']}"
+            elif v_a is not None:
+                n_str = f"n={v_a['n_trials']}"
+            elif v_b is not None:
+                n_str = f"n={v_b['n_trials']}"
+            else:
+                n_str = ""
+            lbl = f"{base_lbl} ({n_str})" if n_str else base_lbl
         else:
-            n_str = ""
+            lbl = base_lbl
 
-        lbl = f"{base_lbl} ({n_str})" if n_str else base_lbl
         col = cond_colors.get(c_num, COLOR_STIM_DEFAULT)
         h = plt.Line2D([0], [0], color=col, linestyle="-", linewidth=2.0, marker="o", markersize=5)
         legend_handles.append(h)
@@ -2198,8 +2663,11 @@ def plot_combined_spatial_perturbations_figure(
         frameon=True, framealpha=0.95, fontsize=8,
     )
 
+    suptitle_text = "Consolidated 3D & Touchscreen Spatial Perturbation Profiles (Targets A & B)"
+    if fixed_params_summary:
+        suptitle_text += f"\n[{fixed_params_summary}]"
     fig.suptitle(
-        "Consolidated 3D & Touchscreen Spatial Perturbation Profiles (Targets A & B)",
+        suptitle_text,
         fontsize=12.0, fontweight="bold", y=0.995,
     )
     fig.subplots_adjust(top=0.87 if len(legend_labels) > 7 else 0.91, hspace=0.28, wspace=0.22, left=0.06, right=0.96, bottom=0.07)
@@ -2255,71 +2723,89 @@ def run_behavioral_rsa_for_target(
         _log(f"Insufficient conditions ({len(conditions)}) for Target {target_str}; skipping.")
         return {"conditions": conditions}
 
-    cond_tag = "_".join(map(str, sorted(c.cond_num for c in conditions)))
+    cond_nums_all = []
+    for c in conditions:
+        comb_brs = getattr(c, "combined_br_indices", None)
+        if comb_brs:
+            cond_nums_all.extend(comb_brs)
+        else:
+            cond_nums_all.append(c.cond_num)
+    cond_tag = "_".join(map(str, sorted(set(cond_nums_all))))
+    fixed_summary = getattr(conditions[0], "fixed_params_summary", "") if conditions else ""
 
     # -------------------------------------------------------------------------
     # 2a. Region 1: Early Window RSA (0 to 100 ms) — Expected Control-Like
     # -------------------------------------------------------------------------
     conds_early = [c.slice_to_window(rsa_early_window) for c in conditions]
     RDM_early, block_sizes_early, block_labels_early = build_behavioral_rdm(conds_early, metric="euclidean")
+    block_short_labels_early = [getattr(c, "short_label", to_short_condition_label(c.label)) for c in conds_early]
     S_early, P_early, Q_early = compute_pairwise_silhouette_matrix(RDM_early, block_sizes_early, n_perm=N_PERMUTATIONS)
     stereotypy_early = compute_within_condition_stereotypy(RDM_early, block_sizes_early)
 
-    early_tag = f"{int(rsa_early_window[0])}_to_{int(rsa_early_window[1])}ms"
-    out_rsa_early = save_dir / f"behavioral_rsa_matrix_Target_{target_str}_window_{early_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
-    plot_behavioral_rsa_matrix_figure(
-        RDM=RDM_early,
-        S=S_early,
-        Q=Q_early,
-        within_stereotypy=stereotypy_early,
-        block_sizes=block_sizes_early,
-        block_labels=block_labels_early,
-        target=target_str,
-        metric_label="Mean 3D Distance (mm)",
-        window_ms=rsa_early_window,
-        window_description="Early Window",
-        save_path=out_rsa_early,
-    )
-
     # -------------------------------------------------------------------------
-    # 2b. Region 2: Perturbation Window RSA (100 to 350 ms)
+    # 2b. Region 2: Late Window RSA (100 to 350 ms)
     # -------------------------------------------------------------------------
     conds_late = [c.slice_to_window(rsa_late_window) for c in conditions]
     RDM_late, block_sizes_late, block_labels_late = build_behavioral_rdm(conds_late, metric="euclidean")
+    block_short_labels_late = [getattr(c, "short_label", to_short_condition_label(c.label)) for c in conds_late]
     S_late, P_late, Q_late = compute_pairwise_silhouette_matrix(RDM_late, block_sizes_late, n_perm=N_PERMUTATIONS)
     stereotypy_late = compute_within_condition_stereotypy(RDM_late, block_sizes_late)
 
-    late_tag = f"{int(rsa_late_window[0])}_to_{int(rsa_late_window[1])}ms"
-    out_rsa_late = save_dir / f"behavioral_rsa_matrix_Target_{target_str}_window_{late_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
-    plot_behavioral_rsa_matrix_figure(
-        RDM=RDM_late,
-        S=S_late,
-        Q=Q_late,
-        within_stereotypy=stereotypy_late,
-        block_sizes=block_sizes_late,
-        block_labels=block_labels_late,
-        target=target_str,
-        metric_label="Mean 3D Distance (mm)",
-        window_ms=rsa_late_window,
-        window_description="Perturbation Window",
-        save_path=out_rsa_late,
-    )
+    # Optional: Plot standalone RDM figures if explicitly requested
+    if PLOT_STANDALONE_RSA_MATRICES:
+        early_tag = f"{int(rsa_early_window[0])}_to_{int(rsa_early_window[1])}ms"
+        out_rsa_early = save_dir / f"behavioral_rsa_matrix_Target_{target_str}_window_{early_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
+        plot_behavioral_rsa_matrix_figure(
+            RDM=RDM_early,
+            S=S_early,
+            Q=Q_early,
+            within_stereotypy=stereotypy_early,
+            block_sizes=block_sizes_early,
+            block_labels=block_labels_early,
+            target=target_str,
+            metric_label="Mean 3D Distance (mm)",
+            window_ms=rsa_early_window,
+            window_description="Early Window",
+            block_short_labels=block_short_labels_early,
+            fixed_params_summary=fixed_summary,
+            save_path=out_rsa_early,
+        )
 
-    # Also save as the standard unwindowed filename for pipeline compatibility
-    out_rsa_std = save_dir / f"behavioral_rsa_matrix_Target_{target_str}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
-    plot_behavioral_rsa_matrix_figure(
-        RDM=RDM_late,
-        S=S_late,
-        Q=Q_late,
-        within_stereotypy=stereotypy_late,
-        block_sizes=block_sizes_late,
-        block_labels=block_labels_late,
-        target=target_str,
-        metric_label="Mean 3D Distance (mm)",
-        window_ms=rsa_late_window,
-        window_description="Perturbation Window",
-        save_path=out_rsa_std,
-    )
+        late_tag = f"{int(rsa_late_window[0])}_to_{int(rsa_late_window[1])}ms"
+        out_rsa_late = save_dir / f"behavioral_rsa_matrix_Target_{target_str}_window_{late_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
+        plot_behavioral_rsa_matrix_figure(
+            RDM=RDM_late,
+            S=S_late,
+            Q=Q_late,
+            within_stereotypy=stereotypy_late,
+            block_sizes=block_sizes_late,
+            block_labels=block_labels_late,
+            target=target_str,
+            metric_label="Mean 3D Distance (mm)",
+            window_ms=rsa_late_window,
+            window_description="Late Window",
+            block_short_labels=block_short_labels_late,
+            fixed_params_summary=fixed_summary,
+            save_path=out_rsa_late,
+        )
+
+        # Also save as the standard unwindowed filename for pipeline compatibility
+        out_rsa_std = save_dir / f"behavioral_rsa_matrix_Target_{target_str}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
+        plot_behavioral_rsa_matrix_figure(
+            RDM=RDM_late,
+            S=S_late,
+            Q=Q_late,
+            within_stereotypy=stereotypy_late,
+            block_sizes=block_sizes_late,
+            block_labels=block_labels_late,
+            target=target_str,
+            metric_label="Mean 3D Distance (mm)",
+            window_ms=rsa_late_window,
+            window_description="Late Window",
+            block_short_labels=block_short_labels_late,
+            fixed_params_summary=fixed_summary,
+            save_path=out_rsa_std,
+        )
 
     # -------------------------------------------------------------------------
     # 2c. Consolidated Dual-Window Comparison Figure (0-100 ms vs 100-350 ms)
@@ -2340,18 +2826,30 @@ def run_behavioral_rsa_for_target(
         window_early=rsa_early_window,
         window_late=rsa_late_window,
         metric_label="Mean 3D Distance (mm)",
+        block_short_labels=block_short_labels_early,
+        fixed_params_summary=fixed_summary,
         save_path=out_rsa_dual,
     )
 
     # -------------------------------------------------------------------------
-    # 3. Time-Resolved Trajectory Variability (Across full 0-500 ms window)
+    # 3. Time-Resolved Trajectory Variability & Control Deflection (0-500 ms)
     # -------------------------------------------------------------------------
     var_results = compute_time_resolved_variability(conditions)
-    out_var = save_dir / f"trajectory_variability_time_resolved_Target_{target_str}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
+    var_clean_mode = VARIABILITY_PLOT_MODE.lower().strip()
+    if var_clean_mode in ("var", "variability"):
+        out_var = save_dir / f"trajectory_variability_Target_{target_str}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
+    elif var_clean_mode in ("def", "deflection", "dev", "deviation"):
+        out_var = save_dir / f"trajectory_deflection_Target_{target_str}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
+    else:
+        out_var = save_dir / f"trajectory_variability_time_resolved_Target_{target_str}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
+
     plot_time_resolved_variability_figure(
         var_results=var_results,
         target=target_str,
+        fixed_params_summary=fixed_summary,
         save_path=out_var,
+        mode=VARIABILITY_PLOT_MODE,
+        legend_orientation=VARIABILITY_LEGEND_ORIENTATION,
     )
 
     # -------------------------------------------------------------------------
@@ -2362,6 +2860,7 @@ def run_behavioral_rsa_for_target(
     plot_target_directional_deviation_traces(
         dir_results=dir_results,
         target=target_str,
+        fixed_params_summary=fixed_summary,
         save_path=out_dir,
     )
 
@@ -2381,6 +2880,7 @@ def run_behavioral_rsa_for_target(
         "within_stereotypy": stereotypy_late,
         "var_results": var_results,
         "dir_results": dir_results,
+        "fixed_params_summary": fixed_summary,
     }
 
 
@@ -2433,11 +2933,56 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Disable rotation into calibrated monkey task frame.",
     )
+    parser.add_argument(
+        "--show-indices",
+        action="store_true",
+        default=False,
+        help="Include condition BR index prefix in labels (default: False).",
+    )
+    parser.add_argument(
+        "--show-trial-counts",
+        action="store_true",
+        default=False,
+        help="Include trial counts in condition labels (default: False).",
+    )
+    parser.add_argument(
+        "--plot-standalone-rdm",
+        action="store_true",
+        default=False,
+        help="Plot individual early/late/standard RDM figures in addition to dual-window comparison (default: False).",
+    )
+    parser.add_argument(
+        "--var-mode",
+        type=str,
+        default=None,
+        choices=["both", "variability", "var", "deflection", "deviation", "dev"],
+        help="Panels to plot in variability/deflection figure: 'both' (default), 'variability', or 'deflection'.",
+    )
+    parser.add_argument(
+        "--var-legend-col",
+        dest="legend_orientation",
+        type=str,
+        default=None,
+        choices=["column", "row"],
+        help="Legend layout for variability/deflection figure: 'column' (default) or 'row'.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+
+    global SHOW_CONDITION_INDICES, SHOW_TRIAL_COUNTS, PLOT_STANDALONE_RSA_MATRICES, VARIABILITY_PLOT_MODE, VARIABILITY_LEGEND_ORIENTATION
+    if args.show_indices:
+        SHOW_CONDITION_INDICES = True
+    if args.show_trial_counts:
+        SHOW_TRIAL_COUNTS = True
+    if args.plot_standalone_rdm:
+        PLOT_STANDALONE_RSA_MATRICES = True
+    if args.var_mode:
+        VARIABILITY_PLOT_MODE = args.var_mode
+    if args.legend_orientation:
+        VARIABILITY_LEGEND_ORIENTATION = args.legend_orientation
 
     # Session resolution
     env_sess = os.environ.get("RCP_SESSION")
@@ -2513,6 +3058,13 @@ def main() -> None:
         if res.get("conditions"):
             results_all[tgt] = res
 
+    # Extract global fixed parameter summary if any target had fixed parameters
+    global_fixed_summary = ""
+    for res in results_all.values():
+        if res.get("fixed_params_summary"):
+            global_fixed_summary = res["fixed_params_summary"]
+            break
+
     # Consolidated Multi-Target Spatial Perturbations Figure (Screen-Face, 3D Vectors, 3D Magnitudes)
     dir_results_by_target = {
         tgt: res["dir_results"]
@@ -2527,6 +3079,7 @@ def main() -> None:
         out_spatial = save_dir / f"combined_spatial_perturbations_{tgt_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
         plot_combined_spatial_perturbations_figure(
             dir_results_by_target=dir_results_by_target,
+            fixed_params_summary=global_fixed_summary,
             save_path=out_spatial,
         )
 

@@ -59,17 +59,19 @@ SESSION_ID_PATTERN = None      # None = all, or regex like r'.*control.*'
 
 FIGURE_CONFIG = {
     # Core visualizations
-    'generate_session_summary': True,       # PSD overview (1-120 Hz)
+    'generate_session_summary': False,       # PSD overview (1-120 Hz)
     'generate_waveform_raster': False,       # Raw LFP traces across trials
     'generate_trial_heatmaps': False,        # Per-trial band power heatmaps
 
     # Spectrograms
-    'generate_per_ua_spectrograms': False,   # 8x8 grid of spectrograms per array
+    'generate_per_ua_spectrograms': False,  # 8x8 grid of spectrograms per array (turned off to omit individual array plots)
     'per_ua_default_trial': 3, 
     'generate_all_trial_spectrograms': False,  # If True, generate for each trial (can be many files!)
     'generate_per_ua_trial_average': False,
-    'generate_per_ua_array_median': True,  # Median across all trials AND channels per Utah array
-    'generate_control_median_baseline_norm_array_median': True,
+    'generate_per_ua_array_median': True,  # Median across all trials AND channels per Utah array (entire spectrogram)
+    'generate_control_median_baseline_norm_array_median': False, # Now replaced by true Stim minus Control subtraction (ΔdB)
+    'generate_stim_minus_control_array_median': True,  # 4-panel Stim minus Matched Control array median
+    'generate_stim_minus_control_per_ua': False,        # 8x8 grid Stim minus Control spectrograms per array
     'generate_causal_diagnostic': False,      # Causal filterbank vs acausal Morlet comparison (0 to 50 ms)
     'generate_causal_zoomed_spectrogram': False,  # Alias for backward compatibility
     
@@ -152,10 +154,20 @@ PLOT_CONFIG = {
         'M1s': '#d62728',   # Red
     },
     
+    # Anatomical display titles for clean publication labels
+    'region_display_names': {
+        'M1i': 'M1 (upper limb)',
+        'M1 Inf': 'M1 (upper limb)',
+        'M1s': 'M1 (lower limb)',
+        'M1 Sup': 'M1 (lower limb)',
+        'PMd': 'Premotor (dorsal)',
+        'SMA': 'SMA',
+    },
+
     # Heatmap settings
     'heatmap_cmap': 'jet', # or RdBu_r
-    'heatmap_vmin': -6.0,                   # dB
-    'heatmap_vmax': 6.0,                    # dB
+    'heatmap_vmin': -3.0,                   # dB
+    'heatmap_vmax': 3.0,                    # dB
     
     # Trace opacity
     'trace_alpha': 0.3,
@@ -209,8 +221,8 @@ PLOT_CONFIG = {
         'vmax_zscore': 6,                   # z-score limits
         'vmin_uV2': 0,                      # For absolute power
         'vmax_uV2': None,                   # None = auto-scale to 95th percentile
-        'vmin_db': -6,                      # For dB (if using relative)
-        'vmax_db': 6,
+        'vmin_db': -3.0,                    # For dB (if using relative)
+        'vmax_db': 3.0,
     },
     
     # Spatial heatmap timepoints
@@ -226,7 +238,7 @@ PLOT_CONFIG = {
 # Set MULTITAPER_SWEEP_CONFIG['enabled'] = True to run a multi-parameter multitaper
 # sweep across conditions (e.g. 11, 17, 18) generating comparison figures.
 MULTITAPER_SWEEP_CONFIG = {
-    'enabled': True,
+    'enabled': False,
     'conditions': [17, 18],     # Cond 11 (1 pulse), 17 (40 pulse), 18 (control)
     'target': 'target_A',
     'regions': ['M1i', 'PMd'],
@@ -359,6 +371,44 @@ def get_foi_with_notch_gaps(freq_min=1, freq_max=120, freq_step=1, notch_regions
         keep_mask[notch_mask] = False
     
     return foi_full[keep_mask]
+
+def get_spectrogram_ticks(f_spec, tick_freqs=None, min_index_spacing=4):
+    """
+    Compute y-tick positions and labels for a spectrogram where notch regions
+    are skipped (non-contiguous frequency space).
+    
+    Prevents adjacent frequency labels from colliding or overlapping
+    (e.g., notch boundary collision around 55-65 Hz).
+    """
+    if tick_freqs is None:
+        tick_freqs = [1, 10, 20, 30, 40, 50, 70, 80, 100]
+    
+    f_arr = np.asarray(f_spec)
+    if len(f_arr) == 0:
+        return [], []
+
+    tick_positions = []
+    tick_labels = []
+    
+    for tf in tick_freqs:
+        # Check range
+        if tf < np.min(f_arr) - 2.0 or tf > np.max(f_arr) + 2.0:
+            continue
+
+        idx = int(np.argmin(np.abs(f_arr - tf)))
+        closest_f = float(f_arr[idx])
+        if abs(closest_f - tf) > 4.0:
+            continue
+
+        lbl = str(int(round(closest_f)))
+        
+        # Enforce minimum index distance between consecutive ticks to prevent text overlap
+        if tick_positions and (idx - tick_positions[-1]) < min_index_spacing:
+            continue
+        tick_positions.append(idx)
+        tick_labels.append(lbl)
+        
+    return tick_positions, tick_labels
 
 def mask_notch_regions(f, psd, notch_regions=None):
     """
@@ -2651,10 +2701,9 @@ def run_multitaper_parameter_sweep(lfp_dir, fig_dir, config=None):
                     a_idx = np.where(foi > notch_hi)[0]
                     if len(b_idx) > 0 and len(a_idx) > 0:
                         ax.axhline(b_idx[-1] + 0.5, color='white', ls='-', lw=1.2, alpha=0.8)
-                tick_freqs = [1, 10, 20, 30, 40, 55, 65, 80, 100, 115]
-                tick_pos = [np.argmin(np.abs(foi - tf)) for tf in tick_freqs]
+                tick_pos, tick_lbls = get_spectrogram_ticks(foi)
                 ax.set_yticks(tick_pos)
-                ax.set_yticklabels([str(tf) for tf in tick_freqs])
+                ax.set_yticklabels(tick_lbls)
                 ax.set_title(c_title, fontsize=11, fontweight='bold', pad=8)
                 ax.set_xlabel("Time from Event Onset (ms)", fontsize=10, fontweight='bold')
                 ax.set_xlim(-500, 500)
@@ -3694,7 +3743,8 @@ def generate_per_ua_spectrograms(data, session_id, fig_dir, groups, fs=1000,
                                   ua_ids_1based=None, nsp_to_elec=None, 
                                   region_grids=None, elec_to_idx=None,
                                   trial_index=0, generate_all_trials=False,
-                                  generate_trial_average=False):
+                                  generate_trial_average=False,
+                                  data_control=None):
     """
     Generate 8x8 spectrogram grids for each Utah Array region.
     Frequencies in notch regions are skipped entirely (broken y-axis).
@@ -3915,30 +3965,117 @@ def generate_per_ua_spectrograms(data, session_id, fig_dir, groups, fs=1000,
                     trial_label=f"Trial {trial_idx}",
                     filename_suffix=f"trial_{trial_idx}"
                 )
+
+        # === STIM MINUS CONTROL SPECTROGRAM GRID (8x8) ===
+        if data_control is not None and FIGURE_CONFIG.get('generate_stim_minus_control_per_ua', True):
+            try:
+                bb_ctrl, t_ms_ctrl = get_broadband_full(data_control)
+                n_trials_ctrl, n_ch_ctrl, _ = bb_ctrl.shape
+                
+                all_diff_spectrograms = {}
+                for row in range(8):
+                    for col in range(8):
+                        elec_id = int(grid_elec[row, col])
+                        data_idx = elec_to_idx.get(elec_id, None)
+                        if data_idx is None or data_idx >= n_ch or data_idx >= n_ch_ctrl:
+                            continue
+                        
+                        # Stim traces across trials
+                        stim_specs = []
+                        t_spec_saved = None
+                        f_spec_saved = None
+                        for t_idx in range(n_trials):
+                            tr = bb_full[t_idx, data_idx, :]
+                            if np.all(np.isnan(tr)) or np.std(tr) < 1e-10:
+                                continue
+                            Sxx, f_out, t_out = compute_wavelet_spectrogram(
+                                tr, fs, foi=foi, baseline_window=None, t_ms=t_ms,
+                                n_cycles=n_cycles, normalize=False
+                            )
+                            if Sxx is not None:
+                                stim_specs.append(Sxx)
+                                if t_spec_saved is None:
+                                    t_spec_saved = t_out * 1000 + t_ms[0]
+                                    f_spec_saved = f_out
+                        
+                        # Control traces across trials
+                        ctrl_specs = []
+                        for t_idx in range(n_trials_ctrl):
+                            tr_c = bb_ctrl[t_idx, data_idx, :]
+                            if np.all(np.isnan(tr_c)) or np.std(tr_c) < 1e-10:
+                                continue
+                            Sxx_c, _, _ = compute_wavelet_spectrogram(
+                                tr_c, fs, foi=foi, baseline_window=None, t_ms=t_ms_ctrl,
+                                n_cycles=n_cycles, normalize=False
+                            )
+                            if Sxx_c is not None:
+                                ctrl_specs.append(Sxx_c)
+                        
+                        if stim_specs and ctrl_specs and t_spec_saved is not None:
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore")
+                                Sxx_stim_med = np.nanmedian(np.stack(stim_specs, axis=0), axis=0)
+                                Sxx_ctrl_med = np.nanmedian(np.stack(ctrl_specs, axis=0), axis=0)
+                            
+                            bl_mask = (t_spec_saved >= baseline_win[0]) & (t_spec_saved <= baseline_win[1])
+                            eps = 1e-12
+                            p_base_stim = np.nanmean(Sxx_stim_med[:, bl_mask], axis=1, keepdims=True)
+                            p_base_ctrl = np.nanmean(Sxx_ctrl_med[:, bl_mask], axis=1, keepdims=True)
+                            
+                            db_stim = 10.0 * np.log10(np.maximum(Sxx_stim_med, eps) / np.maximum(p_base_stim, eps))
+                            db_ctrl = 10.0 * np.log10(np.maximum(Sxx_ctrl_med, eps) / np.maximum(p_base_ctrl, eps))
+                            diff_db = db_stim - db_ctrl
+                            
+                            all_diff_spectrograms[(row, col)] = {
+                                'Sxx': diff_db,
+                                'f': f_spec_saved,
+                                't_ms': t_spec_saved,
+                                'elec_id': elec_id,
+                                'n_trials_averaged': len(stim_specs),
+                            }
+                
+                if all_diff_spectrograms:
+                    _plot_spectrogram_grid(
+                        all_diff_spectrograms, grid_elec, elec_to_idx, n_ch,
+                        session_id, region_name, safe_region, condition_dir, fig_dir,
+                        spec_cfg, normalize_method='dB', n_trials=n_trials,
+                        trial_label=f"Stim minus Control (n_stim={n_trials}, n_ctrl={n_trials_ctrl})",
+                        filename_suffix="spectrogram_grid_STIM_MINUS_CONTROL",
+                        cmap_override='RdBu_r', vmin_override=-3.0, vmax_override=3.0,
+                        cbar_label_override='Power (dB)'
+                    )
+                    print(f"      Saved Stim minus Control grid for {region_name} -> {condition_dir.name}/{safe_region}_spectrogram_grid_STIM_MINUS_CONTROL.png")
+            except Exception as e:
+                print(f"      [Warn] Could not compute stim minus control grid for {region_name}: {e}")
     
     return out_dir
     
 def _plot_spectrogram_grid(all_spectrograms, grid_elec, elec_to_idx, n_ch,
                            session_id, region_name, safe_region, condition_dir, fig_dir,
                            spec_cfg, normalize_method, n_trials,
-                           trial_label="", filename_suffix=""):
+                           trial_label="", filename_suffix="",
+                           cmap_override=None, vmin_override=None, vmax_override=None,
+                           cbar_label_override=None):
     """
     Helper function to plot 8x8 spectrogram grid.
     
-    Updated to handle z-score normalized data with appropriate color scaling.
+    Updated to handle z-score normalized data with appropriate color scaling,
+    as well as custom difference (Stim minus Control) overrides.
     """
-    cmap = spec_cfg.get('cmap', 'viridis')
-    
-    # Determine color scale based on normalization method
-    if normalize_method == 'zscore':
+    if cmap_override is not None:
+        cmap = cmap_override
+        vmin = vmin_override if vmin_override is not None else -3.0
+        vmax = vmax_override if vmax_override is not None else 3.0
+        cbar_label = cbar_label_override or 'Power (dB)'
+    elif normalize_method == 'zscore':
         vmin = spec_cfg.get('vmin_zscore', -3)
         vmax = spec_cfg.get('vmax_zscore', 3)
-        cbar_label = 'Normalized Power (a.u.)'  # CHANGED
+        cbar_label = 'Power (dB)'
         cmap = 'jet'  # Diverging colormap better for z-scores
     elif normalize_method == 'dB':
-        vmin = spec_cfg.get('vmin_db', -6)
-        vmax = spec_cfg.get('vmax_db', 6)
-        cbar_label = 'Power (dB re: baseline)'
+        vmin = spec_cfg.get('vmin_db', -3.0)
+        vmax = spec_cfg.get('vmax_db', 3.0)
+        cbar_label = 'Power (dB)'
         cmap = 'jet'
     else:  # raw
         all_power = np.concatenate([s['Sxx'].flatten() for s in all_spectrograms.values()])
@@ -3998,21 +4135,8 @@ def _plot_spectrogram_grid(all_spectrograms, grid_elec, elec_to_idx, n_ch,
                                   cmap=cmap, vmin=vmin, vmax=vmax,
                                   shading='auto', rasterized=True)
                 
-                # Set y-ticks to show actual frequencies
-                freq_step = spec_cfg.get('freq_step', 1)
-                tick_freqs = [1, 10, 20, 30, 40, 55, 65, 80, 100, 115]
-                tick_positions = []
-                tick_labels = []
-                for tf in tick_freqs:
-                    if tf in f_spec:
-                        idx = np.where(f_spec == tf)[0][0]
-                        tick_positions.append(idx)
-                        tick_labels.append(str(tf))
-                    elif any(abs(f_spec - tf) < freq_step):
-                        idx = np.argmin(abs(f_spec - tf))
-                        tick_positions.append(idx)
-                        tick_labels.append(str(int(f_spec[idx])))
-                
+                # Set y-ticks to show actual frequencies without overlapping notch boundaries
+                tick_positions, tick_labels = get_spectrogram_ticks(f_spec)
                 ax.set_yticks(tick_positions)
                 ax.set_yticklabels(tick_labels)
                 
@@ -4085,6 +4209,7 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
                                              ua_ids_1based=None, nsp_to_elec=None,
                                              region_grids=None, elec_to_idx=None,
                                              control_median_baseline_norm=None,
+                                             data_control=None,
                                              return_raw_specs=False):
     """
     Generate one 4-panel figure per session.
@@ -4147,17 +4272,17 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
     if normalize_method == 'zscore':
         vmin = spec_cfg.get('vmin_zscore', -3)
         vmax = spec_cfg.get('vmax_zscore', 3)
-        cbar_label = 'Normalized Power (a.u.)'
+        cbar_label = 'Power (dB)'
         cmap = 'jet'
     elif normalize_method == 'dB':
-        vmin = spec_cfg.get('vmin_db', -6)
-        vmax = spec_cfg.get('vmax_db', 6)
-        cbar_label = 'Power (dB re: baseline)'
+        vmin = spec_cfg.get('vmin_db', -3.0)
+        vmax = spec_cfg.get('vmax_db', 3.0)
+        cbar_label = 'Power (dB)'
         cmap = 'jet'
     else:
         vmin = spec_cfg.get('vmin_uV2', 0)
         vmax = spec_cfg.get('vmax_uV2', None)
-        cbar_label = 'Power (µV²)'
+        cbar_label = 'Power (dB)'
 
     print("      Computing array-level median spectrograms across trials and channels...")
 
@@ -4234,8 +4359,8 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
     # -------------------------------------------------------------------------
     n_regions = len(region_specs)
 
-    # Usually 4 arrays: SMA, PMd, M1i, M1s
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharex=True, sharey=True)
+    # Usually 4 arrays: SMA, PMd, M1i, M1s (independent axes so right subplots don't clear left tick labels)
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     axes = axes.flatten()
 
     notch_regions = ANALYSIS_CONFIG.get('notch_regions', [(55, 65), (115, 125)])
@@ -4325,37 +4450,32 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
                 gap_y = below_idx[-1] + 0.5
                 ax.axhline(gap_y, color='white', ls='-', lw=1.5, alpha=0.8)
 
-        # Frequency tick labels
-        tick_freqs = [1, 10, 20, 30, 40, 55, 65, 80, 100, 115]
-        tick_positions = []
-        tick_labels = []
-
-        for tf in tick_freqs:
-            if tf in f_spec:
-                idx = np.where(f_spec == tf)[0][0]
-                tick_positions.append(idx)
-                tick_labels.append(str(tf))
-            else:
-                idx = np.argmin(np.abs(f_spec - tf))
-                if np.abs(f_spec[idx] - tf) <= freq_step:
-                    tick_positions.append(idx)
-                    tick_labels.append(str(int(f_spec[idx])))
-
+        # Frequency tick labels (non-colliding, left column only)
+        tick_positions, tick_labels = get_spectrogram_ticks(f_spec)
         ax.set_yticks(tick_positions)
-        ax.set_yticklabels(tick_labels)
 
-        ax.set_title(
-            f'{region_name}\n'
-            f'{spec["n_valid_channels"]} channels, '
-            f'{spec["n_valid_trial_channel_pairs"]} trial-channel spectra',
-            fontsize=11,
-            fontweight='bold'
-        )
+        is_left_col = (plot_idx % 2 == 0)
+        is_bottom_row = (plot_idx >= 2)
 
-        ax.set_xlabel('Time relative to event onset (ms)')
-        ax.set_ylabel('Frequency (Hz)')
+        if is_left_col:
+            ax.set_yticklabels(tick_labels, fontsize=9)
+            ax.set_ylabel('Frequency (Hz)', fontsize=10, fontweight='bold')
+            ax.tick_params(axis='y', which='major', length=4, width=1.0, left=True, labelleft=True, labelsize=9)
+        else:
+            ax.set_yticklabels([])
+            ax.set_ylabel('')
+            ax.tick_params(axis='y', which='major', length=3, width=0.8, left=True, labelleft=False)
 
-        ax.tick_params(axis='both', labelsize=9)
+        if is_bottom_row:
+            ax.set_xlabel('Time (ms)', fontsize=10, fontweight='bold')
+            ax.tick_params(axis='x', which='major', length=4, width=1.0, bottom=True, labelbottom=True, labelsize=9)
+        else:
+            ax.set_xlabel('')
+            ax.set_xticklabels([])
+            ax.tick_params(axis='x', which='major', length=0, bottom=False, labelbottom=False)
+
+        disp_title = PLOT_CONFIG.get('region_display_names', {}).get(region_name, region_name)
+        ax.set_title(disp_title, fontsize=12, fontweight='bold', pad=8)
 
         plot_idx += 1
 
@@ -4368,7 +4488,7 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
         fig.subplots_adjust(right=0.88)
         cbar_ax = fig.add_axes([0.90, 0.18, 0.02, 0.65])
         cbar = fig.colorbar(im_for_cbar, cax=cbar_ax)
-        cbar.set_label(cbar_label, fontsize=12)
+        cbar.set_label('Power (dB)', fontsize=11, fontweight='bold')
         cbar.ax.tick_params(labelsize=10)
 
     plt.tight_layout(rect=[0, 0, 0.88, 0.92])
@@ -4379,17 +4499,36 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
 
     print(f"    Saved array-level median spectrogram -> {out_path.relative_to(fig_dir)}")
 
-    if control_median_baseline_norm is not None:
-        out_path_ctrl = condition_dir / "array_median_across_trials_and_channels_CONTROL_MEDIAN_BASELINE_NORM.png"
+    # -------------------------------------------------------------------------
+    # STIM MINUS MATCHED CONTROL SUBTRACTION (Excess Perturbation ΔdB)
+    # Fully replaces the old control_median_baseline_norm
+    # -------------------------------------------------------------------------
+    ctrl_specs_raw = None
+    if data_control is not None:
+        print("      Computing array-level median spectrograms for matched control subtraction...")
+        ctrl_specs_raw = compute_array_median_raw_spectrograms(
+            data=data_control,
+            groups=groups,
+            fs=fs,
+            region_grids=region_grids,
+            elec_to_idx=elec_to_idx,
+        )
 
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharex=True, sharey=True)
+    if ctrl_specs_raw is not None or control_median_baseline_norm is not None:
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         axes = axes.flatten()
 
+        use_subtraction = (ctrl_specs_raw is not None)
+        sub_title = (
+            "Stim minus Matched Control Subtraction (Excess Perturbation)\n"
+            f"{tfr_label} | ΔdB = dB(Stim) - dB(Control) | Notch regions skipped: {notch_str}"
+            if use_subtraction else
+            f"Control Median-Baseline Normalized\n{tfr_label} | Notch regions skipped: {notch_str}"
+        )
+
         fig.suptitle(
-            f'{session_id}\n'
-            f'Array-Level Median Spectrograms | Control Median-Baseline Normalized\n'
-            f'{tfr_label} | Notch regions skipped: {notch_str}',
-            fontsize=14,
+            f'{session_id}\nArray-Level Median Spectrograms | {sub_title}',
+            fontsize=13,
             fontweight='bold'
         )
 
@@ -4401,76 +4540,113 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
 
             if region_name not in region_specs_raw:
                 continue
-            if region_name not in control_median_baseline_norm:
-                continue
             if plot_idx >= len(axes):
                 break
 
             ax = axes[plot_idx]
             spec = region_specs_raw[region_name]
-
-            Sxx_raw = spec['Sxx']
-            mean_val = control_median_baseline_norm[region_name]['mean']
-            std_val = control_median_baseline_norm[region_name]['std']
-
-            Sxx_ctrl = (Sxx_raw - mean_val) / std_val
-
             f_spec = spec['f']
             t_spec_ms = spec['t_ms']
+            bl_mask = (t_spec_ms >= baseline_win[0]) & (t_spec_ms <= baseline_win[1])
 
-            im = ax.pcolormesh(
-                t_spec_ms,
-                np.arange(len(f_spec)),
-                Sxx_ctrl,
-                cmap=cmap,
-                vmin=vmin,
-                vmax=vmax,
-                shading='auto',
-                rasterized=True
-            )
+            if use_subtraction and region_name in ctrl_specs_raw:
+                spec_ctrl = ctrl_specs_raw[region_name]
+                Sxx_stim = spec['Sxx']
+                Sxx_ctrl = spec_ctrl['Sxx']
 
-            im_for_cbar = im
+                eps = 1e-12
+                p_base_stim = np.nanmean(Sxx_stim[:, bl_mask], axis=1, keepdims=True)
+                p_base_ctrl = np.nanmean(Sxx_ctrl[:, bl_mask], axis=1, keepdims=True)
 
-            ax.axvline(0, color='white', ls='--', lw=1.2, alpha=0.9)
-            ax.axvline(100, color='white', ls=':', lw=1.0, alpha=0.7)
+                db_stim = 10.0 * np.log10(np.maximum(Sxx_stim, eps) / np.maximum(p_base_stim, eps))
+                db_ctrl = 10.0 * np.log10(np.maximum(Sxx_ctrl, eps) / np.maximum(p_base_ctrl, eps))
+                diff_data = db_stim - db_ctrl
 
-            for notch_lo, notch_hi in notch_regions:
-                below_idx = np.where(f_spec < notch_lo)[0]
-                above_idx = np.where(f_spec > notch_hi)[0]
-                if len(below_idx) > 0 and len(above_idx) > 0:
-                    gap_y = below_idx[-1] + 0.5
-                    ax.axhline(gap_y, color='white', ls='-', lw=1.5, alpha=0.8)
+                plot_cmap = 'RdBu_r'
+                plot_vmin, plot_vmax = -3.0, 3.0
+                cbar_lbl = 'Power (dB)'
 
-            tick_freqs = [1, 10, 20, 30, 40, 55, 65, 80, 100, 115]
-            tick_positions = []
-            tick_labels = []
+                im = ax.pcolormesh(
+                    t_spec_ms,
+                    np.arange(len(f_spec)),
+                    diff_data,
+                    cmap=plot_cmap,
+                    vmin=plot_vmin,
+                    vmax=plot_vmax,
+                    shading='auto',
+                    rasterized=True
+                )
+                im_for_cbar = im
 
-            for tf in tick_freqs:
-                if tf in f_spec:
-                    idx = np.where(f_spec == tf)[0][0]
-                    tick_positions.append(idx)
-                    tick_labels.append(str(tf))
-                else:
-                    idx = np.argmin(np.abs(f_spec - tf))
-                    if np.abs(f_spec[idx] - tf) <= freq_step:
-                        tick_positions.append(idx)
-                        tick_labels.append(str(int(f_spec[idx])))
+                # Mark stim train with dark vertical lines and shading
+                ax.axvline(0, color='black', ls='--', lw=1.2, alpha=0.9)
+                ax.axvline(100, color='black', ls=':', lw=1.0, alpha=0.7)
+                ax.axvspan(0, 100, color='black', alpha=0.08)
 
+                for notch_lo, notch_hi in notch_regions:
+                    below_idx = np.where(f_spec < notch_lo)[0]
+                    above_idx = np.where(f_spec > notch_hi)[0]
+                    if len(below_idx) > 0 and len(above_idx) > 0:
+                        gap_y = below_idx[-1] + 0.5
+                        ax.axhline(gap_y, color='black', ls='-', lw=1.2, alpha=0.8)
+
+            elif control_median_baseline_norm and region_name in control_median_baseline_norm:
+                Sxx_raw = spec['Sxx']
+                mean_val = control_median_baseline_norm[region_name]['mean']
+                std_val = control_median_baseline_norm[region_name]['std']
+                Sxx_ctrl = (Sxx_raw - mean_val) / std_val
+
+                im = ax.pcolormesh(
+                    t_spec_ms,
+                    np.arange(len(f_spec)),
+                    Sxx_ctrl,
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    shading='auto',
+                    rasterized=True
+                )
+                im_for_cbar = im
+                cbar_lbl = 'Power vs control median baseline (z)'
+
+                ax.axvline(0, color='white', ls='--', lw=1.2, alpha=0.9)
+                ax.axvline(100, color='white', ls=':', lw=1.0, alpha=0.7)
+
+                for notch_lo, notch_hi in notch_regions:
+                    below_idx = np.where(f_spec < notch_lo)[0]
+                    above_idx = np.where(f_spec > notch_hi)[0]
+                    if len(below_idx) > 0 and len(above_idx) > 0:
+                        gap_y = below_idx[-1] + 0.5
+                        ax.axhline(gap_y, color='white', ls='-', lw=1.5, alpha=0.8)
+            else:
+                continue
+
+            # Frequency tick labels (non-colliding, left column only)
+            tick_positions, tick_labels = get_spectrogram_ticks(f_spec)
             ax.set_yticks(tick_positions)
-            ax.set_yticklabels(tick_labels)
 
-            ax.set_title(
-                f'{region_name}\n'
-                f'{spec["n_valid_channels"]} channels, '
-                f'{spec["n_valid_trial_channel_pairs"]} trial-channel spectra',
-                fontsize=11,
-                fontweight='bold'
-            )
+            is_left_col = (plot_idx % 2 == 0)
+            is_bottom_row = (plot_idx >= 2)
 
-            ax.set_xlabel('Time relative to event onset (ms)')
-            ax.set_ylabel('Frequency (Hz)')
-            ax.tick_params(axis='both', labelsize=9)
+            if is_left_col:
+                ax.set_yticklabels(tick_labels, fontsize=9)
+                ax.set_ylabel('Frequency (Hz)', fontsize=10, fontweight='bold')
+                ax.tick_params(axis='y', which='major', length=4, width=1.0, left=True, labelleft=True, labelsize=9)
+            else:
+                ax.set_yticklabels([])
+                ax.set_ylabel('')
+                ax.tick_params(axis='y', which='major', length=3, width=0.8, left=True, labelleft=False)
 
+            if is_bottom_row:
+                ax.set_xlabel('Time (ms)', fontsize=10, fontweight='bold')
+                ax.tick_params(axis='x', which='major', length=4, width=1.0, bottom=True, labelbottom=True, labelsize=9)
+            else:
+                ax.set_xlabel('')
+                ax.set_xticklabels([])
+                ax.tick_params(axis='x', which='major', length=0, bottom=False, labelbottom=False)
+
+            disp_title = PLOT_CONFIG.get('region_display_names', {}).get(region_name, region_name)
+            ax.set_title(disp_title, fontsize=12, fontweight='bold', pad=8)
             plot_idx += 1
 
         for idx in range(plot_idx, len(axes)):
@@ -4480,14 +4656,20 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
             fig.subplots_adjust(right=0.88)
             cbar_ax = fig.add_axes([0.90, 0.18, 0.02, 0.65])
             cbar = fig.colorbar(im_for_cbar, cax=cbar_ax)
-            cbar.set_label('Power vs control median baseline (z)', fontsize=12)
+            cbar.set_label('Power (dB)', fontsize=11, fontweight='bold')
             cbar.ax.tick_params(labelsize=10)
 
         plt.tight_layout(rect=[0, 0, 0.88, 0.92])
+
+        # Save both files so CONTROL_MEDIAN_BASELINE_NORM is fully replaced by this subtraction
+        out_path_sub = condition_dir / "array_median_across_trials_and_channels_STIM_MINUS_CONTROL.png"
+        out_path_ctrl = condition_dir / "array_median_across_trials_and_channels_CONTROL_MEDIAN_BASELINE_NORM.png"
+        plt.savefig(out_path_sub, dpi=150, bbox_inches='tight')
         plt.savefig(out_path_ctrl, dpi=150, bbox_inches='tight')
         plt.close(fig)
 
-        print(f"    Saved control median-baseline normalized array-level median spectrogram -> {out_path_ctrl.relative_to(fig_dir)}")
+        print(f"    Saved Stim minus Control array-level median spectrogram -> {out_path_sub.relative_to(fig_dir)}")
+        print(f"    Fully replaced CONTROL_MEDIAN_BASELINE_NORM -> {out_path_ctrl.relative_to(fig_dir)}")
 
     if return_raw_specs:
         return out_path, region_specs_raw
@@ -4626,9 +4808,6 @@ def generate_causal_diagnostic(data, session_id, fig_dir, groups, fs=1000,
     causal_specs_norm = _normalize_dict(causal_specs_raw)
     morlet_specs_norm = _normalize_dict(morlet_specs_raw) if morlet_specs_raw else None
 
-    # Frequency tick helper matching standard spectrograms
-    tick_freqs = [1, 10, 20, 30, 40, 55, 65, 80, 100, 115]
-
     def _setup_spec_axes(ax, f_spec, is_bottom=False, is_first_col=False):
         ax.axvline(0, color='white', ls='--', lw=1.5, alpha=0.95)
         for notch_lo, notch_hi in notch_regions:
@@ -4638,19 +4817,7 @@ def generate_causal_diagnostic(data, session_id, fig_dir, groups, fs=1000,
                 gap_y = below_idx[-1] + 0.5
                 ax.axhline(gap_y, color='white', ls='-', lw=1.5, alpha=0.8)
 
-        tick_positions = []
-        tick_labels = []
-        for tf in tick_freqs:
-            if tf in f_spec:
-                idx = np.where(f_spec == tf)[0][0]
-                tick_positions.append(idx)
-                tick_labels.append(str(tf))
-            else:
-                idx = np.argmin(np.abs(f_spec - tf))
-                if np.abs(f_spec[idx] - tf) <= freq_step:
-                    tick_positions.append(idx)
-                    tick_labels.append(str(int(f_spec[idx])))
-
+        tick_positions, tick_labels = get_spectrogram_ticks(f_spec)
         ax.set_yticks(tick_positions)
         if is_first_col:
             ax.set_yticklabels(tick_labels, fontsize=9)
@@ -4886,6 +5053,7 @@ def process_session(data, session_id, fig_dir, groups, fs=1000,
                 trial_index=default_trial,
                 generate_all_trials=generate_all,
                 generate_trial_average=generate_avg,  # <-- ADD THIS
+                data_control=data_control if not is_control else None,
             )
             if path:
                 figure_paths.append(path)
@@ -4897,7 +5065,8 @@ def process_session(data, session_id, fig_dir, groups, fs=1000,
     # Median across all trials and all channels/electrodes within each Utah array.
     morlet_specs_raw = None
     if (FIGURE_CONFIG.get('generate_per_ua_array_median', False) or
-            FIGURE_CONFIG.get('generate_control_median_baseline_norm_array_median', False)):
+            FIGURE_CONFIG.get('generate_control_median_baseline_norm_array_median', False) or
+            FIGURE_CONFIG.get('generate_stim_minus_control_array_median', False)):
         if elec_to_idx is not None and region_grids is not None:
             print("  Generating per-UA array-level median spectrograms...")
             path, morlet_specs_raw = generate_per_ua_array_median_spectrogram(
@@ -4911,6 +5080,7 @@ def process_session(data, session_id, fig_dir, groups, fs=1000,
                 region_grids=region_grids,
                 elec_to_idx=elec_to_idx,
                 control_median_baseline_norm=control_median_baseline_norm,
+                data_control=data_control if not is_control else None,
                 return_raw_specs=True,
             )
             if path:
@@ -5129,6 +5299,8 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
             n_pulses = int(data['n_pulses'])
         if 'is_control' in data:
             is_control = bool(data['is_control'])
+        if 'continuous' in session_id.lower() or 'continuous_stim' in session_id.lower():
+            is_control = False
         
         # Parse from filename if not in metadata
         if n_pulses is None:

@@ -16,6 +16,9 @@ UA_VRANGE_BY_LABEL = {
     "M1s": (-30, 125),
     "PMd": (-30, 150),
     "SMA": (-10, 40),
+    "M1 (upper limb)": (-30, 125),
+    "M1 (lower limb)": (-30, 125),
+    "Premotor (dorsal)": (-30, 150),
     "UA (other)": (-50, 150),
 }
 UA_VRANGE_DEFAULT = (-50, 150)  # fallback
@@ -128,6 +131,89 @@ def _mask_time_window_by_edges(mat, x_edges, blank_ms):
     return mat_masked
 
 
+def sort_matrix_by_peak(
+    mat: np.ndarray,
+    rel_t: np.ndarray,
+    search_window: tuple[float, float] | None = None,
+    direction: str = "top_to_bottom",
+    z_scored: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Sort rows (channels) of a 2D matrix (n_channels, n_time) by time of peak activity.
+
+    Parameters
+    ----------
+    mat : np.ndarray
+        (n_channels, n_time) 2D array.
+    rel_t : np.ndarray
+        (n_time,) time vector in ms.
+    search_window : tuple[float, float] | None
+        (t_min, t_max) in ms to search for peak, or None for full window.
+    direction : str
+        "top_to_bottom" (earliest peak at top of plot) or "bottom_to_top" (earliest peak at bottom).
+    z_scored : bool
+        Whether data is z-scored.
+
+    Returns
+    -------
+    mat_sorted : np.ndarray
+        Sorted matrix with same shape as input.
+    order : np.ndarray
+        1D permutation indices applied to rows.
+    """
+    if mat is None or mat.size == 0 or mat.ndim != 2:
+        return mat, np.arange(0 if mat is None else mat.shape[0])
+
+    n_ch, n_time = mat.shape
+    if n_ch <= 1:
+        return mat, np.arange(n_ch)
+
+    if search_window is not None and rel_t is not None and len(rel_t) == n_time:
+        w_min, w_max = search_window
+        mask = (rel_t >= w_min) & (rel_t <= w_max)
+        if np.any(mask):
+            sub = mat[:, mask]
+            t_sub = np.asarray(rel_t)[mask]
+        else:
+            sub = mat
+            t_sub = np.asarray(rel_t)
+    else:
+        sub = mat
+        t_sub = np.asarray(rel_t) if rel_t is not None and len(rel_t) == n_time else np.arange(n_time)
+
+    # Replace NaNs/Infs with -inf so argmax selects the finite maximum
+    sub_finite = np.where(np.isfinite(sub), sub, -np.inf)
+    max_vals = np.max(sub_finite, axis=1)
+    peak_idx = np.argmax(sub_finite, axis=1)
+    peak_times = t_sub[peak_idx]
+
+    # Responsive channel criteria: finite, non-zero peak, and not flat
+    responsive = np.isfinite(max_vals) & (max_vals > 0.0) & (np.nanstd(sub, axis=1) > 1e-6)
+
+    idx_resp = np.where(responsive)[0]
+    idx_unresp = np.where(~responsive)[0]
+
+    if len(idx_resp) > 0:
+        order_resp = idx_resp[np.argsort(peak_times[idx_resp], kind="stable")]
+    else:
+        order_resp = np.array([], dtype=int)
+
+    # In matplotlib pcolormesh, row 0 is drawn at the bottom (y=0) and row n_ch-1 at the top (y=n_ch).
+    # If direction == "top_to_bottom":
+    #   We want earliest peak at top (row n_ch-1) and latest towards bottom.
+    #   Unresponsive channels go at the very bottom (rows 0, 1, ...).
+    #   order: [idx_unresp, order_resp[::-1]]
+    # If direction == "bottom_to_top":
+    #   We want earliest peak at bottom (row 0) and latest towards top.
+    #   order: [order_resp, idx_unresp]
+    if direction == "top_to_bottom":
+        order = np.concatenate([idx_unresp, order_resp[::-1]])
+    else:
+        order = np.concatenate([order_resp, idx_unresp])
+
+    return mat[order, :], order
+
+
 # ---- Plotting FR for both ----
 def stacked_heatmaps_plus_behv(
     nprw_med, ua_med, t_nprw, t_ua, nprw_edges_ms, ua_edges_ms, out_svg,
@@ -173,6 +259,15 @@ def stacked_heatmaps_plus_behv(
     nprw_blank_ms=None,
     ua_blank_ms=None,
     stim_dur_ms: float | None = None,
+    nprw_sort: str = "none",
+    peak_order_direction: str = "top_to_bottom",
+    peak_search_window_ms: tuple[float, float] | None = None,
+    nprw_show_y_ticks: bool = False,
+    beh_show_box: bool = False,
+    beh_show_y_axis: bool = False,
+    beh_line_width: float = 2.4,
+    beh_scale_bar_ms: float | None = 200.0,
+    beh_in_plot_label: str | None = "Position",
 ):
     """
     s: session ID
@@ -255,6 +350,17 @@ def stacked_heatmaps_plus_behv(
                     # sort by region, then electrode id
                     order_valid = np.lexsort((ids_arr[valid], regs[valid]))
 
+                elif ua_sort == "peak":
+                    # sort all UA electrodes globally by peak latency
+                    sub_data = ua_plot[valid, :]
+                    _, order_valid = sort_matrix_by_peak(
+                        sub_data,
+                        t_ua,
+                        search_window=peak_search_window_ms,
+                        direction=peak_order_direction,
+                        z_scored=center_zero,
+                    )
+
                 else:
                     order_valid = np.arange(valid.sum())
 
@@ -266,25 +372,42 @@ def stacked_heatmaps_plus_behv(
             # now group using the same regs
             ua_groups = []
 
-            def _append(mask, label):
+            def _append(mask, code, label, display_name):
                 if mask.sum():
                     ua_groups.append({
                         "mat": ua_plot[mask, :],
                         "ids": ids_arr[mask],
+                        "code": code,
                         "label": label,
+                        "display_name": display_name,
                     })
 
-            _append((regs == 2), "M1i")
-            _append((regs == 3), "M1s")
-            _append((regs == 1), "PMd")
-            _append((regs == 0), "SMA")
+            _append((regs == 2), "M1i", "M1 (upper limb)", "M1\n(upper limb)")
+            _append((regs == 3), "M1s", "M1 (lower limb)", "M1\n(lower limb)")
+            _append((regs == 1), "PMd", "Premotor (dorsal)", "Premotor (dorsal)")
+            _append((regs == 0), "SMA", "SMA", "SMA")
 
             other_mask = (regs >= 1_000_000)
             if other_mask.any():
-                _append(other_mask, "UA (other)")
+                _append(other_mask, "UA_other", "UA (other)", "UA (other)")
+
+            if ua_sort == "region_then_peak":
+                for group in ua_groups:
+                    mat_g = group["mat"]
+                    if mat_g is not None and mat_g.size > 0:
+                        mat_sorted, ord_g = sort_matrix_by_peak(
+                            mat_g,
+                            t_ua,
+                            search_window=peak_search_window_ms,
+                            direction=peak_order_direction,
+                            z_scored=center_zero,
+                        )
+                        group["mat"] = mat_sorted
+                        if group["ids"] is not None:
+                            group["ids"] = group["ids"][ord_g]
 
         else:
-            ua_groups = [{"mat": ua_plot, "ids": None, "label": "UA (all)"}]
+            ua_groups = [{"mat": ua_plot, "ids": None, "code": "UA", "label": "UA (all)", "display_name": "UA (all)"}]
 
 
     # ---------- Figure sizing ----------
@@ -318,7 +441,9 @@ def stacked_heatmaps_plus_behv(
         for group in ua_groups:
             rows = group["mat"].shape[0] if group["mat"] is not None else 0
             base = max(min_heatmap_ratio, ch_ratio_per_row * rows)
-            scale = 0.5 if any(k in group["label"].lower() for k in ("pmd", "sma")) else 1.0
+            # PMd, SMA, and M1s (lower limb) are reduced in size relative to M1i (upper limb)
+            grp_key = (group.get("code", "") + " " + group.get("label", "")).lower()
+            scale = 0.5 if any(k in grp_key for k in ("pmd", "premotor", "sma", "m1s", "lower")) else 1.0
             height_ratios.append(base * scale * ua_compact_factor)
 
     have_probe = (probe is not None) or (
@@ -376,7 +501,7 @@ def stacked_heatmaps_plus_behv(
         t.set_verticalalignment("center")
         return t
 
-    def _plot_lines(ax, rel_t, lines, title, ylabel, sub, place_legend: bool, stds=None, ylim=None, target=None):
+    def _plot_lines(ax, rel_t, lines, title, ylabel, sub, place_legend: bool, stds=None, ylim=None, target=None, is_last_beh: bool = False):
         """
         Plot lines (D x T). If `stds` is provided and has same shape as `lines`,
         draw a filled band ±std behind each mean line.
@@ -402,6 +527,12 @@ def stacked_heatmaps_plus_behv(
             else:
                 ax.set_ylim(bottom=0.0)
 
+        # Remove box outline (spines) if beh_show_box is False
+        if not beh_show_box:
+            for sp in ax.spines.values():
+                sp.set_visible(False)
+            ax.grid(False)
+
         for i in range(D):
             y = lines[i]
             if not np.isfinite(y).any():
@@ -410,8 +541,8 @@ def stacked_heatmaps_plus_behv(
                 lab = ""
             else:
                 lab = labs[i] if i < len(labs) else f"trace_{i+1}"
-            # plot mean line first to capture color from matplotlib cycle
-            ln, = ax.plot(rel_t, y, lw=1.25, alpha=0.95, label=lab)
+            # plot line with thicker linewidth
+            ln, = ax.plot(rel_t, y, lw=beh_line_width, alpha=0.95, label=lab)
             # if stds available and matching shape, draw shaded band
             if stds is not None:
                 try:
@@ -432,11 +563,8 @@ def stacked_heatmaps_plus_behv(
                         ax.fill_between(rel_t, lo, hi, color=col, alpha=0.22, linewidth=0.0)
                 except Exception:
                     pass
-        # if target is not None:
-            # ax.axhline(target[0], color="red", alpha=0.8, linewidth=1.2, ls="--")
-            # ax.axhline(target[1], color="red", alpha=0.8, linewidth=1.2, ls="--")
-            
-        if sub in ("cam0_pos", "cam1_pos") and "normalized" in str(ylabel).lower():
+
+        if beh_show_box and sub in ("cam0_pos", "cam1_pos") and "normalized" in str(ylabel).lower():
             ax.axhline(0.0, color="0.5", linestyle=":", alpha=0.5, linewidth=0.8)
             ax.axhline(1.0, color="0.5", linestyle=":", alpha=0.5, linewidth=0.8)
 
@@ -451,8 +579,56 @@ def stacked_heatmaps_plus_behv(
             )
 
         ax._is_time_axis = True
-        _ylabel_horizontal(ax, ylabel)
-        if title:
+
+        # Y-axis ticks and labels
+        if not beh_show_y_axis:
+            ax.set_yticks([])
+            ax.tick_params(left=False, labelleft=False)
+            ax.set_ylabel("")
+        else:
+            _ylabel_horizontal(ax, ylabel)
+
+        # Draw time scale bar replacing x-axis on the last behavior row
+        t_arr = np.asarray(rel_t, float) if rel_t is not None else np.array([0.0])
+        t_min = float(np.nanmin(t_arr)) if t_arr.size else 0.0
+        x_start = t_min + 40.0
+        scale_val = float(beh_scale_bar_ms or 200.0)
+        x_end = x_start + scale_val
+        if x_end > -20.0:
+            x_start = -20.0 - scale_val
+            x_end = -20.0
+
+        if beh_scale_bar_ms is not None and is_last_beh:
+            ax.tick_params(axis="x", bottom=False, labelbottom=False)
+            ax.spines["bottom"].set_visible(False)
+            y_bar = -0.06
+            ax.plot(
+                [x_start, x_end], [y_bar, y_bar],
+                transform=ax.get_xaxis_transform(),
+                color="black", lw=2.5, clip_on=False, solid_capstyle="butt"
+            )
+            ax.text(
+                (x_start + x_end) / 2.0, y_bar - 0.08,
+                f"{int(scale_val)} ms",
+                transform=ax.get_xaxis_transform(),
+                ha="center", va="top", fontsize=10, fontweight="medium",
+                color="black", clip_on=False
+            )
+        elif beh_scale_bar_ms is not None:
+            ax.tick_params(axis="x", bottom=False, labelbottom=False)
+            ax.spines["bottom"].set_visible(False)
+
+        if beh_in_plot_label:
+            in_label = "Variability" if sub == "variability" else beh_in_plot_label
+            ax.text(
+                x_start, 0.85,
+                in_label,
+                transform=ax.get_xaxis_transform(),
+                fontsize=14, fontweight="medium",
+                color="#222222", ha="left", va="center", clip_on=False
+            )
+
+        if title and not beh_in_plot_label:
             ax.set_title(title)
         if place_legend and D:
             handles, labels = ax.get_legend_handles_labels()
@@ -482,33 +658,34 @@ def stacked_heatmaps_plus_behv(
 
             # Only place legend on the chosen behavior row
             place_legend_now = (beh_row_i == legend_row_idx) and (not legend_placed)
+            is_last_beh = (beh_row_i == total_beh_rows)
 
             if sub == "variability":
                 var_title = title_variability if title_variability is not None else (title_kinematics or "")
                 _plot_lines(ax, beh_rel_time, beh_variability, var_title,
-                            beh_variability_ylabel, sub, place_legend_now, stds=beh_variability_stds, ylim=beh_variability_ylim, target=None)
+                            beh_variability_ylabel, sub, place_legend_now, stds=beh_variability_stds, ylim=beh_variability_ylim, target=None, is_last_beh=is_last_beh)
             elif sub == "cam0_pos":
                 c0_title = "" if have_variability else (title_kinematics or "")
                 _plot_lines(ax, beh_rel_time, beh_cam0_pos, c0_title,
-                            f"Cam-0\n{beh_pos_ylabel}", sub, place_legend_now, stds=beh_cam0_pos_stds, ylim=beh_ylim, target=target_pos_cam0)
+                            f"Cam-0\n{beh_pos_ylabel}", sub, place_legend_now, stds=beh_cam0_pos_stds, ylim=beh_ylim, target=target_pos_cam0, is_last_beh=is_last_beh)
             elif sub == "cam1_pos":
                 c1_title = "" if (have_variability or have_cam0_pos) else (title_kinematics or "")
                 if title_cam1:
                     c1_title = title_cam1
                 _plot_lines(ax, beh_rel_time, beh_cam1_pos, c1_title,
-                            f"Cam-1\n{beh_pos_ylabel}", sub, place_legend_now, stds=beh_cam1_pos_stds, ylim=beh_ylim, target=target_pos_cam1)
+                            f"Cam-1\n{beh_pos_ylabel}", sub, place_legend_now, stds=beh_cam1_pos_stds, ylim=beh_ylim, target=target_pos_cam1, is_last_beh=is_last_beh)
             elif sub == "cam0_vel":
                 _plot_lines(ax, beh_rel_time, beh_cam0_vel, title_cam0_vel or "",
-                            "Cam-0\nVelocity (z/ms)", sub, place_legend_now, stds=beh_cam0_vel_stds, ylim = tuple(np.array(beh_ylim) / 200.0))
+                            "Cam-0\nVelocity (z/ms)", sub, place_legend_now, stds=beh_cam0_vel_stds, ylim = tuple(np.array(beh_ylim) / 200.0), is_last_beh=is_last_beh)
             elif sub == "cam1_vel":
                 _plot_lines(ax, beh_rel_time, beh_cam1_vel, title_cam1_vel or "",
-                            "Cam-1\nVelocity (z/ms)", sub, place_legend_now, stds=beh_cam1_vel_stds, ylim = tuple(np.array(beh_ylim) / 200.0))
+                            "Cam-1\nVelocity (z/ms)", sub, place_legend_now, stds=beh_cam1_vel_stds, ylim = tuple(np.array(beh_ylim) / 200.0), is_last_beh=is_last_beh)
 
             if place_legend_now:
                 legend_placed = True
 
-            # hide x labels if another behavior row follows
-            if beh_row_i < total_beh_rows:
+            # hide x labels if another behavior row follows or if scale bar is active
+            if beh_row_i < total_beh_rows or beh_scale_bar_ms is not None:
                 ax.set_xlabel(""); ax.tick_params(axis="x", labelbottom=False)
             row += 1
             continue
@@ -524,11 +701,28 @@ def stacked_heatmaps_plus_behv(
     if has_nprw:
         ax_nprw     = fig.add_subplot(gs[row, 0])
         ax_nprw_cax = fig.add_subplot(gs[row, 1])
+
+        nprw_plot_mat = nprw_med
+        if nprw_sort == "peak":
+            mat_for_sort = np.copy(nprw_med)
+            if nprw_blank_ms is not None and t_nprw is not None and len(t_nprw) == mat_for_sort.shape[1]:
+                b0, b1 = float(nprw_blank_ms[0]), float(nprw_blank_ms[1])
+                if b1 > b0:
+                    mat_for_sort[:, (t_nprw >= b0) & (t_nprw <= b1)] = np.nan
+            _, order_nprw = sort_matrix_by_peak(
+                mat_for_sort,
+                t_nprw,
+                search_window=peak_search_window_ms,
+                direction=peak_order_direction,
+                z_scored=center_zero,
+            )
+            nprw_plot_mat = nprw_med[order_nprw, :]
+
         # Mask NaNs
         nprw_x_edges = _centers_to_edges(t_nprw, nprw_edges_ms)
 
         nprw_masked = _mask_time_window_by_edges(
-            nprw_med,
+            nprw_plot_mat,
             nprw_x_edges,
             nprw_blank_ms,
         )
@@ -587,7 +781,11 @@ def stacked_heatmaps_plus_behv(
 
         ax_nprw.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
         # ax_nprw.axvspan(-20.0, 120.0, color="gray", alpha=1)
-        ax_nprw.set_title(title_NA); _ylabel_horizontal(ax_nprw, f"IP {nprw_med.shape[0]} chs")
+        ax_nprw.set_title(title_NA)
+        _ylabel_horizontal(ax_nprw, f"IP\n{nprw_med.shape[0]} chs")
+        if not nprw_show_y_ticks:
+            ax_nprw.set_yticks([])
+            ax_nprw.tick_params(left=False, labelleft=False)
         ax_nprw_cax.cla(); [sp.set_visible(False) for sp in ax_nprw_cax.spines.values()]
         ax_nprw_cax.set_xticks([]); ax_nprw_cax.set_yticks([])
         ax_nprw.tick_params(axis="x", labelbottom=False)
@@ -605,18 +803,22 @@ def stacked_heatmaps_plus_behv(
         for group_idx, group in enumerate(ua_groups):
             mat_group   = group["mat"]
             label_group = group.get("label", "")
+            code_group  = group.get("code", "")
+            disp_group  = group.get("display_name", label_group)
 
             # 1) start from your existing per-label default
-            vmin_ua_group, vmax_ua_group = UA_VRANGE_BY_LABEL.get(label_group, UA_VRANGE_DEFAULT)
+            vmin_ua_group, vmax_ua_group = UA_VRANGE_BY_LABEL.get(
+                code_group, UA_VRANGE_BY_LABEL.get(label_group, UA_VRANGE_DEFAULT)
+            )
 
             # 2) apply call-time overrides (scalar or dict). Call-time wins.
-            def _pick(override, current, label):
+            def _pick(override, current, label, code=""):
                 # allow: scalar number OR dict of label->value
                 if override is None:
                     return current
                 if isinstance(override, dict):
                     # allow dict[str, (min,max)] or separate dicts
-                    val = override.get(label, None)
+                    val = override.get(code, override.get(label, None))
                     if val is None:
                         return current
                     if isinstance(val, (tuple, list)) and len(val) == 2:
@@ -627,8 +829,8 @@ def stacked_heatmaps_plus_behv(
                 # scalar
                 return float(override)
 
-            vmin_ua_group = _pick(vmin_ua, vmin_ua_group, label_group)
-            vmax_ua_group = _pick(vmax_ua, vmax_ua_group, label_group)
+            vmin_ua_group = _pick(vmin_ua, vmin_ua_group, label_group, code_group)
+            vmax_ua_group = _pick(vmax_ua, vmax_ua_group, label_group, code_group)
 
             ax_ua     = fig.add_subplot(gs[row, 0])
             ax_ua_cax = fig.add_subplot(gs[row, 1])
@@ -639,7 +841,7 @@ def stacked_heatmaps_plus_behv(
             # Determine normalization for UA
             norm_local_ua = None
             if isinstance(norm_ua, dict):
-                norm_local_ua = norm_ua.get(label_group, None)
+                norm_local_ua = norm_ua.get(code_group, norm_ua.get(label_group, None))
             elif norm_ua is not None:
                 norm_local_ua = norm_ua
 
@@ -708,7 +910,7 @@ def stacked_heatmaps_plus_behv(
             
             ax_ua.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
             # ax_u.axvspan(-5.0, 105.0, color="gray", alpha=1)
-            _ylabel_horizontal(ax_ua, f"{label_group} {mat_group.shape[0]} chs")
+            _ylabel_horizontal(ax_ua, f"{disp_group}\n{mat_group.shape[0]} chs")
             ax_ua.set_yticks([]); ax_ua.tick_params(left=False, labelleft=False)
             ax_ua._is_time_axis = True
 
@@ -780,29 +982,6 @@ def stacked_heatmaps_plus_behv(
         ax_probe.set_aspect("auto")
         ax_probe.set_box_aspect(None)      # let the grid cell dictate height
         ax_probe.margins(x=0.05,y=0.05)   # small padding
-
-
-    x_ranges = []
-    if has_nprw: x_ranges.append((t_nprw[0], t_nprw[-1]))
-    if has_ua:    x_ranges.append((t_ua[0],    t_ua[-1]))
-    if beh_rel_time is not None and (have_cam0_pos or have_cam1_pos or have_cam0_vel or have_cam1_vel):
-        x_ranges.append((beh_rel_time[0], beh_rel_time[-1]))
-    if x_ranges:
-        xmin = float(min(lo for lo, _ in x_ranges))
-        xmax = float(max(hi for _, hi in x_ranges))
-        # Sync x-lims
-        for ax in [a for a in fig.axes if isinstance(a, plt.Axes)]:
-            if getattr(ax, "_is_time_axis", False):
-                ax.set_xlim(xmin, xmax)
-
-    # ---------- Overall title ----------
-    out_svg = Path(out_svg)
-    out_svg.parent.mkdir(parents=True, exist_ok=True)
-    if overall_title:
-        fig.suptitle(overall_title, fontsize=13, fontweight="bold", y=0.995, va="top")
-    fig.subplots_adjust(top=0.96)           # pull axes up toward the top
-    fig.savefig(out_svg, dpi=300, bbox_inches="tight", pad_inches=0.25)
-    plt.close(fig)
 
 
     x_ranges = []

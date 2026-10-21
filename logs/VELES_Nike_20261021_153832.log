@@ -1,0 +1,10 @@
+================================================================================
+VELES RUN START: 10/21/2026 15:38:32
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [3, 7, 8, 9, 10, 11, 12]
+Scripts:
+  - scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py
+================================================================================
+[10/21/2026 15:38:32] [NRR_RW012] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] IN-PROGRESS
+[10/21/2026 15:40:44] [NRR_RW012] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] FINISHED: 10/21/2026 15:40:44

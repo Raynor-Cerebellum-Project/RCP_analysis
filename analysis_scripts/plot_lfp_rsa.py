@@ -130,33 +130,31 @@ except Exception:
 # =============================================================================
 
 # Pre-reach baseline: strictly before reach movement onset (~ -200 ms)
-DEFAULT_BASELINE_WINDOW_MS: Tuple[float, float] = (-950.0, -650.0)
+DEFAULT_BASELINE_WINDOW_MS: Tuple[float, float] = (-450.0, -250.0)
 
-# 4 Physiological & Methodological Analysis Windows
+# Physiological Analysis Windows (Stim potentiation vs. Pre-reach baseline)
+# Comparisons: [0, 75] ms vs [-250, -50] ms and [75, 350] ms vs [-250, -50] ms
 RSA_ANALYSIS_WINDOWS: Dict[str, Tuple[float, float]] = {
-    "-200_to_0ms": (-250.0, -50.0),       # Pre-stim reach initiation / motor preparation phase
-    "0_to_150ms": (0.0, 150.0),         # Early stimulus delivery phase (pulses + immediate evoked response)
-    "0_to_350ms": (0.0, 350.0),         # Full reach perturbation phase
-    "150_to_350ms": (150.0, 350.0),     # Post-stimulus clean reach execution / recovery phase (100% artifact-free)
+    "0_to_75ms": (0.0, 75.0),       # Early stimulation delivery / potentiation phase vs pre-reach [-250, -50] ms
+    "75_to_350ms": (75.0, 350.0),   # Late perturbation / reach execution phase vs pre-reach [-250, -50] ms
 }
-DEFAULT_RESPONSE_WINDOW_MS: Tuple[float, float] = (150.0, 350.0)
+DEFAULT_RESPONSE_WINDOW_MS: Tuple[float, float] = (0.0, 75.0)
 
 # Multitaper parameters (Slepian DPSS tapers)
-DEFAULT_MULTITAPER_WIN_MS: float = 100.0   # Window duration in ms
+DEFAULT_MULTITAPER_WIN_MS: float = 75.0   # Window duration in ms (matches 0 to 75 ms window)
 DEFAULT_MULTITAPER_NW: float = 2.0         # Time-halfbandwidth product NW
 DEFAULT_MULTITAPER_K: int = 2              # Number of tapers (variance reduction = 1/2)
 
 # Primary frequency bands (avoiding 60 Hz and 120 Hz line noise regions)
 DEFAULT_BANDS: Dict[str, Tuple[float, float]] = {
-    "Beta": (13.0, 25.0),
-    "LowGamma": (25.0, 55.0),
-    "HighGamma": (65.0, 115.0),
-    "Alpha": (8.0, 12.0),
-    "Theta": (4.0, 8.0),
+    "Low Frequency": (2.0, 16.0),
+    "Beta": (20.0, 35.0),
+    "LowGamma": (38.0, 60.0),
+    "HighGamma": (60.0, 115.0),
 }
 NOTCH_REGIONS: List[Tuple[float, float]] = [(55.0, 65.0), (115.0, 125.0)]
 
-DEFAULT_PRIMARY_BAND: str = "LowGamma"
+DEFAULT_PRIMARY_BAND: str = "Beta"
 DEFAULT_ARRAYS: List[str] = ["M1i", "M1s", "PMd", "SMA"]
 
 MIN_TRIALS_PER_CONDITION: int = 3
@@ -164,6 +162,16 @@ N_PERMUTATIONS: int = 1000
 FDR_ALPHA: float = 0.05
 FIG_DPI: int = 300
 FIG_FORMAT: str = "png"
+
+# =============================================================================
+# Plot Generation Settings (Choose which figures to generate)
+# =============================================================================
+GENERATE_SILHOUETTE_FIGURES: bool = True       # Combined 4-array condition silhouette separation matrices
+GENERATE_TRIAL_RDM_FIGURES: bool = True        # Individual trial-by-trial RDM heatmaps per array
+GENERATE_COMBINED_4ARRAY_RDM: bool = True      # Combined 2x2 trial-by-trial RDM heatmap for all 4 Utah arrays
+GENERATE_SUBTRACTION_FIGURES: bool = False     # Stim-minus-Control excess perturbation bar profiles
+GENERATE_RESPONSE_MAGNITUDE_FIGURES: bool = False  # 4-panel array response magnitude dose-response bars
+GENERATE_DISAMBIGUATION_FIGURE: bool = False   # High-temporal-precision sliding multitaper artifact disambiguation
 
 # Color definitions matching project standard
 REGION_COLORS: Dict[str, str] = {
@@ -461,16 +469,21 @@ def load_lfp_conditions_for_target(
                 br_idx = int(data["br_idx"])
             except Exception:
                 pass
+        sess_clean = sess_id.lower()
         if br_idx < 0:
             m = re.search(r'_(\d{3})(?:_|$|\.)', sess_id)
             if m:
                 br_idx = int(m.group(1))
 
         if br_idx < 0:
-            continue
+            if "baseline" in sess_clean or "control" in sess_clean:
+                br_idx = 18  # BR 18 is Reach Baseline for NRR_RW022
+            else:
+                continue
 
         csv_meta = session_meta.get(br_idx, {})
         notes = str(csv_meta.get("notes", "")).strip()
+        notes_clean = notes.lower() if notes else ""
 
         # Check PeriStim checkpoint file for ground truth stim pulse counts
         peri_data = _find_peri_data_for_br(br_idx, target_str)
@@ -533,16 +546,19 @@ def load_lfp_conditions_for_target(
                 except Exception:
                     pass
 
-        # Check Control condition status
-        notes_clean = notes.lower() if notes else ""
-        sess_clean = sess_id.lower()
+        # Check Control condition status (continuous stim is NEVER a control condition)
+        is_continuous = ("continuous" in sess_clean or "continuous_stim" in sess_clean or "continuous" in notes_clean)
         is_control = bool(
-            (control_br_indices and br_idx in control_br_indices)
-            or bool(data.get("is_control", False))
-            or (peri_pulses is not None and peri_pulses == 0)
-            or (csv_pulses is not None and csv_pulses == 0)
-            or any(kw in sess_clean for kw in ("control", "baseline", "0p", "0pulse", "nostim", "no_stim"))
-            or any(kw in notes_clean for kw in ("control", "baseline", "0p", "0pulse", "no stim", "nostim", "no_stim"))
+            not is_continuous
+            and (
+                (control_br_indices and br_idx in control_br_indices)
+                or (br_idx in (1, 18) and ("baseline" in sess_clean or "baseline" in notes_clean))
+                or bool(data.get("is_control", False))
+                or (peri_pulses is not None and peri_pulses == 0)
+                or (csv_pulses is not None and csv_pulses == 0)
+                or any(kw in sess_clean for kw in ("control", "baseline", "0p", "0pulse", "nostim", "no_stim"))
+                or any(kw in notes_clean for kw in ("control", "baseline", "0p", "0pulse", "no stim", "nostim", "no_stim"))
+            )
         )
 
         if is_control:
@@ -626,7 +642,7 @@ def load_lfp_conditions_for_target(
         else:
             avail_ctrls = [c for c in parsed_candidates if c["is_control"]]
             if avail_ctrls:
-                best_ctrl = max(avail_ctrls, key=lambda c: c["n_trials"])
+                best_ctrl = max(avail_ctrls, key=lambda c: (10 if c["br_idx"] in (18, 1) else 1, c["n_trials"]))
                 _log(f"Target {target_str}: Control not in process_only; selected BR {best_ctrl['br_idx']} ({best_ctrl['n_trials']} trials).")
                 selected = req_matched + [best_ctrl]
             else:
@@ -634,7 +650,7 @@ def load_lfp_conditions_for_target(
     else:
         avail_ctrls = [c for c in parsed_candidates if c["is_control"]]
         if avail_ctrls:
-            best_ctrl = max(avail_ctrls, key=lambda c: c["n_trials"])
+            best_ctrl = max(avail_ctrls, key=lambda c: (10 if c["br_idx"] in (18, 1) else 1, c["n_trials"]))
             _log(f"Target {target_str}: Auto-selected BR {best_ctrl['br_idx']} as control ({best_ctrl['n_trials']} trials).")
             selected = [best_ctrl] + [c for c in parsed_candidates if not c["is_control"]]
         else:
@@ -658,7 +674,7 @@ def load_lfp_conditions_for_target(
         ntri = cand["n_trials"]
 
         if is_ctrl:
-            base_label = f"BR_{br} Control"
+            base_label = f"BR_{br} Reach Control" if br in (18, 1) or "baseline" in cand["sess_id"].lower() else f"BR_{br} Control"
         else:
             dur_str = f"{sdur:.1f}ms" if (sdur and not sdur.is_integer()) else (f"{int(sdur)}ms" if sdur else "")
             pulse_str = f"{npul}p@{int(sfreq)}Hz" if npul else f"BR_{br}"
@@ -775,11 +791,11 @@ def extract_trial_multitaper_band_power(
     Extract baseline-normalized band power (in dB) using DPSS Multitaper estimation.
 
     Steps:
-      1. Extract baseline window segment [-950, -650] ms.
-      2. Extract active response window segment (e.g. [-200, 0], [0, 150], [0, 350], [150, 350]).
+      1. Extract baseline window segment [-250, -50] ms (pre-reach preparation phase).
+      2. Extract active response window segment (e.g. [0, 75] ms or [75, 350] ms).
       3. Compute DPSS multitaper PSD for baseline and response segments.
       4. Integrate PSD across band frequencies [f_lo, f_hi].
-      5. Compute dB power change: 10 * log10(P_resp / P_base).
+      5. Compute dB power change (stimulation potentiation): 10 * log10(P_resp / P_base).
 
     Returns:
       feat: (N_trials, len(ch_indices)) array of baseline-normalized dB power.
@@ -795,7 +811,7 @@ def extract_trial_multitaper_band_power(
     resp_mask = (time_ms >= resp_win[0]) & (time_ms <= resp_win[1])
 
     if not np.any(base_mask):
-        base_mask = (time_ms >= -850.0) & (time_ms <= -650.0)
+        base_mask = (time_ms >= -250.0) & (time_ms <= -50.0)
     if not np.any(resp_mask):
         resp_mask = (time_ms >= resp_win[0] - 50.0) & (time_ms <= resp_win[1] + 50.0)
 
@@ -839,14 +855,15 @@ def build_lfp_rdm(
     win_ms: float = DEFAULT_MULTITAPER_WIN_MS,
     nw: float = DEFAULT_MULTITAPER_NW,
     k: int = DEFAULT_MULTITAPER_K,
-    subtract_control: bool = True,
+    subtract_control: bool = False,
     zscore_features: bool = True,
 ) -> Tuple[np.ndarray, List[int], List[str], List[np.ndarray], Optional[np.ndarray]]:
     """
     Construct trial-by-trial LFP Representational Dissimilarity Matrix (RDM).
 
-    When subtract_control=True, subtracts the matched reach-only control condition mean
-    response to isolate stimulation-induced excess perturbation (Delta_P = P_stim - P_ctrl).
+    Evaluates how strongly stimulation potentiates neural activity vs pre-reach baseline [-250, -50] ms
+    within each condition and compares potentiation patterns between conditions.
+    When subtract_control=True, additionally subtracts the matched reach-only control condition mean.
     """
     cond_features: List[np.ndarray] = []
     block_sizes = [c.n_trials for c in conditions]
@@ -1035,8 +1052,9 @@ def plot_lfp_rdm_figure(
     target: str,
     window_name: str,
     resp_win: Tuple[float, float],
+    baseline_win: Tuple[float, float] = DEFAULT_BASELINE_WINDOW_MS,
     metric_label: str = "Dissimilarity (1 - r)",
-    multitaper_info: str = "DPSS (win=100ms, NW=2.0, K=2)",
+    multitaper_info: str = "DPSS (win=75ms, NW=2.0, K=2)",
     save_path: Optional[Path] = None,
 ) -> plt.Figure:
     """Generate publication-ready trial-by-trial LFP RDM heatmap with condition blocks."""
@@ -1076,7 +1094,7 @@ def plot_lfp_rdm_figure(
     color_reg = REGION_COLORS.get(array_name, "#2c3e50")
     ax.set_title(
         f"LFP Multitaper RDM Heatmap | Array: {array_name} | Band: {band_name}\n"
-        f"Target {target} | Window: [{int(resp_win[0])}, {int(resp_win[1])}] ms ({window_name}) | Method: {multitaper_info} (N={RDM.shape[0]} trials)",
+        f"Target {target} | Window: [{int(resp_win[0])}, {int(resp_win[1])}] ms ({window_name}) vs Pre-Reach [{int(baseline_win[0])}, {int(baseline_win[1])}] ms | Method: {multitaper_info} (N={RDM.shape[0]} trials)",
         fontsize=10.5,
         fontweight="bold",
         pad=12,
@@ -1090,6 +1108,108 @@ def plot_lfp_rdm_figure(
     return fig
 
 
+def plot_combined_4array_rdm_figure(
+    results_by_array: Dict[str, Dict[str, Any]],
+    band_name: str,
+    band_range: Tuple[float, float],
+    target: str,
+    window_name: str,
+    resp_win: Tuple[float, float],
+    baseline_win: Tuple[float, float] = DEFAULT_BASELINE_WINDOW_MS,
+    metric_label: str = "Dissimilarity (1 - r)",
+    multitaper_info: str = "DPSS (win=75ms, NW=2.0, K=2)",
+    subtract_control: bool = False,
+    save_path: Optional[Path] = None,
+) -> plt.Figure:
+    """
+    Combined 4-panel figure displaying trial-by-trial LFP RDM heatmaps
+    for all 4 Utah arrays (M1i, M1s, PMd, SMA) on the SAME plot.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(15.0, 14.0), dpi=FIG_DPI)
+
+    # Compute global 98th percentile for RDM across all arrays for consistent scaling
+    all_rdm_vals = []
+    for res in results_by_array.values():
+        if "RDM" in res and res["RDM"] is not None:
+            r = res["RDM"]
+            if np.any(r > 0):
+                all_rdm_vals.append(r[r > 0])
+    vmax = float(np.nanpercentile(np.concatenate(all_rdm_vals), 98)) if all_rdm_vals else 1.0
+    vmax = max(vmax, 0.1)
+
+    cmap = "viridis" if "1 -" in metric_label or "Distance" in metric_label else "RdBu_r"
+    im_ref = None
+
+    for idx, array_name in enumerate(DEFAULT_ARRAYS):
+        r, c = idx // 2, idx % 2
+        ax = axes[r, c]
+        color_reg = REGION_COLORS.get(array_name, "#2c3e50")
+
+        if array_name not in results_by_array:
+            ax.axis("off")
+            continue
+
+        res = results_by_array[array_name]
+        RDM = res["RDM"]
+        block_sizes = res["block_sizes"]
+        block_labels = res["block_labels"]
+        clean_labels = [re.sub(r'\s*\(n=\d+\)', '', lab) for lab in block_labels]
+        n_ch = len(res.get("ch_indices", []))
+
+        im = ax.imshow(
+            RDM,
+            origin="upper",
+            aspect="equal",
+            cmap=cmap,
+            vmin=0.0,
+            vmax=vmax,
+            interpolation="nearest",
+        )
+        im_ref = im
+
+        cum = np.cumsum(block_sizes)
+        starts = np.r_[0, cum[:-1]]
+        boundaries = cum[:-1] - 0.5
+        centers = starts + (np.asarray(block_sizes) / 2.0) - 0.5
+
+        for b in boundaries:
+            ax.axvline(b, color="white", linewidth=1.0, linestyle="-")
+            ax.axhline(b, color="white", linewidth=1.0, linestyle="-")
+
+        ax.set_xticks(centers)
+        ax.set_xticklabels(clean_labels, rotation=45, ha="right", fontsize=8.0)
+        ax.set_yticks(centers)
+        ax.set_yticklabels(clean_labels, fontsize=8.0)
+        ax.set_title(f"{array_name} ({n_ch} channels)", fontsize=12, fontweight="bold", color=color_reg, pad=10)
+
+    # Shared colorbar at bottom
+    if im_ref is not None:
+        cbar_ax = fig.add_axes([0.25, 0.04, 0.50, 0.022])
+        cb = fig.colorbar(im_ref, cax=cbar_ax, orientation="horizontal")
+        cb.set_label(f"Trial Dissimilarity [{metric_label}]", fontsize=10.5, fontweight="bold")
+        cb.ax.tick_params(labelsize=9)
+
+    feat_desc = (
+        "Stim-minus-Control Excess Perturbation (ΔdB)"
+        if subtract_control else
+        f"Stim Potentiation vs Pre-Reach (dB re: [{int(baseline_win[0])}, {int(baseline_win[1])}] ms)"
+    )
+    fig.suptitle(
+        f"LFP Trial-by-Trial RDM Heatmaps across Utah Arrays\n"
+        f"Band: {band_name} ({int(band_range[0])}–{int(band_range[1])} Hz) | Window: [{int(resp_win[0])}, {int(resp_win[1])}] ms ({window_name}) vs Pre-Reach [{int(baseline_win[0])}, {int(baseline_win[1])}] ms | Target {target}\n"
+        f"Features: {feat_desc} | Method: {multitaper_info}",
+        fontsize=12,
+        fontweight="bold",
+        y=0.98,
+    )
+    fig.subplots_adjust(top=0.91, bottom=0.10, left=0.08, right=0.95, hspace=0.35, wspace=0.25)
+
+    if save_path:
+        fig.savefig(save_path, dpi=FIG_DPI, bbox_inches="tight")
+        _log(f"Saved Combined 4-Array RDM figure -> {save_path.name}")
+    return fig
+
+
 def plot_combined_4array_silhouette_figure(
     results_by_array: Dict[str, Dict[str, Any]],
     band_name: str,
@@ -1097,8 +1217,9 @@ def plot_combined_4array_silhouette_figure(
     target: str,
     window_name: str,
     resp_win: Tuple[float, float],
-    multitaper_info: str = "DPSS (win=100ms, NW=2.0, K=2)",
-    subtract_control: bool = True,
+    multitaper_info: str = "DPSS (win=75ms, NW=2.0, K=2)",
+    subtract_control: bool = False,
+    baseline_win: Tuple[float, float] = DEFAULT_BASELINE_WINDOW_MS,
     save_path: Optional[Path] = None,
 ) -> plt.Figure:
     """
@@ -1157,10 +1278,16 @@ def plot_combined_4array_silhouette_figure(
                 elif i < j:
                     s_val = S[i, j]
                     star = p_stars_label(Q[i, j])
-                    star_str = f"\n{star}" if star and star != "n.s." else ""
-                    txt = f"{s_val:+.2f}{star_str}" if np.isfinite(s_val) else "—"
                     col = "white" if abs(s_val) > v_abs * 0.55 else "black"
-                    ax.text(j, i, txt, ha="center", va="center", fontsize=8.5, fontweight="bold", color=col)
+                    val_str = f"{s_val:+.2f}" if np.isfinite(s_val) else "—"
+                    if star and star != "n.s.":
+                        num_font = max(6.0, min(8.0, 9.0 - 0.15 * K))
+                        star_font = max(10.5, min(14.0, 16.0 - 0.25 * K))
+                        ax.text(j, i - 0.13, val_str, ha="center", va="center", fontsize=num_font, fontweight="bold", color=col)
+                        ax.text(j, i + 0.16, star, ha="center", va="center", fontsize=star_font, fontweight="bold", color=col)
+                    else:
+                        num_font = max(6.5, min(8.5, 9.5 - 0.15 * K))
+                        ax.text(j, i, val_str, ha="center", va="center", fontsize=num_font, fontweight="bold", color=col)
                 else:
                     s_val = S[i, j]
                     txt = f"{s_val:+.2f}" if np.isfinite(s_val) else "—"
@@ -1180,10 +1307,14 @@ def plot_combined_4array_silhouette_figure(
         cb.set_label("Pairwise Condition Silhouette Score (S)  [Separation Metric]", fontsize=10.5, fontweight="bold")
         cb.ax.tick_params(labelsize=9)
 
-    feat_desc = "Stim-minus-Control Excess Perturbation (ΔdB)" if subtract_control else "Baseline-Normalized Band Power (dB)"
+    feat_desc = (
+        "Stim-minus-Control Excess Perturbation (ΔdB)"
+        if subtract_control else
+        f"Stim Potentiation vs Pre-Reach (dB re: [{int(baseline_win[0])}, {int(baseline_win[1])}] ms)"
+    )
     fig.suptitle(
         f"LFP Condition Separation Matrix across Utah Arrays (Silhouette Score)\n"
-        f"Band: {band_name} ({int(band_range[0])}–{int(band_range[1])} Hz) | Window: [{int(resp_win[0])}, {int(resp_win[1])}] ms ({window_name}) | Target {target}\n"
+        f"Band: {band_name} ({int(band_range[0])}–{int(band_range[1])} Hz) | Window: [{int(resp_win[0])}, {int(resp_win[1])}] ms ({window_name}) vs Pre-Reach [{int(baseline_win[0])}, {int(baseline_win[1])}] ms | Target {target}\n"
         f"Features: {feat_desc} | Method: {multitaper_info} | * q<0.05, ** q<0.01, *** q<0.001 (FDR BH)",
         fontsize=12,
         fontweight="bold",
@@ -1205,6 +1336,7 @@ def plot_subtraction_analysis_figure(
     target: str,
     window_name: str,
     resp_win: Tuple[float, float],
+    baseline_win: Tuple[float, float] = DEFAULT_BASELINE_WINDOW_MS,
     win_ms: float = DEFAULT_MULTITAPER_WIN_MS,
     nw: float = DEFAULT_MULTITAPER_NW,
     k: int = DEFAULT_MULTITAPER_K,
@@ -1245,6 +1377,7 @@ def plot_subtraction_analysis_figure(
                 fs=c.fs,
                 ch_indices=ch_idx,
                 band=band,
+                baseline_win=baseline_win,
                 resp_win=resp_win,
                 win_ms=win_ms,
                 nw=nw,
@@ -1267,6 +1400,7 @@ def plot_subtraction_analysis_figure(
                 fs=c.fs,
                 ch_indices=ch_idx,
                 band=band,
+                baseline_win=baseline_win,
                 resp_win=resp_win,
                 win_ms=win_ms,
                 nw=nw,
@@ -1326,7 +1460,7 @@ def plot_subtraction_analysis_figure(
     fig.suptitle(
         f"LFP Stimulation-minus-Control Excess Perturbation (ΔdB re Matched Reach-Only Control)\n"
         f"Cortical Utah Arrays: M1i, M1s, PMd, SMA | Band: {band_name} ({int(band[0])}–{int(band[1])} Hz)\n"
-        f"Window: [{int(resp_win[0])}, {int(resp_win[1])}] ms ({window_name}) | Target {target} (Mean ± 95% CI)",
+        f"Window: [{int(resp_win[0])}, {int(resp_win[1])}] ms ({window_name}) vs Pre-Reach [{int(baseline_win[0])}, {int(baseline_win[1])}] ms | Target {target} (Mean ± 95% CI)",
         fontsize=11.5,
         fontweight="bold",
         y=0.99,
@@ -1346,15 +1480,16 @@ def plot_array_response_magnitude_figure(
     target: str,
     window_name: str,
     resp_win: Tuple[float, float],
+    baseline_win: Tuple[float, float] = DEFAULT_BASELINE_WINDOW_MS,
     win_ms: float = DEFAULT_MULTITAPER_WIN_MS,
     nw: float = DEFAULT_MULTITAPER_NW,
     k: int = DEFAULT_MULTITAPER_K,
-    subtract_control: bool = True,
+    subtract_control: bool = False,
     save_path: Optional[Path] = None,
 ) -> plt.Figure:
     """
     Generate 4-panel dose-response / array response magnitude figure:
-    M1i, M1s, PMd, SMA showing baseline-normalized (and control-subtracted) band power change.
+    M1i, M1s, PMd, SMA showing stimulation potentiation relative to pre-reach baseline (or control-subtracted).
     """
     clean_labels = [re.sub(r'\s*\(n=\d+\)', '', c.label) for c in conditions]
     n_conds = len(conditions)
@@ -1379,6 +1514,7 @@ def plot_array_response_magnitude_figure(
                 fs=c.fs,
                 ch_indices=ch_idx,
                 band=band,
+                baseline_win=baseline_win,
                 resp_win=resp_win,
                 win_ms=win_ms,
                 nw=nw,
@@ -1416,14 +1552,14 @@ def plot_array_response_magnitude_figure(
         ax.set_xticks(x)
         ax.set_xticklabels(clean_labels, rotation=45, ha="right", fontsize=8.5)
         ax.set_title(f"{array_name} (n={len(ch_idx)} ch)", fontsize=11, fontweight="bold", color=color_reg)
-        y_lbl = "Excess Power relative to Control (dB)" if subtract_control else "Power Change vs Baseline (dB)"
+        y_lbl = "Excess Power relative to Control (dB)" if subtract_control else f"Power Potentiation vs Pre-Reach [{int(baseline_win[0])}, {int(baseline_win[1])}] ms (dB)"
         ax.set_ylabel(y_lbl, fontsize=9)
         ax.grid(axis="y", linestyle=":", alpha=0.4)
 
-    sub_title = "Control-Subtracted Stim Perturbation" if subtract_control else "Baseline-Normalized Response"
+    sub_title = "Control-Subtracted Stim Perturbation" if subtract_control else f"Stim Potentiation vs Pre-Reach [{int(baseline_win[0])}, {int(baseline_win[1])}] ms"
     fig.suptitle(
         f"LFP Multitaper Band Power Response across Utah Arrays ({sub_title})\n"
-        f"Band: {band_name} ({int(band[0])}–{int(band[1])} Hz) | Window: [{int(resp_win[0])}, {int(resp_win[1])}] ms ({window_name}) | Target {target} (Mean ± 95% CI)",
+        f"Band: {band_name} ({int(band[0])}–{int(band[1])} Hz) | Window: [{int(resp_win[0])}, {int(resp_win[1])}] ms ({window_name}) vs Pre-Reach [{int(baseline_win[0])}, {int(baseline_win[1])}] ms | Target {target} (Mean ± 95% CI)",
         fontsize=11.5,
         fontweight="bold",
         y=0.99,
@@ -1432,6 +1568,173 @@ def plot_array_response_magnitude_figure(
     if save_path:
         fig.savefig(save_path, dpi=FIG_DPI, bbox_inches="tight")
         _log(f"Saved Response Magnitude figure -> {save_path.name}")
+    return fig
+
+
+def plot_time_resolved_stim_artifact_disambiguation(
+    conditions: List[LfpCondition],
+    region_map: Dict[str, List[int]],
+    target: str,
+    save_dir: Path,
+    win_ms: float = 40.0,
+    step_ms: float = 10.0,
+    time_range_ms: Tuple[float, float] = (-100.0, 400.0),
+    baseline_win: Tuple[float, float] = DEFAULT_BASELINE_WINDOW_MS,
+    nw: float = DEFAULT_MULTITAPER_NW,
+    k: int = DEFAULT_MULTITAPER_K,
+    save_path: Optional[Path] = None,
+) -> Optional[plt.Figure]:
+    """
+    High-Temporal-Precision Stimulation Artifact Disambiguation Analysis.
+
+    Evaluates graded pulse count conditions (e.g., 1p, 2p, 4p, 8p, 20p, 40p at 400 Hz)
+    against matched Reach Control across Utah arrays (M1i, M1s, PMd, SMA).
+    
+    Computes time-resolved sliding-window multitaper excess power:
+        ΔdB(t) = dB_stim(t) - dB_control(t)
+    with narrow sliding windows (win=40ms, step=10ms) across High Gamma (65-115 Hz) vs Beta (13-25 Hz).
+    
+    Temporal Disambiguation Principle:
+    - Electrical Stim Artifact & Filter Ringing:
+      Dominates high frequencies (>65 Hz). An artifact MUST terminate immediately (within ~15-20 ms)
+      after pulse train cessation (1p: 2.5ms, 2p: 5ms, 4p: 10ms, 8p: 20ms, 20p: 50ms, 40p: 100ms).
+      In High Gamma, excess power collapses back to baseline right after stim offset.
+    - Genuine Neurophysiological Cortical Modulation:
+      In Beta (13-25 Hz), modulation outlasts stimulation cessation by hundreds of milliseconds,
+      showing sustained excess perturbation (+3 to +6 dB) across 150 to 350 ms.
+    """
+    ctrl_conds = [c for c in conditions if c.is_control]
+    if not ctrl_conds:
+        _log("   [Disambiguation] No control condition found. Skipping.")
+        return None
+    ctrl_c = ctrl_conds[0]
+
+    # Filter stim conditions with known pulse counts (e.g. 1, 2, 4, 8, 20, 40)
+    stim_conds = [c for c in conditions if not c.is_control and c.pulse_count is not None and c.pulse_count > 0]
+    if not stim_conds:
+        _log("   [Disambiguation] No stim pulse conditions found. Skipping.")
+        return None
+    stim_conds.sort(key=lambda c: (c.pulse_count or 0, c.stim_dur_ms or 0))
+
+    # Condition styles (palette, duration in ms, label)
+    palette_map = {
+        1: ("#8e44ad", 2.5, "1p (2.5ms)"),
+        2: ("#2980b9", 5.0, "2p (5.0ms)"),
+        4: ("#16a085", 10.0, "4p (10.0ms)"),
+        8: ("#27ae60", 20.0, "8p (20.0ms)"),
+        20: ("#e67e22", 50.0, "20p (50.0ms)"),
+        40: ("#c0392b", 100.0, "40p (100.0ms)"),
+    }
+
+    half_w = win_ms / 2.0
+    t_centers = np.arange(time_range_ms[0] + half_w, time_range_ms[1] - half_w + 1e-5, step_ms)
+    n_times = len(t_centers)
+
+    bands_eval = {
+        "HighGamma (65–115 Hz)": (65.0, 115.0),
+        "Beta (13–25 Hz)": (13.0, 25.0),
+    }
+
+    fig, axes = plt.subplots(len(DEFAULT_ARRAYS), 2, figsize=(15, 12), dpi=FIG_DPI, sharex=True)
+    if len(DEFAULT_ARRAYS) == 1:
+        axes = np.array([axes])
+
+    for row_idx, array_name in enumerate(DEFAULT_ARRAYS):
+        ch_idx = region_map.get(array_name, [])
+        if not ch_idx:
+            for col_idx in range(2):
+                axes[row_idx, col_idx].text(0.5, 0.5, f"No channels for {array_name}", ha="center", va="center")
+            continue
+
+        for col_idx, (b_title, band_range) in enumerate(bands_eval.items()):
+            ax = axes[row_idx, col_idx]
+
+            # Compute control power curve across sliding windows
+            ctrl_time_pow = np.zeros(n_times)
+            for t_i, t_c in enumerate(t_centers):
+                w_resp = (t_c - half_w, t_c + half_w)
+                db_ctrl = extract_trial_multitaper_band_power(
+                    broadband=ctrl_c.broadband,
+                    time_ms=ctrl_c.time_ms,
+                    fs=ctrl_c.fs,
+                    ch_indices=ch_idx,
+                    band=band_range,
+                    baseline_win=baseline_win,
+                    resp_win=w_resp,
+                    win_ms=win_ms,
+                    nw=nw,
+                    k=k,
+                )
+                ctrl_time_pow[t_i] = float(np.nanmean(db_ctrl))
+
+            # Compute and plot stim condition curves
+            for sc in stim_conds:
+                p_cnt = sc.pulse_count or 1
+                color, dur_ms, dur_lbl = palette_map.get(p_cnt, ("#555555", sc.stim_dur_ms or 10.0, f"{p_cnt}p"))
+                lbl = f"BR_{sc.br_idx} {dur_lbl}"
+
+                stim_time_pow = np.zeros(n_times)
+                for t_i, t_c in enumerate(t_centers):
+                    w_resp = (t_c - half_w, t_c + half_w)
+                    db_stim = extract_trial_multitaper_band_power(
+                        broadband=sc.broadband,
+                        time_ms=sc.time_ms,
+                        fs=sc.fs,
+                        ch_indices=ch_idx,
+                        band=band_range,
+                        baseline_win=baseline_win,
+                        resp_win=w_resp,
+                        win_ms=win_ms,
+                        nw=nw,
+                        k=k,
+                    )
+                    stim_time_pow[t_i] = float(np.nanmean(db_stim))
+
+                delta_dB = stim_time_pow - ctrl_time_pow
+
+                ax.plot(t_centers, delta_dB, color=color, linewidth=2.0, label=lbl, alpha=0.9)
+                # Dotted line marking stimulation train offset
+                ax.axvline(dur_ms, color=color, linestyle=":", linewidth=1.2, alpha=0.6)
+
+            ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.7)
+            ax.axvline(0.0, color="black", linestyle="-", linewidth=1.2, alpha=0.9)
+
+            # Shaded regions
+            if col_idx == 0:
+                ax.axvspan(0.0, 100.0, color="red", alpha=0.06, label="Stim Delivery (0-100ms)")
+            else:
+                ax.axvspan(150.0, 350.0, color="green", alpha=0.07, label="Clean Post-Stim Window (150-350ms)")
+
+            ax.set_ylabel(f"{array_name}\nExcess Power (ΔdB)", fontsize=9.5, fontweight="bold")
+            ax.grid(True, linestyle=":", alpha=0.35)
+            ax.set_xlim(time_range_ms[0], time_range_ms[1])
+
+            if row_idx == 0:
+                sub_header = (
+                    "Electrical Artifact & Filter Ringing (Collapses Post-Stim)"
+                    if col_idx == 0 else
+                    "Genuine Motor Cortical Perturbation (Sustained Modulation)"
+                )
+                ax.set_title(f"{b_title}\n{sub_header}", fontsize=11, fontweight="bold")
+
+            if row_idx == len(DEFAULT_ARRAYS) - 1:
+                ax.set_xlabel("Time from Stimulus Onset (ms)", fontsize=10, fontweight="bold")
+
+            if row_idx == 0 and col_idx == 1:
+                ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
+
+    fig.suptitle(
+        f"High-Temporal-Precision Stimulation Artifact Disambiguation across Utah Arrays\n"
+        f"Session Target {target} | Sliding Multitaper (win={int(win_ms)}ms, step={int(step_ms)}ms, NW={nw}, K={k})\n"
+        f"ΔdB = dB(Stim) - dB(Matched Reach Control) | Vertical dotted lines = Condition stim train offsets",
+        fontsize=12,
+        fontweight="bold",
+        y=0.99,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    if save_path:
+        fig.savefig(save_path, dpi=FIG_DPI, bbox_inches="tight")
+        _log(f"Saved Stim Artifact Disambiguation figure -> {save_path.name}")
     return fig
 
 
@@ -1455,8 +1758,15 @@ def run_lfp_rsa_for_target(
     win_ms: float = DEFAULT_MULTITAPER_WIN_MS,
     nw: float = DEFAULT_MULTITAPER_NW,
     k: int = DEFAULT_MULTITAPER_K,
-    subtract_control: bool = True,
+    subtract_control: bool = False,
     metadata_csv: Optional[Path] = None,
+    plot_silhouette: bool = GENERATE_SILHOUETTE_FIGURES,
+    plot_rdm: bool = GENERATE_TRIAL_RDM_FIGURES,
+    plot_combined_rdm: bool = GENERATE_COMBINED_4ARRAY_RDM,
+    plot_subtraction: bool = GENERATE_SUBTRACTION_FIGURES,
+    plot_response_magnitude: bool = GENERATE_RESPONSE_MAGNITUDE_FIGURES,
+    plot_disambiguation: bool = GENERATE_DISAMBIGUATION_FIGURE,
+    n_perm: int = N_PERMUTATIONS,
 ) -> Dict[str, Any]:
     """
     Execute complete single-session LFP RSA pipeline for one reaching target across
@@ -1468,6 +1778,7 @@ def run_lfp_rsa_for_target(
     _log(f"   Method: DPSS Multitaper (win={win_ms}ms, NW={nw}, K={k} tapers)")
     _log(f"   Baseline: {baseline_win} ms")
     _log(f"   Subtract Matched Control: {subtract_control}")
+    _log(f"   Plot Settings: Silhouette={plot_silhouette}, Trial RDM={plot_rdm}, Combined 4-Array RDM={plot_combined_rdm}, Subtraction={plot_subtraction}, Response Mag={plot_response_magnitude}, Disambiguation={plot_disambiguation}")
     _log(f"=======================================================")
 
     ensure_dir(save_dir)
@@ -1501,7 +1812,7 @@ def run_lfp_rsa_for_target(
     else:
         bands_to_run = list(bands.keys())
 
-    # Resolve windows to run (default: all 4 windows)
+    # Resolve windows to run (default: all active windows)
     if windows is not None:
         active_windows = windows
     elif selected_windows is not None and "all" not in [w.lower() for w in selected_windows]:
@@ -1558,7 +1869,7 @@ def run_lfp_rsa_for_target(
                     subtract_control=subtract_control,
                 )
 
-                S, P, Q = compute_pairwise_silhouette_matrix(RDM, block_sizes, n_perm=N_PERMUTATIONS)
+                S, P, Q = compute_pairwise_silhouette_matrix(RDM, block_sizes, n_perm=n_perm)
                 within_dist = compute_within_condition_consistency(RDM, block_sizes)
 
                 results_by_array[array_name] = {
@@ -1572,30 +1883,55 @@ def run_lfp_rsa_for_target(
                     "ch_indices": ch_idxs,
                 }
 
-                # Save individual trial-by-trial RDM Heatmap
-                out_rdm = win_save_dir / f"lfp_rdm_Target_{target_str}_{array_name}_{band_name}_{win_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
-                plot_lfp_rdm_figure(
-                    RDM=RDM,
-                    block_sizes=block_sizes,
-                    block_labels=block_labels,
-                    array_name=array_name,
-                    band_name=band_name,
-                    target=target_str,
-                    window_name=win_tag,
-                    resp_win=resp_win,
-                    metric_label=f"Dissimilarity ({'1 - r' if metric == 'correlation' else 'Euclidean'})",
-                    multitaper_info=multitaper_info,
-                    save_path=out_rdm,
-                )
+                # 1. Save individual trial-by-trial RDM Heatmap
+                if plot_rdm:
+                    out_rdm = win_save_dir / f"lfp_rdm_Target_{target_str}_{array_name}_{band_name}_{win_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
+                    plot_lfp_rdm_figure(
+                        RDM=RDM,
+                        block_sizes=block_sizes,
+                        block_labels=block_labels,
+                        array_name=array_name,
+                        band_name=band_name,
+                        target=target_str,
+                        window_name=win_tag,
+                        resp_win=resp_win,
+                        baseline_win=baseline_win,
+                        metric_label=f"Dissimilarity ({'1 - r' if metric == 'correlation' else 'Euclidean'})",
+                        multitaper_info=multitaper_info,
+                        save_path=out_rdm,
+                    )
 
-                # Save pairwise silhouette table
+                # Save pairwise silhouette table (always save data table)
                 clean_labs = [re.sub(r'\s*\(n=\d+\)', '', lab) for lab in block_labels]
                 df_sil = pd.DataFrame(S, index=clean_labs, columns=clean_labs)
                 out_csv = win_save_dir / f"lfp_silhouette_Target_{target_str}_{array_name}_{band_name}_{win_tag}.csv"
                 df_sil.to_csv(out_csv)
 
-            # Combined 4-Array Silhouette Figure (All 4 arrays on the SAME plot)
-            if results_by_array:
+            # 2. Combined 4-Array RDM Figure (All 4 arrays on the SAME plot)
+            if plot_combined_rdm and results_by_array:
+                out_combined_rdm = win_save_dir / f"lfp_rdm_4arrays_Target_{target_str}_{band_name}_{win_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
+                plot_combined_4array_rdm_figure(
+                    results_by_array=results_by_array,
+                    band_name=band_name,
+                    band_range=band_range,
+                    target=target_str,
+                    window_name=win_tag,
+                    resp_win=resp_win,
+                    baseline_win=baseline_win,
+                    metric_label=f"{'1 - r' if metric == 'correlation' else 'Euclidean'}",
+                    multitaper_info=multitaper_info,
+                    subtract_control=subtract_control,
+                    save_path=out_combined_rdm,
+                )
+                top_rdm = save_dir / f"lfp_rdm_4arrays_Target_{target_str}_{band_name}_{win_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
+                try:
+                    import shutil
+                    shutil.copyfile(out_combined_rdm, top_rdm)
+                except Exception:
+                    pass
+
+            # 3. Combined 4-Array Silhouette Figure (All 4 arrays on the SAME plot)
+            if plot_silhouette and results_by_array:
                 out_combined_sil = win_save_dir / f"lfp_silhouette_4arrays_Target_{target_str}_{band_name}_{win_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
                 plot_combined_4array_silhouette_figure(
                     results_by_array=results_by_array,
@@ -1606,6 +1942,7 @@ def run_lfp_rsa_for_target(
                     resp_win=resp_win,
                     multitaper_info=multitaper_info,
                     subtract_control=subtract_control,
+                    baseline_win=baseline_win,
                     save_path=out_combined_sil,
                 )
                 # Copy to top-level save_dir for quick reference
@@ -1616,54 +1953,80 @@ def run_lfp_rsa_for_target(
                 except Exception:
                     pass
 
-            # Subtraction Analysis Figure (Stim - Control ΔdB Excess Perturbation across 4 arrays)
-            out_sub = win_save_dir / f"lfp_subtraction_profiles_Target_{target_str}_{band_name}_{win_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
-            plot_subtraction_analysis_figure(
-                conditions=conditions,
-                region_map=region_map,
-                band=band_range,
-                band_name=band_name,
-                target=target_str,
-                window_name=win_tag,
-                resp_win=resp_win,
-                win_ms=win_ms,
-                nw=nw,
-                k=k,
-                save_path=out_sub,
-            )
-            top_sub = save_dir / f"lfp_subtraction_profiles_Target_{target_str}_{band_name}_{win_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
-            try:
-                import shutil
-                shutil.copyfile(out_sub, top_sub)
-            except Exception:
-                pass
+            # 4. Subtraction Analysis Figure (Stim - Control ΔdB Excess Perturbation across 4 arrays)
+            if plot_subtraction:
+                out_sub = win_save_dir / f"lfp_subtraction_profiles_Target_{target_str}_{band_name}_{win_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
+                plot_subtraction_analysis_figure(
+                    conditions=conditions,
+                    region_map=region_map,
+                    band=band_range,
+                    band_name=band_name,
+                    target=target_str,
+                    window_name=win_tag,
+                    resp_win=resp_win,
+                    baseline_win=baseline_win,
+                    win_ms=win_ms,
+                    nw=nw,
+                    k=k,
+                    save_path=out_sub,
+                )
+                top_sub = save_dir / f"lfp_subtraction_profiles_Target_{target_str}_{band_name}_{win_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
+                try:
+                    import shutil
+                    shutil.copyfile(out_sub, top_sub)
+                except Exception:
+                    pass
 
-            # 4-Panel Array Response Magnitude Figure
-            out_resp = win_save_dir / f"lfp_response_magnitude_Target_{target_str}_{band_name}_{win_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
-            plot_array_response_magnitude_figure(
-                conditions=conditions,
-                region_map=region_map,
-                band=band_range,
-                band_name=band_name,
-                target=target_str,
-                window_name=win_tag,
-                resp_win=resp_win,
-                win_ms=win_ms,
-                nw=nw,
-                k=k,
-                subtract_control=subtract_control,
-                save_path=out_resp,
-            )
-            top_resp = save_dir / f"lfp_response_magnitude_Target_{target_str}_{band_name}_{win_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
-            try:
-                import shutil
-                shutil.copyfile(out_resp, top_resp)
-            except Exception:
-                pass
+            # 5. 4-Panel Array Response Magnitude Figure
+            if plot_response_magnitude:
+                out_resp = win_save_dir / f"lfp_response_magnitude_Target_{target_str}_{band_name}_{win_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
+                plot_array_response_magnitude_figure(
+                    conditions=conditions,
+                    region_map=region_map,
+                    band=band_range,
+                    band_name=band_name,
+                    target=target_str,
+                    window_name=win_tag,
+                    resp_win=resp_win,
+                    baseline_win=baseline_win,
+                    win_ms=win_ms,
+                    nw=nw,
+                    k=k,
+                    subtract_control=subtract_control,
+                    save_path=out_resp,
+                )
+                top_resp = save_dir / f"lfp_response_magnitude_Target_{target_str}_{band_name}_{win_tag}_conds_{cond_tag}.{FIG_FORMAT.lower()}"
+                try:
+                    import shutil
+                    shutil.copyfile(out_resp, top_resp)
+                except Exception:
+                    pass
 
             band_results[band_name] = results_by_array
 
         all_window_results[win_tag] = band_results
+
+    # 6. High-Temporal-Precision Stim Artifact Disambiguation Analysis
+    if plot_disambiguation:
+        _log(f"\n=======================================================")
+        _log(f"Running High-Temporal-Precision Stim Artifact Disambiguation: Target {target_str}")
+        _log(f"=======================================================")
+        disambig_path = save_dir / f"lfp_stim_artifact_disambiguation_Target_{target_str}.{FIG_FORMAT.lower()}"
+        plot_time_resolved_stim_artifact_disambiguation(
+            conditions=conditions,
+            region_map=region_map,
+            target=target_str,
+            save_dir=save_dir,
+            win_ms=40.0,
+            step_ms=10.0,
+            time_range_ms=(-100.0, 400.0),
+            baseline_win=baseline_win,
+            nw=nw,
+            k=k,
+            save_path=disambig_path,
+        )
+    else:
+        _log(f"   [Disambiguation] Skipped per plot settings (GENERATE_DISAMBIGUATION_FIGURE=False).")
 
     return {
         "conditions": conditions,
@@ -1701,7 +2064,7 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         type=str,
         default=["all"],
-        help="Analysis windows: '-200_to_0ms', '0_to_150ms', '0_to_350ms', '150_to_350ms', or 'all'.",
+        help="Analysis windows: '0_to_75ms', '75_to_350ms', or 'all' (default: all).",
     )
     parser.add_argument(
         "--metric",
@@ -1714,10 +2077,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--multitaper-nw", type=float, default=DEFAULT_MULTITAPER_NW, help="Multitaper NW product.")
     parser.add_argument("--multitaper-k", type=int, default=DEFAULT_MULTITAPER_K, help="Multitaper number of tapers K.")
     parser.add_argument(
+        "--subtract-control",
+        dest="subtract_control",
+        action="store_true",
+        default=False,
+        help="Subtract matched reach-only control mean response (default: False; potentiation is measured vs pre-reach baseline [-250, -50] ms).",
+    )
+    parser.add_argument(
         "--no-subtract-control",
         dest="subtract_control",
         action="store_false",
-        default=True,
         help="Disable subtracting matched reach-only control mean response.",
     )
     parser.add_argument("--compare-conditions", nargs="+", type=int, default=None, help="Conditions/BR files to compare.")
@@ -1737,8 +2106,22 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         metavar=("START_MS", "END_MS"),
-        help="Baseline time window in ms relative to stim onset (default: -950 -650).",
+        help="Baseline time window in ms relative to stim onset (default: -250 -50).",
     )
+    # Plot generation settings CLI overrides
+    parser.add_argument("--plot-silhouette", dest="plot_silhouette", action="store_true", default=None, help="Generate 4-array condition silhouette separation figures.")
+    parser.add_argument("--no-plot-silhouette", dest="plot_silhouette", action="store_false", help="Disable silhouette figures.")
+    parser.add_argument("--plot-rdm", dest="plot_rdm", action="store_true", default=None, help="Generate trial-by-trial RDM heatmaps.")
+    parser.add_argument("--no-plot-rdm", dest="plot_rdm", action="store_false", help="Disable trial-by-trial RDM heatmaps.")
+    parser.add_argument("--plot-combined-rdm", dest="plot_combined_rdm", action="store_true", default=None, help="Generate combined 4-array trial-by-trial RDM figure.")
+    parser.add_argument("--no-plot-combined-rdm", dest="plot_combined_rdm", action="store_false", help="Disable combined 4-array RDM figure.")
+    parser.add_argument("--plot-subtraction", dest="plot_subtraction", action="store_true", default=None, help="Generate stim minus control subtraction profiles.")
+    parser.add_argument("--no-plot-subtraction", dest="plot_subtraction", action="store_false", help="Disable subtraction figures.")
+    parser.add_argument("--plot-response-magnitude", dest="plot_response_magnitude", action="store_true", default=None, help="Generate 4-panel response magnitude figures.")
+    parser.add_argument("--no-plot-response-magnitude", dest="plot_response_magnitude", action="store_false", help="Disable response magnitude figures.")
+    parser.add_argument("--plot-disambiguation", dest="plot_disambiguation", action="store_true", default=None, help="Generate artifact disambiguation figure.")
+    parser.add_argument("--no-plot-disambiguation", dest="plot_disambiguation", action="store_false", help="Disable artifact disambiguation figure.")
+    parser.add_argument("--n-perm", type=int, default=N_PERMUTATIONS, help=f"Number of permutations for silhouette significance test (default: {N_PERMUTATIONS}).")
     return parser.parse_args()
 
 
@@ -1796,6 +2179,15 @@ def main() -> None:
     else:
         targets = [args.target.upper()]
 
+    # Resolve Plot Generation Toggles (CLI overrides global settings)
+    plot_silhouette = args.plot_silhouette if args.plot_silhouette is not None else GENERATE_SILHOUETTE_FIGURES
+    plot_rdm = args.plot_rdm if args.plot_rdm is not None else GENERATE_TRIAL_RDM_FIGURES
+    plot_combined_rdm = args.plot_combined_rdm if args.plot_combined_rdm is not None else GENERATE_COMBINED_4ARRAY_RDM
+    plot_subtraction = args.plot_subtraction if args.plot_subtraction is not None else GENERATE_SUBTRACTION_FIGURES
+    plot_response_magnitude = args.plot_response_magnitude if args.plot_response_magnitude is not None else GENERATE_RESPONSE_MAGNITUDE_FIGURES
+    plot_disambiguation = args.plot_disambiguation if args.plot_disambiguation is not None else GENERATE_DISAMBIGUATION_FIGURE
+    n_perm = int(args.n_perm)
+
     _log(f"Starting LFP Multitaper RSA Analysis:")
     _log(f"   Session: {session}")
     _log(f"   LFP Dir: {lfp_dir}")
@@ -1807,6 +2199,8 @@ def main() -> None:
     _log(f"   Subtract Control: {args.subtract_control}")
     _log(f"   Baseline Window: {base_win} ms")
     _log(f"   Compare Conditions: {compare_conds}")
+    _log(f"   Plot Settings: Silhouette={plot_silhouette}, Trial RDM={plot_rdm}, Combined 4-Array RDM={plot_combined_rdm}, Subtraction={plot_subtraction}, Response Mag={plot_response_magnitude}, Disambiguation={plot_disambiguation}")
+    _log(f"   N Permutations: {n_perm}")
 
     for tgt in targets:
         run_lfp_rsa_for_target(
@@ -1826,6 +2220,13 @@ def main() -> None:
             k=args.multitaper_k,
             subtract_control=args.subtract_control,
             metadata_csv=METADATA_CSV,
+            plot_silhouette=plot_silhouette,
+            plot_rdm=plot_rdm,
+            plot_combined_rdm=plot_combined_rdm,
+            plot_subtraction=plot_subtraction,
+            plot_response_magnitude=plot_response_magnitude,
+            plot_disambiguation=plot_disambiguation,
+            n_perm=n_perm,
         )
 
     _log("LFP RSA Pipeline Complete.")

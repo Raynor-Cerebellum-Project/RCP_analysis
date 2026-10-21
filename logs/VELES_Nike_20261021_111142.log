@@ -1,0 +1,22 @@
+================================================================================
+VELES RUN START: 10/21/2026 11:11:42
+Monkey: Nike
+Sessions to run: ['NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_plateau_analysis.py
+  - analysis_scripts/plot_3d_kinematics.py
+  - preprocessing_scripts/analyze_lfp_bands.py
+================================================================================
+[10/21/2026 11:11:42] [NRR_RW012] [analysis_scripts/plot_plateau_analysis.py] IN-PROGRESS
+[10/21/2026 11:14:16] [NRR_RW012] [analysis_scripts/plot_plateau_analysis.py] FINISHED: 10/21/2026 11:14:16
+[10/21/2026 11:14:16] [NRR_RW012] [analysis_scripts/plot_3d_kinematics.py] IN-PROGRESS
+[10/21/2026 11:18:56] [NRR_RW012] [analysis_scripts/plot_3d_kinematics.py] FINISHED: 10/21/2026 11:18:56
+[10/21/2026 11:18:56] [NRR_RW012] [preprocessing_scripts/analyze_lfp_bands.py] IN-PROGRESS
+[10/21/2026 12:23:31] [NRR_RW012] [preprocessing_scripts/analyze_lfp_bands.py] FINISHED: 10/21/2026 12:23:31
+[10/21/2026 12:23:32] [NRR_RW011] [analysis_scripts/plot_plateau_analysis.py] IN-PROGRESS
+[10/21/2026 12:25:59] [NRR_RW011] [analysis_scripts/plot_plateau_analysis.py] FINISHED: 10/21/2026 12:25:59
+[10/21/2026 12:25:59] [NRR_RW011] [analysis_scripts/plot_3d_kinematics.py] IN-PROGRESS
+[10/21/2026 12:29:57] [NRR_RW011] [analysis_scripts/plot_3d_kinematics.py] FINISHED: 10/21/2026 12:29:57
+[10/21/2026 12:29:57] [NRR_RW011] [preprocessing_scripts/analyze_lfp_bands.py] IN-PROGRESS
+[10/21/2026 13:17:48] [NRR_RW011] [preprocessing_scripts/analyze_lfp_bands.py] FINISHED: 10/21/2026 13:17:48

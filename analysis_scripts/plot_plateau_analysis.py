@@ -22,8 +22,9 @@ import sys
 import re
 import traceback
 from pathlib import Path
-from typing import Optional, Tuple, Dict, List
+from typing import Optional, Tuple, Dict, List, Any
 import io
+import math
 import warnings
 import imageio
 
@@ -32,6 +33,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 
 from scipy.signal import butter, filtfilt
 from scipy import stats
@@ -73,6 +75,26 @@ except ImportError:
     PERI_ROOT = Path("/path/to/peri_data")  # CHANGE THIS IF CONFIG IMPORT FAILS
 
 
+# ---------------------------------------------------------------------------
+# PROCESS_ONLY: read from RCP_PROCESS_ONLY env var (set by VELES.py).
+# When non-empty, only conditions whose BR index is in this list are
+# processed.  This mirrors PROCESS_ONLY in VELES.py exactly — controls
+# are filtered just like any other condition.
+# ---------------------------------------------------------------------------
+_process_only_raw = os.environ.get("RCP_PROCESS_ONLY", "")
+try:
+    import json as _json
+    _po_parsed = _json.loads(_process_only_raw) if _process_only_raw.strip() else []
+    PROCESS_ONLY_FILTER: Optional[List[int]] = [int(x) for x in _po_parsed] if _po_parsed else None
+except Exception:
+    PROCESS_ONLY_FILTER = None
+
+if PROCESS_ONLY_FILTER is not None:
+    print(f"[info] PROCESS_ONLY_FILTER active: {PROCESS_ONLY_FILTER}")
+else:
+    print("[info] PROCESS_ONLY_FILTER: None (processing all conditions)")
+
+
 # Main analysis settings
 CAMERA_TO_USE = "cam1"
 KEYPOINT_BASE = "middle"
@@ -82,7 +104,10 @@ POST_ZERO_MS = 600.0
 
 ONSET_TIME_XLIM = (0, POST_ZERO_MS)  # ms
 
-CONTROL_BR_INDICES = [1]
+CONTROL_BR_INDICES = [1, 18]
+
+# Combined control key used in all_results after merging
+COMBINED_CONTROL_KEY_SUFFIX = "_Control_combined"
 
 # Butterworth smoothing parameters
 SMOOTHING_PARAMS = {
@@ -105,19 +130,34 @@ DETECTION_PARAMS = {
 }
 
 # Conditions used in selected statistical comparison
-# COMPARE_CONDITIONS = [1, 11, 12, 13, 14, 15, 16, 17] # session 22
+# COMPARE_CONDITIONS = [1, 11, 12, 13, 14, 15, 16, 17, 18] # session 22
+# COMPARE_CONDITIONS = [3, 7, 8, 9, 10, 11, 12] # s12 - 1to40 pulse stim vs control
+COMPARE_CONDITIONS = [4, 5, 6, 7, 10, 11] # s11 - 400 Hz vs 130 Hz
 # COMPARE_CONDITIONS = [1, 17] # session 22
 # COMPARE_CONDITIONS = [3, 7, 8, 9, 10, 11, 12] # session 12
 # COMPARE_CONDITIONS = [3, 12] # session 12
-COMPARE_CONDITIONS = [17, 18, 25] # session 22
+# COMPARE_CONDITIONS = [17, 18, 25] # session 22
 
 
-# Plot/save settings
-PLOT_EACH_CONDITION = True
+# Figure Generation Configuration
+# Currently, ONLY the plateau onset timing figure is generated per user request.
+GENERATE_PLATEAU_ONSET_TIMING_FIG = True
+GENERATE_LEGACY_COMPARISON_FIGS = False
+PLOT_EACH_CONDITION = False
 SAVE_FIGS = True
-SAVE_STATS = False
+SAVE_STATS = True
 
 GENERATE_DISTANCE_GIFS = False
+
+# Color definitions matching plot_behavioral_rsa
+COLOR_CTRL: str = "#2c3e50"
+COLOR_CTRL_LIGHT: str = "#7f8c8d"
+COLOR_STIM_DEFAULT: str = "#e74c3c"
+
+# Condition Label & Plot Display Options matching plot_behavioral_rsa
+SHOW_CONDITION_INDICES: bool = False  # If False, omit condition index prefixes (e.g. 'BR 1', 'BR 17')
+SHOW_TRIAL_COUNTS: bool = False       # If False, omit trial count in labels (e.g. 'n=16')
+PLATEAU_PLOT_MODE: str = "timing"     # Options: "timing" (onset timings only, per user request), "both", or "traces"
 
 DISTANCE_GIF_CONFIG = {
     "time_range_ms": (-800.0, 600.0),
@@ -159,10 +199,10 @@ PULSE_WIDTH_MS = 2.5
 
 
 # -------------------------------------------------------------------------
-# Trajectory variability analysis
+# Trajectory variability analysis (legacy)
 # -------------------------------------------------------------------------
 
-RUN_TRAJECTORY_VARIABILITY_ANALYSIS = True
+RUN_TRAJECTORY_VARIABILITY_ANALYSIS = False
 
 XY_COMPARE_CONDITIONS = COMPARE_CONDITIONS
 
@@ -1017,14 +1057,22 @@ def _extract_trajectory_data_for_target(
     extracted = []
 
     for cond_key, result in all_results.items():
-        if not cond_key.endswith(target_suffix):
+        # Accept keys ending in _TargetA or containing TargetA (merged control keys)
+        if not (cond_key.endswith(target_suffix) or f"Target{target}" in cond_key):
             continue
 
-        cond_num = parse_condition_number_from_key(cond_key)
-        if cond_num is None:
-            continue
+        # Detect merged control key
+        is_merged_control = "Control_combined" in cond_key
 
-        if conditions_to_compare is not None and cond_num not in conditions_to_compare:
+        if is_merged_control:
+            cond_num = 0  # Sort to front; always included
+        else:
+            cond_num = parse_condition_number_from_key(cond_key)
+            if cond_num is None:
+                continue
+
+        # Controls always pass through — only filter stim conditions
+        if not is_merged_control and conditions_to_compare is not None and cond_num not in conditions_to_compare:
             continue
 
         processed = result.get("processed_data", None)
@@ -1805,12 +1853,16 @@ def format_condition_label(
     cond_info: Optional[Dict] = None,
     control_br_indices: Optional[List[int]] = None,
     pulse_width_ms: float = 2.5,
+    show_indices: bool = False,
+    show_trial_counts: bool = False,
 ) -> str:
     """
-    Format condition label for trajectory variability plots.
+    Format publication-quality condition label matching plot_behavioral_rsa.
 
     - Control conditions: 'Control'
     - Stim conditions: '{n_pulses} pulses, {freq} Hz' (e.g. '10 pulses, 200 Hz')
+    - If continuous stim: '{freq} Hz-cont'
+    - If channel specified: ', ch {stim_channels}'
     - If condition has 'curr_steering' in metadata 'Notes': append ', Current Steering'
     """
     if control_br_indices is None:
@@ -1822,8 +1874,8 @@ def format_condition_label(
     br_idx = cond_info.get("br_idx", cond_num)
 
     is_control = (
-        cond_num in control_br_indices
-        or (br_idx is not None and br_idx in control_br_indices)
+        (control_br_indices and cond_num in control_br_indices)
+        or (control_br_indices and br_idx is not None and br_idx in control_br_indices)
         or cond_info.get("is_control", False)
         or (cond_info.get("pulse_count") == 0)
     )
@@ -1874,7 +1926,12 @@ def format_condition_label(
         if pulse_count is None and dur_ms is not None and not np.isnan(dur_ms) and dur_ms > 0:
             pulse_count = int(round(dur_ms / pulse_width_ms))
 
-        if pulse_count is not None and freq_hz is not None and not np.isnan(freq_hz):
+        # Check for continuous stimulation
+        is_cont = any(kw in f"{notes} {cond_str}".lower() for kw in ("cont", "continuous")) or (freq_hz is not None and freq_hz <= 2.5)
+
+        if is_cont:
+            base_label = f"{int(freq_hz)} Hz-cont" if freq_hz else "2Hz-cont"
+        elif pulse_count is not None and freq_hz is not None and not np.isnan(freq_hz):
             pulse_str = f"{pulse_count} pulse" if pulse_count == 1 else f"{pulse_count} pulses"
             freq_str = f"{int(freq_hz)} Hz" if float(freq_hz).is_integer() else f"{freq_hz:.1f} Hz"
             base_label = f"{pulse_str}, {freq_str}"
@@ -1887,8 +1944,27 @@ def format_condition_label(
         else:
             base_label = f"Cond {cond_num}"
 
-    if is_curr_steering:
+    # Stim channels tag
+    stim_channels = cond_info.get("stim_channels")
+    if stim_channels and not is_control:
+        ch_tag = f"ch {stim_channels}"
+        if ch_tag.lower() not in base_label.lower():
+            base_label = f"{base_label}, {ch_tag}"
+
+    if is_curr_steering and not is_control:
         base_label = f"{base_label}, Current Steering"
+
+    if show_indices:
+        comb_brs = cond_info.get("combined_br_indices")
+        if comb_brs and len(comb_brs) > 1:
+            br_prefix = f"BR {','.join(map(str, comb_brs))}: "
+        else:
+            br_prefix = f"BR {cond_num}: " if cond_num is not None else ""
+        base_label = f"{br_prefix}{base_label}"
+
+    n_trials = cond_info.get("n_trials", cond_info.get("n_valid"))
+    if show_trial_counts and n_trials is not None and n_trials > 0:
+        base_label = f"{base_label} (n={n_trials})"
 
     return base_label
 
@@ -2179,6 +2255,187 @@ def plot_trajectory_variability_comparison(
 # Batch analysis
 # =============================================================================
 
+def merge_control_conditions(
+    all_results: Dict,
+    control_br_indices: Optional[List[int]] = None,
+) -> Dict:
+    """
+    Pool all control-flagged condition entries into a single combined entry.
+
+    Each control condition may cover one target (A or B), so merging is done
+    per-target.  The merged entry replaces the individual control entries in
+    the returned dict so that all downstream plotting functions see exactly
+    one "Control" entry per target.
+
+    Parameters
+    ----------
+    all_results : Dict
+        Output of analyze_all_conditions (keyed by condition string).
+    control_br_indices : list of int, optional
+        BR indices that are baseline / control.  Defaults to CONTROL_BR_INDICES.
+
+    Returns
+    -------
+    merged : Dict
+        Same structure as all_results, but with individual control entries
+        replaced by one pooled "Control_combined" entry per target.
+    """
+    if control_br_indices is None:
+        control_br_indices = CONTROL_BR_INDICES
+
+    # Separate control from non-control keys per target
+    controls_by_target: Dict[str, List[str]] = {"A": [], "B": []}
+    non_control_keys = []
+
+    for key, res in all_results.items():
+        if "error" in res:
+            non_control_keys.append(key)
+            continue
+
+        pd_data = res.get("processed_data", {})
+        is_ctrl = (
+            pd_data.get("is_control", False)
+            or (pd_data.get("br_idx") in control_br_indices)
+            or "control" in key.lower()
+            or "ctrl" in key.lower()
+        )
+
+        target = None
+        if key.endswith("_TargetA") or "_TargetA" in key:
+            target = "A"
+        elif key.endswith("_TargetB") or "_TargetB" in key:
+            target = "B"
+
+        if is_ctrl and target is not None:
+            controls_by_target[target].append(key)
+        else:
+            non_control_keys.append(key)
+
+    merged: Dict = {}
+
+    # Keep non-control entries as-is
+    for key in non_control_keys:
+        merged[key] = all_results[key]
+
+    # Merge controls per target
+    for target, ctrl_keys in controls_by_target.items():
+        if len(ctrl_keys) == 0:
+            continue
+
+        if len(ctrl_keys) == 1:
+            # Only one control for this target — keep as-is (no merge needed)
+            merged[ctrl_keys[0]] = all_results[ctrl_keys[0]]
+            continue
+
+        print(f"[merge_controls] Target {target}: pooling {len(ctrl_keys)} control conditions: {ctrl_keys}")
+
+        # Reference result (use the first one for metadata)
+        ref_res = all_results[ctrl_keys[0]]
+        ref_pd = ref_res["processed_data"]
+
+        # Concatenate trial-level arrays across all control conditions
+        dist_raw_parts, dist_smooth_parts, dist_norm_parts = [], [], []
+        x_smooth_parts, y_smooth_parts = [], []
+        valid_mask_parts, scale_factors_parts = [], []
+        onset_times_all, x_vals_all, y_vals_all, dist_vals_all = [], [], [], []
+        all_detection_results = []
+
+        n_total_pooled = 0
+
+        for ck in ctrl_keys:
+            r = all_results[ck]
+            if "error" in r:
+                continue
+            pd_c = r["processed_data"]
+            ps_c = r["plateau_summary"]
+
+            n_c = pd_c.get("n_total", 0)
+            n_total_pooled += n_c
+
+            dist_raw_parts.append(pd_c["distance_raw_all"])
+            dist_smooth_parts.append(pd_c["distance_smooth_all"])
+            dist_norm_parts.append(pd_c["dist_norm"])
+            x_smooth_parts.append(pd_c["x_smooth_all"])
+            y_smooth_parts.append(pd_c["y_smooth_all"])
+            valid_mask_parts.append(pd_c["valid_mask"])
+            scale_factors_parts.append(pd_c.get("scale_factors", np.full(n_c, np.nan)))
+
+            onset_times_all.extend(ps_c["onset_times"].tolist())
+            x_vals_all.extend(ps_c.get("x_values", np.array([])).tolist())
+            y_vals_all.extend(ps_c.get("y_values", np.array([])).tolist())
+            dist_vals_all.extend(ps_c.get("dist_values", np.array([])).tolist())
+            all_detection_results.extend(ps_c.get("results", []))
+
+        dist_raw_all = np.concatenate(dist_raw_parts, axis=0)
+        dist_smooth_all = np.concatenate(dist_smooth_parts, axis=0)
+        dist_norm_all = np.concatenate(dist_norm_parts, axis=0)
+        x_smooth_all = np.concatenate(x_smooth_parts, axis=0)
+        y_smooth_all = np.concatenate(y_smooth_parts, axis=0)
+        valid_mask_all = np.concatenate(valid_mask_parts, axis=0)
+        scale_factors_all = np.concatenate(scale_factors_parts, axis=0)
+
+        n_valid_pooled = int(np.sum(valid_mask_all))
+        onset_arr = np.array(onset_times_all)
+        valid_dist_pooled = dist_norm_all[valid_mask_all, :]
+
+        if n_valid_pooled > 0:
+            ci_summary = mean_ci95_trace_summary(valid_dist_pooled, time=ref_pd["aligned_time"])
+            dist_ci_lower = ci_summary["ci_lower"] if ci_summary else np.full(dist_norm_all.shape[1], np.nan)
+            dist_ci_upper = ci_summary["ci_upper"] if ci_summary else np.full(dist_norm_all.shape[1], np.nan)
+        else:
+            dist_ci_lower = np.full(dist_norm_all.shape[1], np.nan)
+            dist_ci_upper = np.full(dist_norm_all.shape[1], np.nan)
+
+        merged_pd = {
+            **ref_pd,
+            "cond_str": f"Control_combined_Target{target}",
+            "br_idx": control_br_indices[0] if control_br_indices else None,
+            "is_control": True,
+            "pulse_count": 0,
+            "n_valid": n_valid_pooled,
+            "n_total": n_total_pooled,
+            "distance_raw_all": dist_raw_all,
+            "distance_smooth_all": dist_smooth_all,
+            "dist_norm": dist_norm_all,
+            "x_smooth_all": x_smooth_all,
+            "y_smooth_all": y_smooth_all,
+            "valid_mask": valid_mask_all,
+            "scale_factors": scale_factors_all,
+            "dist_median": np.nanmedian(valid_dist_pooled, axis=0) if n_valid_pooled > 0 else np.full(dist_norm_all.shape[1], np.nan),
+            "dist_mean": np.nanmean(valid_dist_pooled, axis=0) if n_valid_pooled > 0 else np.full(dist_norm_all.shape[1], np.nan),
+            "dist_std": np.nanstd(valid_dist_pooled, axis=0, ddof=1) if n_valid_pooled > 1 else np.zeros(dist_norm_all.shape[1]),
+            "dist_ci_lower": dist_ci_lower,
+            "dist_ci_upper": dist_ci_upper,
+        }
+
+        n_found = len(onset_arr)
+        merged_ps = {
+            "n_trials": n_total_pooled,
+            "n_valid": n_valid_pooled,
+            "n_found": n_found,
+            "n_not_found": n_valid_pooled - n_found,
+            "detection_rate": n_found / max(1, n_valid_pooled),
+            "onset_times": onset_arr,
+            "x_values": np.array(x_vals_all),
+            "y_values": np.array(y_vals_all),
+            "dist_values": np.array(dist_vals_all),
+            "results": all_detection_results,
+            "params": ref_res["plateau_summary"].get("params", DETECTION_PARAMS.copy()),
+            "onset_mean": np.mean(onset_arr) if n_found > 0 else np.nan,
+            "onset_std": np.std(onset_arr) if n_found > 0 else np.nan,
+            "onset_median": np.median(onset_arr) if n_found > 0 else np.nan,
+        }
+
+        merged_key = f"Control_combined_TargetA" if target == "A" else "Control_combined_TargetB"
+        merged[merged_key] = {
+            "processed_data": merged_pd,
+            "plateau_summary": merged_ps,
+        }
+        print(f"[merge_controls] Created merged key '{merged_key}' with {n_total_pooled} trials ({n_valid_pooled} valid, {n_found} plateaus found).")
+
+    return merged
+
+
 def analyze_all_conditions(
     peri_root: Path,
     camera: str = "cam1",
@@ -2189,9 +2446,18 @@ def analyze_all_conditions(
     time_window: Tuple[float, float] = (-500, 500),
     plot_each: bool = True,
     save_figs: bool = False,
-    save_dir: Optional[Path] = None) -> Dict:
+    save_dir: Optional[Path] = None,
+    process_only_filter: Optional[List[int]] = None) -> Dict:
     """
     Load all conditions and run plateau analysis.
+
+    Parameters
+    ----------
+    process_only_filter : list of int, optional
+        When provided, only conditions whose BR index is in this list are
+        processed.  All other conditions are skipped.  Mirrors the PROCESS_ONLY
+        variable in VELES.py which is forwarded via the RCP_PROCESS_ONLY
+        environment variable.
     """
     if control_br_indices is None:
         control_br_indices = CONTROL_BR_INDICES
@@ -2207,7 +2473,10 @@ def analyze_all_conditions(
     print("=" * 60)
     print(f"PERI_ROOT: {peri_root}")
     print(f"Camera: {camera}, Keypoint: {keypoint_base}")
-    print(f"Control BR indices: {control_br_indices}\n")
+    print(f"Control BR indices: {control_br_indices}")
+    if process_only_filter is not None:
+        print(f"PROCESS_ONLY filter: {process_only_filter}")
+    print()
 
     all_conditions = load_all_conditions(
         peri_root=Path(peri_root),
@@ -2221,6 +2490,19 @@ def analyze_all_conditions(
         return {}
 
     print(f"\nLoaded {len(all_conditions)} conditions\n")
+
+    # Filter to only the explicitly requested BR indices (controls included).
+    if process_only_filter:
+        filtered = {}
+        for ck, cd in all_conditions.items():
+            br = cd.get("br_idx")
+            in_filter = (br is not None and br in process_only_filter)
+            if in_filter:
+                filtered[ck] = cd
+            else:
+                print(f"  [PROCESS_ONLY] Skipping {ck} (BR {br} not in filter)")
+        all_conditions = filtered
+        print(f"  -> {len(all_conditions)} conditions remain after PROCESS_ONLY filter\n")
 
     all_results = {}
 
@@ -2328,7 +2610,7 @@ def _extract_condition_data_for_target(
         if "error" in data:
             continue
 
-        if not key.endswith(target_suffix):
+        if not (key.endswith(target_suffix) or f"Target{target}" in key):
             continue
 
         plateau_summary = data.get("plateau_summary", {})
@@ -2347,19 +2629,27 @@ def _extract_condition_data_for_target(
 
         condition_str = key.replace(target_suffix, "")
 
+        # Detect merged control key
+        is_merged_control = "Control_combined" in key or condition_str.startswith("Control")
+
         cond_match = re.search(r"Condition:\s*(\d+)", condition_str)
         dur_match = re.search(r"Duration:\s*([\d.]+)\s*ms", condition_str)
         freq_match = re.search(r"Freq:\s*([\d.]+)\s*Hz", condition_str)
 
-        if cond_match:
+        if is_merged_control:
+            cond_num = 0
+        elif cond_match:
             cond_num = int(cond_match.group(1))
         else:
             cond_num = 999
 
-        if conditions_to_compare is not None and cond_num not in conditions_to_compare:
+        # Controls always pass through — only filter stim conditions
+        if not is_merged_control and conditions_to_compare is not None and cond_num not in conditions_to_compare:
             continue
 
-        if dur_match and freq_match:
+        if is_merged_control:
+            label = "Control"
+        elif dur_match and freq_match:
             duration_ms = float(dur_match.group(1))
             freq_hz = float(freq_match.group(1))
             n_pulses = int(duration_ms / pulse_width_ms)
@@ -2406,6 +2696,617 @@ def _extract_condition_data_for_target(
 
     condition_data.sort(key=lambda x: x["cond_num"])
     return condition_data
+
+
+# =============================================================================
+# Plateau Onset Timing & Staggered Stimulation Visualization Helpers
+# =============================================================================
+
+def _safe_color_hex(color_val: Any) -> str:
+    """Return safe hex color string for matplotlib artists."""
+    try:
+        return matplotlib.colors.to_hex(color_val)
+    except Exception:
+        return "#7f8c8d"
+
+
+def draw_staggered_stim_block(
+    ax: plt.Axes,
+    stim_conditions: List[Dict[str, Any]],
+    y_min: Optional[float] = None,
+    y_max: Optional[float] = None,
+    ladder_height_ratio: float = 0.12,
+    show_ladder: bool = True,
+    show_stepped_shading: bool = True,
+    show_drop_lines: bool = True,
+) -> None:
+    """
+    Draw a condition-dependent 'staggered' stimulation window block matching plot_behavioral_rsa:
+      1. Stepped background shading: Cumulative soft yellow shading stepping down as each condition ends.
+      2. Condition-specific drop-lines: Dotted vertical lines at each condition's exact stimulus termination.
+      3. Top-margin duration ladder: Staggered horizontal bars colored by condition with ms duration callouts.
+    """
+    valid_stims = [
+        c for c in stim_conditions
+        if not c.get("is_control", False) and (c.get("stim_dur_ms") or 0.0) > 0
+    ]
+    if not valid_stims:
+        return
+
+    # Sort conditions by duration (shortest to longest)
+    sorted_stims = sorted(valid_stims, key=lambda c: (float(c.get("stim_dur_ms", 0.0)), int(c.get("cond_num", 0))))
+    durations = [float(c["stim_dur_ms"]) for c in sorted_stims]
+    unique_durs = sorted(list(set(durations)))
+
+    # 1. Stepped background shading
+    if show_stepped_shading:
+        prev_d = 0.0
+        for d in unique_durs:
+            n_active = sum(1 for c in sorted_stims if float(c.get("stim_dur_ms", 0.0)) >= d)
+            alpha_step = max(0.02, min(0.18, 0.025 * n_active))
+            ax.axvspan(prev_d, d, color="#f9e79f", alpha=alpha_step, zorder=0)
+            prev_d = d
+
+    # 2. Condition-specific drop-lines at stimulus termination
+    if show_drop_lines:
+        for dur in unique_durs:
+            matching_c = [c for c in sorted_stims if abs(float(c.get("stim_dur_ms", 0.0)) - dur) < 1e-3]
+            unique_colors = []
+            seen_hex = set()
+            for c in matching_c:
+                raw_col = c.get("color", COLOR_STIM_DEFAULT)
+                hex_col = _safe_color_hex(raw_col)
+                if hex_col not in seen_hex:
+                    seen_hex.add(hex_col)
+                    unique_colors.append(raw_col)
+            color = unique_colors[0] if len(unique_colors) == 1 else "#7f8c8d"
+            ax.axvline(dur, color=color, linestyle=":", linewidth=1.1, alpha=0.55, zorder=1)
+
+    # 3. Top-margin duration ladder (deduplicated: exactly one bar per unique stim duration)
+    if show_ladder:
+        cur_ylim = ax.get_ylim()
+        ymin = y_min if y_min is not None else cur_ylim[0]
+        ymax = y_max if y_max is not None else cur_ylim[1]
+        yrange = ymax - ymin
+        if yrange <= 0:
+            yrange = 1.0
+
+        n_bars = len(unique_durs)
+        bar_height_total = yrange * ladder_height_ratio
+        bar_step = bar_height_total / max(1, n_bars)
+        y_top = ymax - (yrange * 0.02)
+
+        for i, dur in enumerate(reversed(unique_durs)):
+            matching_c = [c for c in sorted_stims if abs(float(c.get("stim_dur_ms", 0.0)) - dur) < 1e-3]
+            unique_colors = []
+            seen_hex = set()
+            for c in matching_c:
+                raw_col = c.get("color", COLOR_STIM_DEFAULT)
+                hex_col = _safe_color_hex(raw_col)
+                if hex_col not in seen_hex:
+                    seen_hex.add(hex_col)
+                    unique_colors.append(raw_col)
+            color = unique_colors[0] if len(unique_colors) == 1 else "#4a6572"
+            y_bar = y_top - (i * bar_step)
+            # Horizontal bar
+            ax.plot([0.0, dur], [y_bar, y_bar], color=color, linewidth=2.4, solid_capstyle="butt", zorder=7)
+            # End tick
+            tick_h = bar_step * 0.45
+            ax.plot([dur, dur], [y_bar - tick_h, y_bar + tick_h], color=color, linewidth=2.0, zorder=7)
+            # Text label
+            dur_label = f"{dur:.1f} ms" if dur < 10 and dur % 1 != 0 else f"{int(dur)} ms"
+            ax.text(
+                dur + (ax.get_xlim()[1] * 0.012), y_bar, dur_label,
+                va="center", ha="left", fontsize=8.0, fontweight="bold",
+                color=color, zorder=8,
+            )
+
+
+def plot_plateau_onset_timing_figure(
+    all_results: Dict[str, Any],
+    target: str = "A",
+    conditions_to_compare: Optional[List[int]] = None,
+    pulse_width_ms: float = PULSE_WIDTH_MS,
+    min_reaches: int = 3,
+    time_window_ms: Tuple[float, float] = (0.0, 500.0),
+    mode: str = "timing",
+    show_indices: bool = False,
+    show_trial_counts: bool = False,
+    save_path: Optional[Path] = None,
+) -> Tuple[Optional[plt.Figure], Optional[pd.DataFrame]]:
+    """
+    Publication-quality Reach Endpoint Timing (Plateau Onset) vs Condition Figure.
+    Matches the exact vibe, color scheme, and typography of plot_behavioral_rsa:
+
+        Panel A (Top): Time-Resolved Normalized Reaching Distance Traces with ± 1 SEM shading,
+                       staggered stimulation duration window ladder & shading, and plateau onset
+                       detection markers indicating reach completion phase on each curve.
+        Panel B (Bottom): Plateau Onset Timing (Reach End Timing in ms) Across Conditions,
+                          sharing the exact same time axis (0 to 500 ms) with individual reach dots,
+                          95% CI error bars, ± 1 SEM bars, condition mean points, and delta vs Control.
+
+    Parameters
+    ----------
+    all_results : Dict
+        Output of analyze_all_conditions (after merge_control_conditions).
+    target : str
+        Target letter ('A' or 'B').
+    conditions_to_compare : list of int, optional
+        BR indices to compare. Control conditions always pass through.
+    pulse_width_ms : float
+        Nominal pulse width for duration estimation.
+    min_reaches : int
+        Minimum number of valid detected reaches required per condition.
+    time_window_ms : tuple of float
+        Time window in ms relative to stim onset (default: 0.0 to 500.0 ms).
+    mode : str
+        "both" (default, 2 panels), "timing" (Panel B only), or "traces" (Panel A only).
+    show_indices : bool
+        If True, prepend 'BR XX: ' to condition labels.
+    show_trial_counts : bool
+        If True, append '(n=XX)' to condition labels.
+    save_path : Path, optional
+        Path to save figure.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure or None
+    summary_df : pandas.DataFrame or None
+    """
+    target_suffix = f"_Target{target}"
+    cond_list = []
+
+    for key, data in all_results.items():
+        if "error" in data:
+            continue
+        if not (key.endswith(target_suffix) or f"Target{target}" in key):
+            continue
+
+        pd_data = data.get("processed_data", {})
+        ps = data.get("plateau_summary", {})
+
+        onset_times = ps.get("onset_times", np.array([]))
+        if isinstance(onset_times, np.ndarray):
+            valid_onsets = onset_times[np.isfinite(onset_times) & (onset_times >= 0)].tolist()
+        else:
+            valid_onsets = [float(t) for t in onset_times if np.isfinite(t) and t >= 0]
+
+        if len(valid_onsets) < min_reaches:
+            print(f"[plateau onset] Skipping {key[:50]}: only {len(valid_onsets)} reaches (need >={min_reaches})")
+            continue
+
+        is_merged_control = "Control_combined" in key or key.startswith("Control")
+        is_ctrl = (
+            is_merged_control
+            or pd_data.get("is_control", False)
+            or (pd_data.get("br_idx") in CONTROL_BR_INDICES)
+            or "control" in key.lower()
+            or "ctrl" in key.lower()
+        )
+
+        cond_num = pd_data.get("br_idx")
+        if cond_num is None:
+            m_cond = re.search(r"Condition:\s*(\d+)", key)
+            if m_cond:
+                cond_num = int(m_cond.group(1))
+            else:
+                cond_num = 0 if is_ctrl else 999
+
+        # Filter conditions: controls always pass through
+        if not is_ctrl and conditions_to_compare is not None and cond_num not in conditions_to_compare:
+            continue
+
+        # Compute stats
+        mean_val = float(np.mean(valid_onsets))
+        std_val = float(np.std(valid_onsets, ddof=1)) if len(valid_onsets) > 1 else 0.0
+        sem_val = float(std_val / math.sqrt(len(valid_onsets))) if len(valid_onsets) > 0 else 0.0
+        ci95_val = float(stats.t.ppf(0.975, df=len(valid_onsets) - 1) * sem_val) if len(valid_onsets) > 1 else 0.0
+        median_val = float(np.median(valid_onsets))
+        iqr_val = float(stats.iqr(valid_onsets)) if len(valid_onsets) > 1 else 0.0
+
+        pulse_count = pd_data.get("pulse_count")
+        stim_freq_hz = pd_data.get("stim_freq_hz")
+        stim_dur_ms = pd_data.get("stim_dur_nominal_ms")
+        notes = pd_data.get("notes", "")
+
+        # Parse from key if missing
+        if stim_dur_ms is None or np.isnan(stim_dur_ms):
+            m_d = re.search(r"Duration:\s*([\d.]+)\s*ms", key)
+            if m_d:
+                stim_dur_ms = float(m_d.group(1))
+        if stim_freq_hz is None or np.isnan(stim_freq_hz):
+            m_f = re.search(r"Freq:\s*([\d.]+)\s*Hz", key)
+            if m_f:
+                stim_freq_hz = float(m_f.group(1))
+        if pulse_count is None:
+            m_p = re.search(r"(\d+)\s*pulses?", key, re.IGNORECASE)
+            if m_p:
+                pulse_count = int(m_p.group(1))
+            elif stim_dur_ms is not None and stim_dur_ms > 0:
+                pulse_count = int(round(stim_dur_ms / pulse_width_ms))
+
+        cond_info_dict = {
+            "br_idx": cond_num,
+            "is_control": is_ctrl,
+            "pulse_count": pulse_count,
+            "stim_freq_hz": stim_freq_hz,
+            "stim_dur_nominal_ms": stim_dur_ms,
+            "notes": notes,
+            "cond_str": key,
+            "n_trials": len(valid_onsets),
+            "combined_br_indices": pd_data.get("combined_br_indices"),
+        }
+
+        cond_list.append({
+            "key": key,
+            "cond_num": cond_num,
+            "is_control": is_ctrl,
+            "pulse_count": pulse_count,
+            "stim_freq_hz": stim_freq_hz,
+            "stim_dur_ms": stim_dur_ms,
+            "stim_channels": pd_data.get("stim_channels"),
+            "notes": notes,
+            "valid_onsets": valid_onsets,
+            "mean": mean_val,
+            "std": std_val,
+            "sem": sem_val,
+            "ci95": ci95_val,
+            "median": median_val,
+            "iqr": iqr_val,
+            "processed_data": pd_data,
+        })
+
+    if not cond_list:
+        print(f"[plateau onset] No valid conditions found for Target {target}.")
+        return None, None
+
+    # Separate control vs stimulation conditions
+    ctrl_conds = [c for c in cond_list if c["is_control"]]
+    stim_conds = [c for c in cond_list if not c["is_control"]]
+
+    # Analyze what varies across stimulation conditions (mirroring plot_behavioral_rsa)
+    valid_pulses = [float(c["pulse_count"]) for c in stim_conds if c.get("pulse_count") is not None]
+    unique_pulses = sorted(list(set(valid_pulses)))
+
+    valid_freqs = [float(c["stim_freq_hz"]) for c in stim_conds if c.get("stim_freq_hz") is not None and not np.isnan(c["stim_freq_hz"])]
+    unique_freqs = sorted(list(set(valid_freqs)))
+
+    valid_channels = [str(c["stim_channels"]).strip() for c in stim_conds if c.get("stim_channels") and str(c["stim_channels"]).lower() not in ("none", "nan", "")]
+    unique_channels = sorted(list(set(valid_channels)))
+
+    any_cont = any(c.get("is_continuous", False) or (c.get("stim_freq_hz") is not None and c.get("stim_freq_hz") <= 2.5) for c in stim_conds)
+    all_cont = len(stim_conds) > 0 and all(c.get("is_continuous", False) or (c.get("stim_freq_hz") is not None and c.get("stim_freq_hz") <= 2.5) for c in stim_conds)
+
+    # Frequency: only plot in condition label if different between any conditions (mirroring plot_behavioral_rsa)
+    # If all stim conditions share the same frequency (e.g., all 400 Hz), frequency is omitted from the label
+    vary_freqs = (len(unique_freqs) > 1)
+    constant_freqs = (len(unique_freqs) == 1 and len(valid_freqs) == len(stim_conds))
+
+    vary_channels = (len(unique_channels) > 1)
+    constant_channels = (len(unique_channels) == 1 and len(valid_channels) == len(stim_conds))
+
+    if len(stim_conds) <= 1:
+        vary_pulses = True
+    else:
+        vary_pulses = (len(unique_pulses) > 1) or (any_cont and not all_cont)
+
+    # Guard: If nothing varies among stim conditions, don't leave labels blank
+    if not (vary_pulses or vary_freqs or vary_channels):
+        vary_pulses = True
+
+    # Build condition labels matching plot_behavioral_rsa
+    for c in cond_list:
+        if c["is_control"]:
+            base_label = "Control"
+        else:
+            p_parts = []
+            is_c_cont = c.get("is_continuous", False) or (c.get("stim_freq_hz") is not None and c.get("stim_freq_hz") <= 2.5)
+            if is_c_cont:
+                p_parts.append("2Hz-cont")
+            elif vary_pulses:
+                p_val = c.get("pulse_count")
+                if p_val is not None:
+                    p_parts.append(f"{p_val} pulse" if p_val == 1 else f"{p_val} pulses")
+
+            if vary_freqs and not is_c_cont:
+                f_val = c.get("stim_freq_hz")
+                if f_val is not None and not np.isnan(f_val):
+                    p_parts.append(f"{int(f_val)} Hz" if float(f_val).is_integer() else f"{f_val:.1f} Hz")
+
+            if vary_channels:
+                ch_val = c.get("stim_channels")
+                if ch_val and str(ch_val).strip() and str(ch_val).lower() not in ("none", "nan"):
+                    p_parts.append(f"ch {str(ch_val).strip()}")
+
+            # Check current steering
+            notes_str = str(c.get("notes", "")).strip()
+            cond_str = str(c.get("key", "")).strip()
+            if "curr steer" in f"{notes_str} {cond_str}".lower() or "current steer" in f"{notes_str} {cond_str}".lower():
+                p_parts.append("Current Steering")
+            elif notes_str and notes_str.lower() not in ("baseline", "control", "ctrl", "nan", "none", ""):
+                p_parts.append(notes_str)
+
+            if not p_parts:
+                p_parts.append(f"Cond {c['cond_num']}")
+
+            base_label = ", ".join(p_parts)
+
+        if show_indices:
+            comb_brs = c["processed_data"].get("combined_br_indices")
+            if comb_brs and len(comb_brs) > 1:
+                br_tag = f"BR {','.join(map(str, comb_brs))}"
+            else:
+                br_tag = f"BR {c['cond_num']}"
+            base_label = f"{br_tag}: {base_label}"
+
+        if show_trial_counts:
+            base_label = f"{base_label} (n={len(c['valid_onsets'])})"
+
+        c["base_label"] = base_label
+        c["full_label"] = base_label
+
+    # Order stimulation conditions: pulse count -> freq -> cond_num
+    stim_conds.sort(key=lambda c: (float(c["pulse_count"] or 0), float(c["stim_freq_hz"] or 0), int(c["cond_num"] or 0)))
+    ordered_conds = ctrl_conds + stim_conds
+
+    # Assign colors matching plot_behavioral_rsa
+    n_stim = len(stim_conds)
+    palette = plt.cm.tab10(np.linspace(0.0, 1.0, max(10, n_stim + 1)))
+
+    for c in ctrl_conds:
+        c["color"] = COLOR_CTRL
+        c["linestyle"] = "--"
+        c["marker"] = "D"
+
+    for i, c in enumerate(stim_conds):
+        col = palette[i % len(palette)]
+        c["color"] = col
+        c["linestyle"] = "-"
+        c["marker"] = "o"
+
+    # Compute statistical contrast vs Control baseline
+    ctrl_mean = ctrl_conds[0]["mean"] if ctrl_conds else None
+    ctrl_onsets = ctrl_conds[0]["valid_onsets"] if ctrl_conds else None
+
+    for c in ordered_conds:
+        if c["is_control"] or ctrl_onsets is None or len(ctrl_onsets) < 2:
+            c["diff_vs_ctrl"] = 0.0
+            c["p_val_vs_ctrl"] = np.nan
+            c["sig_stars"] = ""
+        else:
+            c["diff_vs_ctrl"] = c["mean"] - ctrl_mean
+            try:
+                t_res = stats.ttest_ind(c["valid_onsets"], ctrl_onsets, equal_var=False)
+                p_val = float(t_res.pvalue)
+                c["p_val_vs_ctrl"] = p_val
+                if p_val < 0.001:
+                    c["sig_stars"] = "***"
+                elif p_val < 0.01:
+                    c["sig_stars"] = "**"
+                elif p_val < 0.05:
+                    c["sig_stars"] = "*"
+                else:
+                    c["sig_stars"] = "ns"
+            except Exception:
+                c["p_val_vs_ctrl"] = np.nan
+                c["sig_stars"] = ""
+
+    # Parse plot mode
+    mode_clean = str(mode).lower().strip()
+    plot_traces = mode_clean in ("both", "traces", "trace")
+    plot_timing = mode_clean in ("both", "timing", "onsets", "onset")
+
+    if plot_traces and plot_timing:
+        fig = plt.figure(figsize=(11.0, 8.5), dpi=FIG_DPI)
+        gs = gridspec.GridSpec(2, 1, height_ratios=[1.1, 1.0], hspace=0.25)
+        ax_a = fig.add_subplot(gs[0, 0])
+        ax_b = fig.add_subplot(gs[1, 0], sharex=ax_a)
+    elif plot_traces:
+        fig, ax_a = plt.subplots(1, 1, figsize=(11.0, 5.0), dpi=FIG_DPI)
+        ax_b = None
+    else:
+        fig, ax_b = plt.subplots(1, 1, figsize=(9.5, max(4.0, 1.2 + 0.55 * len(ordered_conds))), dpi=FIG_DPI)
+        ax_a = None
+
+    # -------------------------------------------------------------------------
+    # Panel A: Normalized Reaching Distance Traces & Plateau Onset Phase
+    # -------------------------------------------------------------------------
+    if ax_a is not None:
+        ax_a.axhline(0.0, color="#bdc3c7", linestyle="--", linewidth=1.0, alpha=0.8, zorder=1)
+        ax_a.axhline(1.0, color="#95a5a6", linestyle="--", linewidth=1.2, alpha=0.85, zorder=1, label="Plateau (Reach Target)")
+        ax_a.axvline(0.0, color="#7f8c8d", linestyle=":", linewidth=1.2, zorder=1)
+
+        stim_info = [
+            {
+                "cond_num": c["cond_num"],
+                "label": c["base_label"],
+                "color": c["color"],
+                "stim_dur_ms": c.get("stim_dur_ms", 0.0) or 0.0,
+                "is_control": False,
+            }
+            for c in stim_conds
+        ]
+        ax_a.set_ylim(-0.06, 1.28)
+        draw_staggered_stim_block(
+            ax_a, stim_info, y_min=-0.06, y_max=1.28,
+            show_ladder=True, show_stepped_shading=True, show_drop_lines=True,
+        )
+
+        for c in ordered_conds:
+            pd_data = c["processed_data"]
+            t_arr = pd_data.get("aligned_time", np.array([]))
+            dist_arr = pd_data.get("dist_norm", None)
+            if dist_arr is None or len(t_arr) == 0:
+                continue
+
+            mask = pd_data.get("valid_mask")
+            dist_v = dist_arr[mask] if mask is not None and np.any(mask) else dist_arr
+            m_tr = np.nanmean(dist_v, axis=0)
+            n_samples = np.sum(~np.isnan(dist_v), axis=0)
+            sem_tr = np.nanstd(dist_v, axis=0, ddof=1) / np.sqrt(np.maximum(1, n_samples))
+
+            win_mask = (t_arr >= time_window_ms[0]) & (t_arr <= time_window_ms[1])
+            t_win = t_arr[win_mask]
+            m_win = m_tr[win_mask]
+            sem_win = sem_tr[win_mask]
+
+            lw = 2.2 if c["is_control"] else 1.9
+            zo = 5 if c["is_control"] else 3
+            ax_a.plot(t_win, m_win, color=c["color"], linestyle=c["linestyle"], linewidth=lw, label=c["full_label"], zorder=zo)
+            ax_a.fill_between(t_win, m_win - sem_win, m_win + sem_win, color=c["color"], alpha=0.15, zorder=zo - 1)
+
+            # Plateau onset marker on the curve
+            idx_onset = int(np.argmin(np.abs(t_arr - c["mean"])))
+            y_onset = float(m_tr[idx_onset]) if idx_onset < len(m_tr) else 1.0
+
+            ax_a.scatter(
+                [c["mean"]], [y_onset],
+                marker=c["marker"],
+                s=70 if c["is_control"] else 55,
+                color=c["color"],
+                edgecolors="#ffffff" if c["is_control"] else "#1a252f",
+                linewidths=1.2,
+                zorder=8,
+            )
+            ax_a.errorbar(
+                c["mean"], y_onset,
+                xerr=c["sem"],
+                fmt="none",
+                ecolor=c["color"],
+                elinewidth=1.6,
+                capsize=3,
+                capthick=1.2,
+                zorder=7,
+            )
+            ax_a.vlines(
+                c["mean"], ymin=-0.06, ymax=y_onset,
+                color=c["color"], linestyle=":", linewidth=1.1, alpha=0.50, zorder=2,
+            )
+
+        ax_a.set_ylabel("Normalized Distance", fontsize=10.5, fontweight="bold", color="#2c3e50")
+        ax_a.set_title(
+            f"A. Normalized Reaching Distance Traces & Plateau Onset Phase (Target {target})",
+            fontsize=11.0, fontweight="bold", color="#2c3e50", loc="left",
+        )
+        ax_a.legend(
+            loc="upper left", fontsize=8.5, frameon=True, framealpha=0.92,
+            facecolor="#fcfcfc", edgecolor="#d5d8dc",
+        )
+
+    # -------------------------------------------------------------------------
+    # Panel B: Plateau Onset Timing Across Conditions
+    # -------------------------------------------------------------------------
+    if ax_b is not None:
+        n_c = len(ordered_conds)
+        y_pos_list = list(range(n_c - 1, -1, -1))  # Control at top
+
+        # Guidelines: Vertical lines only (NO horizontal grid lines per user request)
+        ax_b.axvline(0.0, color="#7f8c8d", linestyle=":", linewidth=1.2, zorder=1)
+
+        if ctrl_mean is not None:
+            ax_b.axvline(ctrl_mean, color=COLOR_CTRL, linestyle="--", linewidth=1.5, alpha=0.75, zorder=2)
+
+        for y_pos, c in zip(y_pos_list, ordered_conds):
+            # Jittered single-reach scatter dots
+            rng = np.random.default_rng(int(c["cond_num"]) + 101)
+            y_jit = y_pos + rng.uniform(-0.12, 0.12, size=len(c["valid_onsets"]))
+            ax_b.scatter(
+                c["valid_onsets"], y_jit,
+                color=c["color"], alpha=0.40, s=32, edgecolors="none", zorder=3,
+            )
+
+            # 95% Confidence Interval bar
+            ci_lo = max(0.0, c["mean"] - c["ci95"])
+            ci_hi = c["mean"] + c["ci95"]
+            ax_b.plot([ci_lo, ci_hi], [y_pos, y_pos], color=c["color"], linewidth=3.2, solid_capstyle="round", zorder=5)
+
+            # ± 1 SEM bar
+            sem_lo = max(0.0, c["mean"] - c["sem"])
+            sem_hi = c["mean"] + c["sem"]
+            ax_b.plot([sem_lo, sem_hi], [y_pos, y_pos], color=c["color"], linewidth=5.5, alpha=0.9, solid_capstyle="round", zorder=6)
+
+            # Mean marker
+            ax_b.scatter(
+                [c["mean"]], [y_pos],
+                marker=c["marker"],
+                s=95 if c["is_control"] else 85,
+                color=c["color"],
+                edgecolors="#ffffff" if c["is_control"] else "#1a252f",
+                linewidths=1.3,
+                zorder=7,
+            )
+
+        ax_b.set_yticks(y_pos_list)
+        ax_b.set_yticklabels([c["base_label"] for c in ordered_conds], fontsize=10.0, fontweight="bold", color="#2c3e50")
+        ax_b.set_ylim(-0.7, n_c - 0.3)
+        ax_b.set_xlim(time_window_ms[0], time_window_ms[1])
+        ax_b.set_xlabel("Time (ms)", fontsize=10.5, fontweight="bold", color="#2c3e50")
+
+        title_text = f"Plateau Onset Timing — Target {target}"
+        if constant_freqs and len(unique_freqs) == 1:
+            fv = unique_freqs[0]
+            f_str = f"{int(fv)} Hz" if float(fv).is_integer() else f"{fv:.1f} Hz"
+            title_text += f" ({f_str} Stimulation)"
+
+        if ax_a is not None:
+            title_text = f"B. {title_text}"
+
+        ax_b.set_title(title_text, fontsize=11.5, fontweight="bold", color="#2c3e50", loc="left", pad=10)
+
+    # Style axes: despine and clean ticks (NO grid)
+    for ax in [ax_a, ax_b]:
+        if ax is None:
+            continue
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color("#2c3e50")
+        ax.spines["bottom"].set_color("#2c3e50")
+        ax.tick_params(colors="#2c3e50", labelsize=9.5)
+        ax.grid(False)
+        ax.xaxis.grid(False)
+        ax.yaxis.grid(False)
+
+    fig.tight_layout()
+
+    if save_path:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, format=save_path.suffix.lstrip("."), dpi=FIG_DPI, bbox_inches="tight")
+        print(f"[saved] {save_path}")
+
+    # Build structured summary table
+    df_rows = []
+    for c in ordered_conds:
+        df_rows.append({
+            "Target": target,
+            "Condition": c["base_label"],
+            "BR_Index": c["cond_num"],
+            "Is_Control": c["is_control"],
+            "N_Reaches": len(c["valid_onsets"]),
+            "Mean_Onset_ms": round(c["mean"], 2),
+            "SD_ms": round(c["std"], 2),
+            "SEM_ms": round(c["sem"], 2),
+            "CI95_ms": round(c["ci95"], 2),
+            "Median_Onset_ms": round(c["median"], 2),
+            "IQR_ms": round(c["iqr"], 2),
+            "Diff_vs_Ctrl_ms": round(c["diff_vs_ctrl"], 2),
+            "P_val_vs_Ctrl": c["p_val_vs_ctrl"],
+            "Significance": c["sig_stars"],
+        })
+    summary_df = pd.DataFrame(df_rows)
+
+    print("\n" + "=" * 95)
+    print(f"PLATEAU ONSET TIMING SUMMARY TABLE — Target {target}")
+    print("=" * 95)
+    print(f"{'Condition':<30} {'n':>4} {'Mean (ms)':>10} {'SEM':>8} {'95% CI':>10} {'Median':>8} {'Δ vs Ctrl':>10} {'p-val':>8} {'Sig':>4}")
+    print("-" * 95)
+    for _, row in summary_df.iterrows():
+        p_val_str = f"{row['P_val_vs_Ctrl']:.4f}" if np.isfinite(row['P_val_vs_Ctrl']) else "—"
+        diff_str = f"{row['Diff_vs_Ctrl_ms']:+.1f}" if row['Diff_vs_Ctrl_ms'] != 0.0 else "—"
+        print(f"{row['Condition']:<30} {row['N_Reaches']:>4} {row['Mean_Onset_ms']:>10.1f} {row['SEM_ms']:>8.1f} {row['CI95_ms']:>10.1f} {row['Median_Onset_ms']:>8.1f} {diff_str:>10} {p_val_str:>8} {row['Significance']:>4}")
+    print("=" * 95 + "\n")
+
+    return fig, summary_df
 
 
 def compare_conditions_by_target(
@@ -3480,163 +4381,136 @@ def main():
         plot_each=PLOT_EACH_CONDITION,
         save_figs=SAVE_FIGS,
         save_dir=PER_CONDITION_FIG_DIR,
+        process_only_filter=PROCESS_ONLY_FILTER,
     )
 
     if not all_results:
         print("[error] No results to analyze.")
         return
 
+    # Merge multiple control conditions into a single pooled 'Control' entry
+    # per target so that downstream plots show one unified baseline.
+    all_results = merge_control_conditions(all_results, control_br_indices=CONTROL_BR_INDICES)
+    print(f"[info] After merging controls: {list(all_results.keys())}")
 
     if SAVE_STATS:
         # Combined result DataFrame
         plateau_df = create_plateau_dataframe(all_results)
-        print("\nCombined plateau DataFrame:")
-        print(plateau_df.head())
-
         TABLE_DIR.mkdir(parents=True, exist_ok=True)
         csv_path = TABLE_DIR / "plateau_detection_results_all_conditions.csv"
         plateau_df.to_csv(csv_path, index=False)
         print(f"[saved] {csv_path}")
 
     # -------------------------------------------------------------------------
-    # Cell 20 equivalent: compare conditions by target
+    # Plateau Onset Timing Analysis (Reach Endpoint Timing Across Conditions)
     # -------------------------------------------------------------------------
-    print("\n" + "=" * 60)
-    print("TARGET A ANALYSIS")
-    print("=" * 60)
-    target_a_condition_data, target_a_fig = compare_conditions_by_target(
-        all_results,
-        target="A",
-        cmap="cool",
-        pulse_width_ms=PULSE_WIDTH_MS,
-    )
+    if GENERATE_PLATEAU_ONSET_TIMING_FIG:
+        print("\n" + "=" * 60)
+        print("PLATEAU ONSET TIMING ANALYSIS (Reach End Timing vs Condition)")
+        print("=" * 60)
 
-    if SAVE_FIGS and target_a_fig is not None:
-        save_and_close_fig(
-            target_a_fig,
-            COMPARISON_FIG_DIR / f"target_A_all_conditions_plateau_onset_comparison.{FIG_FORMAT}",
-        )
+        for target in ["A", "B"]:
+            # Check if target is present in all_results
+            tgt_keys = [k for k in all_results.keys() if f"Target{target}" in k or k.endswith(f"_Target{target}")]
+            if not tgt_keys:
+                print(f"[plateau onset timing] No conditions found for Target {target}. Skipping.")
+                continue
 
-    if GENERATE_DISTANCE_GIFS:
-        # All valid Target A conditions
-        generate_mean_distance_ci_gif(
-            target_a_condition_data,
+            # If PROCESS_ONLY_FILTER is active, all conditions present in all_results are already
+            # filtered to what was requested in VELES.py. Only fall back to COMPARE_CONDITIONS
+            # if PROCESS_ONLY_FILTER was not set.
+            comp_conds = None if PROCESS_ONLY_FILTER is not None else COMPARE_CONDITIONS
+
+            fig_timing, df_summary = plot_plateau_onset_timing_figure(
+                all_results=all_results,
+                target=target,
+                conditions_to_compare=comp_conds,
+                pulse_width_ms=PULSE_WIDTH_MS,
+                min_reaches=3,
+                time_window_ms=(0.0, 500.0),
+                mode=PLATEAU_PLOT_MODE,
+                show_indices=SHOW_CONDITION_INDICES,
+                show_trial_counts=SHOW_TRIAL_COUNTS,
+            )
+
+            if fig_timing is not None and SAVE_FIGS:
+                cond_tag = "all" if not comp_conds else "_".join(map(str, comp_conds))
+                out_path = COMPARISON_FIG_DIR / f"plateau_onset_timing_Target{target}_conds_{cond_tag}.{FIG_FORMAT}"
+                fig_timing.savefig(out_path, format=FIG_FORMAT, dpi=FIG_DPI, bbox_inches="tight")
+                print(f"[plateau onset timing] Saved figure: {out_path}")
+
+                if FIG_FORMAT.lower() == "svg":
+                    png_path = COMPARISON_FIG_DIR / f"plateau_onset_timing_Target{target}_conds_{cond_tag}.png"
+                    fig_timing.savefig(png_path, format="png", dpi=FIG_DPI, bbox_inches="tight")
+                    print(f"[plateau onset timing] Saved PNG preview: {png_path}")
+
+            if fig_timing is not None:
+                plt.close(fig_timing)
+
+            if df_summary is not None and SAVE_STATS:
+                cond_tag = "all" if not comp_conds else "_".join(map(str, comp_conds))
+                out_csv = TABLE_DIR / f"plateau_onset_timing_summary_Target{target}_conds_{cond_tag}.csv"
+                df_summary.to_csv(out_csv, index=False)
+                print(f"[plateau onset timing] Saved table: {out_csv}")
+
+    # -------------------------------------------------------------------------
+    # Legacy comparison figures (disabled by default per user request)
+    # -------------------------------------------------------------------------
+    if GENERATE_LEGACY_COMPARISON_FIGS:
+        print("\n" + "=" * 60)
+        print("TARGET A ANALYSIS (Legacy)")
+        print("=" * 60)
+        target_a_condition_data, target_a_fig = compare_conditions_by_target(
+            all_results,
             target="A",
-            save_dir=GIF_DIR,
-            config=DISTANCE_GIF_CONFIG,
             cmap="cool",
-            filename="target_A_mean_normalized_distance_CI.gif",
+            pulse_width_ms=PULSE_WIDTH_MS,
         )
 
-        # Selected Target A conditions from COMPARE_CONDITIONS
-        if COMPARE_CONDITIONS:
-            target_a_compare_condition_data = _extract_condition_data_for_target(
-                all_results,
+        if SAVE_FIGS and target_a_fig is not None:
+            save_and_close_fig(
+                target_a_fig,
+                COMPARISON_FIG_DIR / f"target_A_all_conditions_plateau_onset_comparison.{FIG_FORMAT}",
+            )
+
+        if GENERATE_DISTANCE_GIFS:
+            generate_mean_distance_ci_gif(
+                target_a_condition_data,
                 target="A",
-                pulse_width_ms=PULSE_WIDTH_MS,
-                min_reaches=3,
-                conditions_to_compare=COMPARE_CONDITIONS,
-            )
-
-            generate_mean_distance_ci_gif(
-                target_a_compare_condition_data,
-                target="A selected conditions",
                 save_dir=GIF_DIR,
                 config=DISTANCE_GIF_CONFIG,
                 cmap="cool",
-                filename="target_A_COMPARE_CONDITIONS_mean_normalized_distance_CI.gif",
+                filename="target_A_mean_normalized_distance_CI.gif",
             )
 
-    print("\n" + "=" * 60)
-    print("TARGET B ANALYSIS")
-    print("=" * 60)
-    target_b_condition_data, target_b_fig = compare_conditions_by_target(
-        all_results,
-        target="B",
-        cmap="cool",
-        pulse_width_ms=PULSE_WIDTH_MS,
-    )
-
-    if SAVE_FIGS and target_b_fig is not None:
-        save_and_close_fig(
-            target_b_fig,
-            COMPARISON_FIG_DIR / f"target_B_all_conditions_plateau_onset_comparison.{FIG_FORMAT}",
-        )
-
-    if GENERATE_DISTANCE_GIFS:
-        # All valid Target B conditions
-        generate_mean_distance_ci_gif(
-            target_b_condition_data,
+        print("\n" + "=" * 60)
+        print("TARGET B ANALYSIS (Legacy)")
+        print("=" * 60)
+        target_b_condition_data, target_b_fig = compare_conditions_by_target(
+            all_results,
             target="B",
-            save_dir=GIF_DIR,
-            config=DISTANCE_GIF_CONFIG,
             cmap="cool",
-            filename="target_B_mean_normalized_distance_CI.gif",
+            pulse_width_ms=PULSE_WIDTH_MS,
         )
 
-        # Selected Target B conditions from COMPARE_CONDITIONS
-        if COMPARE_CONDITIONS:
-            target_b_compare_condition_data = _extract_condition_data_for_target(
-                all_results,
+        if SAVE_FIGS and target_b_fig is not None:
+            save_and_close_fig(
+                target_b_fig,
+                COMPARISON_FIG_DIR / f"target_B_all_conditions_plateau_onset_comparison.{FIG_FORMAT}",
+            )
+
+        if GENERATE_DISTANCE_GIFS:
+            generate_mean_distance_ci_gif(
+                target_b_condition_data,
                 target="B",
-                pulse_width_ms=PULSE_WIDTH_MS,
-                min_reaches=3,
-                conditions_to_compare=COMPARE_CONDITIONS,
-            )
-
-            generate_mean_distance_ci_gif(
-                target_b_compare_condition_data,
-                target="B selected conditions",
                 save_dir=GIF_DIR,
                 config=DISTANCE_GIF_CONFIG,
                 cmap="cool",
-                filename="target_B_COMPARE_CONDITIONS_mean_normalized_distance_CI.gif",
-            )
-
-    # -------------------------------------------------------------------------
-    # Cell 21 equivalent: selected condition statistics
-    # -------------------------------------------------------------------------
-    if SAVE_STATS:
-        print("\n" + "=" * 60)
-        print("SELECTED CONDITIONS ANALYSIS - Target A")
-        print(f"Comparing: {COMPARE_CONDITIONS if COMPARE_CONDITIONS else 'ALL conditions'}")
-        print("=" * 60)
-
-        selected_a_data, selected_a_fig = analyze_selected_conditions(
-            all_results,
-            conditions_to_compare=COMPARE_CONDITIONS,
-            target="A",
-            cmap="cool",
-            pulse_width_ms=PULSE_WIDTH_MS,
-        )
-
-        if SAVE_FIGS and selected_a_fig is not None:
-            save_and_close_fig(
-                selected_a_fig,
-                STATS_FIG_DIR / f"target_A_selected_conditions_statistics.{FIG_FORMAT}",
-            )
-
-        print("\n" + "=" * 60)
-        print("SELECTED CONDITIONS ANALYSIS - Target B")
-        print(f"Comparing: {COMPARE_CONDITIONS if COMPARE_CONDITIONS else 'ALL conditions'}")
-        print("=" * 60)
-
-        selected_b_data, selected_b_fig = analyze_selected_conditions(
-            all_results,
-            conditions_to_compare=COMPARE_CONDITIONS,
-            target="B",
-            cmap="cool",
-            pulse_width_ms=PULSE_WIDTH_MS,
-        )
-
-        if SAVE_FIGS and selected_b_fig is not None:
-            save_and_close_fig(
-                selected_b_fig,
-                STATS_FIG_DIR / f"target_B_selected_conditions_statistics.{FIG_FORMAT}",
+                filename="target_B_mean_normalized_distance_CI.gif",
             )
 
     # ---------------------------------------------------------------------
-    # Trajectory variability analyses
+    # Trajectory variability analyses (legacy)
     # ---------------------------------------------------------------------
     if RUN_TRAJECTORY_VARIABILITY_ANALYSIS:
         print("\n[trajectory variability] Running trajectory variability analyses...")
@@ -3656,7 +4530,6 @@ def main():
                 print(f"[trajectory variability] No valid trajectory rows for Target {target}.")
                 continue
 
-            # X-Y overlay plot
             fig_xy = plot_xy_trajectory_overlay_for_conditions(
                 traj_rows,
                 target=target,
@@ -3672,7 +4545,6 @@ def main():
             if fig_xy is not None:
                 plt.close(fig_xy)
 
-            # Main variability analyses
             variability_results = run_trajectory_variability_analysis_for_target(
                 all_results,
                 target=target,
@@ -3723,7 +4595,7 @@ def main():
                 print(f"[trajectory variability] Saved summary table: {summary_path}")
                 print(f"[trajectory variability] Saved per-trial table: {per_trial_path}")
                 print(f"[trajectory variability] Saved stats table: {stats_path}")
-    
+
     print("\n[done] Plateau analysis complete.")
 
 
