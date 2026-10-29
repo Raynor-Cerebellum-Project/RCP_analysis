@@ -61,7 +61,7 @@ def add_ua_region_bar(
                                transform=ax.transAxes, facecolor="0.92",
                                edgecolor="none", clip_on=False))
         ax.text(x - 0.01, 0.5*(y0 + y1), label, transform=ax.transAxes,
-                ha="right", va="center", fontsize=9)
+                ha="right", va="center", fontsize=12, fontweight="bold")
         y0 = y1
 
     # 3 tick marks at the internal boundaries
@@ -268,6 +268,7 @@ def stacked_heatmaps_plus_behv(
     beh_line_width: float = 2.4,
     beh_scale_bar_ms: float | None = 200.0,
     beh_in_plot_label: str | None = "Position",
+    xlim: tuple[float, float] | None = None,
 ):
     """
     s: session ID
@@ -384,7 +385,7 @@ def stacked_heatmaps_plus_behv(
 
             _append((regs == 2), "M1i", "M1 (upper limb)", "M1\n(upper limb)")
             _append((regs == 3), "M1s", "M1 (lower limb)", "M1\n(lower limb)")
-            _append((regs == 1), "PMd", "Premotor (dorsal)", "Premotor (dorsal)")
+            _append((regs == 1), "PMd", "Premotor (dorsal)", "Premotor\n(dorsal)")
             _append((regs == 0), "SMA", "SMA", "SMA")
 
             other_mask = (regs >= 1_000_000)
@@ -495,8 +496,8 @@ def stacked_heatmaps_plus_behv(
 
 
     # ---------- Render behavior rows ----------
-    def _ylabel_horizontal(ax, text: str, pad: float = 8.0):
-        t = ax.set_ylabel(text, rotation=0, labelpad=pad)
+    def _ylabel_horizontal(ax, text: str, pad: float = 12.0, fontsize: float = 14, fontweight: str = "bold"):
+        t = ax.set_ylabel(text, rotation=0, labelpad=pad, fontsize=fontsize, fontweight=fontweight)
         t.set_horizontalalignment("right")
         t.set_verticalalignment("center")
         return t
@@ -573,8 +574,8 @@ def stacked_heatmaps_plus_behv(
             ax.axvspan(
                 0.0,
                 float(stim_dur_ms),
-                color="0.7",
-                alpha=0.15,
+                color="#383838",
+                alpha=0.35,
                 zorder=0,
             )
 
@@ -586,11 +587,12 @@ def stacked_heatmaps_plus_behv(
             ax.tick_params(left=False, labelleft=False)
             ax.set_ylabel("")
         else:
+            ax.tick_params(axis="y", labelsize=12, width=1.4)
             _ylabel_horizontal(ax, ylabel)
 
         # Draw time scale bar replacing x-axis on the last behavior row
         t_arr = np.asarray(rel_t, float) if rel_t is not None else np.array([0.0])
-        t_min = float(np.nanmin(t_arr)) if t_arr.size else 0.0
+        t_min = float(xlim[0]) if (xlim is not None) else (float(np.nanmin(t_arr)) if t_arr.size else 0.0)
         x_start = t_min + 40.0
         scale_val = float(beh_scale_bar_ms or 200.0)
         x_end = x_start + scale_val
@@ -605,13 +607,13 @@ def stacked_heatmaps_plus_behv(
             ax.plot(
                 [x_start, x_end], [y_bar, y_bar],
                 transform=ax.get_xaxis_transform(),
-                color="black", lw=2.5, clip_on=False, solid_capstyle="butt"
+                color="black", lw=3.0, clip_on=False, solid_capstyle="butt"
             )
             ax.text(
-                (x_start + x_end) / 2.0, y_bar - 0.08,
+                (x_start + x_end) / 2.0, y_bar - 0.09,
                 f"{int(scale_val)} ms",
                 transform=ax.get_xaxis_transform(),
-                ha="center", va="top", fontsize=10, fontweight="medium",
+                ha="center", va="top", fontsize=14, fontweight="bold",
                 color="black", clip_on=False
             )
         elif beh_scale_bar_ms is not None:
@@ -624,12 +626,12 @@ def stacked_heatmaps_plus_behv(
                 x_start, 0.85,
                 in_label,
                 transform=ax.get_xaxis_transform(),
-                fontsize=14, fontweight="medium",
+                fontsize=18, fontweight="bold",
                 color="#222222", ha="left", va="center", clip_on=False
             )
 
         if title and not beh_in_plot_label:
-            ax.set_title(title)
+            ax.set_title(title, fontsize=15, fontweight="bold")
         if place_legend and D:
             handles, labels = ax.get_legend_handles_labels()
             valid = [(h, l) for h, l in zip(handles, labels) if l and not l.startswith("_")]
@@ -639,7 +641,7 @@ def stacked_heatmaps_plus_behv(
                 ax.legend(handles, labels,
                         loc="center left",
                         bbox_to_anchor=(1.02, 0.5),
-                        fontsize=8,
+                        fontsize=12,
                         frameon=False)
         # ax.grid(alpha=0.15, linestyle=":")
 
@@ -733,7 +735,7 @@ def stacked_heatmaps_plus_behv(
             cmap_local_nprw = plt.get_cmap(cmap_choice_nprw).copy()
         except Exception:
             cmap_local_nprw = cm.get_cmap(cmap_choice_nprw).copy()
-        cmap_local_nprw.set_bad(color="0.9")
+        cmap_local_nprw.set_bad(color="#383838")
 
         # Determine normalization for NPRW
         norm_local_nprw = norm_nprw
@@ -781,21 +783,33 @@ def stacked_heatmaps_plus_behv(
 
         ax_nprw.axvline(0.0, color="Red", alpha=0.8, linewidth=1.2, ls="--")
         # ax_nprw.axvspan(-20.0, 120.0, color="gray", alpha=1)
-        ax_nprw.set_title(title_NA)
-        _ylabel_horizontal(ax_nprw, f"IP\n{nprw_med.shape[0]} chs")
+        if title_NA:
+            ax_nprw.set_title(title_NA, fontsize=15, fontweight="bold")
+        else:
+            ax_nprw.set_title("")
+        _ylabel_horizontal(ax_nprw, f"IntA\n{nprw_med.shape[0]} chs")
         if not nprw_show_y_ticks:
             ax_nprw.set_yticks([])
             ax_nprw.tick_params(left=False, labelleft=False)
+        else:
+            ax_nprw.tick_params(axis="y", labelsize=12, width=1.4)
         ax_nprw_cax.cla(); [sp.set_visible(False) for sp in ax_nprw_cax.spines.values()]
         ax_nprw_cax.set_xticks([]); ax_nprw_cax.set_yticks([])
-        ax_nprw.tick_params(axis="x", labelbottom=False)
+        if not has_ua:
+            ax_nprw.tick_params(axis="x", labelbottom=True, labelsize=13, width=1.4)
+            ax_nprw.set_xlabel("Time (ms)", fontsize=15, fontweight="bold")
+        else:
+            ax_nprw.tick_params(axis="x", labelbottom=False)
         ax_nprw._is_time_axis = True
         cb0 = fig.colorbar(im0, cax=ax_nprw_cax)
         try: cb0.solids.set_edgecolor('face')
         except: pass
-        cb0.ax.tick_params(width=1.2, labelsize=9)
-        cb0.outline.set_linewidth(1.0)
-        cb0.set_label(cb_label_nprw)
+        cb0.ax.tick_params(width=1.4, labelsize=12)
+        cb0.outline.set_linewidth(1.2)
+        if cb_label_nprw:
+            cb0.set_label(cb_label_nprw, fontsize=14, fontweight="bold", labelpad=8)
+        else:
+            cb0.set_label("")
         row += 1
 
     # ---------- UA heatmaps (optional) ----------
@@ -855,7 +869,7 @@ def stacked_heatmaps_plus_behv(
                 cmap_local_ua = plt.get_cmap(cmap_choice_ua).copy()
             except Exception:
                 cmap_local_ua = cm.get_cmap(cmap_choice_ua).copy()
-            cmap_local_ua.set_bad(color="gray")
+            cmap_local_ua.set_bad(color="#383838")
             
             # ua_masked: (n_ch, T)
             n_ch, T = ua_masked.shape
@@ -916,7 +930,8 @@ def stacked_heatmaps_plus_behv(
 
             is_last = (group_idx == len(ua_groups) - 1)
             if is_last:
-                ax_ua.set_xlabel("Time (ms) rel. stim")
+                ax_ua.set_xlabel("Time (ms)", fontsize=15, fontweight="bold")
+                ax_ua.tick_params(axis="x", labelbottom=True, labelsize=13, width=1.4)
             else:
                 ax_ua.set_xlabel("")
                 ax_ua.tick_params(axis="x", labelbottom=False)
@@ -924,9 +939,12 @@ def stacked_heatmaps_plus_behv(
             ax_ua_cax.cla(); [sp.set_visible(False) for sp in ax_ua_cax.spines.values()]
             ax_ua_cax.set_xticks([]); ax_ua_cax.set_yticks([])
             cb1 = fig.colorbar(im1, cax=ax_ua_cax)
-            cb1.ax.tick_params(width=1.2, labelsize=9)
-            cb1.outline.set_linewidth(1.0)
-            cb1.set_label(cb_label_ua)
+            cb1.ax.tick_params(width=1.4, labelsize=12)
+            cb1.outline.set_linewidth(1.2)
+            if not has_nprw and group_idx == 0 and cb_label_ua:
+                cb1.set_label(cb_label_ua, fontsize=14, fontweight="bold", labelpad=8)
+            else:
+                cb1.set_label("")
             row += 1
 
     # ---------- Probe inset (optional) ----------
@@ -969,29 +987,42 @@ def stacked_heatmaps_plus_behv(
             plot_probe(
                 probe_local, ax=ax_probe, with_contact_id=False,
                 contacts_colors=contacts_colors,
-                probe_shape_kwargs={"facecolor": "none", "edgecolor": "black", "linewidth": 0.8},
-                contacts_kargs={"edgecolors": "k", "linewidths": 0.6, "zorder": 3},
+                probe_shape_kwargs={"facecolor": "none", "edgecolor": "black", "linewidth": 2.2},
+                contacts_kargs={"edgecolors": "black", "linewidths": 1.6, "zorder": 3},
             )
         else:
             if probe_locs is not None:
                 L = np.asarray(probe_locs)
                 ax_probe.scatter(L[:, 0], L[:, 1], s=probe_marker_size,
-                                facecolors="none", edgecolors="k", linewidths=0.6, zorder=3)
-        ax_probe.set_title(probe_title, fontsize=10)
+                                facecolors="none", edgecolors="black", linewidths=1.6, zorder=3)
+        # Remove x (um), y (um), ticks, ticklabels, and probe title
+        ax_probe.set_xlabel("")
+        ax_probe.set_ylabel("")
+        ax_probe.set_xticks([])
+        ax_probe.set_yticks([])
+        ax_probe.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+        ax_probe.set_title("")
         # Fill the full gridspec cell (avoid letterboxing)
         ax_probe.set_aspect("auto")
         ax_probe.set_box_aspect(None)      # let the grid cell dictate height
         ax_probe.margins(x=0.05,y=0.05)   # small padding
 
 
-    x_ranges = []
-    if has_nprw: x_ranges.append((t_nprw[0], t_nprw[-1]))
-    if has_ua:    x_ranges.append((t_ua[0],    t_ua[-1]))
-    if beh_rel_time is not None and (have_cam0_pos or have_cam1_pos or have_cam0_vel or have_cam1_vel):
-        x_ranges.append((beh_rel_time[0], beh_rel_time[-1]))
-    if x_ranges:
-        xmin = float(min(lo for lo, _ in x_ranges))
-        xmax = float(max(hi for _, hi in x_ranges))
+    if xlim is not None:
+        xmin, xmax = float(xlim[0]), float(xlim[1])
+    else:
+        x_ranges = []
+        if has_nprw: x_ranges.append((t_nprw[0], t_nprw[-1]))
+        if has_ua:    x_ranges.append((t_ua[0],    t_ua[-1]))
+        if beh_rel_time is not None and (have_cam0_pos or have_cam1_pos or have_cam0_vel or have_cam1_vel):
+            x_ranges.append((beh_rel_time[0], beh_rel_time[-1]))
+        if x_ranges:
+            xmin = float(min(lo for lo, _ in x_ranges))
+            xmax = float(max(hi for _, hi in x_ranges))
+        else:
+            xmin, xmax = None, None
+
+    if xmin is not None and xmax is not None:
         # Sync x-lims
         for ax in [a for a in fig.axes if isinstance(a, plt.Axes)]:
             if getattr(ax, "_is_time_axis", False):
@@ -1001,7 +1032,7 @@ def stacked_heatmaps_plus_behv(
     out_svg = Path(out_svg)
     out_svg.parent.mkdir(parents=True, exist_ok=True)
     if overall_title:
-        fig.suptitle(overall_title, fontsize=13, fontweight="bold", y=0.995, va="top")
+        fig.suptitle(overall_title, fontsize=16, fontweight="bold", y=0.995, va="top")
     fig.subplots_adjust(top=0.96)           # pull axes up toward the top
     fig.savefig(out_svg, dpi=300, bbox_inches="tight", pad_inches=0.25)
     plt.close(fig)

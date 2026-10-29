@@ -1,6 +1,7 @@
 # Editor / IDE
 .ruff_cache
 .vscode/
+.agents/
 
 # Config, data, and results
 config/params.yaml

@@ -1,0 +1,19 @@
+================================================================================
+VELES RUN START: 10/22/2026 12:17:22
+Monkey: Nike
+Sessions to run: ['NRR_RW011']
+Process only: [2, 4, 22, 12, 13, 14, 15, 16, 17, 18, 19, 21]
+Scripts:
+  - analysis_scripts/plot_plateau_analysis.py
+  - analysis_scripts/plot_3d_kinematics.py
+  - analysis_scripts/plot_behavioral_rsa.py
+  - analysis_scripts/plot_lfp_rsa.py
+================================================================================
+[10/22/2026 12:17:22] [NRR_RW011] [analysis_scripts/plot_plateau_analysis.py] IN-PROGRESS
+[10/22/2026 12:18:22] [NRR_RW011] [analysis_scripts/plot_plateau_analysis.py] FINISHED: 10/22/2026 12:18:22
+[10/22/2026 12:18:22] [NRR_RW011] [analysis_scripts/plot_3d_kinematics.py] IN-PROGRESS
+[10/22/2026 12:20:49] [NRR_RW011] [analysis_scripts/plot_3d_kinematics.py] FINISHED: 10/22/2026 12:20:49
+[10/22/2026 12:20:49] [NRR_RW011] [analysis_scripts/plot_behavioral_rsa.py] IN-PROGRESS
+[10/22/2026 12:21:17] [NRR_RW011] [analysis_scripts/plot_behavioral_rsa.py] FINISHED: 10/22/2026 12:21:17
+[10/22/2026 12:21:17] [NRR_RW011] [analysis_scripts/plot_lfp_rsa.py] IN-PROGRESS
+[10/22/2026 12:38:01] [NRR_RW011] [analysis_scripts/plot_lfp_rsa.py] FINISHED: 10/22/2026 12:38:01

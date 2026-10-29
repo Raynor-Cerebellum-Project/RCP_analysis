@@ -36,11 +36,14 @@ PLOT_SPIKE_COUNTS = False
 Z_SCORE_FR   = True
 
 # Channel ordering by peak latency
-ORDER_BY_PEAK = False
+ORDER_BY_PEAK = True
 # Direction of peak ordering: "top_to_bottom" (earliest peak at top of plot) or "bottom_to_top"
 PEAK_ORDER_DIRECTION = "top_to_bottom"
 # Optional search window (ms) for finding peak latency (None = search whole time epoch, or e.g. (-600.0, 600.0))
 PEAK_SEARCH_WINDOW_MS = None
+
+# Plotted time window in ms (processed across full time epoch, but final plot viewport clamped to [-500, 500])
+PLOT_XLIM = (-500.0, 500.0)
 
 # Sorting strategy for NPRW and UA
 NPRW_SORT = "peak" if ORDER_BY_PEAK else "none"
@@ -110,7 +113,7 @@ PLOT_VELOCITY = False
 SHOW_NPRW_Y_TICKS = False      # Option to hide/show NPRW read-write probe y-axis ticks and numbers
 BEH_SHOW_BOX = False           # False to remove box outline (spines) around variability & distance plots
 BEH_SHOW_Y_AXIS = False        # False to remove y-axis label and ticks for variability & distance plots
-BEH_LINE_WIDTH = 2.4           # Plotted behavior line thickness
+BEH_LINE_WIDTH = 2.6           # Plotted behavior line thickness
 BEH_SCALE_BAR_MS = 200.0       # Replaces x-axis with a 200 ms scale bar on behavior panel (or None)
 BEH_IN_PLOT_LABEL = "Position" # In-plot label on behavior panel (or None)
 
@@ -121,7 +124,7 @@ MIN_HEATMAP_RATIO = 0.6       # minimum ratio so tiny arrays don't vanish
 UA_COMPACT_FACTOR = 0.95      # < 1.0 shrinks UA panel heights
 NPRW_SCALE        = 0.6       # < 1.0 shrinks Intan height (e.g., 0.6 = 60% of previous)
 GAP_BEH_NPRW      = 0.25      # height "ratio" for a spacer row between behavior and Intan
-FIG_WIDTH_IN         = 8.0    # overall width (inches)
+FIG_WIDTH_IN         = 8.5    # overall width (inches)
 HEIGHT_PER_RATIO_IN  = 4.0    # height per unit of `ratios` sum
 PROBE_GAP_RATIO      = 0.15
 PROBE_WIDTH_RATIO    = 0.35
@@ -688,15 +691,8 @@ def main():
         base_kin_title = f"Kinematics / n={n_events} events"
         metric_str = "spike counts" if PLOT_SPIKE_COUNTS else "FR"
         neural_type = "z-scored" if Z_SCORE_FR else "median"
-        if PLOT_SPIKE_COUNTS:
-            base_neural_title = f"Neural Activity ({neural_type} {metric_str}/bin)"
-            cb_label = "z-score (std)" if Z_SCORE_FR else "Spike count"
-        else:
-            base_neural_title = f"Neural Activity ({neural_type} Δ) / Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
-            cb_label = "z-score (std)" if Z_SCORE_FR else "Δ FR (Hz)"
-
-        if ORDER_BY_PEAK:
-            base_neural_title += " (peak ordered)"
+        base_neural_title = ""
+        cb_label = "z-score (std)" if Z_SCORE_FR else ("Spike count" if PLOT_SPIKE_COUNTS else "Δ FR (Hz)")
 
         full_overall_title = f"{overall_title} {target_label.replace('_', ' ').replace('/', ' - ')}"
 
@@ -739,7 +735,7 @@ def main():
             cmap=COLORMAP,
             center_zero=CENTER_ZERO,
             cb_label_nprw=cb_label,
-            cb_label_ua=cb_label,
+            cb_label_ua="",
             vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
             vmin_ua={
                 "M1i": VMIN_UA,
@@ -756,7 +752,7 @@ def main():
             probe=nprw_probe,
             probe_locs=locs,
             stim_idx=stim_locs,
-            probe_title="NPRW probe (stim sites highlighted)",
+            probe_title="",
             ua_ids_1based=ua_ids_1based,
             ua_sort=UA_SORT,
             nprw_sort=NPRW_SORT,
@@ -800,6 +796,7 @@ def main():
             beh_line_width=BEH_LINE_WIDTH,
             beh_scale_bar_ms=BEH_SCALE_BAR_MS,
             beh_in_plot_label=BEH_IN_PLOT_LABEL,
+            xlim=PLOT_XLIM,
         )
         # -----------------------------------------------------------------
         # FIGURE 2: ALL VARIANCE TRACES (no shading, all keypoints)
@@ -837,7 +834,7 @@ def main():
             probe=nprw_probe,
             probe_locs=locs,
             stim_idx=stim_locs,
-            probe_title="NPRW probe (stim sites highlighted)",
+            probe_title="",
             ua_ids_1based=ua_ids_1based,
             ua_sort="region_then_elec",
             beh_rel_time=beh_time_for_both,
@@ -878,6 +875,7 @@ def main():
             beh_line_width=BEH_LINE_WIDTH,
             beh_scale_bar_ms=BEH_SCALE_BAR_MS,
             beh_in_plot_label=BEH_IN_PLOT_LABEL,
+            xlim=PLOT_XLIM,
         )
 
         # -----------------------------------------------------------------
@@ -968,12 +966,7 @@ def main():
 
         band_label = "95% CI" if PLOT_NORMALIZED_DISTANCE else "std"
         title_MWT_kin = f"Kinematics (mean ± {band_label}) / n={n_events} events"
-        if PLOT_SPIKE_COUNTS:
-            title_MWT_neural = f"Neural Activity ({neural_type} spike counts/bin)"
-        else:
-            title_MWT_neural = f"Neural Activity (mean Δ) / Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
-        if ORDER_BY_PEAK:
-            title_MWT_neural += " (peak ordered)"
+        title_MWT_neural = ""
 
         rcp.stacked_heatmaps_plus_behv(
             NPRW_med, UA_med,          # same med heatmaps; metric is just for behavior here
@@ -988,7 +981,7 @@ def main():
             cmap=COLORMAP,
             center_zero=CENTER_ZERO,
             cb_label_nprw=cb_label,
-            cb_label_ua=cb_label,
+            cb_label_ua="",
             vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
             vmin_ua={
                 "M1i": VMIN_UA,
@@ -1005,7 +998,7 @@ def main():
             probe=nprw_probe,
             probe_locs=locs,
             stim_idx=stim_locs,
-            probe_title="NPRW probe (stim sites highlighted)",
+            probe_title="",
             ua_ids_1based=ua_ids_1based,
             ua_sort=UA_SORT,
             nprw_sort=NPRW_SORT,
@@ -1049,6 +1042,7 @@ def main():
             beh_line_width=BEH_LINE_WIDTH,
             beh_scale_bar_ms=BEH_SCALE_BAR_MS,
             beh_in_plot_label=BEH_IN_PLOT_LABEL,
+            xlim=PLOT_XLIM,
         )
         # -----------------------------------------------------------------
         # FIGURE 4: MWT ONLY VARIANCE (same behavior subset)
@@ -1086,7 +1080,7 @@ def main():
             probe=nprw_probe,
             probe_locs=locs,
             stim_idx=stim_locs,
-            probe_title="NPRW probe (stim sites highlighted)",
+            probe_title="",
             ua_ids_1based=ua_ids_1based,
             ua_sort="region_then_elec",
             beh_rel_time=beh_time_for_both,
@@ -1127,6 +1121,7 @@ def main():
             beh_line_width=BEH_LINE_WIDTH,
             beh_scale_bar_ms=BEH_SCALE_BAR_MS,
             beh_in_plot_label=BEH_IN_PLOT_LABEL,
+            xlim=PLOT_XLIM,
         )
         # -----------------------------------------------------------------
         # FIGURE 5: MWT ONLY MEDIAN BIN COUNTS (same behavior subset as MWT fig)
@@ -1166,7 +1161,7 @@ def main():
             probe=nprw_probe,
             probe_locs=locs,
             stim_idx=stim_locs,
-            probe_title="NPRW probe (stim sites highlighted)",
+            probe_title="",
             ua_ids_1based=ua_ids_1based,
             ua_sort=UA_SORT,
             nprw_sort=NPRW_SORT,
@@ -1210,6 +1205,7 @@ def main():
             beh_line_width=BEH_LINE_WIDTH,
             beh_scale_bar_ms=BEH_SCALE_BAR_MS,
             beh_in_plot_label=BEH_IN_PLOT_LABEL,
+            xlim=PLOT_XLIM,
         )
 
         # -----------------------------------------------------------------
@@ -1322,15 +1318,7 @@ def main():
                     c1_vel_single = None
 
                 title_single_kin = f"Kinematics (MWT, single trial {i_trial+1})"
-                if PLOT_SPIKE_COUNTS:
-                    title_single_neural = f"Neural Activity (single trial {i_trial+1} spike counts/bin)"
-                else:
-                    title_single_neural = (
-                        f"Neural Activity (single trial {i_trial+1}) / "
-                        f"Referenced to first {int(NORMALIZE_FIRST_MS)} ms)"
-                    )
-                if ORDER_BY_PEAK:
-                    title_single_neural += " (peak ordered)"
+                title_single_neural = ""
 
                 if peri_stim_npz_loc.name.startswith('baseline'):
                     base_fn = f"{peri_stim_npz_loc.name}"
@@ -1353,7 +1341,7 @@ def main():
                     cmap=COLORMAP,
                     center_zero=CENTER_ZERO,
                     cb_label_nprw=cb_label,
-                    cb_label_ua=cb_label,
+                    cb_label_ua="",
                     vmin_nprw=VMIN_NPRW, vmax_nprw=VMAX_NPRW,
                     vmin_ua={
                         "M1i": VMIN_UA,
@@ -1370,7 +1358,7 @@ def main():
                     probe=nprw_probe,
                     probe_locs=locs,
                     stim_idx=stim_locs,
-                    probe_title="NPRW probe (stim sites highlighted)",
+                    probe_title="",
                     ua_ids_1based=ua_ids_1based,
                     ua_sort=UA_SORT,
                     nprw_sort=NPRW_SORT,
@@ -1414,6 +1402,7 @@ def main():
                     beh_line_width=BEH_LINE_WIDTH,
                     beh_scale_bar_ms=BEH_SCALE_BAR_MS,
                     beh_in_plot_label=BEH_IN_PLOT_LABEL,
+                    xlim=PLOT_XLIM,
                 )
 
 

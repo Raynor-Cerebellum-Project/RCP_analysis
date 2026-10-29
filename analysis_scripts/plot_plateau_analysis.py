@@ -81,13 +81,28 @@ except ImportError:
 # processed.  This mirrors PROCESS_ONLY in VELES.py exactly — controls
 # are filtered just like any other condition.
 # ---------------------------------------------------------------------------
-_process_only_raw = os.environ.get("RCP_PROCESS_ONLY", "")
-try:
-    import json as _json
-    _po_parsed = _json.loads(_process_only_raw) if _process_only_raw.strip() else []
-    PROCESS_ONLY_FILTER: Optional[List[int]] = [int(x) for x in _po_parsed] if _po_parsed else None
-except Exception:
-    PROCESS_ONLY_FILTER = None
+def resolve_process_only() -> Optional[List[int]]:
+    """Resolve active conditions to process from environment (VELES) or PARAMS."""
+    env_val = os.environ.get("RCP_PROCESS_ONLY", "")
+    if env_val:
+        try:
+            import json as _json
+            parsed = _json.loads(env_val)
+            if isinstance(parsed, list) and len(parsed) > 0:
+                return [int(x) for x in parsed if str(x).lstrip("-").isdigit()]
+        except Exception:
+            pass
+    if "PARAMS" in globals() and PARAMS is not None:
+        po = getattr(PARAMS, "process_only", None)
+        if isinstance(po, list) and len(po) > 0:
+            return [int(x) for x in po if str(x).lstrip("-").isdigit()]
+        if hasattr(PARAMS, "preprocessing") and isinstance(PARAMS.preprocessing, dict):
+            po2 = PARAMS.preprocessing.get("process_only", None)
+            if isinstance(po2, list) and len(po2) > 0:
+                return [int(x) for x in po2 if str(x).lstrip("-").isdigit()]
+    return None
+
+PROCESS_ONLY_FILTER: Optional[List[int]] = resolve_process_only()
 
 if PROCESS_ONLY_FILTER is not None:
     print(f"[info] PROCESS_ONLY_FILTER active: {PROCESS_ONLY_FILTER}")
@@ -130,18 +145,30 @@ DETECTION_PARAMS = {
 }
 
 # Conditions used in selected statistical comparison
-# COMPARE_CONDITIONS = [1, 11, 12, 13, 14, 15, 16, 17, 18] # session 22
+# COMPARE_CONDITIONS = [11, 12, 13, 14, 15, 16, 17, 18] # session 22
+# COMPARE_CONDITIONS = [2, 4, 22, 12, 13, 14, 15, 16, 17, 18, 19, 21] # s11 - 8 ch walk vs control
 # COMPARE_CONDITIONS = [3, 7, 8, 9, 10, 11, 12] # s12 - 1to40 pulse stim vs control
 COMPARE_CONDITIONS = [4, 5, 6, 7, 10, 11] # s11 - 400 Hz vs 130 Hz
-# COMPARE_CONDITIONS = [1, 17] # session 22
+# COMPARE_CONDITIONS = [17, 18] # session 22
 # COMPARE_CONDITIONS = [3, 7, 8, 9, 10, 11, 12] # session 12
 # COMPARE_CONDITIONS = [3, 12] # session 12
 # COMPARE_CONDITIONS = [17, 18, 25] # session 22
 
 
 # Figure Generation Configuration
-# Currently, ONLY the plateau onset timing figure is generated per user request.
+# Currently, ONLY the plateau onset timing / end of reach figure is generated per user request.
 GENERATE_PLATEAU_ONSET_TIMING_FIG = True
+INCLUDE_NORMALIZED_DISTANCE_PLOT: bool = False  # If True, include Normalized Position plot at the top above End of Reach
+SHOW_SIGNIFICANCE_LINES: bool = True           # If True, draw vertical comparison lines disclosing significance vs Control
+SIGNIFICANCE_LINE_STYLE: str = "line"          # Options: "bracket" (staggered pairwise comparison lines to Control), "line" (vertical reference spine), or "bar"
+SIGNIFICANCE_POSITION: str = "left"            # Options: "left" (on the left of the figure as before), "right_outside"
+SHOW_NON_SIGNIFICANT_LINES: bool = False       # If True, also show lines for non-significant (ns) conditions
+
+# Error metric options for distance traces and onset bars
+NORMALIZED_DISTANCE_ERROR: str = "sd"         # Options: "sem" (±1 SEM, default), "sd" (±1 SD), or "ci95" (95% CI)
+ONSET_INNER_BAR: str = "sem"                   # Options: "sem" (±1 SEM, wider/thicker bar), "ci95" (95% CI), or "none"
+ONSET_OUTER_BAR: str = "ci95"                  # Options: "ci95" (95% CI, longer/thinner bar), "sd" (±1 SD), or "none"
+
 GENERATE_LEGACY_COMPARISON_FIGS = False
 PLOT_EACH_CONDITION = False
 SAVE_FIGS = True
@@ -157,7 +184,7 @@ COLOR_STIM_DEFAULT: str = "#e74c3c"
 # Condition Label & Plot Display Options matching plot_behavioral_rsa
 SHOW_CONDITION_INDICES: bool = False  # If False, omit condition index prefixes (e.g. 'BR 1', 'BR 17')
 SHOW_TRIAL_COUNTS: bool = False       # If False, omit trial count in labels (e.g. 'n=16')
-PLATEAU_PLOT_MODE: str = "timing"     # Options: "timing" (onset timings only, per user request), "both", or "traces"
+PLATEAU_PLOT_MODE: str = "both" if INCLUDE_NORMALIZED_DISTANCE_PLOT else "timing"
 
 DISTANCE_GIF_CONFIG = {
     "time_range_ms": (-800.0, 600.0),
@@ -500,14 +527,201 @@ def get_br_from_filename(filename: str) -> Optional[int]:
     patterns = [
         r"BR_(\d+)",
         r"Cond_(\d+)",
+        r"Condition_(\d+)",
         r"_(\d+)_target",
+        r"^(\d+)_",
+        r"_(\d+)\.npz",
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, filename)
+        match = re.search(pattern, filename, re.IGNORECASE)
 
         if match:
             return int(match.group(1))
+
+    return None
+
+
+_SESSION_METADATA_CACHE: Optional[Dict[int, Dict[str, Any]]] = None
+
+
+def get_session_metadata_cache(peri_root: Optional[Path] = None) -> Dict[int, Dict[str, Any]]:
+    """
+    Load and cache session metadata CSV into a dictionary indexed by BR integer condition number.
+    Searches standard METADATA_CSV, METADATA_ROOT, SESSION_LOC, and peri_root directories.
+    """
+    global _SESSION_METADATA_CACHE
+    if _SESSION_METADATA_CACHE is not None:
+        return _SESSION_METADATA_CACHE
+
+    meta_dict: Dict[int, Dict[str, Any]] = {}
+    csv_path: Optional[Path] = None
+
+    if "METADATA_CSV" in globals() and METADATA_CSV is not None:
+        p = Path(METADATA_CSV)
+        if p.is_file():
+            csv_path = p
+
+    if csv_path is None:
+        search_dirs: List[Path] = []
+        if "METADATA_ROOT" in globals() and METADATA_ROOT is not None and Path(METADATA_ROOT).exists():
+            search_dirs.append(Path(METADATA_ROOT))
+        if "SESSION_LOC" in globals() and SESSION_LOC is not None and Path(SESSION_LOC).exists():
+            search_dirs.extend([Path(SESSION_LOC) / "Metadata", Path(SESSION_LOC) / "metadata", Path(SESSION_LOC)])
+        if peri_root is not None:
+            p_root = Path(peri_root)
+            for par in p_root.parents:
+                search_dirs.extend([par / "Metadata", par / "metadata"])
+        elif "PERI_ROOT" in globals() and PERI_ROOT is not None:
+            p_root = Path(PERI_ROOT)
+            for par in p_root.parents:
+                search_dirs.extend([par / "Metadata", par / "metadata"])
+
+        for sdir in search_dirs:
+            if sdir.exists():
+                cands = [f for f in sdir.glob("*metadata*.csv") if not f.name.startswith("._") and "shift" not in f.name.lower()]
+                if cands:
+                    csv_path = cands[0]
+                    break
+
+    if csv_path and csv_path.exists():
+        for enc in ("utf-8-sig", "latin-1", "cp1252", "utf-8"):
+            try:
+                df = pd.read_csv(csv_path, encoding=enc)
+                for _, row in df.iterrows():
+                    br_val = row.get("BR_File") or row.get("br_idx") or row.get("Condition") or row.get("BR")
+                    if pd.notna(br_val):
+                        try:
+                            m_num = re.findall(r"\d+", str(br_val))
+                            if m_num:
+                                b_int = int(m_num[-1])
+                                meta_dict[b_int] = row.to_dict()
+                        except Exception:
+                            pass
+                break
+            except Exception:
+                pass
+
+    _SESSION_METADATA_CACHE = meta_dict
+    return _SESSION_METADATA_CACHE
+
+
+def get_metadata_notes_mapping() -> Dict[int, str]:
+    """Retrieve condition notes mapping from session metadata cache."""
+    cache = get_session_metadata_cache()
+    notes_map: Dict[int, str] = {}
+    for b_idx, row in cache.items():
+        for k in ("notes", "Notes", "note", "Note", "comments", "Comments", "description"):
+            if k in row and pd.notna(row[k]):
+                val = str(row[k]).strip()
+                if val and val.lower() not in ("nan", "none", ""):
+                    notes_map[b_idx] = val
+                    break
+    return notes_map
+
+
+def extract_stim_channels_info(
+    peri: Any,
+    csv_meta: Optional[Dict[str, Any]] = None,
+    notes: str = "",
+    cond_str: str = "",
+) -> Optional[str]:
+    """
+    Extract stimulation channel specification (e.g. '1-32', '1-8', '16-24', '17-24')
+    from peristim npz metadata, session metadata CSV row, notes, or title string.
+    Identical logic to plot_behavioral_rsa.py.
+    """
+    stim_list = []
+    if hasattr(peri, "__getitem__"):
+        for meta_k in ("nprw_meta", "meta"):
+            has_meta = False
+            if hasattr(peri, "files"):
+                has_meta = meta_k in peri.files
+            elif hasattr(peri, "__contains__"):
+                has_meta = meta_k in peri
+            if has_meta:
+                try:
+                    obj = peri[meta_k]
+                    m_dict = obj.item() if hasattr(obj, "item") else obj
+                    if isinstance(m_dict, dict):
+                        for ch_k in ("stim_channels", "active_channels", "stim_channel", "channels", "stim_channels_0based"):
+                            if ch_k in m_dict and m_dict[ch_k] is not None:
+                                raw_val = m_dict[ch_k]
+                                if ch_k == "stim_channels_0based":
+                                    raw_val = np.asarray(raw_val) + 1
+                                stim_list = raw_val
+                                if np.size(stim_list) > 0:
+                                    break
+                except Exception:
+                    pass
+            if np.size(stim_list) > 0:
+                break
+
+        if np.size(stim_list) == 0:
+            for direct_k in ("stim_channels", "stim_channels_0based", "active_channels"):
+                has_k = False
+                if hasattr(peri, "files"):
+                    has_k = direct_k in peri.files
+                elif hasattr(peri, "__contains__"):
+                    has_k = direct_k in peri
+                if has_k:
+                    try:
+                        raw_val = peri[direct_k]
+                        if direct_k == "stim_channels_0based":
+                            raw_val = np.asarray(raw_val) + 1
+                        stim_list = raw_val
+                        break
+                    except Exception:
+                        pass
+
+    if np.size(stim_list) > 0:
+        try:
+            sl = [int(x) for x in np.asarray(stim_list).ravel() if np.isfinite(x)]
+            if len(sl) > 0:
+                chs = sorted(list(set(sl)))
+                ranges = []
+                start = chs[0]
+                end = chs[0]
+                for ch in chs[1:]:
+                    if ch == end + 1:
+                        end = ch
+                    else:
+                        ranges.append(f"{start}-{end}" if end > start else f"{start}")
+                        start = ch
+                        end = ch
+                ranges.append(f"{start}-{end}" if end > start else f"{start}")
+                return ", ".join(ranges)
+        except Exception:
+            pass
+
+    if csv_meta:
+        norm_csv = {str(k).strip().lower().replace(" ", "_"): v for k, v in csv_meta.items()}
+        for ch_k in ("stim_channels", "stim_chs", "channels", "channel", "stim_ch", "active_channels", "probe_channels"):
+            if ch_k in norm_csv and pd.notna(norm_csv[ch_k]):
+                val_str = str(norm_csv[ch_k]).strip()
+                if val_str and val_str.lower() not in ("nan", "none", ""):
+                    m_range = re.findall(r"\d+", val_str)
+                    if len(m_range) >= 2:
+                        return f"{m_range[0]}-{m_range[-1]}"
+                    elif len(m_range) == 1:
+                        return m_range[0]
+                    return val_str
+
+    for text_cand in (notes, cond_str):
+        if not text_cand:
+            continue
+        m_explicit = re.search(r"(?:chs?|channels?)\.?\s*[:=]?\s*([0-9]+\s*[-–]\s*[0-9]+)", text_cand, re.IGNORECASE)
+        if m_explicit:
+            return m_explicit.group(1).replace(" ", "").replace("–", "-")
+        m_port = re.search(r"port[:\s]+[a-z]_?([0-9]+\s*[-–]\s*[0-9]+)", text_cand, re.IGNORECASE)
+        if m_port:
+            return m_port.group(1).replace(" ", "").replace("–", "-")
+        m_dash = re.search(r"\b([0-9]{1,3}\s*[-–]\s*[0-9]{1,3})\b", text_cand)
+        if m_dash:
+            return m_dash.group(1).replace(" ", "").replace("–", "-")
+        m_single = re.search(r"(?:chs?|channels?)\.?\s*[:=]?\s*([0-9]+)\b", text_cand, re.IGNORECASE)
+        if m_single:
+            return m_single.group(1)
 
     return None
 
@@ -659,10 +873,18 @@ def load_condition_data(
                 elif stim_dur_nominal_ms is not None and not np.isnan(stim_dur_nominal_ms) and stim_dur_nominal_ms > 0:
                     pulse_count = int(round(stim_dur_nominal_ms / PULSE_WIDTH_MS))
 
+        csv_meta = get_session_metadata_cache(peri_root=file_path.parents[2] if len(file_path.parents) > 2 else None).get(br_idx, {}) if br_idx is not None else {}
         meta_dict = data["meta"].item() if "meta" in data.files and hasattr(data["meta"], "item") else {}
         notes = ""
         if isinstance(meta_dict, dict):
             notes = str(meta_dict.get("Notes", meta_dict.get("notes", "")))
+        if not notes and csv_meta:
+            for k in ("notes", "Notes", "note", "Note", "comments", "Comments", "description"):
+                if k in csv_meta and pd.notna(csv_meta[k]):
+                    val = str(csv_meta[k]).strip()
+                    if val and val.lower() not in ("nan", "none", ""):
+                        notes = val
+                        break
         if not notes and br_idx is not None:
             notes = get_metadata_notes_mapping().get(br_idx, "")
 
@@ -674,6 +896,15 @@ def load_condition_data(
             or ("ctrl" in file_path.stem.lower())
             or (pulse_count == 0)
         )
+
+        stim_channels = None
+        if not is_control:
+            stim_channels = extract_stim_channels_info(
+                peri=data,
+                csv_meta=csv_meta,
+                notes=notes,
+                cond_str=cond_str,
+            )
 
     return {
         "x_all": x_all,
@@ -687,6 +918,7 @@ def load_condition_data(
         "pulse_count": pulse_count,
         "stim_freq_hz": stim_freq_hz,
         "stim_dur_nominal_ms": stim_dur_nominal_ms,
+        "stim_channels": stim_channels,
         "is_control": is_control,
         "n_trials": pos_segs.shape[0],
         "file_path": file_path,
@@ -697,9 +929,10 @@ def load_all_conditions(
     peri_root: Path,
     camera: str = "cam1",
     keypoint_base: str = "middle",
-    control_br_indices: Optional[list] = None) -> Dict[str, Dict]:
+    control_br_indices: Optional[list] = None,
+    process_only_filter: Optional[List[int]] = None) -> Dict[str, Dict]:
     """
-    Load all condition files from a session.
+    Load condition files from a session, pre-filtering by process_only_filter if set.
 
     Returns
     -------
@@ -714,8 +947,26 @@ def load_all_conditions(
 
     for target, files in files_by_target.items():
         for file_path in files:
+            # Pre-filter by BR index from filename before reading the NPZ from disk
+            if process_only_filter is not None:
+                br_cand = get_br_from_filename(file_path.name)
+                if br_cand is not None:
+                    if br_cand not in process_only_filter:
+                        continue
+                else:
+                    is_ctrl_name = any(k in file_path.stem.lower() for k in ("control", "ctrl", "baseline"))
+                    if is_ctrl_name:
+                        if not any(c in process_only_filter for c in control_br_indices):
+                            continue
+
             try:
                 cond_data = load_condition_data(file_path, camera, keypoint_base)
+
+                # Post-check in case filename had no BR index
+                if process_only_filter is not None:
+                    br_actual = cond_data.get("br_idx")
+                    if br_actual is not None and br_actual not in process_only_filter:
+                        continue
 
                 key = f"{cond_data['cond_str']}_Target{target}"
 
@@ -922,6 +1173,7 @@ def process_condition(
         "pulse_count": condition_data.get("pulse_count"),
         "stim_freq_hz": condition_data.get("stim_freq_hz"),
         "stim_dur_nominal_ms": condition_data.get("stim_dur_nominal_ms"),
+        "stim_channels": condition_data.get("stim_channels"),
         "is_control": condition_data.get("is_control"),
     }
 
@@ -2392,6 +2644,7 @@ def merge_control_conditions(
             "br_idx": control_br_indices[0] if control_br_indices else None,
             "is_control": True,
             "pulse_count": 0,
+            "stim_channels": None,
             "n_valid": n_valid_pooled,
             "n_total": n_total_pooled,
             "distance_raw_all": dist_raw_all,
@@ -2483,6 +2736,7 @@ def analyze_all_conditions(
         camera=camera,
         keypoint_base=keypoint_base,
         control_br_indices=control_br_indices,
+        process_only_filter=process_only_filter,
     )
 
     if len(all_conditions) == 0:
@@ -2661,10 +2915,14 @@ def _extract_condition_data_for_target(
         else:
             label = f"C{cond_num}"
 
+        processed_data = data.get("processed_data", {}) if isinstance(data.get("processed_data"), dict) else {}
+        ch_val_tmp = processed_data.get("stim_channels")
+        if ch_val_tmp and not is_merged_control:
+            label = f"{label}, ch {ch_val_tmp}"
+
         notes_val = get_metadata_notes_mapping().get(cond_num, "")
         if not notes_val:
-            processed_tmp = data.get("processed_data", {})
-            notes_val = processed_tmp.get("notes", "") if isinstance(processed_tmp, dict) else ""
+            notes_val = processed_data.get("notes", "")
         if notes_val:
             n_clean = str(notes_val).lower().replace("-", " ").replace("_", " ")
             if "curr steer" in n_clean or "current steer" in n_clean:
@@ -2809,9 +3067,17 @@ def plot_plateau_onset_timing_figure(
     pulse_width_ms: float = PULSE_WIDTH_MS,
     min_reaches: int = 3,
     time_window_ms: Tuple[float, float] = (0.0, 500.0),
-    mode: str = "timing",
+    include_normalized_distance: Optional[bool] = None,
+    mode: Optional[str] = None,
     show_indices: bool = False,
     show_trial_counts: bool = False,
+    show_significance_lines: bool = SHOW_SIGNIFICANCE_LINES,
+    significance_style: str = SIGNIFICANCE_LINE_STYLE,
+    significance_position: str = SIGNIFICANCE_POSITION,
+    show_ns_lines: bool = SHOW_NON_SIGNIFICANT_LINES,
+    norm_dist_error: str = NORMALIZED_DISTANCE_ERROR,
+    onset_inner_bar: str = ONSET_INNER_BAR,
+    onset_outer_bar: str = ONSET_OUTER_BAR,
     save_path: Optional[Path] = None,
 ) -> Tuple[Optional[plt.Figure], Optional[pd.DataFrame]]:
     """
@@ -3024,7 +3290,14 @@ def plot_plateau_onset_timing_figure(
             if "curr steer" in f"{notes_str} {cond_str}".lower() or "current steer" in f"{notes_str} {cond_str}".lower():
                 p_parts.append("Current Steering")
             elif notes_str and notes_str.lower() not in ("baseline", "control", "ctrl", "nan", "none", ""):
-                p_parts.append(notes_str)
+                ch_val_str = str(c.get("stim_channels") or "").strip()
+                clean_notes = notes_str
+                if ch_val_str:
+                    clean_notes = re.sub(r"(?:chs?|channels?)\.?\s*[:=]?\s*" + re.escape(ch_val_str), "", clean_notes, flags=re.IGNORECASE).strip(" ,;:-")
+                    if clean_notes.strip() == ch_val_str:
+                        clean_notes = ""
+                if clean_notes and clean_notes.lower() not in ("baseline", "control", "ctrl", "nan", "none", ""):
+                    p_parts.append(clean_notes)
 
             if not p_parts:
                 p_parts.append(f"Cond {c['cond_num']}")
@@ -3091,29 +3364,53 @@ def plot_plateau_onset_timing_figure(
                 c["p_val_vs_ctrl"] = np.nan
                 c["sig_stars"] = ""
 
-    # Parse plot mode
-    mode_clean = str(mode).lower().strip()
-    plot_traces = mode_clean in ("both", "traces", "trace")
-    plot_timing = mode_clean in ("both", "timing", "onsets", "onset")
+    # Parse plot mode and inclusion flags
+    if include_normalized_distance is not None:
+        plot_traces = bool(include_normalized_distance)
+        plot_timing = True
+    elif mode is not None:
+        mode_clean = str(mode).lower().strip()
+        plot_traces = mode_clean in ("both", "traces", "trace")
+        plot_timing = mode_clean in ("both", "timing", "onsets", "onset")
+    else:
+        plot_traces = bool(INCLUDE_NORMALIZED_DISTANCE_PLOT)
+        plot_timing = True
+
+    # Construct shared fixed parameters metadata string for titles
+    fixed_meta = []
+    if constant_freqs and not vary_freqs and len(unique_freqs) == 1:
+        fv = unique_freqs[0]
+        f_str = f"{int(fv)} Hz" if float(fv).is_integer() else f"{fv:.1f} Hz"
+        fixed_meta.append(f"{f_str} Stimulation")
+    if not vary_pulses and len(unique_pulses) == 1 and not any_cont and len(stim_conds) > 1:
+        pv = int(unique_pulses[0])
+        fixed_meta.append(f"{pv} Pulse" if pv == 1 else f"{pv} Pulses")
+    if not vary_channels and len(unique_channels) == 1 and len(stim_conds) > 1:
+        fixed_meta.append(f"ch {unique_channels[0]}")
+
+    meta_str = f" ({', '.join(fixed_meta)})" if fixed_meta else ""
 
     if plot_traces and plot_timing:
-        fig = plt.figure(figsize=(11.0, 8.5), dpi=FIG_DPI)
-        gs = gridspec.GridSpec(2, 1, height_ratios=[1.1, 1.0], hspace=0.25)
+        timing_h = max(3.8, 0.55 * len(ordered_conds) + 0.8)
+        trace_h = 4.0
+        fig_h = trace_h + timing_h + 1.2
+        fig = plt.figure(figsize=(10.5, fig_h), dpi=FIG_DPI)
+        gs = gridspec.GridSpec(2, 1, height_ratios=[trace_h, timing_h], hspace=0.28)
         ax_a = fig.add_subplot(gs[0, 0])
         ax_b = fig.add_subplot(gs[1, 0], sharex=ax_a)
     elif plot_traces:
-        fig, ax_a = plt.subplots(1, 1, figsize=(11.0, 5.0), dpi=FIG_DPI)
+        fig, ax_a = plt.subplots(1, 1, figsize=(10.5, 5.0), dpi=FIG_DPI)
         ax_b = None
     else:
-        fig, ax_b = plt.subplots(1, 1, figsize=(9.5, max(4.0, 1.2 + 0.55 * len(ordered_conds))), dpi=FIG_DPI)
+        timing_h = max(4.0, 1.2 + 0.55 * len(ordered_conds))
+        fig, ax_b = plt.subplots(1, 1, figsize=(9.5, timing_h), dpi=FIG_DPI)
         ax_a = None
 
     # -------------------------------------------------------------------------
-    # Panel A: Normalized Reaching Distance Traces & Plateau Onset Phase
+    # Panel A: Normalized Position Traces & Plateau Onset Phase
     # -------------------------------------------------------------------------
     if ax_a is not None:
         ax_a.axhline(0.0, color="#bdc3c7", linestyle="--", linewidth=1.0, alpha=0.8, zorder=1)
-        ax_a.axhline(1.0, color="#95a5a6", linestyle="--", linewidth=1.2, alpha=0.85, zorder=1, label="Plateau (Reach Target)")
         ax_a.axvline(0.0, color="#7f8c8d", linestyle=":", linewidth=1.2, zorder=1)
 
         stim_info = [
@@ -3143,17 +3440,34 @@ def plot_plateau_onset_timing_figure(
             dist_v = dist_arr[mask] if mask is not None and np.any(mask) else dist_arr
             m_tr = np.nanmean(dist_v, axis=0)
             n_samples = np.sum(~np.isnan(dist_v), axis=0)
-            sem_tr = np.nanstd(dist_v, axis=0, ddof=1) / np.sqrt(np.maximum(1, n_samples))
+            std_tr = np.nanstd(dist_v, axis=0, ddof=1)
+            sem_tr = std_tr / np.sqrt(np.maximum(1, n_samples))
+
+            # Select error metric for ribbon shading based on norm_dist_error
+            err_mode = norm_dist_error.lower()
+            if err_mode == "sd":
+                err_tr = std_tr
+                xerr_pt = c["std"]
+            elif err_mode == "ci95":
+                t_crit = np.zeros_like(sem_tr)
+                valid_n = n_samples >= 2
+                if np.any(valid_n):
+                    t_crit[valid_n] = stats.t.ppf(0.975, df=n_samples[valid_n] - 1)
+                err_tr = t_crit * sem_tr
+                xerr_pt = c["ci95"]
+            else:  # default "sem"
+                err_tr = sem_tr
+                xerr_pt = c["sem"]
 
             win_mask = (t_arr >= time_window_ms[0]) & (t_arr <= time_window_ms[1])
             t_win = t_arr[win_mask]
             m_win = m_tr[win_mask]
-            sem_win = sem_tr[win_mask]
+            err_win = err_tr[win_mask]
 
             lw = 2.2 if c["is_control"] else 1.9
             zo = 5 if c["is_control"] else 3
-            ax_a.plot(t_win, m_win, color=c["color"], linestyle=c["linestyle"], linewidth=lw, label=c["full_label"], zorder=zo)
-            ax_a.fill_between(t_win, m_win - sem_win, m_win + sem_win, color=c["color"], alpha=0.15, zorder=zo - 1)
+            ax_a.plot(t_win, m_win, color=c["color"], linestyle=c["linestyle"], linewidth=lw, label=c["base_label"], zorder=zo)
+            ax_a.fill_between(t_win, m_win - err_win, m_win + err_win, color=c["color"], alpha=0.15, zorder=zo - 1)
 
             # Plateau onset marker on the curve
             idx_onset = int(np.argmin(np.abs(t_arr - c["mean"])))
@@ -3170,7 +3484,7 @@ def plot_plateau_onset_timing_figure(
             )
             ax_a.errorbar(
                 c["mean"], y_onset,
-                xerr=c["sem"],
+                xerr=xerr_pt,
                 fmt="none",
                 ecolor=c["color"],
                 elinewidth=1.6,
@@ -3183,19 +3497,21 @@ def plot_plateau_onset_timing_figure(
                 color=c["color"], linestyle=":", linewidth=1.1, alpha=0.50, zorder=2,
             )
 
-        ax_a.set_ylabel("Normalized Distance", fontsize=10.5, fontweight="bold", color="#2c3e50")
-        ax_a.set_title(
-            f"A. Normalized Reaching Distance Traces & Plateau Onset Phase (Target {target})",
-            fontsize=11.0, fontweight="bold", color="#2c3e50", loc="left",
-        )
+        ax_a.set_ylabel("Normalized Position", fontsize=10.5, fontweight="bold", color="#2c3e50")
+        ax_a.set_title("Normalized Position", fontsize=11.5, fontweight="bold", color="#2c3e50", loc="left", pad=8)
         ax_a.legend(
-            loc="upper left", fontsize=8.5, frameon=True, framealpha=0.92,
+            loc="upper right", fontsize=8.5, frameon=True, framealpha=0.92,
             facecolor="#fcfcfc", edgecolor="#d5d8dc",
         )
+        if ax_b is not None:
+            plt.setp(ax_a.get_xticklabels(), visible=False)
+            ax_a.tick_params(axis="x", which="both", bottom=False, labelbottom=False)
 
     # -------------------------------------------------------------------------
-    # Panel B: Plateau Onset Timing Across Conditions
+    # Panel B: End of Reach Timing Across Conditions
     # -------------------------------------------------------------------------
+    is_outside_right = False
+    sig_candidates = []
     if ax_b is not None:
         n_c = len(ordered_conds)
         y_pos_list = list(range(n_c - 1, -1, -1))  # Control at top
@@ -3215,15 +3531,37 @@ def plot_plateau_onset_timing_figure(
                 color=c["color"], alpha=0.40, s=32, edgecolors="none", zorder=3,
             )
 
-            # 95% Confidence Interval bar
-            ci_lo = max(0.0, c["mean"] - c["ci95"])
-            ci_hi = c["mean"] + c["ci95"]
-            ax_b.plot([ci_lo, ci_hi], [y_pos, y_pos], color=c["color"], linewidth=3.2, solid_capstyle="round", zorder=5)
+            # Outer error bar (longer, thinner: default 95% CI or SD)
+            outer_mode = onset_outer_bar.lower()
+            if outer_mode == "ci95":
+                outer_val = c["ci95"]
+            elif outer_mode == "sd":
+                outer_val = c["std"]
+            elif outer_mode == "sem":
+                outer_val = c["sem"]
+            else:
+                outer_val = 0.0
 
-            # ± 1 SEM bar
-            sem_lo = max(0.0, c["mean"] - c["sem"])
-            sem_hi = c["mean"] + c["sem"]
-            ax_b.plot([sem_lo, sem_hi], [y_pos, y_pos], color=c["color"], linewidth=5.5, alpha=0.9, solid_capstyle="round", zorder=6)
+            if outer_val > 0.0:
+                out_lo = max(0.0, c["mean"] - outer_val)
+                out_hi = c["mean"] + outer_val
+                ax_b.plot([out_lo, out_hi], [y_pos, y_pos], color=c["color"], linewidth=3.0, solid_capstyle="round", zorder=5)
+
+            # Inner error bar (wider, shorter: default ±1 SEM)
+            inner_mode = onset_inner_bar.lower()
+            if inner_mode == "sem":
+                inner_val = c["sem"]
+            elif inner_mode == "ci95":
+                inner_val = c["ci95"]
+            elif inner_mode == "sd":
+                inner_val = c["std"]
+            else:
+                inner_val = 0.0
+
+            if inner_val > 0.0:
+                in_lo = max(0.0, c["mean"] - inner_val)
+                in_hi = c["mean"] + inner_val
+                ax_b.plot([in_lo, in_hi], [y_pos, y_pos], color=c["color"], linewidth=5.5, alpha=0.9, solid_capstyle="round", zorder=6)
 
             # Mean marker
             ax_b.scatter(
@@ -3236,22 +3574,170 @@ def plot_plateau_onset_timing_figure(
                 zorder=7,
             )
 
+        # ---------------------------------------------------------------------
+        # Statistical Significance Vertical Lines & Markers
+        # ---------------------------------------------------------------------
+        if show_significance_lines and ctrl_conds and len(ctrl_conds[0].get("valid_onsets", [])) >= 2:
+            y_ctrl = y_pos_list[0]  # Control condition is at top
+            for y_pos, c in zip(y_pos_list, ordered_conds):
+                if c["is_control"]:
+                    continue
+                stars = c.get("sig_stars", "")
+                is_sig = stars in ("*", "**", "***")
+                if is_sig or (show_ns_lines and stars == "ns"):
+                    sig_candidates.append((y_pos, c))
+
+            if sig_candidates:
+                pos_mode = significance_position.lower()
+                is_outside_right = pos_mode in ("right_outside", "outside_right")
+
+                if is_outside_right:
+                    # Blend axes coordinates for x (0=left spine, 1=right spine) and data coordinates for y
+                    trans = ax_b.get_yaxis_transform()
+                    x_base = 1.025
+                    x_step = 0.035
+                    tick_w = 0.012
+                    direction = 1.0
+                    ha_align = "left"
+
+                    if significance_style == "bracket":
+                        # Staggered vertical comparison brackets connecting Control row to each condition row
+                        for idx, (y_pos, c) in enumerate(sig_candidates):
+                            x_line = x_base + (idx * x_step)
+                            c_color = c["color"]
+                            stars = c.get("sig_stars", "")
+
+                            # Vertical bracket line connecting Control to Condition
+                            ax_b.plot([x_line, x_line], [y_ctrl, y_pos], color=c_color, linewidth=1.4, alpha=0.9,
+                                      transform=trans, clip_on=False, zorder=10)
+
+                            # Top horizontal tick at Control row
+                            ax_b.plot([x_line - (direction * tick_w), x_line], [y_ctrl, y_ctrl], color=c_color, linewidth=1.3, alpha=0.9,
+                                      transform=trans, clip_on=False, zorder=10)
+
+                            # Bottom horizontal tick at Condition row
+                            ax_b.plot([x_line - (direction * tick_w), x_line], [y_pos, y_pos], color=c_color, linewidth=1.3, alpha=0.9,
+                                      transform=trans, clip_on=False, zorder=10)
+
+                            # Significance marker text at the condition level
+                            font_sz = 9.0 if stars == "***" else 9.5
+                            ax_b.text(
+                                x_line + (direction * 0.008), y_pos, stars,
+                                transform=trans, clip_on=False,
+                                va="center", ha=ha_align, fontsize=font_sz, fontweight="bold",
+                                color=c_color, zorder=11,
+                            )
+                    elif significance_style == "line":
+                        # Single continuous vertical reference spine from Control down to lowest significant condition
+                        y_lowest = min(y_pos for y_pos, _ in sig_candidates)
+                        x_line = x_base + (direction * 0.008)
+                        ax_b.plot([x_line, x_line], [y_ctrl, y_lowest], color=COLOR_CTRL, linewidth=1.5, alpha=0.85,
+                                  transform=trans, clip_on=False, zorder=10)
+                        # Top cap at Control
+                        ax_b.plot([x_line - (direction * tick_w), x_line + (direction * tick_w * 0.6)], [y_ctrl, y_ctrl],
+                                  color=COLOR_CTRL, linewidth=1.5, transform=trans, clip_on=False, zorder=10)
+
+                        for y_pos, c in sig_candidates:
+                            c_color = c["color"]
+                            stars = c.get("sig_stars", "")
+                            ax_b.plot([x_line, x_line + (direction * tick_w * 1.3)], [y_pos, y_pos],
+                                      color=c_color, linewidth=1.4, transform=trans, clip_on=False, zorder=10)
+                            ax_b.text(
+                                x_line + (direction * (tick_w * 1.3 + 0.008)), y_pos, stars,
+                                transform=trans, clip_on=False,
+                                va="center", ha=ha_align, fontsize=9.5, fontweight="bold",
+                                color=c_color, zorder=11,
+                            )
+                    elif significance_style == "bar":
+                        # Vertical bar indicator segment at each condition row
+                        x_line = x_base + (direction * 0.008)
+                        for y_pos, c in sig_candidates:
+                            c_color = c["color"]
+                            stars = c.get("sig_stars", "")
+                            ax_b.plot([x_line, x_line], [y_pos - 0.28, y_pos + 0.28], color=c_color, linewidth=2.4,
+                                      solid_capstyle="round", transform=trans, clip_on=False, zorder=10)
+                            ax_b.text(
+                                x_line + (direction * 0.014), y_pos, stars,
+                                transform=trans, clip_on=False,
+                                va="center", ha=ha_align, fontsize=9.5, fontweight="bold",
+                                color=c_color, zorder=11,
+                            )
+                else:
+                    # On the left of the figure as before (inside, right of y-axis)
+                    x_min_win, x_max_win = time_window_ms
+                    win_span = x_max_win - x_min_win
+                    x_base = x_min_win + (win_span * 0.035)  # e.g., 17.5 ms for 0-500 ms window
+                    x_step = min(win_span * 0.026, 13.0)     # e.g., 13 ms spacing
+                    tick_w = min(win_span * 0.007, 3.2)
+
+                    if significance_style == "bracket":
+                        # Staggered vertical comparison brackets connecting Control row to each condition row
+                        for idx, (y_pos, c) in enumerate(sig_candidates):
+                            x_line = x_base + (idx * x_step)
+                            c_color = c["color"]
+                            stars = c.get("sig_stars", "")
+
+                            # Vertical comparison line connecting Control to Condition
+                            ax_b.plot([x_line, x_line], [y_ctrl, y_pos], color=c_color, linewidth=1.4, alpha=0.9, zorder=6)
+
+                            # Top horizontal cap at Control row
+                            ax_b.plot([x_line - tick_w, x_line + tick_w], [y_ctrl, y_ctrl], color=c_color, linewidth=1.3, alpha=0.9, zorder=6)
+
+                            # Bottom horizontal cap at Condition row
+                            ax_b.plot([x_line - tick_w, x_line + tick_w], [y_pos, y_pos], color=c_color, linewidth=1.3, alpha=0.9, zorder=6)
+
+                            # Significance marker text at the condition level
+                            font_sz = 9.0 if stars == "***" else 9.5
+                            ax_b.text(
+                                x_line + tick_w + 1.2, y_pos, stars,
+                                va="center", ha="left", fontsize=font_sz, fontweight="bold",
+                                color=c_color, zorder=7,
+                            )
+                    elif significance_style == "line":
+                        # Single continuous vertical reference spine from Control down to lowest significant condition
+                        y_lowest = min(y_pos for y_pos, _ in sig_candidates)
+                        x_line = x_base + 4.0
+                        ax_b.plot([x_line, x_line], [y_ctrl, y_lowest], color=COLOR_CTRL, linewidth=1.5, alpha=0.8, zorder=6)
+                        ax_b.plot([x_line - tick_w, x_line + tick_w], [y_ctrl, y_ctrl], color=COLOR_CTRL, linewidth=1.5, zorder=6)
+
+                        for y_pos, c in sig_candidates:
+                            c_color = c["color"]
+                            stars = c.get("sig_stars", "")
+                            ax_b.plot([x_line, x_line + tick_w * 1.5], [y_pos, y_pos], color=c_color, linewidth=1.4, zorder=6)
+                            ax_b.text(
+                                x_line + tick_w * 1.5 + 1.5, y_pos, stars,
+                                va="center", ha="left", fontsize=9.5, fontweight="bold",
+                                color=c_color, zorder=7,
+                            )
+                    elif significance_style == "bar":
+                        # Vertical bar indicator segment at each condition row
+                        x_line = x_base + 4.0
+                        for y_pos, c in sig_candidates:
+                            c_color = c["color"]
+                            stars = c.get("sig_stars", "")
+                            ax_b.plot([x_line, x_line], [y_pos - 0.28, y_pos + 0.28], color=c_color, linewidth=2.4, solid_capstyle="round", zorder=6)
+                            ax_b.text(
+                                x_line + 3.0, y_pos, stars,
+                                va="center", ha="left", fontsize=9.5, fontweight="bold",
+                                color=c_color, zorder=7,
+                            )
+
         ax_b.set_yticks(y_pos_list)
         ax_b.set_yticklabels([c["base_label"] for c in ordered_conds], fontsize=10.0, fontweight="bold", color="#2c3e50")
         ax_b.set_ylim(-0.7, n_c - 0.3)
         ax_b.set_xlim(time_window_ms[0], time_window_ms[1])
         ax_b.set_xlabel("Time (ms)", fontsize=10.5, fontweight="bold", color="#2c3e50")
 
-        title_text = f"Plateau Onset Timing — Target {target}"
-        if constant_freqs and len(unique_freqs) == 1:
-            fv = unique_freqs[0]
-            f_str = f"{int(fv)} Hz" if float(fv).is_integer() else f"{fv:.1f} Hz"
-            title_text += f" ({f_str} Stimulation)"
-
-        if ax_a is not None:
-            title_text = f"B. {title_text}"
-
-        ax_b.set_title(title_text, fontsize=11.5, fontweight="bold", color="#2c3e50", loc="left", pad=10)
+        # Set title according to configuration
+        if plot_traces and plot_timing:
+            fig_title = f"Normalized Position & End of Reach — Target {target}{meta_str}"
+            fig.suptitle(fig_title, fontsize=12.5, fontweight="bold", color="#2c3e50", y=0.985)
+            ax_b.set_title("End of Reach", fontsize=11.5, fontweight="bold", color="#2c3e50", loc="left", pad=8)
+        elif plot_traces:
+            ax_a.set_title(f"Normalized Position — Target {target}{meta_str}", fontsize=12.0, fontweight="bold", color="#2c3e50", loc="left", pad=10)
+        else:
+            # Single plot: End of Reach
+            ax_b.set_title(f"End of Reach — Target {target}{meta_str}", fontsize=12.0, fontweight="bold", color="#2c3e50", loc="left", pad=10)
 
     # Style axes: despine and clean ticks (NO grid)
     for ax in [ax_a, ax_b]:
@@ -3266,7 +3752,19 @@ def plot_plateau_onset_timing_figure(
         ax.xaxis.grid(False)
         ax.yaxis.grid(False)
 
-    fig.tight_layout()
+    # Dynamic right margin adjustment when significance markers are outside to the right
+    if is_outside_right and len(sig_candidates) > 0:
+        if significance_style == "bracket":
+            right_margin = max(0.85, 0.94 - (len(sig_candidates) * 0.025))
+        else:
+            right_margin = 0.92
+    else:
+        right_margin = 0.98
+
+    if plot_traces and plot_timing:
+        fig.tight_layout(rect=[0.0, 0.0, right_margin, 0.96])
+    else:
+        fig.tight_layout(rect=[0.0, 0.0, right_margin, 1.0])
 
     if save_path:
         save_path = Path(save_path)
@@ -3282,6 +3780,7 @@ def plot_plateau_onset_timing_figure(
             "Condition": c["base_label"],
             "BR_Index": c["cond_num"],
             "Is_Control": c["is_control"],
+            "Stim_Channels": c.get("stim_channels"),
             "N_Reaches": len(c["valid_onsets"]),
             "Mean_Onset_ms": round(c["mean"], 2),
             "SD_ms": round(c["std"], 2),
@@ -4428,9 +4927,17 @@ def main():
                 pulse_width_ms=PULSE_WIDTH_MS,
                 min_reaches=3,
                 time_window_ms=(0.0, 500.0),
+                include_normalized_distance=INCLUDE_NORMALIZED_DISTANCE_PLOT,
                 mode=PLATEAU_PLOT_MODE,
                 show_indices=SHOW_CONDITION_INDICES,
                 show_trial_counts=SHOW_TRIAL_COUNTS,
+                show_significance_lines=SHOW_SIGNIFICANCE_LINES,
+                significance_style=SIGNIFICANCE_LINE_STYLE,
+                significance_position=SIGNIFICANCE_POSITION,
+                show_ns_lines=SHOW_NON_SIGNIFICANT_LINES,
+                norm_dist_error=NORMALIZED_DISTANCE_ERROR,
+                onset_inner_bar=ONSET_INNER_BAR,
+                onset_outer_bar=ONSET_OUTER_BAR,
             )
 
             if fig_timing is not None and SAVE_FIGS:

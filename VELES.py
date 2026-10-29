@@ -39,11 +39,11 @@ SESSIONS_TO_RUN_ADA = [
 ]
 
 # PROCESS_ONLY = [3, 7, 8, 9, 10, 11, 12] # s12 - 1to40 pulse stim vs control
-PROCESS_ONLY = [1, 11, 12, 14, 15, 16, 17, 18] # s22 - 1to40 pulse stim vs control
+PROCESS_ONLY = [11, 12, 14, 15, 16, 17, 18] # s22 - 1to40 pulse stim vs control
 
-# PROCESS_ONLY = [4, 5, 6, 7, 10, 11] # s11 - 400 Hz vs 130 Hz
+# PROCESS_ONLY = [4, 6, 7, 10, 11] # s11 - 400 Hz vs 130 Hz
 
-# PROCESS_ONLY = [2, 4, 22, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] # s11 - 8 ch walk vs control
+# PROCESS_ONLY = [2, 4, 22, 12, 13, 14, 15, 16, 17, 18, 19, 21] # s11 - 8 ch walk vs control
 
 # PROCESS_ONLY = [3, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31] # s12 - 1-4 pulse stim across different channels
 
@@ -53,12 +53,21 @@ PROCESS_ONLY = [1, 11, 12, 14, 15, 16, 17, 18] # s22 - 1to40 pulse stim vs contr
 # PROCESS_ONLY = [1, 17, 18] # s22 - 40p stim vs control
 
 
-# PROCESS_ONLY = [18]
+# PROCESS_ONLY = [15, 16, 17]
 
-# PROCESS_ONLY = []
+# PROCESS_ONLY = [15]
 # PROCESS_ONLY = [6, 7]
-# PROCESS_ONLY = [8, 9, 10]
+# PROCESS_ONLY = [15, 16]
 
+# PROCESS_ONLY = [8]
+
+# PROCESS_ONLY = [3, 13, 14, 15, 17, 10, 11, 12] # s11 - control, at rest, stim comparison
+# PROCESS_ONLY = [14, 11, 8, 3]
+# PROCESS_ONLY = [3, 8, 11]
+# PROCESS_ONLY = [3, 29, 30, 31]
+# PROCESS_ONLY = [17,18]
+# PROCESS_ONLY = [3, 12]
+# PROCESS_ONLY = []
 
 SCRIPTS = [
     # "preprocessing_scripts/OCR_frame_correction.py",
@@ -77,8 +86,10 @@ SCRIPTS = [
     # "analysis_scripts/plot_plateau_analysis.py",
     # "analysis_scripts/plot_3d_kinematics.py",
     # "analysis_scripts/plot_behavioral_stim_perturbation.py",
-    # "analysis_scripts/plot_behavioral_rsa.py",
-    "analysis_scripts/plot_lfp_rsa.py",
+    # "analysis_scripts/plot_target_tracking_stability.py",
+    "analysis_scripts/plot_behavioral_rsa.py",
+    # "analysis_scripts/plot_lfp_rsa.py",
+    # "analysis_scripts/plot_ipca_artifact_correction.py",
     # "analysis_scripts/RSA_calculation.py",
     # "analysis_scripts/plot_firing_rates.py",
     # "analysis_scripts/plot_peri_stim_raster.py",

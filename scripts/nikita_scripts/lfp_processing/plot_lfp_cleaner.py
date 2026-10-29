@@ -28,6 +28,7 @@ from scipy.ndimage import gaussian_filter1d, label
 from pathlib import Path
 import warnings
 import imageio
+from PIL import Image
 import io
 import pandas as pd
 import re
@@ -42,11 +43,17 @@ except Exception:
     TORCH_AVAILABLE = False
 
 # =============================================================================
-# Load process_only dynamically from PARAMS if available, otherwise None
+# Load process_only dynamically from RCP_PROCESS_ONLY env var or PARAMS
 try:
-    from RCP_analysis.python.functions.config_loading import PARAMS
-    _po = PARAMS.preprocessing.get("process_only") if PARAMS is not None else None
-    SESSION_FILTER = [int(x) for x in _po] if _po else None
+    import json
+    import os
+    env_po = os.environ.get("RCP_PROCESS_ONLY")
+    if env_po:
+        SESSION_FILTER = [int(x) for x in json.loads(env_po)]
+    else:
+        from RCP_analysis.python.functions.config_loading import PARAMS
+        _po = PARAMS.preprocessing.get("process_only") if PARAMS is not None else None
+        SESSION_FILTER = [int(x) for x in _po] if _po else None
 except Exception:
     SESSION_FILTER = None
 
@@ -85,7 +92,9 @@ FIGURE_CONFIG = {
     
     # Spatial visualizations
     'generate_spatial_heatmaps': False,      # Static spatial maps at key timepoints
-    'generate_spatial_gif': False,           # Animated GIF of spatial activity
+    'generate_spatial_gif': True,            # Animated GIF of spatial activity
+    'generate_spatial_gif_blocky': False,    # Blocky GIF turned off per user request
+    'generate_spatial_gif_smoothed': True,   # Smoothed interpolated GIF
 }
 
 TIME_WINDOWS = {
@@ -120,17 +129,20 @@ ANALYSIS_CONFIG = {
     'confidence_level': 0.95,               # For CI calculation
     'z_score': 1.96,                        # For 95% CI: SEM × 1.96
     
-    # Band definitions
+    # Band definitions (aligned with plot_lfp_rsa DEFAULT_BANDS)
     'bands': {
-        'Delta': (1, 4),
-        'Theta': (4, 8),
-        'Alpha': (8, 12),
-        'Beta': (12, 25),
-        'Low Gamma': (25, 55),
-        'High Gamma': (65, 115),
+        'Low Frequency': (2.0, 12.0),
+        'Delta': (1.0, 4.0),
+        'Theta': (4.0, 8.0),
+        'Alpha': (8.0, 12.0),
+        'Beta': (13.0, 25.0),
+        'Low Gamma': (25.0, 55.0),
+        'LowGamma': (25.0, 55.0),
+        'High Gamma': (70.0, 110.0),
+        'HighGamma': (70.0, 110.0),
     },
 
-    'notch_regions': [(55, 65), (115, 125)],
+    'notch_regions': [(55.0, 65.0), (115.0, 125.0)],
     
     # Coherence settings
     'coherence_nperseg': 256,
@@ -139,30 +151,45 @@ ANALYSIS_CONFIG = {
     # Phase lag settings
     'phase_lag_max_ms': 100,                # Maximum lag to consider
     
-    # GIF settings
+    # Spatial analysis & GIF settings
+    'spatial_method': 'multitaper',         # TFR extraction method: 'morlet', 'multitaper', or 'hilbert'
+    'spatial_bands': ['Beta', 'High Gamma'], # Bands to generate spatial heatmaps and GIFs for
     'gif_time_range': (-500, 500),
     'gif_step_ms': 25,
     'gif_fps': 10,
 }
 
 PLOT_CONFIG = {
-    # Color scheme for regions
+    # Color scheme for regions matching plot_lfp_rsa
     'region_colors': {
-        'SMA': '#1f77b4',   # Blue
-        'PMd': '#ff7f0e',   # Orange
-        'M1i': '#2ca02c',   # Green
-        'M1s': '#d62728',   # Red
+        'SMA': '#1f77b4',               # Blue
+        'PMd': '#ff7f0e',               # Orange
+        'M1i': '#2ca02c',               # Green
+        'M1s': '#d62728',               # Red
+        'M1 (upper limb)': '#2ca02c',   # Green
+        'M1 (lower limb)': '#d62728',   # Red
+        'Premotor (dorsal)': '#ff7f0e', # Orange
+        'M1 Inf': '#2ca02c',            # Green
+        'M1 Sup': '#d62728',            # Red
     },
     
     # Anatomical display titles for clean publication labels
     'region_display_names': {
-        'M1i': 'M1 (upper limb)',
-        'M1 Inf': 'M1 (upper limb)',
         'M1s': 'M1 (lower limb)',
         'M1 Sup': 'M1 (lower limb)',
+        'M1 (lower limb)': 'M1 (lower limb)',
+        'M1i': 'M1 (upper limb)',
+        'M1 Inf': 'M1 (upper limb)',
+        'M1 (upper limb)': 'M1 (upper limb)',
         'PMd': 'Premotor (dorsal)',
+        'Premotor (dorsal)': 'Premotor (dorsal)',
         'SMA': 'SMA',
     },
+
+    # Title & Header Display Options
+    'show_titles': True,                # Master switch for titles
+    'show_suptitle': False,             # If False, omit top multi-line suptitle (centered color scale & clean publication look)
+    'show_subplot_titles': True,        # Keep region subplot titles ('M1 (lower limb)', 'SMA', etc.)
 
     # Heatmap settings
     'heatmap_cmap': 'jet', # or RdBu_r
@@ -226,10 +253,14 @@ PLOT_CONFIG = {
     },
     
     # Spatial heatmap timepoints
-    'spatial_timepoints_ms': [-500, -300, -200, -100, -50, 0, 50, 100, 200, 300, 500],
+    'spatial_timepoints_ms': [-650, -600, -550, -500, -450, -400, -350, -300, -250, -200, -175, -150, -125, -100, -75, -50, -25, 
+                                0, 25, 50, 75, 100, 125, 150, 175, 200, 250, 300, 350, 400, 450, 500],
+    'spatial_static_timepoints_ms': [-200, -50, 0, 50, 100, 200, 300, 500], # For 8-panel static heatmap figures
     
-    # Selected band for spatial analysis
-    'selected_band': 'Low Gamma',
+    # Spatial heatmap & GIF configuration
+    'spatial_bands': ['Beta', 'High Gamma'], # Bands to generate spatial plots/GIFs for
+    'spatial_method': 'multitaper',             # Options: 'morlet', 'multitaper', 'hilbert'
+    'selected_band': 'Beta',                # Fallback for single-band calls
 }
 
 # =============================================================================
@@ -467,13 +498,55 @@ def compute_confidence_interval(data, axis=0, confidence=0.95):
     return mean, mean - ci, mean + ci
 
 def get_region_color(region_name):
-    """Get color for a region, with fallback."""
-    colors = PLOT_CONFIG['region_colors']
-    # Handle various naming conventions
+    """Get color for a region matching plot_lfp_rsa color palette."""
+    rn = str(region_name).lower()
+    if 'upper' in rn or 'm1i' in rn or 'inf' in rn:
+        return '#2ca02c'  # Green
+    if 'lower' in rn or 'm1s' in rn or 'sup' in rn:
+        return '#d62728'  # Red
+    if 'premotor' in rn or 'pmd' in rn:
+        return '#ff7f0e'  # Orange
+    if 'sma' in rn:
+        return '#1f77b4'  # Blue
+    colors = PLOT_CONFIG.get('region_colors', {})
     for key in colors:
-        if key.lower() in region_name.lower():
+        if key.lower() in rn:
             return colors[key]
-    return 'gray'
+    return '#2c3e50'
+
+# 2x2 Layout Order matching plot_lfp_rsa:
+# Top-Left: M1s (M1 lower limb), Top-Right: SMA
+# Bottom-Left: M1i (M1 upper limb), Bottom-Right: PMd (Premotor dorsal)
+PREFERRED_REGION_ORDER = ['M1s', 'SMA', 'M1i', 'PMd']
+
+def normalize_region_name(r_name):
+    """Normalize region name string to one of: M1s, SMA, M1i, PMd."""
+    rn = str(r_name).lower()
+    if 'lower' in rn or 'm1s' in rn or 'sup' in rn:
+        return 'M1s'
+    if 'sma' in rn:
+        return 'SMA'
+    if 'upper' in rn or 'm1i' in rn or 'inf' in rn:
+        return 'M1i'
+    if 'premotor' in rn or 'pmd' in rn:
+        return 'PMd'
+    return r_name
+
+def order_groups_preferred(groups):
+    """
+    Sort groups list according to PREFERRED_REGION_ORDER:
+    Top-Left: M1s (M1 lower limb), Top-Right: SMA
+    Bottom-Left: M1i (M1 upper limb), Bottom-Right: PMd (Premotor dorsal)
+    """
+    def get_sort_key(grp):
+        grp_name = grp[1] if isinstance(grp, (list, tuple)) and len(grp) > 1 else str(grp)
+        rn = grp_name.split(' (')[0].strip()
+        rn_norm = normalize_region_name(rn)
+        try:
+            return PREFERRED_REGION_ORDER.index(rn_norm)
+        except ValueError:
+            return 99
+    return sorted(groups, key=get_sort_key)
 
 def add_band_shading(ax, bands=None, alpha=0.08, skip_notch=True):
     """Add subtle background shading for frequency bands, skipping notch regions."""
@@ -3432,8 +3505,212 @@ def generate_dose_response(session_data_dict, base_session_id, fig_dir, groups, 
 
 
 # =============================================================================
-# FIGURE 8: SPATIAL GIF
+# FIGURE 8: SPATIAL GIF & HEATMAPS
 # =============================================================================
+
+def compute_spatial_band_power(bb_full, t_ms, band_name, fs=1000, method='morlet'):
+    """
+    Compute time-varying band power (baseline-normalized dB) across all channels.
+
+    Parameters
+    ----------
+    bb_full : np.ndarray
+        Shape (n_trials, n_channels, n_times)
+    t_ms : np.ndarray
+        Time axis in ms, shape (n_times,)
+    band_name : str
+        Frequency band name (e.g. 'Beta', 'High Gamma')
+    fs : float
+        Sampling frequency in Hz
+    method : str
+        'morlet', 'multitaper', or 'hilbert'
+
+    Returns
+    -------
+    band_dB : np.ndarray
+        Baseline-normalized power in dB, shape (n_trials, n_channels, n_out_times)
+    t_out_ms : np.ndarray
+        Time axis in ms, shape (n_out_times,)
+    """
+    method = str(method).lower().strip()
+    bands = ANALYSIS_CONFIG.get('bands', {})
+    if band_name not in bands:
+        raise ValueError(f"Band {band_name!r} not found in ANALYSIS_CONFIG['bands']: {list(bands.keys())}")
+    
+    f_lo, f_hi = bands[band_name]
+    baseline_win = ANALYSIS_CONFIG.get('baseline_window', (-950, -650))
+    nyq = fs / 2.0
+    if f_hi >= nyq:
+        f_hi = nyq - 1.0
+
+    n_trials, n_channels, n_time = bb_full.shape
+
+    if method == 'hilbert':
+        # 4th-order Butterworth bandpass + Hilbert envelope
+        b, a = signal.butter(4, [f_lo / nyq, f_hi / nyq], btype='band')
+        filtered = signal.filtfilt(b, a, bb_full, axis=2)
+        envelope = np.abs(signal.hilbert(filtered, axis=2))
+
+        bl_mask = (t_ms >= baseline_win[0]) & (t_ms <= baseline_win[1])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            baseline_power = np.nanmean(envelope[:, :, bl_mask], axis=2, keepdims=True)
+            baseline_power[baseline_power < 1e-10] = 1e-10
+            band_dB = 10.0 * np.log10(np.maximum(envelope, 1e-10) / baseline_power)
+        return band_dB, t_ms
+
+    elif method in ('morlet', 'wavelet'):
+        spec_cfg = PLOT_CONFIG.get('spectrogram', {})
+        freq_step = spec_cfg.get('freq_step', 1)
+        notch_regions = ANALYSIS_CONFIG.get('notch_regions', [(55, 65), (115, 125)])
+
+        foi = np.arange(f_lo, f_hi + 1, freq_step, dtype=np.float32)
+        for n_lo, n_hi in notch_regions:
+            foi = foi[(foi < n_lo) | (foi > n_hi)]
+        if len(foi) == 0:
+            foi = np.array([(f_lo + f_hi) / 2.0], dtype=np.float32)
+
+        traces_flat = bb_full.reshape(n_trials * n_channels, n_time).astype(np.float32)
+
+        use_gpu = (
+            ANALYSIS_CONFIG.get('use_gpu_wavelet', False)
+            and ANALYSIS_CONFIG.get('gpu_backend', 'torch').lower() == 'torch'
+            and TORCH_AVAILABLE
+            and torch is not None
+            and torch.cuda.is_available()
+        )
+        gpu_batch_size = int(ANALYSIS_CONFIG.get('gpu_batch_size', 32))
+        n_cycles = spec_cfg.get('wavelet_cycles', ANALYSIS_CONFIG.get('wavelet_cycles', 7))
+
+        Sxx_flat = None
+        if use_gpu:
+            try:
+                Sxx_flat, foi_out, _ = compute_wavelet_spectrogram_batch_torch(
+                    traces_flat, fs=fs, foi=foi, n_cycles=n_cycles,
+                    batch_size=gpu_batch_size, device="cuda"
+                )
+            except Exception as e:
+                print(f"      [Warn] Torch GPU Morlet failed for spatial power ({e}); falling back to CPU.")
+                Sxx_flat = None
+                if torch is not None and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        if Sxx_flat is None:
+            specs = []
+            for i in range(len(traces_flat)):
+                sxx, _, _ = compute_wavelet_spectrogram(
+                    traces_flat[i], fs=fs, foi=foi, n_cycles=n_cycles, normalize=False
+                )
+                if sxx is None:
+                    sxx = np.zeros((len(foi), n_time), dtype=np.float32)
+                specs.append(sxx)
+            Sxx_flat = np.stack(specs, axis=0)
+
+        # Sxx_flat shape: (n_trials * n_channels, len(foi), n_time)
+        Sxx_4d = Sxx_flat.reshape(n_trials, n_channels, len(foi), n_time)
+        band_power = np.nanmean(Sxx_4d, axis=2)  # (n_trials, n_channels, n_time)
+
+        bl_mask = (t_ms >= baseline_win[0]) & (t_ms <= baseline_win[1])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            baseline_power = np.nanmean(band_power[:, :, bl_mask], axis=2, keepdims=True)
+            baseline_power[baseline_power < 1e-10] = 1e-10
+            band_dB = 10.0 * np.log10(np.maximum(band_power, 1e-10) / baseline_power)
+
+        return band_dB, t_ms
+
+    elif method == 'multitaper':
+        spec_cfg = PLOT_CONFIG.get('spectrogram', {})
+        freq_step = spec_cfg.get('freq_step', 1)
+        notch_regions = ANALYSIS_CONFIG.get('notch_regions', [(55, 65), (115, 125)])
+
+        foi = np.arange(f_lo, f_hi + 1, freq_step, dtype=np.float32)
+        for n_lo, n_hi in notch_regions:
+            foi = foi[(foi < n_lo) | (foi > n_hi)]
+        if len(foi) == 0:
+            foi = np.array([(f_lo + f_hi) / 2.0], dtype=np.float32)
+
+        traces_flat = bb_full.reshape(n_trials * n_channels, n_time).astype(np.float32)
+
+        multitaper_win_ms = spec_cfg.get('multitaper_win_ms', 100)
+        multitaper_nw = spec_cfg.get('multitaper_nw', 2.0)
+        multitaper_k = spec_cfg.get('multitaper_k', 2)
+        multitaper_step_ms = spec_cfg.get('multitaper_step_ms', 10)
+
+        use_gpu = (
+            ANALYSIS_CONFIG.get('use_gpu_wavelet', False)
+            and ANALYSIS_CONFIG.get('gpu_backend', 'torch').lower() == 'torch'
+            and TORCH_AVAILABLE
+            and torch is not None
+            and torch.cuda.is_available()
+        )
+        gpu_batch_size = int(ANALYSIS_CONFIG.get('gpu_batch_size', 32))
+
+        Sxx_flat = None
+        t_out_sec = None
+        if use_gpu:
+            try:
+                Sxx_flat, foi_out, t_out_sec = compute_multitaper_spectrogram_batch_torch(
+                    traces_flat, fs=fs, foi=foi, win_ms=multitaper_win_ms,
+                    nw=multitaper_nw, k=multitaper_k, step_ms=multitaper_step_ms,
+                    batch_size=gpu_batch_size, device="cuda"
+                )
+            except Exception as e:
+                print(f"      [Warn] Torch GPU Multitaper failed for spatial power ({e}); falling back to CPU.")
+                Sxx_flat = None
+                if torch is not None and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        if Sxx_flat is None:
+            specs = []
+            for i in range(len(traces_flat)):
+                sxx, _, t_out_sec = compute_multitaper_spectrogram(
+                    traces_flat[i], fs=fs, foi=foi, win_ms=multitaper_win_ms,
+                    nw=multitaper_nw, k=multitaper_k, step_ms=multitaper_step_ms,
+                    t_ms=t_ms
+                )
+                if sxx is None:
+                    # fallback dummy
+                    n_steps_approx = max(1, (n_time - int(multitaper_win_ms * fs / 1000.0)) // int(multitaper_step_ms * fs / 1000.0) + 1)
+                    sxx = np.zeros((len(foi), n_steps_approx), dtype=np.float32)
+                specs.append(sxx)
+            Sxx_flat = np.stack(specs, axis=0)
+
+        n_steps = Sxx_flat.shape[-1]
+        if t_out_sec is None or len(t_out_sec) == 0:
+            Nw = int(multitaper_win_ms / 1000.0 * fs)
+            if Nw % 2 == 0: Nw += 1
+            step = max(1, int(multitaper_step_ms / 1000.0 * fs))
+            window_starts = np.arange(n_steps) * step
+            window_centers = window_starts + (Nw - 1) / 2.0
+            t_out_sec = window_centers / float(fs)
+
+        t_spec_ms = np.asarray(t_out_sec, dtype=np.float32) * 1000.0 + float(t_ms[0])
+
+        Sxx_4d = Sxx_flat.reshape(n_trials, n_channels, len(foi), n_steps)
+        band_power = np.nanmean(Sxx_4d, axis=2)  # (n_trials, n_channels, n_steps)
+
+        bl_mask = (t_spec_ms >= baseline_win[0]) & (t_spec_ms <= baseline_win[1])
+        if not np.any(bl_mask):
+            # Fallback to pre-stimulus window if default baseline_win is outside range
+            bl_mask = (t_spec_ms < 0)
+            if not np.any(bl_mask):
+                bl_mask = np.zeros(n_steps, dtype=bool)
+                bl_mask[:max(1, n_steps // 4)] = True
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            baseline_power = np.nanmean(band_power[:, :, bl_mask], axis=2, keepdims=True)
+            baseline_power = np.nan_to_num(baseline_power, nan=1.0)
+            baseline_power[baseline_power < 1e-10] = 1e-10
+            band_dB = 10.0 * np.log10(np.maximum(band_power, 1e-10) / baseline_power)
+            band_dB = np.nan_to_num(band_dB, nan=0.0)
+
+        return band_dB, t_spec_ms
+
+    else:
+        raise ValueError(f"Unknown spatial band extraction method: {method!r}. Expected 'morlet', 'multitaper', or 'hilbert'.")
+
 
 def render_spatial_grid(ax, mean_band_dB, t_bin_idx, grid_elec, elec_to_idx, 
                         vmin, vmax, smoothing=True):
@@ -3443,6 +3720,7 @@ def render_spatial_grid(ax, mean_band_dB, t_bin_idx, grid_elec, elec_to_idx,
     grid = np.full((8, 8), np.nan)
     points = []
     values = []
+    cmap = PLOT_CONFIG.get('heatmap_cmap', 'jet')
     
     for r in range(8):
         for c in range(8):
@@ -3477,39 +3755,53 @@ def render_spatial_grid(ax, mean_band_dB, t_bin_idx, grid_elec, elec_to_idx,
                         if neighbors:
                             filled_grid[r, c] = np.nanmean(np.asarray(neighbors))
         
-        im = ax.imshow(filled_grid, cmap='jet', vmin=vmin, vmax=vmax,
+        im = ax.imshow(filled_grid, cmap=cmap, vmin=vmin, vmax=vmax,
                        origin='upper', aspect='equal', interpolation='bicubic')
     else:
-        im = ax.imshow(grid, cmap='jet', vmin=vmin, vmax=vmax,
+        im = ax.imshow(grid, cmap=cmap, vmin=vmin, vmax=vmax,
                        origin='upper', aspect='equal')
     
     return im
 
 
 def generate_spatial_gif(band_dB, t_ms, ua_ids_1based, session_id, fig_dir, 
-                         groups, nsp_to_elec, elec_to_idx, region_grids):
+                         groups, nsp_to_elec, elec_to_idx, region_grids,
+                         band_name='Beta', method='morlet'):
     """
     Generate animated GIF of the spatial heatmap over time.
+    Uses discrete time points from PLOT_CONFIG['spatial_timepoints_ms']
+    so every single frame corresponds to a unique physiological state.
     """
     gif_cfg = ANALYSIS_CONFIG
-    t_start, t_end = gif_cfg.get('gif_time_range', (-500, 500))
-    t_step = gif_cfg.get('gif_step_ms', 10)
     vmin = PLOT_CONFIG['heatmap_vmin']
     vmax = PLOT_CONFIG['heatmap_vmax']
     
-    n_trials = band_dB.shape[0]
+    # 1. Use the curated discrete time points
+    time_pts = PLOT_CONFIG.get('spatial_timepoints_ms', [
+        -650, -600, -550, -500, -450, -400, -350, -300, -250, -200, -175, -150, -125, -100, -75, -50, -25, 
+        0, 25, 50, 75, 100, 125, 150, 175, 200, 250, 300, 350, 400, 450, 500
+    ])
+    
+    n_trials = band_dB.shape[0] if band_dB.ndim == 3 else 1
     
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        mean_band_dB = np.nanmean(band_dB, axis=0)  # (n_ch, n_time)
+        if band_dB.ndim == 3:
+            mean_band_dB = np.nanmean(band_dB, axis=0)  # (n_ch, n_time)
+        else:
+            mean_band_dB = band_dB
     
-    # Define time points for GIF frames
-    gif_time_pts = np.arange(t_start, t_end + t_step, t_step)
+    # Map each timepoint in time_pts to the nearest actual calculated spectral time bin in t_ms
+    t_clean = np.asarray(t_ms, dtype=np.float64).ravel()
+    t_bin_indices = [int(np.argmin(np.abs(t_clean - tp))) for tp in time_pts]
+    print(f"    [Spatial GIF] Generating {len(time_pts)} discrete frames matching spatial_timepoints_ms ({time_pts[0]} to {time_pts[-1]} ms)")
     
     heatmap_dir = fig_dir / "Spatial_GIF"
     heatmap_dir.mkdir(parents=True, exist_ok=True)
     
-    band_name = PLOT_CONFIG.get('selected_band', 'Beta')
+    safe_band = str(band_name).replace(' ', '_')
+    method_str = method.capitalize() if method else ""
+    saved_paths = []
     
     for grp_idxs, grp_name in groups:
         region_name = grp_name.split(' (')[0]
@@ -3520,70 +3812,117 @@ def generate_spatial_gif(band_dB, t_ms, ua_ids_1based, session_id, fig_dir,
         
         safe_region = region_name.replace(' ', '_')
         
-        # Generate both blocky and smoothed versions
-        for mode_label, use_smoothing in [('blocky', False), ('smoothed', True)]:
+        # Determine modes to generate (blocky turned off for now per user request)
+        modes = []
+        if FIGURE_CONFIG.get('generate_spatial_gif_blocky', False):
+            modes.append(('blocky', False))
+        if FIGURE_CONFIG.get('generate_spatial_gif_smoothed', True):
+            modes.append(('smoothed', True))
+        if not modes:
+            modes = [('smoothed', True)]
+            
+        for mode_label, use_smoothing in modes:
             frames = []
-            print(f"      Generating GIF ({mode_label}) for {region_name}...")
+            print(f"      Generating GIF ({mode_label}, {method}) for {region_name} [{band_name}] ({len(time_pts)} frames)...")
             
             fig, ax = plt.subplots(figsize=(6, 5))
-            
-            for t_target in gif_time_pts:
-                t_bin_idx = int(np.argmin(np.abs(t_ms - t_target)))
-                t_actual = float(t_ms[t_bin_idx])
+            try:
+                fig.subplots_adjust(top=0.88, bottom=0.12, left=0.12, right=0.86)
                 
-                if t_actual < t_ms[0] or t_actual > t_ms[-1]:
-                    continue
+                # Lookup clean anatomical Utah array display name matching LFP RSA style
+                display_region = PLOT_CONFIG.get('region_display_names', {}).get(region_name, region_name)
                 
-                ax.clear()
-                im = render_spatial_grid(ax, mean_band_dB, t_bin_idx, grid_elec, 
-                                        elec_to_idx, vmin, vmax, smoothing=use_smoothing)
+                # Subdirectory for lossless individual PNG frames (immune to GIF palette compression / frame deduplication)
+                frames_dir = heatmap_dir / "frames" / f"spatial_{safe_band}_{session_id}_{safe_region}_{mode_label}_{method}"
+                frames_dir.mkdir(parents=True, exist_ok=True)
                 
-                ax.set_title(f"{region_name} | {band_name} ({mode_label.capitalize()})\n"
-                            f"T = {t_actual:.0f} ms", fontsize=12)
-                ax.set_xticks(np.arange(8))
-                ax.set_yticks(np.arange(8))
-                ax.set_xticklabels(np.arange(1, 9), fontsize=8)
-                ax.set_yticklabels(np.arange(1, 9), fontsize=8)
-                ax.set_ylabel("Row", fontsize=10)
-                ax.set_xlabel("Col", fontsize=10)
-                
-                # Add colorbar only once
-                if not hasattr(fig, '_colorbar_added'):
-                    fig.colorbar(im, ax=ax, label="dB")
-                    fig._colorbar_added = True
-                
-                # Convert to image
-                buf = io.BytesIO()
-                plt.savefig(buf, format='png', dpi=80)
-                buf.seek(0)
-                frames.append(imageio.v3.imread(buf))
-            
-            plt.close(fig)
+                for frame_idx, t_target in enumerate(time_pts):
+                    ax.clear()
+                    t_bin_idx = t_bin_indices[frame_idx]
+                    im = render_spatial_grid(ax, mean_band_dB, t_bin_idx, grid_elec, 
+                                            elec_to_idx, vmin, vmax, smoothing=use_smoothing)
+                    
+                    # Single prominent Utah array title matching LFP RSA naming style
+                    ax.set_title(display_region, fontsize=18, fontweight='bold', pad=12, color='#0F172A')
+                    ax.set_xticks(np.arange(8))
+                    ax.set_yticks(np.arange(8))
+                    ax.set_xticklabels(np.arange(1, 9), fontsize=8)
+                    ax.set_yticklabels(np.arange(1, 9), fontsize=8)
+                    ax.set_ylabel("Row", fontsize=10)
+                    ax.set_xlabel("Col", fontsize=10)
+                    
+                    # Add colorbar only once
+                    if not hasattr(fig, '_colorbar_added'):
+                        cbar = fig.colorbar(im, ax=ax)
+                        cbar.set_label("dB", fontsize=11, fontweight='bold')
+                        cbar.ax.tick_params(labelsize=9)
+                        fig._colorbar_added = True
+                    
+                    # Subtle invisible frame counter tag in corner to guarantee GIF encoders (Pillow)
+                    # never collapse consecutive identical frames into one
+                    ax.text(0, 0, f"f_{frame_idx:03d}", color='#ffffff', alpha=0.01, fontsize=1)
+                    
+                    # Convert to image
+                    buf = io.BytesIO()
+                    plt.savefig(buf, format='png', dpi=80)
+                    buf.seek(0)
+                    pil_frame = Image.open(buf).convert("RGBA")
+                    
+                    # Micro-tag extreme top-left pixel (0,0) in outer margin with frame_idx to guarantee
+                    # Pillow GIF encoder NEVER merges/deduplicates consecutive identical frames
+                    pil_frame.putpixel((0, 0), (frame_idx % 256, (frame_idx * 7) % 256, (frame_idx * 13) % 256, 255))
+                    
+                    # Save lossless numbered PNG frame for 100% synchronized Quad compositing
+                    png_path = frames_dir / f"frame_{frame_idx:03d}_{int(t_target):+05d}ms.png"
+                    pil_frame.save(png_path)
+                    
+                    frames.append(np.array(pil_frame))
+            finally:
+                plt.close(fig)
             
             if frames:
-                out_path = heatmap_dir / f"spatial_{band_name}_{session_id}_{safe_region}_{mode_label}.gif"
-                imageio.mimsave(out_path, frames, fps=gif_cfg.get('gif_fps', 10))
-                print(f"      Saved spatial GIF -> {out_path.name}")
+                out_path = heatmap_dir / f"spatial_{safe_band}_{session_id}_{safe_region}_{mode_label}_{method}.gif"
+                fps = gif_cfg.get('gif_fps', 10)
+                try:
+                    if out_path.exists():
+                        try:
+                            out_path.unlink()
+                        except Exception:
+                            pass
+                    imageio.mimsave(out_path, frames, fps=fps)
+                except TypeError:
+                    imageio.mimsave(out_path, frames, duration=1.0 / fps)
+                print(f"      Saved spatial GIF ({len(frames)} frames) -> {out_path.name}")
+                saved_paths.append(out_path)
+
+    return saved_paths
 
 
 def generate_spatial_heatmaps(band_dB, t_ms, ua_ids_1based, session_id, fig_dir,
-                               groups, elec_to_idx, region_grids):
+                               groups, elec_to_idx, region_grids,
+                               band_name='Beta', method='morlet'):
     """
     Generate static spatial heatmaps at key timepoints.
     """
-    time_pts = PLOT_CONFIG.get('spatial_timepoints_ms', [-200, -50, 0, 50, 100, 200, 300, 500])
+    time_pts = PLOT_CONFIG.get('spatial_static_timepoints_ms', [-200, -50, 0, 50, 100, 200, 300, 500])
     vmin = PLOT_CONFIG['heatmap_vmin']
     vmax = PLOT_CONFIG['heatmap_vmax']
-    band_name = PLOT_CONFIG.get('selected_band', 'Beta')
     
-    n_trials = band_dB.shape[0]
+    n_trials = band_dB.shape[0] if band_dB.ndim == 3 else 1
     
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        mean_band_dB = np.nanmean(band_dB, axis=0)
+        if band_dB.ndim == 3:
+            mean_band_dB = np.nanmean(band_dB, axis=0)
+        else:
+            mean_band_dB = band_dB
     
     heatmap_dir = fig_dir / "Spatial_Heatmaps"
     heatmap_dir.mkdir(parents=True, exist_ok=True)
+    
+    safe_band = str(band_name).replace(' ', '_')
+    method_str = method.capitalize() if method else ""
+    saved_paths = []
     
     for grp_idxs, grp_name in groups:
         region_name = grp_name.split(' (')[0]
@@ -3599,7 +3938,8 @@ def generate_spatial_heatmaps(band_dB, t_ms, ua_ids_1based, session_id, fig_dir,
             if len(time_pts) == 1:
                 axes = [axes]
             
-            fig.suptitle(f"{session_id} — {region_name} ({mode_label.capitalize()})\n"
+            sub_title = f" ({mode_label.capitalize()}, {method_str})" if method_str else f" ({mode_label.capitalize()})"
+            fig.suptitle(f"{session_id} — {region_name}{sub_title}\n"
                         f"{band_name} Spatial Heatmap — Mean of {n_trials} Trials (dB)",
                         fontsize=14)
             
@@ -3626,10 +3966,13 @@ def generate_spatial_heatmaps(band_dB, t_ms, ua_ids_1based, session_id, fig_dir,
                 cbar_ax = fig.add_axes([0.94, 0.25, 0.01, 0.5])
                 fig.colorbar(im, cax=cbar_ax, label="dB")
             
-            out_path = heatmap_dir / f"spatial_{band_name}_{session_id}_{safe_region}_{mode_label}.png"
+            out_path = heatmap_dir / f"spatial_{safe_band}_{session_id}_{safe_region}_{mode_label}_{method}.png"
             plt.savefig(out_path, dpi=120)
             plt.close(fig)
             print(f"      Saved spatial heatmap -> {out_path.name}")
+            saved_paths.append(out_path)
+
+    return saved_paths
 
 
 # =============================================================================
@@ -3676,9 +4019,10 @@ def generate_trial_heatmaps(data, session_id, fig_dir, groups, fs=1000):
     if n_regions == 1:
         axes = [axes]
     
-    fig.suptitle(f'{band_name} Band Power by Trial: {session_id}\n'
-                 f'({f_lo}-{f_hi} Hz, trials sorted by mean post-stim power)',
-                 fontsize=12, fontweight='bold')
+    if PLOT_CONFIG.get('show_suptitle', False) and PLOT_CONFIG.get('show_titles', True):
+        fig.suptitle(f'{band_name} Band Power by Trial: {session_id}\n'
+                     f'({f_lo}-{f_hi} Hz, trials sorted by mean post-stim power)',
+                     fontsize=12, fontweight='bold')
     
     bl_mask = (t_ms >= baseline_win[0]) & (t_ms <= baseline_win[1])
     
@@ -3713,7 +4057,6 @@ def generate_trial_heatmaps(data, session_id, fig_dir, groups, fs=1000):
                       extent=[t_ms[0], t_ms[-1], n_trials, 0])
         
         ax.axvline(0, color='white', ls='--', lw=1)
-        ax.axvline(100, color='white', ls=':', lw=0.5)
         
         ax.set_title(f'{short_name}', fontsize=11, fontweight='bold')
         ax.set_xlabel('Time (ms)')
@@ -4393,20 +4736,23 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
     else:
         tfr_label = f"Morlet Wavelets ({spec_cfg.get('wavelet_cycles', 5)} cycles)"
 
-    fig.suptitle(
-        f'{session_id}\n'
-        f'Array-Level Median Spectrograms | Median Across All Trials and Channels\n'
-        f'{tfr_label} | {norm_str} | Notch regions skipped: {notch_str}',
-        fontsize=14,
-        fontweight='bold'
-    )
+    show_sup = PLOT_CONFIG.get('show_suptitle', False) and PLOT_CONFIG.get('show_titles', True)
+    if show_sup:
+        fig.suptitle(
+            f'{session_id}\n'
+            f'Array-Level Median Spectrograms | Median Across All Trials and Channels\n'
+            f'{tfr_label} | {norm_str} | Notch regions skipped: {notch_str}',
+            fontsize=14,
+            fontweight='bold'
+        )
 
     im_for_cbar = None
 
-    # Keep plotting order consistent with groups
+    # Keep plotting order: Top-Left: M1s, Top-Right: SMA, Bottom-Left: M1i, Bottom-Right: PMd
     plot_idx = 0
+    ordered_groups = order_groups_preferred(groups)
 
-    for grp_idxs, grp_name in groups:
+    for grp_idxs, grp_name in ordered_groups:
         region_name = grp_name.split(' (')[0]
 
         if region_name not in region_specs:
@@ -4437,9 +4783,6 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
 
         # Mark stim onset
         ax.axvline(0, color='white', ls='--', lw=1.2, alpha=0.9)
-
-        # Optional: mark end of stimulation if you consider 100 ms stimulation
-        ax.axvline(100, color='white', ls=':', lw=1.0, alpha=0.7)
 
         # Mark notch gaps
         for notch_lo, notch_hi in notch_regions:
@@ -4475,7 +4818,8 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
             ax.tick_params(axis='x', which='major', length=0, bottom=False, labelbottom=False)
 
         disp_title = PLOT_CONFIG.get('region_display_names', {}).get(region_name, region_name)
-        ax.set_title(disp_title, fontsize=12, fontweight='bold', pad=8)
+        reg_color = get_region_color(region_name)
+        ax.set_title(disp_title, fontsize=12, fontweight='bold', color=reg_color, pad=8)
 
         plot_idx += 1
 
@@ -4483,15 +4827,24 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
     for idx in range(plot_idx, len(axes)):
         axes[idx].axis('off')
 
-    # Colorbar
+    plt.tight_layout(rect=[0, 0, 0.88, 0.93 if show_sup else 0.98])
+
+    # Colorbar centered and aligned with the active grid of subplots
     if im_for_cbar is not None:
         fig.subplots_adjust(right=0.88)
-        cbar_ax = fig.add_axes([0.90, 0.18, 0.02, 0.65])
+        active_axes = [a for a in axes[:plot_idx] if a.axison]
+        if active_axes:
+            plot_bottom = min(a.get_position().y0 for a in active_axes)
+            plot_top = max(a.get_position().y1 for a in active_axes)
+            cbar_height = plot_top - plot_bottom
+            cbar_bottom = plot_bottom
+        else:
+            cbar_bottom = 0.18
+            cbar_height = 0.65
+        cbar_ax = fig.add_axes([0.90, cbar_bottom, 0.02, cbar_height])
         cbar = fig.colorbar(im_for_cbar, cax=cbar_ax)
         cbar.set_label('Power (dB)', fontsize=11, fontweight='bold')
         cbar.ax.tick_params(labelsize=10)
-
-    plt.tight_layout(rect=[0, 0, 0.88, 0.92])
 
     out_path = condition_dir / "array_median_across_trials_and_channels.png"
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
@@ -4526,16 +4879,19 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
             f"Control Median-Baseline Normalized\n{tfr_label} | Notch regions skipped: {notch_str}"
         )
 
-        fig.suptitle(
-            f'{session_id}\nArray-Level Median Spectrograms | {sub_title}',
-            fontsize=13,
-            fontweight='bold'
-        )
+        show_sup = PLOT_CONFIG.get('show_suptitle', False) and PLOT_CONFIG.get('show_titles', True)
+        if show_sup:
+            fig.suptitle(
+                f'{session_id}\nArray-Level Median Spectrograms | {sub_title}',
+                fontsize=13,
+                fontweight='bold'
+            )
 
         im_for_cbar = None
         plot_idx = 0
+        ordered_groups = order_groups_preferred(groups)
 
-        for grp_idxs, grp_name in groups:
+        for grp_idxs, grp_name in ordered_groups:
             region_name = grp_name.split(' (')[0]
 
             if region_name not in region_specs_raw:
@@ -4580,7 +4936,6 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
 
                 # Mark stim train with dark vertical lines and shading
                 ax.axvline(0, color='black', ls='--', lw=1.2, alpha=0.9)
-                ax.axvline(100, color='black', ls=':', lw=1.0, alpha=0.7)
                 ax.axvspan(0, 100, color='black', alpha=0.08)
 
                 for notch_lo, notch_hi in notch_regions:
@@ -4610,7 +4965,6 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
                 cbar_lbl = 'Power vs control median baseline (z)'
 
                 ax.axvline(0, color='white', ls='--', lw=1.2, alpha=0.9)
-                ax.axvline(100, color='white', ls=':', lw=1.0, alpha=0.7)
 
                 for notch_lo, notch_hi in notch_regions:
                     below_idx = np.where(f_spec < notch_lo)[0]
@@ -4646,20 +5000,30 @@ def generate_per_ua_array_median_spectrogram(data, session_id, fig_dir, groups, 
                 ax.tick_params(axis='x', which='major', length=0, bottom=False, labelbottom=False)
 
             disp_title = PLOT_CONFIG.get('region_display_names', {}).get(region_name, region_name)
-            ax.set_title(disp_title, fontsize=12, fontweight='bold', pad=8)
+            reg_color = get_region_color(region_name)
+            ax.set_title(disp_title, fontsize=12, fontweight='bold', color=reg_color, pad=8)
             plot_idx += 1
 
         for idx in range(plot_idx, len(axes)):
             axes[idx].axis('off')
 
+        plt.tight_layout(rect=[0, 0, 0.88, 0.93 if show_sup else 0.98])
+
         if im_for_cbar is not None:
             fig.subplots_adjust(right=0.88)
-            cbar_ax = fig.add_axes([0.90, 0.18, 0.02, 0.65])
+            active_axes = [a for a in axes[:plot_idx] if a.axison]
+            if active_axes:
+                plot_bottom = min(a.get_position().y0 for a in active_axes)
+                plot_top = max(a.get_position().y1 for a in active_axes)
+                cbar_height = plot_top - plot_bottom
+                cbar_bottom = plot_bottom
+            else:
+                cbar_bottom = 0.18
+                cbar_height = 0.65
+            cbar_ax = fig.add_axes([0.90, cbar_bottom, 0.02, cbar_height])
             cbar = fig.colorbar(im_for_cbar, cax=cbar_ax)
             cbar.set_label('Power (dB)', fontsize=11, fontweight='bold')
             cbar.ax.tick_params(labelsize=10)
-
-        plt.tight_layout(rect=[0, 0, 0.88, 0.92])
 
         # Save both files so CONTROL_MEDIAN_BASELINE_NORM is fully replaced by this subtraction
         out_path_sub = condition_dir / "array_median_across_trials_and_channels_STIM_MINUS_CONTROL.png"
@@ -4836,18 +5200,21 @@ def generate_causal_diagnostic(data, session_id, fig_dir, groups, fs=1000,
     fig_causal, axes_causal = plt.subplots(2, 2, figsize=(14, 10), sharex=True, sharey=True)
     axes_causal = axes_causal.flatten()
 
-    fig_causal.suptitle(
-        f'{session_id}\n'
-        f'Array-Level Causal Spectrograms | Median Across All Trials and Channels\n'
-        f'Strictly Causal Filterbank (Forward-Only SOS) | {norm_str} | Zoom: [{zoom_range_ms[0]}, {zoom_range_ms[1]}] ms | Notch skipped: {notch_str}',
-        fontsize=14,
-        fontweight='bold'
-    )
+    show_sup = PLOT_CONFIG.get('show_suptitle', False) and PLOT_CONFIG.get('show_titles', True)
+    if show_sup:
+        fig_causal.suptitle(
+            f'{session_id}\n'
+            f'Array-Level Causal Spectrograms | Median Across All Trials and Channels\n'
+            f'Strictly Causal Filterbank (Forward-Only SOS) | {norm_str} | Zoom: [{zoom_range_ms[0]}, {zoom_range_ms[1]}] ms | Notch skipped: {notch_str}',
+            fontsize=14,
+            fontweight='bold'
+        )
 
     im_cbar = None
     plot_idx = 0
+    ordered_groups = order_groups_preferred(groups)
 
-    for grp_idxs, grp_name in groups:
+    for grp_idxs, grp_name in ordered_groups:
         region_name = grp_name.split(' (')[0]
         if region_name not in causal_specs_norm:
             continue
@@ -4879,26 +5246,38 @@ def generate_causal_diagnostic(data, session_id, fig_dir, groups, fs=1000,
 
         _setup_spec_axes(ax, f_spec, is_bottom=(plot_idx >= 2), is_first_col=(plot_idx % 2 == 0))
 
+        disp_title = PLOT_CONFIG.get('region_display_names', {}).get(region_name, region_name)
+        reg_color = get_region_color(region_name)
         ax.set_title(
-            f'{region_name}\n'
+            f'{disp_title}\n'
             f'{spec["n_valid_channels"]} channels, '
             f'{spec["n_valid_trial_channel_pairs"]} trial-channel spectra',
             fontsize=11,
-            fontweight='bold'
+            fontweight='bold',
+            color=reg_color,
         )
         plot_idx += 1
 
     for idx in range(plot_idx, len(axes_causal)):
         axes_causal[idx].axis('off')
 
+    plt.tight_layout(rect=[0, 0, 0.88, 0.93 if show_sup else 0.98])
+
     if im_cbar is not None:
         fig_causal.subplots_adjust(right=0.88)
-        cbar_ax = fig_causal.add_axes([0.90, 0.18, 0.02, 0.65])
+        active_axes = [a for a in axes_causal[:plot_idx] if a.axison]
+        if active_axes:
+            plot_bottom = min(a.get_position().y0 for a in active_axes)
+            plot_top = max(a.get_position().y1 for a in active_axes)
+            cbar_height = plot_top - plot_bottom
+            cbar_bottom = plot_bottom
+        else:
+            cbar_bottom = 0.18
+            cbar_height = 0.65
+        cbar_ax = fig_causal.add_axes([0.90, cbar_bottom, 0.02, cbar_height])
         cbar = fig_causal.colorbar(im_cbar, cax=cbar_ax)
         cbar.set_label(cbar_label, fontsize=12)
         cbar.ax.tick_params(labelsize=10)
-
-    plt.tight_layout(rect=[0, 0, 0.88, 0.92])
 
     path_causal_diag = out_dir_causal / "array_median_causal_0_to_50ms.png"
     plt.savefig(path_causal_diag, dpi=150, bbox_inches='tight')
@@ -5140,77 +5519,94 @@ def process_session(data, session_id, fig_dir, groups, fs=1000,
                 bb_full = None
             
             if bb_full is not None:          
-                # Compute band power
-                band_name = PLOT_CONFIG.get('selected_band', 'Beta')
-                bands = ANALYSIS_CONFIG['bands']
-                f_lo, f_hi = bands.get(band_name, (12, 25))
-                baseline_win = ANALYSIS_CONFIG['baseline_window']
-                
-                nyq = fs / 2
-                if f_hi >= nyq:
-                    f_hi = nyq - 1
-                
-                try:
-                    b, a = signal.butter(4, [f_lo/nyq, f_hi/nyq], btype='band')
-                    
-                    # Filter and compute envelope for all channels
-                    filtered = signal.filtfilt(b, a, bb_full, axis=2)
-                    envelope = np.abs(signal.hilbert(filtered, axis=2))
-                    
-                    # Baseline normalize
-                    bl_mask = (t_ms >= baseline_win[0]) & (t_ms <= baseline_win[1])
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        baseline_power = np.nanmean(envelope[:, :, bl_mask], axis=2, keepdims=True)
-                        baseline_power[baseline_power < 1e-10] = 1e-10
-                        band_dB = 10 * np.log10(envelope / baseline_power)
-                    
-                    # Generate normal spatial heatmaps
-                    if FIGURE_CONFIG.get('generate_spatial_heatmaps', True):
-                        print("  Generating spatial heatmaps...")
-                        generate_spatial_heatmaps(
-                            band_dB,
-                            t_ms,
-                            ua_ids_1based,
-                            session_id,
-                            fig_dir,
-                            groups,
-                            elec_to_idx,
-                            region_grids
+                # Determine bands and method for spatial visualizations
+                spatial_bands = PLOT_CONFIG.get('spatial_bands') or ANALYSIS_CONFIG.get('spatial_bands')
+                if spatial_bands is None:
+                    single = PLOT_CONFIG.get('selected_band', 'Beta')
+                    spatial_bands = [single] if isinstance(single, str) else list(single)
+                elif isinstance(spatial_bands, str):
+                    spatial_bands = [spatial_bands]
+
+                spatial_method = PLOT_CONFIG.get('spatial_method') or ANALYSIS_CONFIG.get('spatial_method', 'morlet')
+                spatial_method = str(spatial_method).lower().strip()
+
+                for band_name in spatial_bands:
+                    try:
+                        print(f"  Computing spatial band power for {band_name} using {spatial_method.capitalize()}...")
+                        band_dB, t_band_ms = compute_spatial_band_power(
+                            bb_full=bb_full,
+                            t_ms=t_ms,
+                            band_name=band_name,
+                            fs=fs,
+                            method=spatial_method
                         )
 
-                    # Generate CONTROL-NORM spatial heatmaps
-                    if (FIGURE_CONFIG.get('generate_control_norm_spatial_heatmaps', False)
-                        and control_spatial_baseline is not None):
-
-                        if control_spatial_baseline.shape[1] == envelope.shape[1]:
-                            eps = 1e-12
-                            band_dB_control = 10 * np.log10(
-                                np.maximum(envelope, eps) / np.maximum(control_spatial_baseline, eps)
-                            )
-
-                            print("  Generating CONTROL-NORM spatial heatmaps...")
-                            generate_spatial_heatmaps(
-                                band_dB_control,
-                                t_ms,
+                        # Generate normal spatial heatmaps
+                        if FIGURE_CONFIG.get('generate_spatial_heatmaps', True):
+                            print(f"  Generating spatial heatmaps ({band_name})...")
+                            hm_paths = generate_spatial_heatmaps(
+                                band_dB,
+                                t_band_ms,
                                 ua_ids_1based,
-                                session_id + "_CONTROL_NORM",
+                                session_id,
                                 fig_dir,
                                 groups,
                                 elec_to_idx,
-                                region_grids
+                                region_grids,
+                                band_name=band_name,
+                                method=spatial_method
                             )
-                        else:
-                            print("    [Skip] Control spatial baseline channel mismatch")
-                    
-                    # Generate spatial GIF
-                    if FIGURE_CONFIG.get('generate_spatial_gif', True):
-                        print("  Generating spatial GIF...")
-                        generate_spatial_gif(band_dB, t_ms, ua_ids_1based, session_id,
-                                            fig_dir, groups, nsp_to_elec, elec_to_idx, region_grids)
-                
-                except Exception as e:
-                    print(f"    [Error] Spatial visualization failed: {e}")
+                            if hm_paths:
+                                figure_paths.extend(hm_paths)
+
+                        # Generate CONTROL-NORM spatial heatmaps
+                        if (FIGURE_CONFIG.get('generate_control_norm_spatial_heatmaps', False)
+                            and control_spatial_baseline is not None):
+                            # Fallback envelope check if control baseline matches channel count
+                            if control_spatial_baseline.shape[1] == band_dB.shape[1]:
+                                eps = 1e-12
+                                band_dB_control = 10 * np.log10(
+                                    np.maximum(band_dB, eps) / np.maximum(control_spatial_baseline, eps)
+                                )
+                                print(f"  Generating CONTROL-NORM spatial heatmaps ({band_name})...")
+                                c_paths = generate_spatial_heatmaps(
+                                    band_dB_control,
+                                    t_band_ms,
+                                    ua_ids_1based,
+                                    session_id + "_CONTROL_NORM",
+                                    fig_dir,
+                                    groups,
+                                    elec_to_idx,
+                                    region_grids,
+                                    band_name=band_name,
+                                    method=spatial_method
+                                )
+                                if c_paths:
+                                    figure_paths.extend(c_paths)
+
+                        # Generate spatial GIF
+                        if FIGURE_CONFIG.get('generate_spatial_gif', True):
+                            print(f"  Generating spatial GIF ({band_name})...")
+                            gif_paths = generate_spatial_gif(
+                                band_dB,
+                                t_band_ms,
+                                ua_ids_1based,
+                                session_id,
+                                fig_dir,
+                                groups,
+                                nsp_to_elec,
+                                elec_to_idx,
+                                region_grids,
+                                band_name=band_name,
+                                method=spatial_method
+                            )
+                            if gif_paths:
+                                figure_paths.extend(gif_paths)
+
+                    except Exception as e:
+                        import traceback
+                        print(f"    [Error] Spatial visualization failed for band {band_name}: {e}")
+                        traceback.print_exc()
         else:
             print("  [Skip] Spatial visualizations require electrode mapping")
     
@@ -5285,6 +5681,24 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
         if 'broadband_full' not in data:
             print(f"    [Skip] No broadband_full data")
             continue
+        
+        # Ensure session_id carries canonical session/BR prefix for baseline/control files
+        if not re.search(r'_(\d{3})(?:_|$|\.)', session_id):
+            s_cand = None
+            if 'sessions' in data and len(data['sessions']) > 0:
+                s_cand = str(np.asarray(data['sessions']).ravel()[0])
+            elif 'br_indices' in data and len(data['br_indices']) > 0:
+                try:
+                    b_val = int(np.asarray(data['br_indices']).ravel()[0])
+                    s_cand = f"BR_{b_val:03d}"
+                except Exception:
+                    pass
+            elif SESSION_FILTER is not None and 3 in SESSION_FILTER:
+                s_cand = "BR_003"
+            
+            if s_cand:
+                session_id = f"{s_cand}_{session_id}"
+                session_id = re.sub(r'_+', '_', session_id)
         
         # === EXTRACT TARGET (A or B) ===
         target_match = re.search(r'target_([AB])$', session_id, re.IGNORECASE)
@@ -5460,6 +5874,30 @@ def process_directory(lfp_dir, fig_dir, label="LFP"):
     processed_count = 0
     
     for session_id, info in all_sessions.items():
+        # Enforce SESSION_FILTER strictly: only generate figures/GIFs for requested conditions
+        if SESSION_FILTER is not None:
+            session_brs = [int(m) for m in re.findall(r'_(\d{3})(?:_|$|\.)', session_id)]
+            
+            data = info.get('data', {})
+            if 'br_indices' in data:
+                for b in np.asarray(data['br_indices']).ravel():
+                    try:
+                        session_brs.append(int(b))
+                    except (ValueError, TypeError):
+                        pass
+            if 'sessions' in data:
+                for s in np.asarray(data['sessions']).ravel():
+                    m_s = re.search(r'_(\d{3})(?:_|$|\.)', str(s))
+                    if m_s:
+                        session_brs.append(int(m_s.group(1)))
+
+            is_ctrl = info.get('is_control', False) or ('baseline' in session_id.lower()) or ('control' in session_id.lower())
+            matches_br = any(b in SESSION_FILTER for b in session_brs)
+            has_ctrl_in_filter = is_ctrl and any(x in SESSION_FILTER for x in [3, 0])
+
+            if not (matches_br or has_ctrl_in_filter):
+                continue
+
         target = info['target']
 
         target_key = target if target is not None else '_default'
@@ -5566,10 +6004,11 @@ def _build_groups(data, n_ch):
                 elif region in ["M1s", "M1 Sup"]:
                     m1s_idxs.append(ch_idx)
             
-            if sma_idxs: groups.append((sma_idxs, f"SMA (n={len(sma_idxs)})"))
-            if pmd_idxs: groups.append((pmd_idxs, f"PMd (n={len(pmd_idxs)})"))
-            if m1i_idxs: groups.append((m1i_idxs, f"M1i (n={len(m1i_idxs)})"))
+            # Append in layout order: Top-Left: M1s, Top-Right: SMA, Bottom-Left: M1i, Bottom-Right: PMd
             if m1s_idxs: groups.append((m1s_idxs, f"M1s (n={len(m1s_idxs)})"))
+            if sma_idxs: groups.append((sma_idxs, f"SMA (n={len(sma_idxs)})"))
+            if m1i_idxs: groups.append((m1i_idxs, f"M1i (n={len(m1i_idxs)})"))
+            if pmd_idxs: groups.append((pmd_idxs, f"PMd (n={len(pmd_idxs)})"))
             
             # Build electrode mapping for spatial plots
             ua_port = 'A'
