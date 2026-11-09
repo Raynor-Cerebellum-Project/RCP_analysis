@@ -1,0 +1,32 @@
+================================================================================
+VELES RUN START: 11/03/2026 16:07:01
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: [11, 12, 14, 15, 16, 17, 18]
+Scripts:
+  - analysis_scripts/plot_inta_reaching.py
+================================================================================
+[11/03/2026 16:07:01] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] IN-PROGRESS
+[11/03/2026 16:07:14] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] FAIL: 11/03/2026 16:07:14 (exit code 1)
+
+================================================================================
+VELES RUN START: 11/03/2026 16:34:29
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: [11, 12, 14, 15, 16, 17, 18]
+Scripts:
+  - analysis_scripts/plot_inta_reaching.py
+================================================================================
+[11/03/2026 16:34:29] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] IN-PROGRESS
+[11/03/2026 16:34:55] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] FINISHED: 11/03/2026 16:34:55
+
+================================================================================
+VELES RUN START: 11/03/2026 16:58:27
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: [11, 12, 14, 15, 16, 17, 18]
+Scripts:
+  - analysis_scripts/plot_inta_reaching.py
+================================================================================
+[11/03/2026 16:58:27] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] IN-PROGRESS
+[11/03/2026 16:58:43] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] FINISHED: 11/03/2026 16:58:43

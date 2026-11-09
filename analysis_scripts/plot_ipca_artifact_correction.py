@@ -66,6 +66,8 @@ matplotlib.rcParams["ytick.major.size"] = 4
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.patheffects as pe
+import matplotlib.ticker as ticker
+from sklearn.decomposition import IncrementalPCA
 
 # Add repository root and analysis_scripts to sys.path
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -513,9 +515,13 @@ def load_raw_ns6_recording(
         ua_map_path = rcp.ua_excel_path(repo_root, params.probes)
         ua_map = rcp.load_UA_mapping_from_excel(ua_map_path)
         
-        metadata_csv = Path(METADATA_CSV) if "METADATA_CSV" in globals() and METADATA_CSV else (session_loc / "Metadata" / f"{params.session}_metadata.csv")
+        session_name = getattr(params, "session", "")
+        monkey_name = str(getattr(params, "monkey", None) or os.environ.get("RCP_MONKEY") or "Nike")
+        metadata_csv = session_loc / "Metadata" / f"{session_name}_metadata.csv"
+        if not metadata_csv.exists() and "METADATA_CSV" in globals() and METADATA_CSV:
+            metadata_csv = Path(METADATA_CSV)
         (rec_proc, _, ua_elec, _, ua_region, ua_region_names, ua_port) = rcp.apply_ua_mapping_with_regions(
-            rec_raw, ua_map, condition, metadata_csv, monkey=str(params.monkey)
+            rec_raw, ua_map, condition, metadata_csv, monkey=monkey_name
         )
         # Apply 300 Hz highpass filter (standard action potential band)
         rec_hp = spre.highpass_filter(rec_proc, freq_min=float(getattr(params, "highpass_hz", 300.0)))
@@ -868,6 +874,288 @@ def plot_ipca_correction_figure(
         print(f"[saved] {out_path.with_suffix('.svg')}")
 
 
+def plot_ipca_mechanism_figure(
+    rec_before,
+    rec_after,
+    target_eid: int,
+    ridx_to_meta: Dict[int, Dict[str, Any]],
+    peak_ms_dict: Dict[Any, Any],
+    target_ch_elecs: np.ndarray,
+    event_time_local: float,
+    stim_dur: float,
+    stim_freq: float,
+    fs: float,
+    session_title: str,
+    condition: int,
+    trial_idx: int,
+    out_path: Path,
+    output_dpi: int = 300,
+    save_svg: bool = True,
+    zoom_win: Optional[Tuple[float, float]] = None,
+    pulse_win_ms: Tuple[float, float] = (-0.4, 0.3),
+    ipca_rank: int = 10,
+) -> Optional[plt.Figure]:
+    """
+    Generate a publication-grade, 3-panel poster figure illustrating the algorithmic
+    mechanism of Incremental Principal Component Analysis (IPCA) stimulation artifact
+    correction and neural action potential preservation.
+
+    Panels:
+      A. Raw Signal & Pulse Micro-Windows (Showing the target window with 3 spikes)
+      B. Artifact Subtraction: Subspace Modeling Decomposition (X = Â + S)
+      C. Cleaned Signal & Detected Spikes (Exact same window as A, artifacts removed)
+    """
+    if rec_before is None or rec_after is None:
+        print(f"[warn] Cannot generate IPCA mechanism figure: rec_before or rec_after is None.")
+        return None
+
+    # Resolve electrode metadata
+    matched_meta = None
+    for ridx, meta in ridx_to_meta.items():
+        if meta["eid"] == target_eid:
+            matched_meta = meta
+            break
+
+    if not matched_meta:
+        if target_ch_elecs.size > 0:
+            m = np.where(target_ch_elecs == target_eid)[0]
+            if m.size > 0:
+                ridx_cand = int(m[0])
+                matched_meta = ridx_to_meta.get(ridx_cand, {
+                    "ridx": ridx_cand, "eid": target_eid, "oid": ridx_cand,
+                    "cid": f"UAe{target_eid}", "region": "M1s",
+                    "region_display": "M1 superior", "color": "#d62728"
+                })
+
+    if not matched_meta:
+        print(f"[warn] Electrode {target_eid} could not be resolved for mechanism figure.")
+        return None
+
+    cid = matched_meta["cid"]
+    oid = matched_meta["oid"]
+    eid = matched_meta["eid"]
+    reg_display = matched_meta.get("region_display", "Cortical Unit")
+    reg_color = matched_meta.get("color", "#27ae60")
+
+    # ── 1. Extract Continuous Stim Window ──
+    pad_pre_ms = 8.0
+    pad_post_ms = 12.0
+    s_start = int(round((event_time_local - pad_pre_ms) / 1000.0 * fs))
+    s_end = int(round((event_time_local + stim_dur + pad_post_ms) / 1000.0 * fs))
+
+    if s_start < 0 or s_end > rec_before.get_num_frames():
+        print(f"[warn] Window outside recording bounds for mechanism figure.")
+        return None
+
+    trace_raw_cont = rec_before.get_traces(start_frame=s_start, end_frame=s_end, channel_ids=[cid], return_in_uV=True).squeeze()
+    trace_clean_cont = rec_after.get_traces(start_frame=s_start, end_frame=s_end, channel_ids=[cid], return_in_uV=True).squeeze()
+    t_cont_ms = (np.arange(s_start, s_end) - int(round(event_time_local / 1000.0 * fs))) / fs * 1000.0
+
+    # ── 2. Pulse Chaining & Micro-Window Extraction ──
+    stim_start_idx = int(round(pad_pre_ms / 1000.0 * fs))
+    stim_end_idx = int(round((pad_pre_ms + stim_dur) / 1000.0 * fs))
+
+    p0_search = trace_raw_cont[stim_start_idx : stim_start_idx + int(round(2.5 / 1000.0 * fs))]
+    first_p = stim_start_idx + np.argmin(p0_search)
+
+    expected_step_samp = int(round((1000.0 / stim_freq) / 1000.0 * fs))
+    centers = [first_p]
+    search_radius = 10
+    while centers[-1] + expected_step_samp - search_radius < stim_end_idx:
+        next_nom = centers[-1] + expected_step_samp
+        w_lo = max(0, next_nom - search_radius)
+        w_hi = min(len(trace_raw_cont), next_nom + search_radius)
+        if w_hi <= w_lo:
+            break
+        local_p = w_lo + np.argmin(trace_raw_cont[w_lo:w_hi])
+        centers.append(local_p)
+
+    mw_pre_ms = abs(float(pulse_win_ms[0]))    # 0.40 ms
+    mw_post_ms = abs(float(pulse_win_ms[1]))   # 0.30 ms
+    mw_pre_samp = int(round(mw_pre_ms / 1000.0 * fs))   # 12 samples @ 30 kHz
+    mw_post_samp = int(round(mw_post_ms / 1000.0 * fs))  # 9 samples @ 30 kHz
+
+    pulses = []
+    valid_centers = []
+    for c in centers:
+        p0 = c - mw_pre_samp
+        p1 = c + mw_post_samp + 1
+        if p0 >= 0 and p1 <= len(trace_raw_cont):
+            pulses.append(trace_raw_cont[p0:p1])
+            valid_centers.append(c)
+
+    pulses = np.asarray(pulses, dtype=np.float32)
+    n_pulses, n_samples_mw = pulses.shape
+    t_mw_ms = (np.arange(n_samples_mw) - mw_pre_samp) / fs * 1000.0
+    pulse_times_rel = (np.array(valid_centers) - stim_start_idx) / fs * 1000.0
+
+    # ── 3. Incremental PCA Subspace Fitting with Inverse Transform ──
+    baseline_mean = np.mean(pulses[:, :3], axis=1, keepdims=True)
+    pulses_centered = pulses - baseline_mean
+
+    effective_rank = min(ipca_rank, n_pulses, n_samples_mw)
+    ipca_k = IncrementalPCA(n_components=effective_rank)
+    p_trans_k = ipca_k.fit_transform(pulses_centered)
+    art_inv = ipca_k.inverse_transform(p_trans_k)
+    clean_pulses = pulses_centered - art_inv + baseline_mean
+
+    ex_idx = min(12, n_pulses - 1)
+    raw_ex = pulses[ex_idx]
+    art_ex = art_inv[ex_idx] + baseline_mean[ex_idx]
+    clean_ex = clean_pulses[ex_idx]
+
+    # ── 4. Retrieve Detected Spikes & Align Window for Panels A & C ──
+    ch_pks = np.asarray(peak_ms_dict.get(oid, peak_ms_dict.get(eid, [])), float).ravel()
+    spikes_stim_rel = ch_pks[(ch_pks >= event_time_local) & (ch_pks <= event_time_local + stim_dur)] - event_time_local
+
+    if zoom_win is not None and len(zoom_win) == 2:
+        zoom_t0, zoom_t1 = float(zoom_win[0]), float(zoom_win[1])
+    else:
+        # Default window: 22.0 to 35.0 ms
+        # (30 to 35 ms on the right containing 2 spikes, and 22 to 30 ms on the left containing the earlier spike)
+        zoom_t0 = 22.0
+        zoom_t1 = 35.0
+        if len(spikes_stim_rel) >= 3:
+            early_spikes = spikes_stim_rel[spikes_stim_rel <= 36.0]
+            if len(early_spikes) >= 3:
+                zoom_t0 = max(0.0, float(early_spikes[0] - 3.4))
+                zoom_t1 = min(stim_dur, float(early_spikes[2] + 2.1))
+            else:
+                min_span = 999.0
+                best_triplet = (spikes_stim_rel[0], spikes_stim_rel[1], spikes_stim_rel[2])
+                for i in range(len(spikes_stim_rel) - 2):
+                    span = spikes_stim_rel[i+2] - spikes_stim_rel[i]
+                    if span < min_span and span >= 3.0:
+                        min_span = span
+                        best_triplet = (spikes_stim_rel[i], spikes_stim_rel[i+1], spikes_stim_rel[i+2])
+                if min_span < 25.0:
+                    zoom_t0 = max(0.0, best_triplet[0] - 2.5)
+                    zoom_t1 = min(stim_dur, best_triplet[2] + 2.2)
+        elif len(spikes_stim_rel) > 0:
+            mid_s = float(np.median(spikes_stim_rel))
+            zoom_t0 = max(0.0, mid_s - 5.0)
+            zoom_t1 = min(stim_dur, mid_s + 5.0)
+        else:
+            zoom_t0 = 20.0
+            zoom_t1 = 32.0
+
+    mask_win = (t_cont_ms >= zoom_t0) & (t_cont_ms <= zoom_t1)
+    t_win = t_cont_ms[mask_win]
+    raw_win = trace_raw_cont[mask_win]
+    clean_win = trace_clean_cont[mask_win]
+
+    spikes_in_win = [s for s in spikes_stim_rel if zoom_t0 <= s <= zoom_t1]
+
+    # ── BUILD 3-PANEL POSTER FIGURE ──
+    fig = plt.figure(figsize=(16.5, 4.8), dpi=output_dpi)
+    gs = fig.add_gridspec(
+        1, 3,
+        width_ratios=[1.15, 1.0, 1.15],
+        wspace=0.26,
+        left=0.065,
+        right=0.965,
+        top=0.82,
+        bottom=0.15
+    )
+
+    ax_a = fig.add_subplot(gs[0, 0])
+    ax_b = fig.add_subplot(gs[0, 1])
+    ax_c = fig.add_subplot(gs[0, 2])
+
+    # ─────────────────────────────────────────────────────────────
+    # PANEL A: Raw Signal & Pulse Micro-Windows (Showing the Window with 3 Spikes)
+    # ─────────────────────────────────────────────────────────────
+    ax_a.plot(t_win, raw_win, color="#2c3e50", lw=1.1)
+    ax_a.axhline(0.0, color="#7f8c8d", linestyle=":", lw=0.6, alpha=0.5)
+
+    for pt in pulse_times_rel:
+        if zoom_t0 - mw_pre_ms <= pt <= zoom_t1 + mw_post_ms:
+            ax_a.axvspan(pt - mw_pre_ms, pt + mw_post_ms, color="#f39c12", alpha=0.25, zorder=1)
+            ax_a.axvline(pt, color="#c0392b", linestyle="--", lw=0.9, alpha=0.75, zorder=2)
+
+    ax_a.set_xlim(zoom_t0, zoom_t1)
+    y_max_a = max(300.0, float(np.percentile(np.abs(raw_win), 99.8)) * 1.25) if len(raw_win) > 0 else 350.0
+    ax_a.set_ylim(-y_max_a, y_max_a)
+    ax_a.spines["top"].set_visible(False)
+    ax_a.spines["right"].set_visible(False)
+    ax_a.set_xlabel("Time (ms)", fontsize=10.0, fontweight="medium")
+    ax_a.set_ylabel("Amplitude (µV)", fontsize=10.0, fontweight="medium")
+    ax_a.set_title("A. Raw Signal & Pulse Micro-Windows", fontsize=11.0, fontweight="bold", loc="left", color="#1a252f")
+
+    # ─────────────────────────────────────────────────────────────
+    # PANEL B: IPCA Subspace Artifact Modeling (X = A + S)
+    # ─────────────────────────────────────────────────────────────
+    ax_b.plot(t_mw_ms, raw_ex, color="#2c3e50", lw=1.5, alpha=0.88, label="Raw Pulse (X)", zorder=3)
+    ax_b.plot(t_mw_ms, art_ex, color="#e74c3c", lw=2.2, linestyle="--", label="Artifact Model (A)", zorder=4)
+    ax_b.plot(t_mw_ms, clean_ex, color="#27ae60", lw=2.4, label="Cleaned Residual (S)", zorder=5,
+              path_effects=[pe.Stroke(linewidth=3.5, foreground="#ffffff"), pe.Normal()])
+
+    ax_b.axhline(0.0, color="#7f8c8d", linestyle=":", lw=0.7, alpha=0.6)
+    ax_b.axvline(0.0, color="#bdc3c7", linestyle="--", lw=0.8, alpha=0.5)
+
+    ax_b.set_xlim(t_mw_ms[0], t_mw_ms[-1])
+    y_max_b = max(300.0, max(abs(float(np.min(raw_ex))), abs(float(np.max(raw_ex)))) * 1.35)
+    ax_b.set_ylim(-y_max_b, y_max_b)
+    ax_b.spines["top"].set_visible(False)
+    ax_b.spines["right"].set_visible(False)
+    ax_b.set_xlabel("Time from Pulse Trough (ms)", fontsize=10.0, fontweight="medium")
+    ax_b.set_ylabel("Amplitude (µV)", fontsize=10.0, fontweight="medium")
+    ax_b.set_title("B. Artifact Subtraction (X = A + S)", fontsize=11.0, fontweight="bold", loc="left", color="#1a252f")
+    ax_b.legend(loc="upper right", fontsize=8.5, framealpha=0.92, edgecolor="#d0d7de")
+
+    # ─────────────────────────────────────────────────────────────
+    # PANEL C: Same Window as Panel A, Cleaned + Spikes Detected
+    # ─────────────────────────────────────────────────────────────
+    ax_c.plot(t_win, clean_win, color="#27ae60", lw=1.2, alpha=0.95, label="Cleaned Signal")
+    ax_c.axhline(0.0, color="#7f8c8d", linestyle=":", lw=0.6, alpha=0.5)
+
+    spike_labeled = False
+    for i, spk in enumerate(spikes_in_win):
+        local_mask = (t_win >= spk - 0.35) & (t_win <= spk + 0.35)
+        if np.any(local_mask):
+            local_t = t_win[local_mask]
+            local_v = clean_win[local_mask]
+            min_i = np.argmin(local_v)
+            spk_t_plot = float(local_t[min_i])
+            v_spk = float(local_v[min_i])
+        else:
+            spk_t_plot = spk
+            v_spk = float(np.interp(spk, t_win, clean_win))
+
+        lbl = "Detected Spike" if not spike_labeled else None
+        ax_c.scatter([spk_t_plot], [v_spk], color="#c0392b", s=42, edgecolors="#ffffff", lw=1.2, zorder=6, label=lbl)
+        spike_labeled = True
+
+    ax_c.set_xlim(zoom_t0, zoom_t1)
+    min_c = float(np.min(clean_win)) if len(clean_win) > 0 else -60.0
+    max_c = float(np.max(clean_win)) if len(clean_win) > 0 else 30.0
+    ax_c.set_ylim(min(-75.0, min_c - 15.0), max(35.0, max_c + 12.0))
+    ax_c.spines["top"].set_visible(False)
+    ax_c.spines["right"].set_visible(False)
+    ax_c.set_xlabel("Time (ms)", fontsize=10.0, fontweight="medium")
+    ax_c.set_ylabel("Amplitude (µV)", fontsize=10.0, fontweight="medium")
+    ax_c.set_title("C. Cleaned Signal & Detected Spikes", fontsize=11.0, fontweight="bold", loc="left", color="#1a252f")
+    ax_c.legend(loc="upper right", fontsize=8.5, framealpha=0.92, edgecolor="#d0d7de")
+
+    # ─────────────────────────────────────────────────────────────
+    # MASTER TITLE
+    # ─────────────────────────────────────────────────────────────
+    fig.suptitle(
+        f"{session_title}  •  Condition {condition:03d} (Stim: {stim_dur:.1f} ms @ {stim_freq:.0f} Hz)  •  Electrode {eid} ({reg_display})\n"
+        f"Incremental PCA (IPCA) Artifact Correction: Micro-Windows, Subspace Modeling & Spike Recovery",
+        fontsize=12.0, fontweight="bold", color="#111827", y=0.97
+    )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=output_dpi, bbox_inches="tight")
+    if save_svg:
+        fig.savefig(out_path.with_suffix(".svg"), bbox_inches="tight")
+    plt.close(fig)
+    print(f"[saved] {out_path}")
+    if save_svg:
+        print(f"[saved] {out_path.with_suffix('.svg')}")
+    return fig
+
 def process_single_condition(
     cond: int,
     channels: List[int],
@@ -887,6 +1175,10 @@ def process_single_condition(
     aligned_ckpt: Path,
     ckpt_dir: Path,
     fig_dir: Path,
+    plot_comparison: bool = True,
+    plot_mechanism: bool = True,
+    override_stim_freq: Optional[float] = None,
+    mechanism_win: Optional[Tuple[float, float]] = None,
 ):
     """Process and render artifact correction figure for a single condition."""
     print("\n" + "=" * 75)
@@ -941,18 +1233,24 @@ def process_single_condition(
 
     # ── Extract Hardware Stim Duration ──
     from RCP_analysis.python.functions.config_loading import METADATA_CSV, NPRW_AUX_DATA
-    stim_npz_path, _ = rcp.stim_npz_path_from_br_idx(cond, METADATA_CSV, NPRW_AUX_DATA)
     fs_nprw = 30_000.0
     stim_dur = 0.0
-    if stim_npz_path and stim_npz_path.exists():
-        stim = rcp.load_stim_detection(stim_npz_path)
-        block_bounds = stim.get("block_bounds_samples", np.empty((0, 2), dtype=np.int64))
-        if len(block_bounds) > 0:
-            if isinstance(block_bounds, list):
-                block_bounds = np.array(block_bounds, dtype=np.int64)
-            nprw_samps = block_bounds[:, 0].astype(np.int64)
-            nprw_ends = block_bounds[:, 1].astype(np.int64)
-            stim_dur = float((nprw_ends - nprw_samps).max() * 1000.0 / fs_nprw)
+    if "stim_dur_measured_ms" in z.files:
+        stim_dur = float(np.mean(z["stim_dur_measured_ms"]))
+    elif "stim_dur_nominal_ms" in z.files:
+        stim_dur = float(np.mean(z["stim_dur_nominal_ms"]))
+    else:
+        meta_csv_cand = session_loc / "Metadata" / f"{session_name}_metadata.csv"
+        stim_npz_path, _ = rcp.stim_npz_path_from_br_idx(cond, meta_csv_cand, NPRW_AUX_DATA)
+        if stim_npz_path and stim_npz_path.exists():
+            stim = rcp.load_stim_detection(stim_npz_path)
+            block_bounds = stim.get("block_bounds_samples", np.empty((0, 2), dtype=np.int64))
+            if len(block_bounds) > 0:
+                if isinstance(block_bounds, list):
+                    block_bounds = np.array(block_bounds, dtype=np.int64)
+                nprw_samps = block_bounds[:, 0].astype(np.int64)
+                nprw_ends = block_bounds[:, 1].astype(np.int64)
+                stim_dur = float((nprw_ends - nprw_samps).max() * 1000.0 / fs_nprw)
     print(f"[info] Stimulation pulse train duration: {stim_dur:.1f} ms")
 
     # ── Load Recordings ──
@@ -989,6 +1287,17 @@ def process_single_condition(
         repo_root=repo_root
     )
 
+    # Validate requested channels against target_ch_elecs
+    if target_ch_elecs.size > 0:
+        valid_channels = [c for c in channels if c in target_ch_elecs]
+        if not valid_channels:
+            m1s_candidates = [c for c in target_ch_elecs if c >= 193]
+            fallback_c = 233 if 233 in target_ch_elecs else (m1s_candidates[0] if m1s_candidates else int(target_ch_elecs[0]))
+            print(f"[info] Requested channel(s) {channels} not mapped on this array port. Auto-selecting active electrode {fallback_c}.")
+            channels = [fallback_c]
+        else:
+            channels = valid_channels
+
     # ── Validate & Filter Event Window ──
     valid_events = []
     for s in event_local_ms:
@@ -1015,34 +1324,92 @@ def process_single_condition(
     )
     out_path = fig_dir / out_filename
 
-    # ── Generate Poster Plot ──
-    print("[info] Rendering publication comparison figure...")
-    plot_ipca_correction_figure(
-        rec_before=rec_before,
-        rec_after=rec_after,
-        channels_to_plot=channels,
-        ridx_to_meta=ridx_to_meta,
-        peak_ms_dict=peak_ms_dict,
-        target_ch_elecs=target_ch_elecs,
-        event_time_local=chosen_event_time,
-        stim_dur=stim_dur,
-        fs=fs,
-        session_title=session_name,
-        condition=cond,
-        trial_idx=trial_i,
-        out_path=out_path,
-        window_ms=win_ms,
-        wf_pre_ms=wf_pre,
-        wf_post_ms=wf_post,
-        y_lim_trace=y_trace,
-        y_lim_waveform=y_wf,
-        share_y_before_after=SHARE_Y_BEFORE_AFTER,
-        overlay_spikes_on_trace=OVERLAY_SPIKES_ON_TRACE,
-        max_waveforms_overlay=MAX_WAVEFORMS_OVERLAY,
-        legal_intervals=legal_intervals,
-        output_dpi=dpi,
-        save_svg=save_svg,
-    )
+    # ── Resolve Stimulation Frequency ──
+    stim_freq = override_stim_freq
+    if stim_freq is None and "stim_freq_hz" in z.files:
+        raw_f = z["stim_freq_hz"]
+        stim_freq = float(raw_f.item() if hasattr(raw_f, "item") else np.mean(raw_f))
+    if stim_freq is None or stim_freq <= 0:
+        stim_freq = 400.0
+
+    # ── Generate Figure 1: Before vs After & Waveforms Comparison ──
+    if plot_comparison:
+        print("[info] Rendering publication comparison figure (Figure 1)...")
+        plot_ipca_correction_figure(
+            rec_before=rec_before,
+            rec_after=rec_after,
+            channels_to_plot=channels,
+            ridx_to_meta=ridx_to_meta,
+            peak_ms_dict=peak_ms_dict,
+            target_ch_elecs=target_ch_elecs,
+            event_time_local=chosen_event_time,
+            stim_dur=stim_dur,
+            fs=fs,
+            session_title=session_name,
+            condition=cond,
+            trial_idx=trial_i,
+            out_path=out_path,
+            window_ms=win_ms,
+            wf_pre_ms=wf_pre,
+            wf_post_ms=wf_post,
+            y_lim_trace=y_trace,
+            y_lim_waveform=y_wf,
+            share_y_before_after=SHARE_Y_BEFORE_AFTER,
+            overlay_spikes_on_trace=OVERLAY_SPIKES_ON_TRACE,
+            max_waveforms_overlay=MAX_WAVEFORMS_OVERLAY,
+            legal_intervals=legal_intervals,
+            output_dpi=dpi,
+            save_svg=save_svg,
+        )
+
+    # ── Generate Figure 2: IPCA Artifact Correction Mechanism Figure ──
+    if plot_mechanism and stim_dur > 0 and rec_before is not None and rec_after is not None:
+        print("[info] Rendering publication artifact correction mechanism figure (Figure 2)...")
+        # Load IPCA pulse window and rank from params.yaml if available
+        pulse_win_ms = (-0.4, 0.3)
+        ipca_rank = 10
+        params_yaml_path = repo_root / "config" / "params.yaml"
+        if params_yaml_path.exists():
+            try:
+                import yaml
+                with open(params_yaml_path, "r", encoding="utf-8") as f:
+                    y_cfg = yaml.safe_load(f)
+                if y_cfg and "IPCA_Params" in y_cfg:
+                    pw = y_cfg["IPCA_Params"].get("pulse_windows_ms")
+                    if pw and len(pw) == 2:
+                        pulse_win_ms = (float(pw[0]), float(pw[1]))
+                    if "rank" in y_cfg["IPCA_Params"]:
+                        ipca_rank = int(y_cfg["IPCA_Params"]["rank"])
+            except Exception:
+                pass
+
+        for ch in channels:
+            mech_out_filename = (
+                f"{session_name}__cond{cond:03d}__trial{trial_i + 1}__ch{ch}__"
+                f"IPCA_Artifact_Correction_Mechanism.png"
+            )
+            mech_out_path = fig_dir / mech_out_filename
+            plot_ipca_mechanism_figure(
+                rec_before=rec_before,
+                rec_after=rec_after,
+                target_eid=ch,
+                ridx_to_meta=ridx_to_meta,
+                peak_ms_dict=peak_ms_dict,
+                target_ch_elecs=target_ch_elecs,
+                event_time_local=chosen_event_time,
+                stim_dur=stim_dur,
+                stim_freq=stim_freq,
+                fs=fs,
+                session_title=session_name,
+                condition=cond,
+                trial_idx=trial_i,
+                out_path=mech_out_path,
+                output_dpi=dpi,
+                save_svg=save_svg,
+                zoom_win=mechanism_win,
+                pulse_win_ms=pulse_win_ms,
+                ipca_rank=ipca_rank,
+            )
     print("=" * 75 + "\n")
 
 
@@ -1074,6 +1441,18 @@ def main():
                         help="Disable SVG export")
     parser.add_argument("--out-dir", type=str, default=None,
                         help="Optional custom output directory")
+    parser.add_argument("--session", "-s", type=str, default=None,
+                        help="Session ID (e.g. NRR_RW022, default: from params.yaml or data_status_reaching.csv)")
+    parser.add_argument("--no-mechanism", action="store_true",
+                        help="Skip generating the 3-panel IPCA correction mechanism figure")
+    parser.add_argument("--mechanism-only", action="store_true",
+                        help="Only generate the 3-panel IPCA correction mechanism figure (skip before/after trace plot)")
+    parser.add_argument("--mechanism-win-start", type=float, default=22.0,
+                        help="Start time in ms for mechanism zoom window (Panels A & C, default: 22.0)")
+    parser.add_argument("--mechanism-win-end", type=float, default=35.0,
+                        help="End time in ms for mechanism zoom window (Panels A & C, default: 35.0)")
+    parser.add_argument("--stim-freq", type=float, default=None,
+                        help="Override stimulation frequency in Hz (default: from metadata or 400 Hz)")
 
     args = parser.parse_args()
 
@@ -1092,9 +1471,45 @@ def main():
     # ── Resolve Experiment Paths & Session Settings ──
     repo_root = _REPO_ROOT
     params = rcp.load_experiment_params(repo_root / "config" / "params.yaml", repo_root=repo_root)
-    session_loc = (Path(params.data_root) / Path(params.location)).resolve()
+    monkey = str(getattr(params, "monkey", None) or os.environ.get("RCP_MONKEY") or "Nike")
+    params.monkey = monkey
+
+    # Graceful fallback for location and session if not set in params.yaml
+    chosen_session = args.session or os.environ.get("RCP_SESSION") or getattr(params, "session", None)
+    if not chosen_session:
+        chosen_session = "NRR_RW022"
+
+    params.session = chosen_session
+    if not getattr(params, "location", None) or str(params.location).strip() in ("", "."):
+        status_csv_candidates = [
+            Path(params.data_root) / monkey / "data_status_reaching.csv",
+            Path(params.data_root) / "data_status_reaching.csv",
+        ]
+        for sc in status_csv_candidates:
+            if sc.exists():
+                import csv
+                with sc.open("r", encoding="utf-8-sig") as f:
+                    for row in csv.DictReader(f):
+                        if row.get("Session", "").strip() == chosen_session:
+                            params.location = row.get("Location", "").strip()
+                            break
+                if getattr(params, "location", None):
+                    break
+
+    if not getattr(params, "location", None) or str(params.location).strip() in ("", "."):
+        loc_env = os.environ.get("RCP_LOCATION")
+        if loc_env:
+            params.location = loc_env
+        else:
+            params.location = f"20260311_{chosen_session}"
+
+    cand_loc = (Path(params.data_root) / Path(params.location)).resolve()
+    if not cand_loc.exists() or not (cand_loc / "results").exists():
+        cand_loc_monkey = (Path(params.data_root) / monkey / Path(params.location)).resolve()
+        if cand_loc_monkey.exists():
+            cand_loc = cand_loc_monkey
+    session_loc = cand_loc
     session_name = getattr(params, "session", "UNKNOWN")
-    monkey = str(getattr(params, "monkey", "Nike"))
 
     out_base = session_loc / "results"
     aligned_ckpt = out_base / "checkpoints" / "Aligned"
@@ -1120,6 +1535,9 @@ def main():
             conditions_to_run = [int(c) for c in proc_only]
 
     for c in conditions_to_run:
+        plot_comp = not args.mechanism_only
+        plot_mech = not args.no_mechanism
+
         process_single_condition(
             cond=c,
             channels=channels,
@@ -1139,6 +1557,11 @@ def main():
             aligned_ckpt=aligned_ckpt,
             ckpt_dir=ckpt_dir,
             fig_dir=fig_dir,
+            plot_comparison=plot_comp,
+            plot_mechanism=plot_mech,
+            override_stim_freq=args.stim_freq,
+            mechanism_win=(args.mechanism_win_start, args.mechanism_win_end)
+                if args.mechanism_win_start is not None and args.mechanism_win_end is not None else (22.0, 35.0),
         )
 
 

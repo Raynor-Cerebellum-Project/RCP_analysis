@@ -1,0 +1,55 @@
+================================================================================
+VELES RUN START: 11/05/2026 09:59:58
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: [18]
+Scripts:
+  - analysis_scripts/plot_inta_reaching.py
+================================================================================
+[11/05/2026 09:59:58] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] IN-PROGRESS
+[11/05/2026 10:01:39] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] FAIL: 11/05/2026 10:01:39 (exit code 1)
+
+================================================================================
+VELES RUN START: 11/05/2026 10:07:59
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: [18]
+Scripts:
+  - analysis_scripts/plot_inta_reaching.py
+================================================================================
+[11/05/2026 10:07:59] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] IN-PROGRESS
+[11/05/2026 10:09:42] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] FINISHED: 11/05/2026 10:09:42
+
+================================================================================
+VELES RUN START: 11/05/2026 10:29:18
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: [18]
+Scripts:
+  - preprocessing_scripts/sort_nprw_kilosort4.py
+  - preprocessing_scripts/segment_sorted_units_by_condition.py
+  - analysis_scripts/plot_inta_reaching.py
+================================================================================
+[11/05/2026 10:29:18] [NRR_RW022] [preprocessing_scripts/sort_nprw_kilosort4.py] IN-PROGRESS
+[11/05/2026 13:28:32] [NRR_RW022] [preprocessing_scripts/sort_nprw_kilosort4.py] FINISHED: 11/05/2026 13:28:32
+[11/05/2026 13:28:32] [NRR_RW022] [preprocessing_scripts/segment_sorted_units_by_condition.py] IN-PROGRESS
+[11/05/2026 13:28:44] [NRR_RW022] [preprocessing_scripts/segment_sorted_units_by_condition.py] FINISHED: 11/05/2026 13:28:44
+[11/05/2026 13:28:44] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] IN-PROGRESS
+[11/05/2026 13:31:56] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] FINISHED: 11/05/2026 13:31:56
+
+================================================================================
+VELES RUN START: 11/05/2026 12:30:57
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [3]
+Scripts:
+  - preprocessing_scripts/sort_nprw_kilosort4.py
+  - preprocessing_scripts/segment_sorted_units_by_condition.py
+  - analysis_scripts/plot_inta_reaching.py
+================================================================================
+[11/05/2026 12:30:57] [NRR_RW012] [preprocessing_scripts/sort_nprw_kilosort4.py] IN-PROGRESS
+[11/05/2026 18:00:29] [NRR_RW012] [preprocessing_scripts/sort_nprw_kilosort4.py] FINISHED: 11/05/2026 18:00:29
+[11/05/2026 18:00:30] [NRR_RW012] [preprocessing_scripts/segment_sorted_units_by_condition.py] IN-PROGRESS
+[11/05/2026 18:00:47] [NRR_RW012] [preprocessing_scripts/segment_sorted_units_by_condition.py] FINISHED: 11/05/2026 18:00:47
+[11/05/2026 18:00:47] [NRR_RW012] [analysis_scripts/plot_inta_reaching.py] IN-PROGRESS
+[11/05/2026 18:02:15] [NRR_RW012] [analysis_scripts/plot_inta_reaching.py] FINISHED: 11/05/2026 18:02:15

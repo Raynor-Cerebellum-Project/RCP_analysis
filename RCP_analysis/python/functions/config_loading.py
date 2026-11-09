@@ -43,6 +43,7 @@ if PARAMS is not None:
         ALIGNED_CKPT_ROOT = OUT_BASE / "checkpoints" / "Aligned"
         VOG_CKPT_ROOT  = OUT_BASE / "checkpoints" / "VOG"
         PERI_ROOT      = OUT_BASE / "checkpoints" / "PeriStim"
+        SPIKESORTING_CKPT_ROOT = OUT_BASE / "checkpoints" / "spikesorting"
         
         # Ensure common output directories exist
         OUT_BASE.mkdir(parents=True, exist_ok=True)
@@ -59,6 +60,7 @@ if PARAMS is not None:
         VOG_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
         
         PERI_ROOT.mkdir(parents=True, exist_ok=True)
+        SPIKESORTING_CKPT_ROOT.mkdir(parents=True, exist_ok=True)
         
         # Metadata file
         METADATA_CSV   = METADATA_ROOT / f"{PARAMS.session}_metadata.csv"
@@ -83,8 +85,22 @@ if PARAMS is not None:
         SESSION_LOC = None
         OUT_BASE = None
         MONKEY = None
+        METADATA_CSV = None
+        METADATA_ROOT = None
+        PERI_ROOT = None
+        ALIGNED_CKPT_ROOT = None
+        INTAN_ROOT = None
+        NPRW_AUX_DATA = None
+        NPRW_CKPT_ROOT = None
 else:
     SESSION_LOC = None
     OUT_BASE = None
     MONKEY = None
+    METADATA_CSV = None
+    METADATA_ROOT = None
+    PERI_ROOT = None
+    ALIGNED_CKPT_ROOT = None
+    INTAN_ROOT = None
+    NPRW_AUX_DATA = None
+    NPRW_CKPT_ROOT = None
 

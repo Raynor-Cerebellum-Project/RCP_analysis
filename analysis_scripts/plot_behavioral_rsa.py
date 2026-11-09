@@ -128,6 +128,23 @@ ALIGN_TO_TASK_FRAME: bool = True
 # Extended to 450 ms so prolonged/delayed reaches (e.g. 40 pulses, 100 ms duration) complete touchscreen touch
 DEFAULT_PLOT_WINDOW_MS: Tuple[float, float] = (-75.0, 500.0)
 
+# Minimum physical reach arrival time (ms relative to stimulation onset / IR beam crossing)
+# Reaches ending before 100 ms are excluded as premature or non-task movements
+MIN_REACH_ARRIVAL_MS: float = 100.0
+
+# Outlier arrival time rejection threshold (ms deviation from condition median)
+# Reaches with arrival times deviating by > 150 ms from the condition median are excluded as outliers
+ARRIVAL_OUTLIER_THRESH_MS: float = 150.0
+
+# Minimum kinematic displacement threshold for meaningful perturbation (mm)
+# Displacements within 5 mm of control center fall within baseline motor jitter / target perimeter
+MIN_PERTURBATION_THRESH_MM: float = 5.0
+
+# Kinematic dose-response figure Panel C display mode:
+# 'planar_vector' / 'combined_variance' = 2D touchscreen endpoint deviation vector ||Δr_XZ|| and variance
+# 'vertical' / 'dz' = vertical deflection ΔZ
+DOSE_PANEL_C_MODE: str = "planar_vector"
+
 # Dual-window Behavioral RSA analysis windows:
 # Region 1 (Early Window): Pre-divergence / expected control-like phase
 RSA_EARLY_WINDOW_MS: Tuple[float, float] = (0.0, 75.0)
@@ -135,8 +152,8 @@ RSA_EARLY_WINDOW_MS: Tuple[float, float] = (0.0, 75.0)
 RSA_LATE_WINDOW_MS: Tuple[float, float] = (75.0, 350.0)
 
 # Dual-Window Progress Epochs (Normalized reach depth fraction p in [0.0, 1.0]):
-RSA_EARLY_PROGRESS_RANGE: Tuple[float, float] = (0.0, 0.60)   # Early reach progress: 0–25% forward depth
-RSA_LATE_PROGRESS_RANGE: Tuple[float, float] = (0.60, 1.00)   # Late reach progress: 25–100% forward depth
+RSA_EARLY_PROGRESS_RANGE: Tuple[float, float] = (0.0, 0.60)   # Early reach progress: 0–25%% forward depth
+RSA_LATE_PROGRESS_RANGE: Tuple[float, float] = (0.60, 1.00)   # Late reach progress: 25–100%% forward depth
 
 
 MIN_REACHES_PER_CONDITION: int = 3
@@ -1243,15 +1260,18 @@ def resample_trajectory_by_arclength(
         pts_valid = pts[valid]
         y_vals = pts_valid[:, 1]
 
-        # Truncate at touchscreen endpoint (at or after 75 ms if available)
-        if t_sub is not None and np.any(t_sub >= 75.0):
-            cand_mask = (t_sub >= 75.0)
+        # Truncate at touchscreen endpoint (at or after MIN_REACH_ARRIVAL_MS if available)
+        if t_sub is not None and np.any(t_sub >= MIN_REACH_ARRIVAL_MS):
+            cand_mask = (t_sub >= MIN_REACH_ARRIVAL_MS)
             cand_indices = np.where(cand_mask)[0]
             y_max_idx = int(cand_indices[np.nanargmax(y_vals[cand_indices])])
+            t_arrival = float(t_sub[y_max_idx])
         else:
             y_max_idx = int(np.nanargmax(y_vals))
+            t_arrival = float(t_sub[y_max_idx]) if t_sub is not None else float(y_max_idx)
 
-        if y_max_idx < 1:
+        # Do not accept an end of reach before MIN_REACH_ARRIVAL_MS (100 ms)
+        if y_max_idx < 1 or t_arrival < MIN_REACH_ARRIVAL_MS:
             continue
 
         pts_fwd = pts_valid[:y_max_idx + 1]
@@ -1329,20 +1349,26 @@ def resample_trajectory_by_forward_y(
         pts_valid = pts[valid]
         y_vals = pts_valid[:, 1]
 
-        # Find touchscreen arrival endpoint (peak forward extension Y at or after 75 ms if available)
-        if t_sub is not None and np.any(t_sub >= 75.0):
-            cand_mask = (t_sub >= 75.0)
+        # Find touchscreen arrival endpoint (peak forward extension Y at or after MIN_REACH_ARRIVAL_MS if available)
+        if t_sub is not None and np.any(t_sub >= MIN_REACH_ARRIVAL_MS):
+            cand_mask = (t_sub >= MIN_REACH_ARRIVAL_MS)
             cand_indices = np.where(cand_mask)[0]
             y_max_idx = int(cand_indices[np.nanargmax(y_vals[cand_indices])])
+            t_arrival = float(t_sub[y_max_idx])
         else:
             y_max_idx = int(np.nanargmax(y_vals))
+            t_arrival = float(t_sub[y_max_idx]) if t_sub is not None else float(y_max_idx)
+
+        # Do not accept an end of reach before MIN_REACH_ARRIVAL_MS (100 ms)
+        if y_max_idx < 1 or t_arrival < MIN_REACH_ARRIVAL_MS:
+            continue
 
         y_start = y_vals[0]
         y_max = y_vals[y_max_idx]
         delta_y = y_max - y_start
 
         # Require outbound progress from t = 0 to endpoint (no physical mm requirement)
-        if y_max_idx < 1 or delta_y <= 1e-4:
+        if delta_y <= 1e-4:
             continue
 
         # Truncate trajectory from t = 0.0 ms up to touchscreen endpoint arrival
@@ -1915,8 +1941,8 @@ def compute_directional_perturbations(
         valid_i = np.isfinite(y_tr)
         if not np.any(valid_i):
             continue
-        # Touch arrival cannot happen before 75 ms: find peak forward excursion Y at or after 75 ms
-        t_valid = (ctrl_cond.time >= 75.0) & np.isfinite(y_tr)
+        # Touch arrival cannot happen before MIN_REACH_ARRIVAL_MS (100 ms)
+        t_valid = (ctrl_cond.time >= MIN_REACH_ARRIVAL_MS) & np.isfinite(y_tr)
         if np.any(t_valid):
             k_cand = np.where(t_valid)[0]
             k_max = int(k_cand[np.nanargmax(y_tr[k_cand])])
@@ -1930,10 +1956,20 @@ def compute_directional_perturbations(
         ctrl_abs_end_z[i] = np.nanmean(ctrl_cond.z[i, k_lo:k_hi])
         t_peak = float(ctrl_cond.time[k_max])
         ctrl_t_end[i] = t_peak
-        ctrl_completed[i] = bool(t_peak >= 75.0 and k_max >= 2)
+        ctrl_completed[i] = bool(t_peak >= MIN_REACH_ARRIVAL_MS and k_max >= 2)
+
+    # Filter arrival time outliers (> 150 ms difference from condition median arrival time)
+    if np.any(ctrl_completed):
+        c_med_t = float(np.median(ctrl_t_end[ctrl_completed]))
+        ctrl_outliers = np.abs(ctrl_t_end - c_med_t) > ARRIVAL_OUTLIER_THRESH_MS
+        ctrl_completed = ctrl_completed & (~ctrl_outliers)
 
     if not np.any(ctrl_completed):
-        ctrl_completed = np.array([bool(np.isfinite(ctrl_t_end[i]) and ctrl_t_end[i] >= 75.0) for i in range(ctrl_cond.n_trials)], dtype=bool)
+        ctrl_completed = np.array([bool(np.isfinite(ctrl_t_end[i]) and ctrl_t_end[i] >= MIN_REACH_ARRIVAL_MS) for i in range(ctrl_cond.n_trials)], dtype=bool)
+        if np.any(ctrl_completed):
+            c_med_t = float(np.median(ctrl_t_end[ctrl_completed]))
+            ctrl_outliers = np.abs(ctrl_t_end - c_med_t) > ARRIVAL_OUTLIER_THRESH_MS
+            ctrl_completed = ctrl_completed & (~ctrl_outliers)
 
     ctrl_use = ctrl_completed if np.any(ctrl_completed) else np.isfinite(ctrl_abs_end_x)
     ctrl_mean_end_x = float(np.nanmean(ctrl_abs_end_x[ctrl_use]))
@@ -2005,8 +2041,8 @@ def compute_directional_perturbations(
             valid_i = np.isfinite(y_tr)
             if not np.any(valid_i):
                 continue
-            # Touch arrival cannot happen before 75 ms: find peak forward excursion Y at or after 75 ms
-            t_valid = (time >= 75.0) & np.isfinite(y_tr)
+            # Touch arrival cannot happen before MIN_REACH_ARRIVAL_MS (100 ms)
+            t_valid = (time >= MIN_REACH_ARRIVAL_MS) & np.isfinite(y_tr)
             if np.any(t_valid):
                 k_cand = np.where(t_valid)[0]
                 k_max = int(k_cand[np.nanargmax(y_tr[k_cand])])
@@ -2022,16 +2058,26 @@ def compute_directional_perturbations(
             t_peak = float(time[k_max])
             trial_t_end[i] = t_peak
 
-            # Reach completion criteria: touch arrival cannot happen before 75 ms
+            # Reach completion criteria: touch arrival cannot happen before MIN_REACH_ARRIVAL_MS (100 ms)
             near_screen = bool(y_peak >= (tgt_ref_y - 15.0))
             not_truncated = bool((k_max < n_t - 1) or near_screen)
-            is_completed_reach[i] = bool((t_peak >= 75.0) and not_truncated and (k_max >= 2))
+            is_completed_reach[i] = bool((t_peak >= MIN_REACH_ARRIVAL_MS) and not_truncated and (k_max >= 2))
+
+        # Filter arrival time outliers (> 150 ms difference from condition median arrival time)
+        if np.any(is_completed_reach):
+            cond_med_t = float(np.median(trial_t_end[is_completed_reach]))
+            cond_outliers = np.abs(trial_t_end - cond_med_t) > ARRIVAL_OUTLIER_THRESH_MS
+            is_completed_reach = is_completed_reach & (~cond_outliers)
 
         if not np.any(is_completed_reach):
-            # Fallback: enforce t_peak >= 75 ms
+            # Fallback: enforce t_peak >= MIN_REACH_ARRIVAL_MS
             for i in range(n_trials):
-                if np.isfinite(trial_t_end[i]) and trial_t_end[i] >= 75.0:
+                if np.isfinite(trial_t_end[i]) and trial_t_end[i] >= MIN_REACH_ARRIVAL_MS:
                     is_completed_reach[i] = True
+            if np.any(is_completed_reach):
+                cond_med_t = float(np.median(trial_t_end[is_completed_reach]))
+                cond_outliers = np.abs(trial_t_end - cond_med_t) > ARRIVAL_OUTLIER_THRESH_MS
+                is_completed_reach = is_completed_reach & (~cond_outliers)
 
         # Endpoint shifts relative to control reference touch center
         end_dx = abs_end_x - ctrl_median_end_x
@@ -3952,8 +3998,8 @@ def plot_forward_y_normalization_validation_figure(
             z_valid = pts[valid, 2]
 
             y_start = float(y_valid[0])
-            # Physical touchscreen arrival cannot occur before 75 ms
-            t_candidates = (t_valid >= 75.0)
+            # Physical touchscreen arrival cannot occur before MIN_REACH_ARRIVAL_MS (100 ms)
+            t_candidates = (t_valid >= MIN_REACH_ARRIVAL_MS)
             if np.any(t_candidates):
                 k_sub = np.where(t_candidates)[0]
                 k_max = int(k_sub[np.argmax(y_valid[k_sub])])
@@ -3962,7 +4008,7 @@ def plot_forward_y_normalization_validation_figure(
             y_max = float(y_valid[k_max])
             t_max = float(t_valid[k_max])
             delta_y = y_max - y_start
-            is_retained = bool((t_max >= 75.0) and (k_max >= 2))
+            is_retained = bool((t_max >= MIN_REACH_ARRIVAL_MS) and (k_max >= 2))
 
             trial_data.append({
                 "cond_num": c.cond_num,
@@ -4095,14 +4141,14 @@ def plot_forward_y_normalization_validation_figure(
         base_lbl = getattr(c, "short_label", None) or re.sub(r"\s*\(n=\d+\)", "", c.label).strip()
         cond_labels_b.append(base_lbl)
 
-        # Condition Boxplot
+        # Condition Boxplot (fliers disabled since all trials are plotted via scatter)
         ax_b.boxplot(
             c_t, positions=[x_pos], widths=0.42, patch_artist=True,
+            showfliers=False,
             boxprops=dict(facecolor=col, alpha=0.35, color=col, linewidth=1.3),
             medianprops=dict(color="#1b2631", linewidth=2.0),
             whiskerprops=dict(color=col, linewidth=1.2),
             capprops=dict(color=col, linewidth=1.2),
-            flierprops=dict(marker="o", markersize=3, color=col, alpha=0.5),
         )
         jitter = np.random.normal(0, 0.05, len(c_t))
         ax_b.scatter(x_pos + jitter, c_t, color=col, s=24, alpha=0.7, edgecolors="#1b2631", linewidths=0.5, zorder=5)
@@ -4217,14 +4263,14 @@ def plot_forward_y_normalization_validation_figure(
         base_lbl = getattr(c, "short_label", None) or re.sub(r"\s*\(n=\d+\)", "", c.label).strip()
         cond_labels_e.append(base_lbl)
 
-        # Boxplot
+        # Boxplot (fliers disabled since all trials are plotted via scatter)
         ax_e.boxplot(
             c_ymax, positions=[x_pos], widths=0.42, patch_artist=True,
+            showfliers=False,
             boxprops=dict(facecolor=col, alpha=0.35, color=col, linewidth=1.3),
             medianprops=dict(color="#1b2631", linewidth=2.0),
             whiskerprops=dict(color=col, linewidth=1.2),
             capprops=dict(color=col, linewidth=1.2),
-            flierprops=dict(marker="o", markersize=3, color=col, alpha=0.5),
         )
         jitter = np.random.normal(0, 0.05, len(c_ymax))
         ax_e.scatter(x_pos + jitter, c_ymax, color=col, s=24, alpha=0.7, edgecolors="#1b2631", linewidths=0.5, zorder=5)
@@ -4312,11 +4358,11 @@ def plot_kinematic_dose_response_figure(
     time_window: Tuple[float, float] = (0.0, 500.0),
 ) -> Optional[plt.Figure]:
     """
-    Kinematic Dose-Response & Directional RSA Decomposition Figure (4 Panels):
-        Panel A: Touchscreen Arrival Time vs. Pulse Count (Time vs. Pulse)
-        Panel B: Lateral Steering Deviation (ΔX) vs. Pulse Count [Left < 0 < Right]
-        Panel C: Vertical Deflection (ΔZ) vs. Pulse Count [Dip < 0 < Lift]
-        Panel D: Directional RSA Separation (Lateral X, Vertical Z, 3D) & Net 3D Deflection
+    Kinematic Dose-Response & Directional Perturbations Figure (4 Panels):
+        Panel A: Reach Duration vs. Pulse Count
+        Panel B: Lateral Steering Deviation (ΔX) vs. Pulse Count (Symmetric ± limits)
+        Panel C: 2D Endpoint Deviation Vector ||Δr_XZ|| & Variance vs. Pulse Count (or Vertical ΔZ)
+        Panel D: Touchscreen Endpoint Perturbations (10 mm Target, X vs. Z)
     """
     if not conditions:
         return None
@@ -4346,8 +4392,8 @@ def plot_kinematic_dose_response_figure(
             cond_colors[c.cond_num] = stim_color_pool[stim_idx % len(stim_color_pool)]
             stim_idx += 1
 
-    fig = plt.figure(figsize=(16.5, 12.0), dpi=FIG_DPI)
-    gs = fig.add_gridspec(2, 2, hspace=0.34, wspace=0.28)
+    fig = plt.figure(figsize=(16.0, 12.5), dpi=FIG_DPI)
+    gs = fig.add_gridspec(2, 2, hspace=0.38, wspace=0.28)
 
     ax_a = fig.add_subplot(gs[0, 0])
     ax_b = fig.add_subplot(gs[0, 1])
@@ -4357,26 +4403,73 @@ def plot_kinematic_dose_response_figure(
     legend_handles = []
     legend_labels = []
 
+    def _add_significance_brackets(ax, comparisons, y_min_data, y_max_data, symmetric: bool = False):
+        """
+        Draw clean statistical comparison brackets at the top of an axis with large, poster-readable asterisks.
+        comparisons: list of tuples (x_ctrl, x_stim, star_str, p_or_q_val)
+        """
+        if not comparisons:
+            return
+
+        # Sort comparisons by span width so smaller intervals sit lower
+        comparisons_sorted = sorted(comparisons, key=lambda item: abs(item[1] - item[0]))
+
+        span = max(float(y_max_data - y_min_data), 1.0)
+        base_y = float(y_max_data) + 0.08 * span
+        step_y = 0.12 * span
+        tick_h = 0.03 * span
+
+        curr_y = base_y
+        for x1, x2, star, _ in comparisons_sorted:
+            left, right = min(x1, x2), max(x1, x2)
+            # Clean straight significance line (no end ticks)
+            ax.plot([left, right], [curr_y, curr_y],
+                    color="#1b2631", linewidth=1.8, clip_on=False, zorder=10)
+            # Large, prominent significance star for poster visibility
+            ax.text((left + right) / 2.0, curr_y + 0.015 * span, star,
+                    ha="center", va="bottom", fontsize=16.0, fontweight="bold", color="#1b2631", zorder=11)
+            curr_y += step_y
+
+        # Adjust y-limits to provide ample headroom
+        curr_ylim = ax.get_ylim()
+        new_top = max(curr_ylim[1], curr_y + 0.06 * span)
+        if symmetric:
+            sym_val = max(abs(curr_ylim[0]), abs(new_top))
+            ax.set_ylim(-sym_val, sym_val)
+        else:
+            ax.set_ylim(curr_ylim[0], new_top)
+
+    def _p_to_star(p):
+        if p < 0.001:
+            return "***"
+        elif p < 0.01:
+            return "**"
+        elif p < 0.05:
+            return "*"
+        return None
+
     # -------------------------------------------------------------------------
-    # Panel A: Touchscreen Arrival Time vs. Pulse Count (Time vs. Pulse)
+    # Panel A: Touchscreen Arrival Time vs. Pulse Count
     # -------------------------------------------------------------------------
     cond_positions = []
     cond_labels = []
     cond_medians_t = []
-    ctrl_t_arr = None
+    all_t_by_cond = []
 
     for idx_c, c in enumerate(cond_list):
         res = dir_results.get(c.cond_num, {})
         use_mask = res.get("is_completed_reach", np.ones(c.n_trials, dtype=bool))
         raw_t = res.get("trial_t_end", np.full(c.n_trials, np.nan))
         valid_t = raw_t[use_mask] if np.any(use_mask) else raw_t
-        valid_t = valid_t[np.isfinite(valid_t) & (valid_t >= 75.0)]
+        valid_t = valid_t[np.isfinite(valid_t) & (valid_t >= MIN_REACH_ARRIVAL_MS)]
+        if len(valid_t) > 1:
+            med_t = float(np.median(valid_t))
+            valid_t = valid_t[np.abs(valid_t - med_t) <= ARRIVAL_OUTLIER_THRESH_MS]
 
         if len(valid_t) == 0:
             valid_t = np.array([c.time[-1]])
 
-        if c.is_control:
-            ctrl_t_arr = valid_t
+        all_t_by_cond.append(valid_t)
 
         x_pos = idx_c + 1
         cond_positions.append(x_pos)
@@ -4384,79 +4477,70 @@ def plot_kinematic_dose_response_figure(
         cond_labels.append(base_lbl)
         col = cond_colors[c.cond_num]
 
-        # Top unified legend entry
+        # Top unified legend entry (prominent line and marker for posters)
         n_str = f" (n={c.n_trials})" if SHOW_TRIAL_COUNTS else ""
-        h = plt.Line2D([0], [0], color=col, linestyle="-", linewidth=2.4, marker="o", markersize=6.5)
+        h = plt.Line2D([0], [0], color=col, linestyle="-", linewidth=3.0, marker="o", markersize=8.0)
         legend_handles.append(h)
         legend_labels.append(f"{base_lbl}{n_str}")
 
-        # Boxplot with semi-transparent fill
+        # Boxplot with semi-transparent fill and wider width to compress spacing (fliers disabled)
         ax_a.boxplot(
-            valid_t, positions=[x_pos], widths=0.42, patch_artist=True,
-            boxprops=dict(facecolor=col, alpha=0.32, color=col, linewidth=1.3),
-            medianprops=dict(color="#1b2631", linewidth=2.2),
-            whiskerprops=dict(color=col, linewidth=1.2),
-            capprops=dict(color=col, linewidth=1.2),
-            flierprops=dict(marker="o", markersize=3, color=col, alpha=0.5),
+            valid_t, positions=[x_pos], widths=0.62, patch_artist=True,
+            showfliers=False, showmeans=True, meanline=True,
+            meanprops=dict(color="#1b2631", linewidth=2.6, linestyle="-"),
+            medianprops=dict(linewidth=0),
+            boxprops=dict(facecolor=col, alpha=0.35, color=col, linewidth=1.5),
+            whiskerprops=dict(color=col, linewidth=1.3),
+            capprops=dict(color=col, linewidth=1.3),
         )
-        jitter = np.random.normal(0, 0.05, len(valid_t))
-        ax_a.scatter(x_pos + jitter, valid_t, color=col, s=26, alpha=0.72, edgecolors="#1b2631", linewidths=0.5, zorder=5)
+        jitter = np.random.normal(0, 0.06, len(valid_t))
+        ax_a.scatter(x_pos + jitter, valid_t, color=col, s=36, alpha=0.75, edgecolors="#1b2631", linewidths=0.6, zorder=5)
 
         med_val = float(np.median(valid_t))
         cond_medians_t.append(med_val)
 
-        # Statistical comparison vs Control (Mann-Whitney U test)
-        if not c.is_control and ctrl_t_arr is not None and len(ctrl_t_arr) >= 2 and len(valid_t) >= 2:
+    # Statistical comparison vs Control (Two-sided Mann-Whitney U test with FDR correction)
+    ctrl_t = all_t_by_cond[0]
+    p_vals_a = []
+    stim_x_positions = []
+    for idx_s in range(1, len(cond_list)):
+        stim_t = all_t_by_cond[idx_s]
+        if len(ctrl_t) >= 2 and len(stim_t) >= 2:
             try:
-                p_mw = stats.mannwhitneyu(valid_t, ctrl_t_arr, alternative="two-sided").pvalue
-                if p_mw < 0.001:
-                    star = "***"
-                elif p_mw < 0.01:
-                    star = "**"
-                elif p_mw < 0.05:
-                    star = "*"
-                else:
-                    star = "ns"
-                if star != "ns":
-                    y_star = float(np.max(valid_t)) + 12.0
-                    ax_a.text(x_pos, y_star, star, ha="center", va="bottom", fontsize=10.0, fontweight="bold", color="#c0392b")
+                p_val = float(stats.mannwhitneyu(stim_t, ctrl_t, alternative="two-sided").pvalue)
             except Exception:
-                pass
+                p_val = 1.0
+        else:
+            p_val = 1.0
+        p_vals_a.append(p_val)
+        stim_x_positions.append(idx_s + 1)
 
-    # Median trend line
-    ax_a.plot(cond_positions, cond_medians_t, color="#2c3e50", linestyle="--", linewidth=1.6, alpha=0.80, zorder=4)
+    try:
+        from scipy.stats import false_discovery_control
+        q_vals_a = list(false_discovery_control(p_vals_a, method="bh")) if len(p_vals_a) > 0 else []
+    except Exception:
+        q_vals_a = p_vals_a
 
-    t_end = time_window[1] if time_window else 500.0
-    if ctrl_t_arr is not None and len(ctrl_t_arr) > 0:
-        c_med = float(np.median(ctrl_t_arr))
-        c_q25 = float(np.percentile(ctrl_t_arr, 25))
-        c_q75 = float(np.percentile(ctrl_t_arr, 75))
-        ax_a.axhspan(c_q25, c_q75, color="#f2f4f4", alpha=0.55, zorder=1)
-        ax_a.axhline(c_med, color="#2c3e50", linestyle="--", linewidth=1.3, alpha=0.85, zorder=2)
-        ax_a.text(0.55, c_med + 6.0, f"Ctrl Baseline ({c_med:.0f} ms)", fontsize=8.0, color="#2c3e50", fontweight="bold")
+    sig_comparisons_a = []
+    for x_stim, p_val, q_val in zip(stim_x_positions, p_vals_a, q_vals_a):
+        star = _p_to_star(q_val)
+        if star is not None:
+            sig_comparisons_a.append((1, x_stim, star, q_val))
 
-    ax_a.axhline(t_end, color="#e74c3c", linestyle="--", linewidth=1.4, alpha=0.85, zorder=2)
-    ax_a.text(len(cond_list) + 0.35, t_end, f"Window Cutoff ({int(t_end)} ms)", fontsize=7.5, color="#c0392b", fontweight="bold", va="center", ha="right")
+    flat_t = [v for sub in all_t_by_cond for v in sub if np.isfinite(v) and v >= MIN_REACH_ARRIVAL_MS]
+    min_arr = min(flat_t) if flat_t else MIN_REACH_ARRIVAL_MS
+    max_arr = max(flat_t) if flat_t else 480.0
+    ax_a.set_ylim(min(MIN_REACH_ARRIVAL_MS - 10.0, float(min_arr) - 15.0), max(500.0, float(max_arr) + 30.0))
+    ax_a.set_xlim(0.35, len(cond_list) + 0.65)
 
-    # Time vs Pulse dose-response summary badge (positioned cleanly below top boundary)
-    if len(cond_medians_t) > 1:
-        c_t0 = cond_medians_t[0]
-        max_t = max(cond_medians_t)
-        delta_max_t = max_t - c_t0
-        badge_a = f"Time vs. Pulse Metric:\n• Ctrl Arrival: {c_t0:.0f} ms\n• Max Delay: {delta_max_t:+.0f} ms\n• Dose Prolongation: Yes"
-        ax_a.text(0.04, 0.88, badge_a, transform=ax_a.transAxes, fontsize=8.0, va="top",
-                  bbox=dict(boxstyle="round,pad=0.45", facecolor="#f8f9fa", edgecolor="#cfd8dc", alpha=0.95), zorder=8)
-
-    # Ample headroom so cutoff line and dots do not touch top edge
-    min_arr = min(min([np.min(td) for td in [res.get("trial_t_end", [140]) for res in dir_results.values()] if len(td) > 0 and np.any(np.isfinite(td))], default=120), 120)
-    ax_a.set_ylim(min(120.0, float(min_arr) - 20.0), t_end + 45.0)
+    _add_significance_brackets(ax_a, sig_comparisons_a, min_arr, max_arr)
 
     ax_a.set_xticks(cond_positions)
-    ax_a.set_xticklabels(cond_labels, rotation=22, ha="right", fontsize=8.5)
-    ax_a.set_title("A. Touchscreen Arrival Time vs. Pulse Count (Time vs. Pulse)", fontsize=10.5, fontweight="bold", loc="left")
-    ax_a.set_ylabel("Arrival Time t_max (ms)", fontsize=9.0)
-    ax_a.set_xlabel("Condition / Pulse Count", fontsize=9.0)
-    ax_a.grid(True, linestyle="--", alpha=0.35)
+    ax_a.set_xticklabels(cond_labels, rotation=0, ha="center", fontsize=13.0, fontweight="bold")
+    ax_a.set_title("A. Reach Duration vs. Pulse Count", fontsize=14.0, fontweight="bold", loc="left")
+    ax_a.set_ylabel("Reach Duration (ms)", fontsize=13.5, fontweight="bold")
+    ax_a.set_xlabel("Pulse Count", fontsize=13.5, fontweight="bold")
+    ax_a.tick_params(axis="both", which="major", labelsize=12.0)
     ax_a.spines["top"].set_visible(False)
     ax_a.spines["right"].set_visible(False)
 
@@ -4464,7 +4548,8 @@ def plot_kinematic_dose_response_figure(
     # Panel B: Lateral Steering Deviation (ΔX) vs. Pulse Count
     # -------------------------------------------------------------------------
     cond_medians_dx = []
-    inflight_dx_list = []
+    all_dx_by_cond = []
+
     for idx_c, c in enumerate(cond_list):
         res = dir_results.get(c.cond_num, {})
         use_mask = res.get("is_completed_reach", np.ones(c.n_trials, dtype=bool))
@@ -4474,267 +4559,369 @@ def plot_kinematic_dose_response_figure(
         if len(valid_dx) == 0:
             valid_dx = np.array([0.0])
 
+        all_dx_by_cond.append(valid_dx)
+
         x_pos = idx_c + 1
         col = cond_colors[c.cond_num]
 
         ax_b.boxplot(
-            valid_dx, positions=[x_pos], widths=0.42, patch_artist=True,
-            boxprops=dict(facecolor=col, alpha=0.32, color=col, linewidth=1.3),
-            medianprops=dict(color="#1b2631", linewidth=2.2),
-            whiskerprops=dict(color=col, linewidth=1.2),
-            capprops=dict(color=col, linewidth=1.2),
-            flierprops=dict(marker="o", markersize=3, color=col, alpha=0.5),
+            valid_dx, positions=[x_pos], widths=0.62, patch_artist=True,
+            showfliers=False, showmeans=True, meanline=True,
+            meanprops=dict(color="#1b2631", linewidth=2.6, linestyle="-"),
+            medianprops=dict(linewidth=0),
+            boxprops=dict(facecolor=col, alpha=0.35, color=col, linewidth=1.5),
+            whiskerprops=dict(color=col, linewidth=1.3),
+            capprops=dict(color=col, linewidth=1.3),
         )
-        jitter = np.random.normal(0, 0.05, len(valid_dx))
-        ax_b.scatter(x_pos + jitter, valid_dx, color=col, s=26, alpha=0.72, edgecolors="#1b2631", linewidths=0.5, zorder=5)
+        jitter = np.random.normal(0, 0.06, len(valid_dx))
+        ax_b.scatter(x_pos + jitter, valid_dx, color=col, s=36, alpha=0.75, edgecolors="#1b2631", linewidths=0.6, zorder=5)
 
         cond_medians_dx.append(float(np.median(valid_dx)))
 
-        # In-flight lateral mean shift (t >= 75 ms)
-        mean_dx_t = res.get("mean_dx", None)
-        t_vec = res.get("time", c.time)
-        if mean_dx_t is not None and len(mean_dx_t) > 0:
-            t_mask = (t_vec >= 75.0) & np.isfinite(mean_dx_t)
-            inf_val = float(np.nanmean(mean_dx_t[t_mask])) if np.any(t_mask) else float(np.nanmean(mean_dx_t))
+    # Statistical comparison vs Control (Two-sided Mann-Whitney U test with FDR correction)
+    ctrl_dx = all_dx_by_cond[0]
+    p_vals_b = []
+    for idx_s in range(1, len(cond_list)):
+        stim_dx = all_dx_by_cond[idx_s]
+        if len(ctrl_dx) >= 2 and len(stim_dx) >= 2:
+            try:
+                p_val = float(stats.mannwhitneyu(stim_dx, ctrl_dx, alternative="two-sided").pvalue)
+            except Exception:
+                p_val = 1.0
         else:
-            inf_val = float(np.median(valid_dx))
-        inflight_dx_list.append(inf_val)
-        # Prominent distinct diamond marker with white outline
-        ax_b.scatter([x_pos], [inf_val], marker="D", s=68, color=col, edgecolors="#1b2631", linewidths=1.4, zorder=7)
+            p_val = 1.0
+        p_vals_b.append(p_val)
 
-        # Significance star vs Control
-        p_dx = res.get("p_dx", 1.0)
-        if not c.is_control and p_dx < 0.05:
-            star = "***" if p_dx < 0.001 else ("**" if p_dx < 0.01 else "*")
-            y_s = float(np.max(valid_dx)) + 2.8 if np.median(valid_dx) >= 0 else float(np.min(valid_dx)) - 3.8
-            ax_b.text(x_pos, y_s, star, ha="center", va="center", fontsize=10.0, fontweight="bold", color="#1f77b4")
+    try:
+        from scipy.stats import false_discovery_control
+        q_vals_b = list(false_discovery_control(p_vals_b, method="bh")) if len(p_vals_b) > 0 else []
+    except Exception:
+        q_vals_b = p_vals_b
 
-    ax_b.plot(cond_positions, cond_medians_dx, color="#2c3e50", linestyle="--", linewidth=1.6, alpha=0.80, zorder=4)
-    ax_b.axhline(0.0, color="#2c3e50", linestyle="-", linewidth=1.2, alpha=0.7, zorder=2)
-    ax_b.axhspan(-TARGET_DIAMETER_MM / 2.0, TARGET_DIAMETER_MM / 2.0, color="#eaeded", alpha=0.55, zorder=1)
-    ax_b.axhline(TARGET_DIAMETER_MM / 2.0, color="#b0bec5", linestyle=":", linewidth=1.1, alpha=0.8, zorder=2)
-    ax_b.axhline(-TARGET_DIAMETER_MM / 2.0, color="#b0bec5", linestyle=":", linewidth=1.1, alpha=0.8, zorder=2)
+    sig_comparisons_b = []
+    for x_stim, p_val, q_val, stim_data in zip(stim_x_positions, p_vals_b, q_vals_b, all_dx_by_cond[1:]):
+        mean_shift = abs(float(np.nanmean(stim_data)))
+        # Require statistical significance (q < 0.05) AND mean shift >= 5 mm kinematic jitter threshold
+        if q_val < 0.05 and mean_shift >= MIN_PERTURBATION_THRESH_MM:
+            star = _p_to_star(q_val)
+            if star is not None:
+                sig_comparisons_b.append((1, x_stim, star, q_val))
 
-    # Direction annotations as sleek pill badges
-    y_lims_b = ax_b.get_ylim()
-    span_b = max(abs(y_lims_b[0]), abs(y_lims_b[1]), 14.0) + 4.0
-    ax_b.set_ylim(-span_b, span_b)
-    ax_b.text(0.96, 0.93, "Rightward Veer (ΔX > 0) →", transform=ax_b.transAxes, ha="right", va="top",
-              fontsize=7.8, color="#1f77b4", fontweight="bold",
-              bbox=dict(boxstyle="round,pad=0.35", facecolor="#ebf5fb", edgecolor="#aed6f1", alpha=0.92))
-    ax_b.text(0.96, 0.07, "← Leftward Veer (ΔX < 0)", transform=ax_b.transAxes, ha="right", va="bottom",
-              fontsize=7.8, color="#1f77b4", fontweight="bold",
-              bbox=dict(boxstyle="round,pad=0.35", facecolor="#ebf5fb", edgecolor="#aed6f1", alpha=0.92))
+    flat_dx = [v for sub in all_dx_by_cond for v in sub if np.isfinite(v)]
+    min_dx = min(flat_dx) if flat_dx else -15.0
+    max_dx = max(flat_dx) if flat_dx else 15.0
+
+    # Symmetric bounds for signed deviation (centered at 0, no lopsided scaling)
+    sym_bound_b = max(abs(min_dx), abs(max_dx), 13.0) + 1.5
+    ax_b.set_ylim(-sym_bound_b, sym_bound_b)
+    ax_b.set_xlim(0.35, len(cond_list) + 0.65)
+
+    _add_significance_brackets(ax_b, sig_comparisons_b, -sym_bound_b, max_dx, symmetric=True)
 
     ax_b.set_xticks(cond_positions)
-    ax_b.set_xticklabels(cond_labels, rotation=22, ha="right", fontsize=8.5)
-    ax_b.set_title("B. Lateral Steering Deviation ΔX vs. Pulse Count", fontsize=10.5, fontweight="bold", loc="left")
-    ax_b.set_ylabel("Lateral Deviation ΔX (mm) [Left < 0 < Right]", fontsize=9.0)
-    ax_b.set_xlabel("Condition / Pulse Count", fontsize=9.0)
-    ax_b.grid(True, linestyle="--", alpha=0.35)
+    ax_b.set_xticklabels(cond_labels, rotation=0, ha="center", fontsize=13.0, fontweight="bold")
+    ax_b.set_title("B. Lateral Steering Deviation ΔX vs. Pulse Count", fontsize=14.0, fontweight="bold", loc="left")
+    ax_b.set_ylabel("Lateral Deviation ΔX (mm)", fontsize=13.5, fontweight="bold")
+    ax_b.set_xlabel("Pulse Count", fontsize=13.5, fontweight="bold")
+    ax_b.tick_params(axis="both", which="major", labelsize=12.0)
     ax_b.spines["top"].set_visible(False)
     ax_b.spines["right"].set_visible(False)
 
     # -------------------------------------------------------------------------
-    # Panel C: Vertical Deflection (ΔZ) vs. Pulse Count
+    # Panel C: 2D Endpoint Deviation Vector ||Δr_XZ|| & Variance (or Vertical ΔZ)
     # -------------------------------------------------------------------------
-    cond_medians_dz = []
-    inflight_dz_list = []
-    for idx_c, c in enumerate(cond_list):
-        res = dir_results.get(c.cond_num, {})
-        use_mask = res.get("is_completed_reach", np.ones(c.n_trials, dtype=bool))
-        raw_dz = res.get("end_dz", np.full(c.n_trials, np.nan))
-        valid_dz = raw_dz[use_mask] if np.any(use_mask) else raw_dz
-        valid_dz = valid_dz[np.isfinite(valid_dz)]
-        if len(valid_dz) == 0:
-            valid_dz = np.array([0.0])
+    use_planar_vector = DOSE_PANEL_C_MODE.lower() in ("planar_vector", "combined_variance", "planar_dev", "vector")
 
-        x_pos = idx_c + 1
-        col = cond_colors[c.cond_num]
+    if use_planar_vector:
+        # Combined 2D touchscreen endpoint deviation vector ||Δr_XZ|| = sqrt(ΔX^2 + ΔZ^2) (mm)
+        cond_medians_d2d = []
+        all_d2d_by_cond = []
+        cond_var_2d = []
 
-        ax_c.boxplot(
-            valid_dz, positions=[x_pos], widths=0.42, patch_artist=True,
-            boxprops=dict(facecolor=col, alpha=0.32, color=col, linewidth=1.3),
-            medianprops=dict(color="#1b2631", linewidth=2.2),
-            whiskerprops=dict(color=col, linewidth=1.2),
-            capprops=dict(color=col, linewidth=1.2),
-            flierprops=dict(marker="o", markersize=3, color=col, alpha=0.5),
-        )
-        jitter = np.random.normal(0, 0.05, len(valid_dz))
-        ax_c.scatter(x_pos + jitter, valid_dz, color=col, s=26, alpha=0.72, edgecolors="#1b2631", linewidths=0.5, zorder=5)
+        for idx_c, c in enumerate(cond_list):
+            res = dir_results.get(c.cond_num, {})
+            use_mask = res.get("is_completed_reach", np.ones(c.n_trials, dtype=bool))
+            raw_dx = res.get("end_dx", np.full(c.n_trials, np.nan))
+            raw_dz = res.get("end_dz", np.full(c.n_trials, np.nan))
+            raw_cx = res.get("abs_end_x", np.full(c.n_trials, np.nan))
+            raw_cz = res.get("abs_end_z", np.full(c.n_trials, np.nan))
 
-        cond_medians_dz.append(float(np.median(valid_dz)))
+            raw_d2d = np.sqrt(raw_dx**2 + raw_dz**2)
+            valid_d2d = raw_d2d[use_mask] if np.any(use_mask) else raw_d2d
+            valid_d2d = valid_d2d[np.isfinite(valid_d2d)]
+            if len(valid_d2d) == 0:
+                valid_d2d = np.array([0.0])
+            all_d2d_by_cond.append(valid_d2d)
 
-        # In-flight vertical mean shift (t >= 75 ms)
-        mean_dz_t = res.get("mean_dz", None)
-        t_vec = res.get("time", c.time)
-        if mean_dz_t is not None and len(mean_dz_t) > 0:
-            t_mask = (t_vec >= 75.0) & np.isfinite(mean_dz_t)
-            inf_val = float(np.nanmean(mean_dz_t[t_mask])) if np.any(t_mask) else float(np.nanmean(mean_dz_t))
-        else:
-            inf_val = float(np.median(valid_dz))
-        inflight_dz_list.append(inf_val)
-        # Prominent distinct diamond marker with white outline
-        ax_c.scatter([x_pos], [inf_val], marker="D", s=68, color=col, edgecolors="#1b2631", linewidths=1.4, zorder=7)
+            # Compute condition total spatial variance: Var(X) + Var(Z) (mm²)
+            valid_cx = raw_cx[use_mask] if np.any(use_mask) else raw_cx
+            valid_cz = raw_cz[use_mask] if np.any(use_mask) else raw_cz
+            v_pts = np.isfinite(valid_cx) & np.isfinite(valid_cz)
+            if np.sum(v_pts) > 1:
+                v_total = float(np.var(valid_cx[v_pts], ddof=1) + np.var(valid_cz[v_pts], ddof=1))
+            else:
+                v_total = 0.0
+            cond_var_2d.append(v_total)
 
-        # Significance star vs Control
-        p_dz = res.get("p_dz", 1.0)
-        if not c.is_control and p_dz < 0.05:
-            star = "***" if p_dz < 0.001 else ("**" if p_dz < 0.01 else "*")
-            y_s = float(np.max(valid_dz)) + 2.8 if np.median(valid_dz) >= 0 else float(np.min(valid_dz)) - 3.8
-            ax_c.text(x_pos, y_s, star, ha="center", va="center", fontsize=10.0, fontweight="bold", color="#2ca02c")
+            x_pos = idx_c + 1
+            col = cond_colors[c.cond_num]
 
-    ax_c.plot(cond_positions, cond_medians_dz, color="#2c3e50", linestyle="--", linewidth=1.6, alpha=0.80, zorder=4)
-    ax_c.axhline(0.0, color="#2c3e50", linestyle="-", linewidth=1.2, alpha=0.7, zorder=2)
-    ax_c.axhspan(-TARGET_DIAMETER_MM / 2.0, TARGET_DIAMETER_MM / 2.0, color="#eaeded", alpha=0.55, zorder=1)
-    ax_c.axhline(TARGET_DIAMETER_MM / 2.0, color="#b0bec5", linestyle=":", linewidth=1.1, alpha=0.8, zorder=2)
-    ax_c.axhline(-TARGET_DIAMETER_MM / 2.0, color="#b0bec5", linestyle=":", linewidth=1.1, alpha=0.8, zorder=2)
+            ax_c.boxplot(
+                valid_d2d, positions=[x_pos], widths=0.62, patch_artist=True,
+                showfliers=False, showmeans=True, meanline=True,
+                meanprops=dict(color="#1b2631", linewidth=2.6, linestyle="-"),
+                medianprops=dict(linewidth=0),
+                boxprops=dict(facecolor=col, alpha=0.35, color=col, linewidth=1.5),
+                whiskerprops=dict(color=col, linewidth=1.3),
+                capprops=dict(color=col, linewidth=1.3),
+            )
+            jitter = np.random.normal(0, 0.06, len(valid_d2d))
+            ax_c.scatter(x_pos + jitter, valid_d2d, color=col, s=36, alpha=0.75, edgecolors="#1b2631", linewidths=0.6, zorder=5)
+            cond_medians_d2d.append(float(np.median(valid_d2d)))
 
-    y_lims_c = ax_c.get_ylim()
-    span_c = max(abs(y_lims_c[0]), abs(y_lims_c[1]), 14.0) + 4.0
-    ax_c.set_ylim(-span_c, span_c)
-    ax_c.text(0.96, 0.93, "Upward Lift (ΔZ > 0) ↑", transform=ax_c.transAxes, ha="right", va="top",
-              fontsize=7.8, color="#2ca02c", fontweight="bold",
-              bbox=dict(boxstyle="round,pad=0.35", facecolor="#eafaf1", edgecolor="#a9dfbf", alpha=0.92))
-    ax_c.text(0.96, 0.07, "↓ Downward Dip (ΔZ < 0)", transform=ax_c.transAxes, ha="right", va="bottom",
-              fontsize=7.8, color="#2ca02c", fontweight="bold",
-              bbox=dict(boxstyle="round,pad=0.35", facecolor="#eafaf1", edgecolor="#a9dfbf", alpha=0.92))
+        # 5 mm Kinematic Jitter / Target Boundary Reference Line
+        ax_c.axhline(MIN_PERTURBATION_THRESH_MM, color="#e74c3c", linestyle="--", linewidth=1.5, alpha=0.85, zorder=2)
+        ax_c.text(0.55, MIN_PERTURBATION_THRESH_MM + 0.35, "5 mm Target Radius Threshold", color="#c0392b", fontsize=8.5, fontweight="bold", ha="left", zorder=3)
+
+        # Statistical comparison vs Control
+        ctrl_d2d = all_d2d_by_cond[0]
+        p_vals_c = []
+        for idx_s in range(1, len(cond_list)):
+            stim_d2d = all_d2d_by_cond[idx_s]
+            if len(ctrl_d2d) >= 2 and len(stim_d2d) >= 2:
+                try:
+                    p_val = float(stats.mannwhitneyu(stim_d2d, ctrl_d2d, alternative="two-sided").pvalue)
+                except Exception:
+                    p_val = 1.0
+            else:
+                p_val = 1.0
+            p_vals_c.append(p_val)
+
+        try:
+            from scipy.stats import false_discovery_control
+            q_vals_c = list(false_discovery_control(p_vals_c, method="bh")) if len(p_vals_c) > 0 else []
+        except Exception:
+            q_vals_c = p_vals_c
+
+        sig_comparisons_c = []
+        for x_stim, p_val, q_val, stim_data in zip(stim_x_positions, p_vals_c, q_vals_c, all_d2d_by_cond[1:]):
+            mean_shift = abs(float(np.nanmean(stim_data)))
+            if q_val < 0.05 and mean_shift >= MIN_PERTURBATION_THRESH_MM:
+                star = _p_to_star(q_val)
+                if star is not None:
+                    sig_comparisons_c.append((1, x_stim, star, q_val))
+
+        flat_d2d = [v for sub in all_d2d_by_cond for v in sub if np.isfinite(v)]
+        max_d2d = max(flat_d2d) if flat_d2d else 12.0
+        ax_c.set_ylim(0.0, max(max_d2d + 3.5, 14.0))
+        ax_c.set_xlim(0.35, len(cond_list) + 0.65)
+
+        _add_significance_brackets(ax_c, sig_comparisons_c, 0.0, max_d2d, symmetric=False)
+
+        ax_c.set_title("C. 2D Endpoint Deviation Vector ||Δr_XZ|| vs. Pulse Count", fontsize=14.0, fontweight="bold", loc="left")
+        ax_c.set_ylabel("2D Deviation ||Δr_XZ|| (mm)", fontsize=13.5, fontweight="bold")
+    else:
+        # Legacy Panel C: Vertical Deflection ΔZ vs. Pulse Count with symmetric ± limits
+        cond_medians_dz = []
+        all_dz_by_cond = []
+
+        for idx_c, c in enumerate(cond_list):
+            res = dir_results.get(c.cond_num, {})
+            use_mask = res.get("is_completed_reach", np.ones(c.n_trials, dtype=bool))
+            raw_dz = res.get("end_dz", np.full(c.n_trials, np.nan))
+            valid_dz = raw_dz[use_mask] if np.any(use_mask) else raw_dz
+            valid_dz = valid_dz[np.isfinite(valid_dz)]
+            if len(valid_dz) == 0:
+                valid_dz = np.array([0.0])
+
+            all_dz_by_cond.append(valid_dz)
+
+            x_pos = idx_c + 1
+            col = cond_colors[c.cond_num]
+
+            ax_c.boxplot(
+                valid_dz, positions=[x_pos], widths=0.62, patch_artist=True,
+                showfliers=False, showmeans=True, meanline=True,
+                meanprops=dict(color="#1b2631", linewidth=2.6, linestyle="-"),
+                medianprops=dict(linewidth=0),
+                boxprops=dict(facecolor=col, alpha=0.35, color=col, linewidth=1.5),
+                whiskerprops=dict(color=col, linewidth=1.3),
+                capprops=dict(color=col, linewidth=1.3),
+            )
+            jitter = np.random.normal(0, 0.06, len(valid_dz))
+            ax_c.scatter(x_pos + jitter, valid_dz, color=col, s=36, alpha=0.75, edgecolors="#1b2631", linewidths=0.6, zorder=5)
+
+            cond_medians_dz.append(float(np.median(valid_dz)))
+
+        ctrl_dz = all_dz_by_cond[0]
+        p_vals_c = []
+        for idx_s in range(1, len(cond_list)):
+            stim_dz = all_dz_by_cond[idx_s]
+            if len(ctrl_dz) >= 2 and len(stim_dz) >= 2:
+                try:
+                    p_val = float(stats.mannwhitneyu(stim_dz, ctrl_dz, alternative="two-sided").pvalue)
+                except Exception:
+                    p_val = 1.0
+            else:
+                p_val = 1.0
+            p_vals_c.append(p_val)
+
+        try:
+            from scipy.stats import false_discovery_control
+            q_vals_c = list(false_discovery_control(p_vals_c, method="bh")) if len(p_vals_c) > 0 else []
+        except Exception:
+            q_vals_c = p_vals_c
+
+        sig_comparisons_c = []
+        for x_stim, p_val, q_val, stim_data in zip(stim_x_positions, p_vals_c, q_vals_c, all_dz_by_cond[1:]):
+            mean_shift = abs(float(np.nanmean(stim_data)))
+            if q_val < 0.05 and mean_shift >= MIN_PERTURBATION_THRESH_MM:
+                star = _p_to_star(q_val)
+                if star is not None:
+                    sig_comparisons_c.append((1, x_stim, star, q_val))
+
+        flat_dz = [v for sub in all_dz_by_cond for v in sub if np.isfinite(v)]
+        min_dz = min(flat_dz) if flat_dz else -15.0
+        max_dz = max(flat_dz) if flat_dz else 15.0
+
+        # Enforce unified symmetric bound across both Lateral ΔX and Vertical ΔZ so neither is lopsided
+        sym_bound_common = max(abs(min_dx), abs(max_dx), abs(min_dz), abs(max_dz), 13.0) + 1.5
+        ax_b.set_ylim(-sym_bound_common, sym_bound_common)
+        ax_c.set_ylim(-sym_bound_common, sym_bound_common)
+        ax_c.set_xlim(0.35, len(cond_list) + 0.65)
+
+        _add_significance_brackets(ax_c, sig_comparisons_c, -sym_bound_common, max_dz, symmetric=True)
+
+        ax_c.set_title("C. Vertical Deflection ΔZ vs. Pulse Count", fontsize=14.0, fontweight="bold", loc="left")
+        ax_c.set_ylabel("Vertical Deviation ΔZ (mm)", fontsize=13.5, fontweight="bold")
 
     ax_c.set_xticks(cond_positions)
-    ax_c.set_xticklabels(cond_labels, rotation=22, ha="right", fontsize=8.5)
-    ax_c.set_title("C. Vertical Deflection ΔZ vs. Pulse Count", fontsize=10.5, fontweight="bold", loc="left")
-    ax_c.set_ylabel("Vertical Deviation ΔZ (mm) [Dip < 0 < Lift]", fontsize=9.0)
-    ax_c.set_xlabel("Condition / Pulse Count", fontsize=9.0)
-    ax_c.grid(True, linestyle="--", alpha=0.35)
+    ax_c.set_xticklabels(cond_labels, rotation=0, ha="center", fontsize=13.0, fontweight="bold")
+    ax_c.set_xlabel("Pulse Count", fontsize=13.5, fontweight="bold")
+    ax_c.tick_params(axis="both", which="major", labelsize=12.0)
     ax_c.spines["top"].set_visible(False)
     ax_c.spines["right"].set_visible(False)
 
     # -------------------------------------------------------------------------
-    # Panel D: Directional RSA Separation (S_X, S_Z, S_3D) & Net 3D Deflection
+    # Panel D: Touchscreen Endpoint Perturbations (10 mm Target, X vs. Z)
     # -------------------------------------------------------------------------
-    try:
-        conds_prog = [
-            c.slice_to_progress(RSA_LATE_PROGRESS_RANGE, n_progress=RSA_N_PROGRESS_SAMPLES, mode=RSA_PROGRESS_MODE)
-            for c in conditions
-        ]
-        RDM_x, sz_x, _ = build_behavioral_rdm(conds_prog, metric="euclidean", axis="x", align_by_progress=False, aggregation=RSA_DISTANCE_AGGREGATION)
-        S_x, _, _ = compute_pairwise_silhouette_matrix(RDM_x, sz_x, n_perm=0)
-
-        RDM_z, sz_z, _ = build_behavioral_rdm(conds_prog, metric="euclidean", axis="z", align_by_progress=False, aggregation=RSA_DISTANCE_AGGREGATION)
-        S_z, _, _ = compute_pairwise_silhouette_matrix(RDM_z, sz_z, n_perm=0)
-
-        RDM_3d, sz_3d, _ = build_behavioral_rdm(conds_prog, metric="euclidean", axis="3d", align_by_progress=False, aggregation=RSA_DISTANCE_AGGREGATION)
-        S_3d, _, _ = compute_pairwise_silhouette_matrix(RDM_3d, sz_3d, n_perm=0)
-    except Exception as e:
-        _log(f"Directional RSA computation note: {e}")
-        S_x = np.zeros((len(conditions), len(conditions)))
-        S_z = np.zeros((len(conditions), len(conditions)))
-        S_3d = np.zeros((len(conditions), len(conditions)))
-
-    # Primary axis: Silhouette separation vs Control
-    stim_positions = cond_positions[1:] if len(cond_positions) > 1 else cond_positions
-    stim_labels = cond_labels[1:] if len(cond_labels) > 1 else cond_labels
-    s_x_vals = [float(S_x[0, k]) if k < S_x.shape[0] else 0.0 for k in range(1, len(cond_list))]
-    s_z_vals = [float(S_z[0, k]) if k < S_z.shape[0] else 0.0 for k in range(1, len(cond_list))]
-    s_3d_vals = [float(S_3d[0, k]) if k < S_3d.shape[0] else 0.0 for k in range(1, len(cond_list))]
-
-    if not s_x_vals:
-        s_x_vals = [0.0]
-        s_z_vals = [0.0]
-        s_3d_vals = [0.0]
-
-    # Twin axis for Net 3D Deflection (mm)
-    ax_d_twin = ax_d.twinx()
-
-    net_dnorm_vals = []
-    for k in range(1, len(cond_list)):
-        c = cond_list[k]
-        res = dir_results.get(c.cond_num, {})
-        use_mask = res.get("is_completed_reach", np.ones(c.n_trials, dtype=bool))
-        raw_norm = res.get("end_norm", np.full(c.n_trials, np.nan))
-        valid_norm = raw_norm[use_mask] if np.any(use_mask) else raw_norm
-        valid_norm = valid_norm[np.isfinite(valid_norm)]
-        net_dnorm_vals.append(float(np.median(valid_norm)) if len(valid_norm) > 0 else 0.0)
-
-    if not net_dnorm_vals:
-        net_dnorm_vals = [0.0]
-
-    # Plot Net 3D bars in background without confusing cross-plot lines
-    bar_width = 0.38
-    b_bars = ax_d_twin.bar(stim_positions, net_dnorm_vals, width=bar_width, color="#bdc3c7", alpha=0.35,
-                           edgecolor="#95a5a6", linewidth=0.8, label="Net 3D Deflection ||Δr|| (mm)", zorder=1)
-    # Shaded band on twin axis for target radius (0 to 5 mm)
-    ax_d_twin.axhspan(0.0, TARGET_DIAMETER_MM / 2.0, color="#eaeded", alpha=0.45, zorder=0)
-    ax_d_twin.set_ylabel("Net 3D Deflection ||Δr|| (mm)", fontsize=9.0, color="#7f8c8d")
-    ax_d_twin.tick_params(axis="y", labelcolor="#7f8c8d")
-    max_dnorm = max(net_dnorm_vals + [TARGET_DIAMETER_MM * 1.5])
-    ax_d_twin.set_ylim(0.0, max(max_dnorm, 20.0))
-
-    # Chance level band on Silhouette primary axis (S <= 0)
-    ax_d.axhspan(-0.25, 0.0, color="#f8f9fa", alpha=0.65, zorder=1)
-    ax_d.axhline(0.0, color="#7f8c8d", linestyle="-", linewidth=1.2, alpha=0.75, zorder=2)
-
-    # Plot Directional RSA curves on primary axis
-    h_x, = ax_d.plot(stim_positions, s_x_vals, marker="o", markersize=7.5, linewidth=2.3, color="#1f77b4",
-                     label="Lateral-X Silhouette (S_X)", zorder=5)
-    h_z, = ax_d.plot(stim_positions, s_z_vals, marker="^", markersize=8.0, linewidth=2.3, color="#2ca02c",
-                     label="Vertical-Z Silhouette (S_Z)", zorder=5)
-    h_3d, = ax_d.plot(stim_positions, s_3d_vals, marker="s", markersize=6.8, linewidth=1.9, color="#34495e",
-                      linestyle="--", label="Isotropic 3D Silhouette (S_3D)", zorder=4)
-
-    # Determine winning axis and annotate peak
-    max_sx = max(s_x_vals) if s_x_vals else 0.0
-    max_sz = max(s_z_vals) if s_z_vals else 0.0
-    max_s3d = max(s_3d_vals) if s_3d_vals else 0.0
-
-    if max_sz > max_sx and max_sz >= 0.15:
-        p_idx = int(np.argmax(s_z_vals))
-        ax_d.scatter([stim_positions[p_idx]], [s_z_vals[p_idx]], s=120, facecolor="none", edgecolor="#2ca02c", linewidth=2.2, zorder=7)
-        ax_d.annotate(f"Peak S_Z = {s_z_vals[p_idx]:+.3f}", xy=(stim_positions[p_idx], s_z_vals[p_idx]),
-                      xytext=(0, 10), textcoords="offset points", ha="center", fontsize=8.0, fontweight="bold", color="#2ca02c")
-        win_title = "Primary Steering: Vertical Dip"
-    elif max_sx > max_sz and max_sx >= 0.15:
-        p_idx = int(np.argmax(s_x_vals))
-        ax_d.scatter([stim_positions[p_idx]], [s_x_vals[p_idx]], s=120, facecolor="none", edgecolor="#1f77b4", linewidth=2.2, zorder=7)
-        ax_d.annotate(f"Peak S_X = {s_x_vals[p_idx]:+.3f}", xy=(stim_positions[p_idx], s_x_vals[p_idx]),
-                      xytext=(0, 10), textcoords="offset points", ha="center", fontsize=8.0, fontweight="bold", color="#1f77b4")
-        win_title = "Primary Steering: Lateral Veer"
-    else:
-        win_title = "Directional RSA Decomposition"
-
-    ax_d.set_ylabel("Condition Separation vs. Control (Silhouette S)", fontsize=9.0, color="#1b2631")
-    ax_d.set_xlabel("Condition / Pulse Count", fontsize=9.0)
-    ax_d.set_xticks(stim_positions)
-    ax_d.set_xticklabels(stim_labels, rotation=22, ha="right", fontsize=8.5)
-
-    all_s = s_x_vals + s_z_vals + s_3d_vals
-    min_s = min(all_s + [-0.1])
-    max_s = max(all_s + [0.3])
-    ax_d.set_ylim(min_s - 0.05, max(max_s + 0.12, 0.45))
-    ax_d.set_title(f"D. Directional RSA Decomposition ({win_title})", fontsize=10.5, fontweight="bold", loc="left")
-    ax_d.grid(True, linestyle="--", alpha=0.35)
-    ax_d.spines["top"].set_visible(False)
-
-    badge_d = (
-        f"{win_title}:\n"
-        f"• Lateral-X Separation: S_X = {max_sx:+.3f}\n"
-        f"• Vertical-Z Separation: S_Z = {max_sz:+.3f}\n"
-        f"• Isotropic 3D Euclidean: S_3D = {max_s3d:+.3f}\n"
-        f"Isolates steering axis from 3D speed/depth noise"
+    tgt_info = resolve_target_spatial_anchor(
+        target=target,
+        conditions=conditions,
+        target_radius_mm=TARGET_RADIUS_MM,
     )
-    ax_d.text(0.04, 0.95, badge_d, transform=ax_d.transAxes, fontsize=8.0, va="top",
-              bbox=dict(boxstyle="round,pad=0.45", facecolor="#f8f9fa", edgecolor="#cfd8dc", alpha=0.95), zorder=8)
+    tgt_x = float(tgt_info["target_x"])
+    tgt_z = float(tgt_info["target_z"])
+    tgt_r = float(tgt_info.get("target_radius_mm", TARGET_RADIUS_MM))
+    tgt_d = float(tgt_info.get("target_diameter_mm", 2.0 * tgt_r))
 
-    lines_d = [h_x, h_z, h_3d, b_bars]
-    labels_d = ["Lateral-X Silhouette (S_X)", "Vertical-Z Silhouette (S_Z)", "Isotropic 3D Silhouette (S_3D)", "Net 3D Deflection ||Δr||"]
-    ax_d.legend(lines_d, labels_d, loc="lower right", framealpha=0.92, fontsize=7.8)
+    # 10 mm Physical target circle patch (keep dashed outline)
+    target_patch = Circle(
+        (tgt_x, tgt_z), radius=tgt_r,
+        facecolor="#f2f4f4", edgecolor="#5d6d7e",
+        linestyle="--", linewidth=1.8, alpha=0.55, zorder=1,
+    )
+    ax_d.add_patch(target_patch)
 
-    # Unified Header Legend at Top
+    # Center crosshair (+) at target anchor
+    ax_d.plot([tgt_x - 1.5, tgt_x + 1.5], [tgt_z, tgt_z], color="#5d6d7e", linewidth=1.3, zorder=2)
+    ax_d.plot([tgt_x, tgt_x], [tgt_z - 1.5, tgt_z + 1.5], color="#5d6d7e", linewidth=1.3, zorder=2)
+
+    all_end_x = [tgt_x - tgt_r - 2.0, tgt_x + tgt_r + 2.0]
+    all_end_z = [tgt_z - tgt_r - 2.0, tgt_z + tgt_r + 2.0]
+
+    ellipse_mode_d = ELLIPSE_SCALE if ELLIPSE_SCALE else "2se"
+    scale_label_d = "2-SD" if "sd" in str(ellipse_mode_d).lower() else "2-SE"
+
+    # Plot Control endpoints and dispersion ellipse
+    if ctrl_conds:
+        c_ctrl = ctrl_conds[0]
+        res_ctrl = dir_results.get(c_ctrl.cond_num, {})
+        use_c = res_ctrl.get("is_completed_reach", np.ones(c_ctrl.n_trials, dtype=bool))
+        raw_cx = res_ctrl.get("abs_end_x", np.full(c_ctrl.n_trials, np.nan))
+        raw_cz = res_ctrl.get("abs_end_z", np.full(c_ctrl.n_trials, np.nan))
+        cx_pts = raw_cx[use_c] if np.any(use_c) else raw_cx
+        cz_pts = raw_cz[use_c] if np.any(use_c) else raw_cz
+        v_c = np.isfinite(cx_pts) & np.isfinite(cz_pts)
+        cx_pts, cz_pts = cx_pts[v_c], cz_pts[v_c]
+
+        if len(cx_pts) > 0:
+            col_c = cond_colors[c_ctrl.cond_num]
+            # Control endpoint scatter dots (higher opacity for poster clarity)
+            ax_d.scatter(cx_pts, cz_pts, color=col_c, alpha=0.65, s=36, edgecolors="#1b2631", linewidths=0.5, zorder=4)
+
+            # Control center marker (diamond)
+            c_mx = float(np.median(cx_pts))
+            c_mz = float(np.median(cz_pts))
+            ax_d.scatter([c_mx], [c_mz], marker="D", s=95, color=col_c, edgecolors="#1b2631", linewidths=1.6, zorder=8)
+
+            # Control dispersion ellipse (no dotted outline: edgecolor="none")
+            draw_confidence_ellipse(
+                ax_d, cx_pts, cz_pts,
+                n_scale=1.0, scale_mode=ellipse_mode_d,
+                edgecolor="none", facecolor=col_c, alpha=0.18,
+                center=(c_mx, c_mz), linewidth=0, zorder=3,
+            )
+            all_end_x.extend([c_mx] + list(cx_pts))
+            all_end_z.extend([c_mz] + list(cz_pts))
+
+    # Plot each stimulation condition
+    for c in stim_conds:
+        res = dir_results.get(c.cond_num, {})
+        use_s = res.get("is_completed_reach", np.ones(c.n_trials, dtype=bool))
+        raw_sx = res.get("abs_end_x", np.full(c.n_trials, np.nan))
+        raw_sz = res.get("abs_end_z", np.full(c.n_trials, np.nan))
+        sx_pts = raw_sx[use_s] if np.any(use_s) else raw_sx
+        sz_pts = raw_sz[use_s] if np.any(use_s) else raw_sz
+        v_s = np.isfinite(sx_pts) & np.isfinite(sz_pts)
+        sx_pts, sz_pts = sx_pts[v_s], sz_pts[v_s]
+
+        if len(sx_pts) == 0:
+            continue
+
+        col = cond_colors[c.cond_num]
+        # Scatter dots (higher opacity for poster clarity)
+        ax_d.scatter(sx_pts, sz_pts, color=col, alpha=0.70, s=36, edgecolors="#1b2631", linewidths=0.5, zorder=5)
+
+        # Centroid marker (circle)
+        s_mx = float(np.median(sx_pts))
+        s_mz = float(np.median(sz_pts))
+        ax_d.scatter([s_mx], [s_mz], marker="o", s=85, color=col, edgecolors="#1b2631", linewidths=1.5, zorder=9)
+
+        # Dispersion ellipse (no dotted outline: edgecolor="none")
+        draw_confidence_ellipse(
+            ax_d, sx_pts, sz_pts,
+            n_scale=1.0, scale_mode=ellipse_mode_d,
+            edgecolor="none", facecolor=col, alpha=0.20,
+            center=(s_mx, s_mz), linewidth=0, zorder=3,
+        )
+        all_end_x.extend([s_mx] + list(sx_pts))
+        all_end_z.extend([s_mz] + list(sz_pts))
+
+    # Title with embedded target and ellipse specifications
+    ax_d.set_title(f"D. Touchscreen Endpoint Perturbations (10 mm Target, {scale_label_d} Ellipses)", fontsize=14.0, fontweight="bold", loc="left")
+    ax_d.set_xlabel("Lateral X (mm)", fontsize=13.5, fontweight="bold")
+    ax_d.set_ylabel("Vertical Z (mm)", fontsize=13.5, fontweight="bold")
+    ax_d.tick_params(axis="both", which="major", labelsize=12.0)
+    ax_d.spines["top"].set_visible(False)
+    ax_d.spines["right"].set_visible(False)
+
+    # Equal aspect ratio so the 10 mm target is truly circular
+    min_x, max_x = min(all_end_x), max(all_end_x)
+    min_z, max_z = min(all_end_z), max(all_end_z)
+    mid_x = (min_x + max_x) / 2.0
+    mid_z = (min_z + max_z) / 2.0
+    half_rng = max(max_x - min_x, max_z - min_z, 14.0) / 2.0 + 2.5
+    ax_d.set_xlim(mid_x - half_rng, mid_x + half_rng)
+    ax_d.set_ylim(mid_z - half_rng, mid_z + half_rng)
+    ax_d.set_aspect("equal", adjustable="datalim")
+
+    # Unified Header Legend at Top (placed cleanly between suptitle and subplots)
     ncol = min(8, len(legend_labels))
     fig.legend(
         legend_handles, legend_labels,
-        loc="upper center", bbox_to_anchor=(0.5, 0.965),
-        ncol=ncol, frameon=True, framealpha=0.95, fontsize=8.5,
+        loc="upper center", bbox_to_anchor=(0.5, 0.932),
+        ncol=ncol, frameon=True, framealpha=0.95, fontsize=12.0,
     )
 
     # Figure Suptitle & Subtitle
@@ -4742,16 +4929,16 @@ def plot_kinematic_dose_response_figure(
     suptitle_text = f"Kinematic Dose-Response & Directional Perturbations — Target {target} ({time_str})"
     if fixed_params_summary:
         suptitle_text += f"\n[{fixed_params_summary}]"
-    fig.suptitle(suptitle_text, fontsize=12.2, fontweight="bold", y=0.995)
+    fig.suptitle(suptitle_text, fontsize=16.5, fontweight="bold", y=0.985)
 
     # Footer annotation
     fig.text(
-        0.5, 0.02,
-        "◆ Diamond marker = In-flight trajectory centroid (t ≥ 75 ms)   |   Boxplot/Dots = Physical touchscreen arrival endpoints   |   * p<0.05, ** p<0.01, *** p<0.001 vs. Control (Mann-Whitney U)",
-        ha="center", va="center", fontsize=8.0, color="#5d6d7e", style="italic",
+        0.5, 0.022,
+        "Solid bars = Condition Mean; Box = IQR; Dots = Individual trials   |   Top brackets: * q<0.05, ** q<0.01, *** q<0.001 vs. Control (Mann-Whitney U with FDR; mean shift ≥ 5 mm threshold)",
+        ha="center", va="center", fontsize=9.5, color="#5d6d7e", style="italic",
     )
 
-    fig.subplots_adjust(top=0.90, bottom=0.06, left=0.07, right=0.93)
+    fig.subplots_adjust(top=0.865, bottom=0.08, left=0.07, right=0.95)
 
     if save_path:
         out_file = save_path.with_suffix(f".{FIG_FORMAT.lower()}")
@@ -5034,6 +5221,435 @@ def run_behavioral_rsa_for_target(
     }
 
 
+
+
+def plot_bilateral_kinematic_comparison_figure(
+    target_a_data: Dict[str, Any],
+    target_b_data: Dict[str, Any],
+    fixed_params_summary: str = "",
+    save_path: Optional[Path] = None,
+) -> Optional[plt.Figure]:
+    """
+    Bilateral Kinematic Comparison Figure (Target A Left vs. Target B Right):
+        Top Row (Reach Duration Modulation):
+            Panel A: Left Reaches (Target A) — Reach Duration vs. Pulse Count
+            Panel B: Right Reaches (Target B) — Reach Duration vs. Pulse Count
+            (Panels A & B share identical y-limits and unified straight significance line heights)
+        Bottom Row (Spatial Invariance: 2D Endpoint Deviation & Variance):
+            Panel C: Left Reaches (Target A) — 2D Endpoint Deviation Vector ||Δr_XZ|| (0-28 mm, shaded 5 mm target zone)
+                     ns bracket positioned at top, above zero-centered (ΔX, ΔZ) circular target inset
+            Panel D: Right Reaches (Target B) — 2D Endpoint Deviation Vector ||Δr_XZ|| (0-28 mm, shaded 5 mm target zone)
+                     ns bracket positioned at top, above zero-centered (ΔX, ΔZ) circular target inset
+    """
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+
+    conds_a: List[ReachCondition] = target_a_data.get("conditions", [])
+    conds_b: List[ReachCondition] = target_b_data.get("conditions", [])
+    dir_a = target_a_data.get("dir_results", {})
+    dir_b = target_b_data.get("dir_results", {})
+
+    if not conds_a or not conds_b:
+        _log("Bilateral comparison requires valid data for both Target A and Target B; skipping.")
+        return None
+
+    ctrl_a = next((c for c in conds_a if c.is_control), None)
+    ctrl_b = next((c for c in conds_b if c.is_control), None)
+    stim_a = [c for c in conds_a if not c.is_control]
+    stim_b = [c for c in conds_b if not c.is_control]
+
+    cond_list_a = ([ctrl_a] if ctrl_a else []) + sorted(stim_a, key=lambda c: c.pulse_count or 0)
+    cond_list_b = ([ctrl_b] if ctrl_b else []) + sorted(stim_b, key=lambda c: c.pulse_count or 0)
+
+    stim_color_pool = [
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd", "#17becf", "#8c564b", "#e377c2", "#bcbd22", "#34495e"
+    ]
+    cond_colors = {}
+    stim_idx = 0
+    for c in cond_list_a:
+        if c.is_control:
+            cond_colors[c.cond_num] = COLOR_CTRL if "COLOR_CTRL" in globals() else "#d32f2f"
+        else:
+            cond_colors[c.cond_num] = stim_color_pool[stim_idx % len(stim_color_pool)]
+            stim_idx += 1
+    for c in cond_list_b:
+        if c.cond_num not in cond_colors:
+            if c.is_control:
+                cond_colors[c.cond_num] = COLOR_CTRL if "COLOR_CTRL" in globals() else "#d32f2f"
+            else:
+                cond_colors[c.cond_num] = stim_color_pool[stim_idx % len(stim_color_pool)]
+                stim_idx += 1
+
+    fig = plt.figure(figsize=(16.5, 12.5), dpi=FIG_DPI)
+    gs = fig.add_gridspec(2, 2, hspace=0.38, wspace=0.28)
+
+    ax_a = fig.add_subplot(gs[0, 0])
+    ax_b = fig.add_subplot(gs[0, 1])
+    ax_c = fig.add_subplot(gs[1, 0])
+    ax_d = fig.add_subplot(gs[1, 1])
+
+    legend_handles = []
+    legend_labels = []
+
+    def _p_to_star(p):
+        if p < 0.001:
+            return "***"
+        elif p < 0.01:
+            return "**"
+        elif p < 0.05:
+            return "*"
+        return None
+
+    def _extract_target_kinematics(cond_list, dir_results):
+        all_t = []
+        all_d2d = []
+        all_cx = []
+        all_cz = []
+        cond_labels = []
+        cond_positions = []
+        for idx_c, c in enumerate(cond_list):
+            res = dir_results.get(c.cond_num, {})
+            use_mask = res.get("is_completed_reach", np.ones(c.n_trials, dtype=bool))
+
+            # Reach duration
+            raw_t = res.get("trial_t_end", np.full(c.n_trials, np.nan))
+            valid_t = raw_t[use_mask] if np.any(use_mask) else raw_t
+            valid_t = valid_t[np.isfinite(valid_t) & (valid_t >= MIN_REACH_ARRIVAL_MS)]
+            if len(valid_t) > 1:
+                med_t = float(np.median(valid_t))
+                valid_t = valid_t[np.abs(valid_t - med_t) <= ARRIVAL_OUTLIER_THRESH_MS]
+            if len(valid_t) == 0:
+                valid_t = np.array([c.time[-1]])
+            all_t.append(valid_t)
+
+            # 2D deviation magnitude
+            raw_dx = res.get("end_dx", np.full(c.n_trials, np.nan))
+            raw_dz = res.get("end_dz", np.full(c.n_trials, np.nan))
+            raw_d2d = np.sqrt(raw_dx**2 + raw_dz**2)
+            valid_d2d = raw_d2d[use_mask] if np.any(use_mask) else raw_d2d
+            valid_d2d = valid_d2d[np.isfinite(valid_d2d)]
+            if len(valid_d2d) == 0:
+                valid_d2d = np.array([0.0])
+            all_d2d.append(valid_d2d)
+
+            # Raw touchscreen endpoints for inset
+            raw_x = res.get("abs_end_x", np.full(c.n_trials, np.nan))
+            raw_z = res.get("abs_end_z", np.full(c.n_trials, np.nan))
+            vx = raw_x[use_mask] if np.any(use_mask) else raw_x
+            vz = raw_z[use_mask] if np.any(use_mask) else raw_z
+            m_valid = np.isfinite(vx) & np.isfinite(vz)
+            all_cx.append(vx[m_valid])
+            all_cz.append(vz[m_valid])
+
+            x_pos = idx_c + 1
+            cond_positions.append(x_pos)
+            base_lbl = getattr(c, "short_label", None) or re.sub(r"\s*\(n=\d+\)", "", c.label).strip()
+            cond_labels.append(base_lbl)
+
+        return all_t, all_d2d, all_cx, all_cz, cond_labels, cond_positions
+
+    all_t_a, all_d2d_a, cx_a, cz_a, labels_a, pos_a = _extract_target_kinematics(cond_list_a, dir_a)
+    all_t_b, all_d2d_b, cx_b, cz_b, labels_b, pos_b = _extract_target_kinematics(cond_list_b, dir_b)
+
+    # Build Unified Header Legend
+    for idx_c, c in enumerate(cond_list_a):
+        col = cond_colors.get(c.cond_num, "#7f8c8d")
+        base_lbl = labels_a[idx_c]
+        h = plt.Line2D([0], [0], color=col, linestyle="-", linewidth=3.0, marker="o", markersize=8.0)
+        legend_handles.append(h)
+        legend_labels.append(base_lbl)
+
+    # -------------------------------------------------------------------------
+    # Render Panels A & B: Reach Duration
+    # Unified straight significance lines (no end ticks) at identical heights
+    # -------------------------------------------------------------------------
+    def _compute_significance_comparisons(cond_list, all_t):
+        ctrl_t = all_t[0]
+        p_vals = []
+        stim_x_positions = []
+        for idx_s in range(1, len(cond_list)):
+            stim_t = all_t[idx_s]
+            if len(ctrl_t) >= 2 and len(stim_t) >= 2:
+                try:
+                    p_val = float(stats.mannwhitneyu(stim_t, ctrl_t, alternative="two-sided").pvalue)
+                except Exception:
+                    p_val = 1.0
+            else:
+                p_val = 1.0
+            p_vals.append(p_val)
+            stim_x_positions.append(idx_s + 1)
+
+        try:
+            from scipy.stats import false_discovery_control
+            q_vals = list(false_discovery_control(p_vals, method="bh")) if len(p_vals) > 0 else []
+        except Exception:
+            q_vals = p_vals
+
+        sig_dict = {}
+        for x_stim, p_val, q_val in zip(stim_x_positions, p_vals, q_vals):
+            star = _p_to_star(q_val)
+            if star is not None:
+                sig_dict[x_stim] = (star, q_val)
+        return sig_dict
+
+    sig_a = _compute_significance_comparisons(cond_list_a, all_t_a)
+    sig_b = _compute_significance_comparisons(cond_list_b, all_t_b)
+
+    # Determine unified set of significant condition positions across both targets
+    all_sig_stim_x = sorted(list(set(list(sig_a.keys()) + list(sig_b.keys()))))
+
+    # Pre-assign identical straight-line heights for both panels (shaving ~100 ms off empty top headroom)
+    base_line_y = 425.0
+    line_step_y = 48.0
+    sig_line_y_map = {}
+    for idx_lvl, x_val in enumerate(all_sig_stim_x):
+        sig_line_y_map[x_val] = base_line_y + idx_lvl * line_step_y
+
+    top_ylim_max = max([base_line_y + len(all_sig_stim_x) * line_step_y + 35.0, 625.0])
+    top_ylim_min = 75.0
+
+    def _plot_reach_duration(ax, cond_list, all_t, cond_labels, cond_positions, sig_dict):
+        for idx_c, c in enumerate(cond_list):
+            x_pos = cond_positions[idx_c]
+            col = cond_colors.get(c.cond_num, "#7f8c8d")
+            v_t = all_t[idx_c]
+
+            # Boxplot with solid bar for MEAN
+            ax.boxplot(
+                v_t, positions=[x_pos], widths=0.62, patch_artist=True,
+                showfliers=False, showmeans=True, meanline=True,
+                meanprops=dict(color="#1b2631", linewidth=2.6, linestyle="-"),
+                medianprops=dict(linewidth=0),
+                boxprops=dict(facecolor=col, alpha=0.35, color=col, linewidth=1.5),
+                whiskerprops=dict(color=col, linewidth=1.3),
+                capprops=dict(color=col, linewidth=1.3),
+            )
+            jitter = np.random.normal(0, 0.06, len(v_t))
+            ax.scatter(x_pos + jitter, v_t, color=col, s=36, alpha=0.75, edgecolors="#1b2631", linewidths=0.6, zorder=5)
+
+        # Draw clean straight horizontal significance lines (no end ticks) at identical heights
+        for x_stim, (star, _) in sig_dict.items():
+            line_y = sig_line_y_map.get(x_stim, base_line_y)
+            ax.plot([1.0, float(x_stim)], [line_y, line_y], color="#1b2631", linewidth=1.8, clip_on=False, zorder=10)
+            ax.text((1.0 + float(x_stim)) / 2.0, line_y + 6.0, star,
+                    ha="center", va="bottom", fontsize=15.5, fontweight="bold", color="#1b2631", zorder=11)
+
+        ax.set_xticks(cond_positions)
+        ax.set_xticklabels(cond_labels, rotation=0, ha="center", fontsize=13.0, fontweight="bold")
+        # Subplot titles removed for clean poster layout
+        ax.set_ylabel("Reach Duration (ms)", fontsize=13.5, fontweight="bold")
+        ax.set_xlabel("Pulse Count", fontsize=13.5, fontweight="bold")
+        ax.tick_params(axis="both", which="major", labelsize=12.0)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.set_xlim(0.35, len(cond_list) + 0.65)
+        ax.set_ylim(top_ylim_min, top_ylim_max)
+
+    _plot_reach_duration(ax_a, cond_list_a, all_t_a, labels_a, pos_a, sig_a)
+    _plot_reach_duration(ax_b, cond_list_b, all_t_b, labels_b, pos_b, sig_b)
+
+    # -------------------------------------------------------------------------
+    # Render Panels C & D: 2D Endpoint Deviation Vector ||Δr_XZ|| (0-28 mm)
+    # With Inset: Zero-Centered (ΔX, ΔZ) 10 mm Target Inset in Upper Right
+    # -------------------------------------------------------------------------
+    def _plot_endpoint_deviation_with_inset(ax, cond_list, all_d2d, all_cx, all_cz, cond_labels, cond_positions, target_name):
+        ctrl_d2d = all_d2d[0]
+        p_vals = []
+        stim_x_positions = []
+        for idx_s in range(1, len(cond_list)):
+            stim_d2d = all_d2d[idx_s]
+            if len(ctrl_d2d) >= 2 and len(stim_d2d) >= 2:
+                try:
+                    p_val = float(stats.mannwhitneyu(stim_d2d, ctrl_d2d, alternative="two-sided").pvalue)
+                except Exception:
+                    p_val = 1.0
+            else:
+                p_val = 1.0
+            p_vals.append(p_val)
+            stim_x_positions.append(idx_s + 1)
+
+        try:
+            from scipy.stats import false_discovery_control
+            q_vals = list(false_discovery_control(p_vals, method="bh")) if len(p_vals) > 0 else []
+        except Exception:
+            q_vals = p_vals
+
+        sig_comps = []
+        for x_stim, p_val, q_val, stim_data in zip(stim_x_positions, p_vals, q_vals, all_d2d[1:]):
+            mean_shift = abs(float(np.nanmean(stim_data)))
+            if q_val < 0.05 and mean_shift >= MIN_PERTURBATION_THRESH_MM:
+                star = _p_to_star(q_val)
+                if star is not None:
+                    sig_comps.append((1, x_stim, star, q_val))
+
+        # 1. Soft shaded band representing the 10 mm target interior (r ≤ 5 mm)
+        ax.axhspan(0.0, 5.0, facecolor="#f2f4f4", edgecolor="#bdc3c7", linestyle="--", linewidth=1.0, alpha=0.85, zorder=0)
+
+        # 2. Boxplot with solid bar for MEAN
+        for idx_c, c in enumerate(cond_list):
+            x_pos = cond_positions[idx_c]
+            col = cond_colors.get(c.cond_num, "#7f8c8d")
+            v_d = all_d2d[idx_c]
+
+            ax.boxplot(
+                v_d, positions=[x_pos], widths=0.62, patch_artist=True,
+                showfliers=False, showmeans=True, meanline=True,
+                meanprops=dict(color="#1b2631", linewidth=2.6, linestyle="-"),
+                medianprops=dict(linewidth=0),
+                boxprops=dict(facecolor=col, alpha=0.35, color=col, linewidth=1.5),
+                whiskerprops=dict(color=col, linewidth=1.3),
+                capprops=dict(color=col, linewidth=1.3),
+            )
+            jitter = np.random.normal(0, 0.06, len(v_d))
+            ax.scatter(x_pos + jitter, v_d, color=col, s=36, alpha=0.75, edgecolors="#1b2631", linewidths=0.6, zorder=5)
+
+        # Extended Y-axis: 0 to 28.5 mm
+        ax.set_ylim(0.0, 28.5)
+
+        # 3. Clean straight significance line at the top (pushed to 27 mm, completely above the inset)
+        if sig_comps:
+            for x1, x2, star, _ in sig_comps:
+                ax.plot([float(x1), float(x2)], [27.0, 27.0], color="#1b2631", linewidth=1.8, clip_on=False, zorder=15)
+                ax.text((float(x1) + float(x2)) / 2.0, 27.3, star, ha="center", va="bottom", fontsize=15.0, fontweight="bold", color="#1b2631", zorder=16)
+        else:
+            # Overarching straight ns line spanning across conditions at 27 mm (above the inset)
+            ax.plot([1.0, 7.0], [27.0, 27.0], color="#1b2631", linewidth=1.8, clip_on=False, zorder=15)
+            ax.text(4.0, 27.3, "ns (p > 0.05 vs. Control)",
+                    ha="center", va="bottom", fontsize=13.0, fontweight="bold", color="#5d6d7e", zorder=16)
+
+        ax.set_xticks(cond_positions)
+        ax.set_xticklabels(cond_labels, rotation=0, ha="center", fontsize=13.0, fontweight="bold")
+        # Subplot titles removed for clean poster layout
+        ax.set_ylabel("2D Deviation ||Δr_XZ|| (mm)", fontsize=13.5, fontweight="bold")
+        ax.set_xlabel("Pulse Count", fontsize=13.5, fontweight="bold")
+        ax.tick_params(axis="both", which="major", labelsize=12.0)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.set_xlim(0.35, len(cond_list) + 0.65)
+
+        # 4. Large Inset Subplot: Zero-Centered (ΔX, ΔZ) relative to target center (± mm from target center)
+        # Squished slightly from bottom to top and raised higher (y ≈ 12.8 to 25.6 mm) so delta X doesn't cut into 2D deviations
+        tgt_info = resolve_target_spatial_anchor(
+            target=target_name,
+            conditions=cond_list,
+            target_radius_mm=TARGET_RADIUS_MM,
+        )
+        tgt_x = float(tgt_info["target_x"])
+        tgt_z = float(tgt_info["target_z"])
+        tgt_r = float(tgt_info.get("target_radius_mm", TARGET_RADIUS_MM))
+
+        ax_ins = inset_axes(
+            ax, width="100%", height="100%",
+            loc="upper right",
+            bbox_to_anchor=(0.52, 0.45, 0.45, 0.45),
+            bbox_transform=ax.transAxes,
+            borderpad=0,
+        )
+
+        # Target circle patch centered exactly at (0, 0)
+        target_patch = Circle(
+            (0.0, 0.0), radius=tgt_r,
+            facecolor="#f2f4f4", edgecolor="#5d6d7e",
+            linestyle="--", linewidth=1.8, alpha=0.70, zorder=1,
+        )
+        ax_ins.add_patch(target_patch)
+
+        # Center crosshair (+) at (0, 0)
+        ax_ins.plot([-1.5, 1.5], [0.0, 0.0], color="#5d6d7e", linewidth=1.4, zorder=2)
+        ax_ins.plot([0.0, 0.0], [-1.5, 1.5], color="#5d6d7e", linewidth=1.4, zorder=2)
+
+        ellipse_mode = ELLIPSE_SCALE if ELLIPSE_SCALE else "2se"
+
+        # Plot Control centered at (0, 0)
+        cx_pts = all_cx[0]
+        cz_pts = all_cz[0]
+        if len(cx_pts) > 0:
+            cx_rel = cx_pts - tgt_x
+            cz_rel = cz_pts - tgt_z
+            col_c = cond_colors.get(cond_list[0].cond_num, "#d32f2f")
+            ax_ins.scatter(cx_rel, cz_rel, color=col_c, alpha=0.68, s=28, edgecolors="#1b2631", linewidths=0.5, zorder=4)
+            c_mx_rel = float(np.median(cx_rel))
+            c_mz_rel = float(np.median(cz_rel))
+            ax_ins.scatter([c_mx_rel], [c_mz_rel], marker="D", s=85, color=col_c, edgecolors="#1b2631", linewidths=1.5, zorder=8)
+            draw_confidence_ellipse(
+                ax_ins, cx_rel, cz_rel,
+                n_scale=1.0, scale_mode=ellipse_mode,
+                edgecolor="none", facecolor=col_c, alpha=0.20,
+                center=(c_mx_rel, c_mz_rel), linewidth=0, zorder=3,
+            )
+
+        # Plot Stimulation conditions centered at (0, 0)
+        for idx_c in range(1, len(cond_list)):
+            c = cond_list[idx_c]
+            sx_pts = all_cx[idx_c]
+            sz_pts = all_cz[idx_c]
+            if len(sx_pts) == 0:
+                continue
+            sx_rel = sx_pts - tgt_x
+            sz_rel = sz_pts - tgt_z
+            col = cond_colors.get(c.cond_num, "#7f8c8d")
+            ax_ins.scatter(sx_rel, sz_rel, color=col, alpha=0.72, s=28, edgecolors="#1b2631", linewidths=0.5, zorder=5)
+            s_mx_rel = float(np.median(sx_rel))
+            s_mz_rel = float(np.median(sz_rel))
+            ax_ins.scatter([s_mx_rel], [s_mz_rel], marker="o", s=75, color=col, edgecolors="#1b2631", linewidths=1.3, zorder=9)
+            draw_confidence_ellipse(
+                ax_ins, sx_rel, sz_rel,
+                n_scale=1.0, scale_mode=ellipse_mode,
+                edgecolor="none", facecolor=col, alpha=0.22,
+                center=(s_mx_rel, s_mz_rel), linewidth=0, zorder=3,
+            )
+
+        # Identical symmetric framing for both Target A and Target B insets (±8.5 mm from target center)
+        ax_ins.set_xlim(-8.5, 8.5)
+        ax_ins.set_ylim(-8.5, 8.5)
+        ax_ins.set_aspect("equal")
+
+        ax_ins.set_xticks([-6, -3, 0, 3, 6])
+        ax_ins.set_yticks([-6, -3, 0, 3, 6])
+        ax_ins.set_xticklabels(["-6", "-3", "0", "+3", "+6"], fontsize=9.0, fontweight="bold")
+        ax_ins.set_yticklabels(["-6", "-3", "0", "+3", "+6"], fontsize=9.0, fontweight="bold")
+
+        ax_ins.set_title("10 mm Target (X-Z)", fontsize=11.0, fontweight="bold", pad=3)
+        ax_ins.set_xlabel("ΔX from Target (mm)", fontsize=10.0, labelpad=1, fontweight="bold")
+        ax_ins.set_ylabel("ΔZ from Target (mm)", fontsize=10.0, labelpad=1, fontweight="bold")
+        ax_ins.tick_params(axis="both", which="major", labelsize=9.0, pad=1)
+        ax_ins.patch.set_facecolor("#ffffff")
+        ax_ins.patch.set_alpha(0.94)
+
+    _plot_endpoint_deviation_with_inset(ax_c, cond_list_a, all_d2d_a, cx_a, cz_a, labels_a, pos_a, "A")
+    _plot_endpoint_deviation_with_inset(ax_d, cond_list_b, all_d2d_b, cx_b, cz_b, labels_b, pos_b, "B")
+
+    # Unified Header Legend at Top (placed cleanly between suptitle and subplots)
+    ncol = min(8, len(legend_labels))
+    fig.legend(
+        legend_handles, legend_labels,
+        loc="upper center", bbox_to_anchor=(0.5, 0.932),
+        ncol=ncol, frameon=True, framealpha=0.95, fontsize=12.0,
+    )
+
+    # Suptitle
+    suptitle_text = "Bilateral Kinematic Comparison: Left vs. Right Target Dose-Response"
+    if fixed_params_summary:
+        suptitle_text += f"\n[{fixed_params_summary}]"
+    fig.suptitle(suptitle_text, fontsize=16.5, fontweight="bold", y=0.985)
+
+    # Footer annotation
+    fig.text(
+        0.5, 0.022,
+        "Solid bars = Condition Mean; Box = IQR; Dots = Individual trials   |   Shaded band (0–5 mm) = 10 mm Target Zone (r ≤ 5 mm)   |   ns: p > 0.05 vs. Control",
+        ha="center", va="center", fontsize=9.5, color="#5d6d7e", style="italic",
+    )
+
+    fig.subplots_adjust(top=0.865, bottom=0.08, left=0.07, right=0.95)
+
+    if save_path:
+        out_file = save_path.with_suffix(f".{FIG_FORMAT.lower()}")
+        fig.savefig(out_file, format=FIG_FORMAT.lower(), dpi=FIG_DPI, bbox_inches="tight")
+        _log(f"Saved Bilateral Kinematic Comparison figure: {out_file.name}")
+        plt.close(fig)
+
+    return fig
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="3D Behavioral Representational Similarity Analysis and Trajectory Variability Analysis."
@@ -5082,7 +5698,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         metavar=("P_START", "P_END"),
-        help="Early reach progress range fraction (default: 0.0 0.25 for 0–25% forward depth).",
+        help="Early reach progress range fraction (default: 0.0 0.25 for 0–25%% forward depth).",
     )
     parser.add_argument(
         "--rsa-late-progress",
@@ -5090,7 +5706,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         metavar=("P_START", "P_END"),
-        help="Late reach progress range fraction (default: 0.25 1.0 for 25–100% forward depth).",
+        help="Late reach progress range fraction (default: 0.25 1.0 for 25–100%% forward depth).",
     )
     parser.add_argument(
         "--rsa-no-progress-align",
@@ -5186,13 +5802,46 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Maximum allowed 3D jitter (std in mm) across video detections before landmark is deemed unstable (default: 8.0 mm).",
     )
+    parser.add_argument(
+        "--min-arrival",
+        type=float,
+        default=None,
+        help="Minimum physical touchscreen arrival time in ms (default: 100.0 ms). Reaches before this are excluded.",
+    )
+    parser.add_argument(
+        "--arrival-outlier-thresh",
+        type=float,
+        default=None,
+        help="Maximum allowed deviation (in ms) from condition median arrival time before reach is excluded as an outlier (default: 150.0 ms).",
+    )
+    parser.add_argument(
+        "--min-perturbation-thresh",
+        type=float,
+        default=None,
+        help="Minimum kinematic displacement threshold in mm for meaningful perturbation vs. jitter (default: 5.0 mm).",
+    )
+    parser.add_argument(
+        "--dose-panel-c",
+        type=str,
+        default="planar_vector",
+        choices=["planar_vector", "combined_variance", "planar_dev", "vertical", "dz"],
+        help="Panel C mode in kinematic dose-response figure: 'planar_vector' (default: 2D deviation vector & variance) or 'vertical' (legacy dZ).",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
 
-    global SHOW_CONDITION_INDICES, SHOW_TRIAL_COUNTS, VARIABILITY_PLOT_MODE, VARIABILITY_LEGEND_ORIENTATION, SPATIAL_PLOT_MODE, TRAJECTORY_STAT, ELLIPSE_SCALE, RSA_ALIGN_BY_PROGRESS, RSA_DISTANCE_AGGREGATION, RSA_N_PROGRESS_SAMPLES, RSA_PROGRESS_MODE, TARGET_DIAMETER_MM, TARGET_STABILITY_THRESHOLD_MM
+    global SHOW_CONDITION_INDICES, SHOW_TRIAL_COUNTS, VARIABILITY_PLOT_MODE, VARIABILITY_LEGEND_ORIENTATION, SPATIAL_PLOT_MODE, TRAJECTORY_STAT, ELLIPSE_SCALE, RSA_ALIGN_BY_PROGRESS, RSA_DISTANCE_AGGREGATION, RSA_N_PROGRESS_SAMPLES, RSA_PROGRESS_MODE, TARGET_DIAMETER_MM, TARGET_STABILITY_THRESHOLD_MM, MIN_REACH_ARRIVAL_MS, ARRIVAL_OUTLIER_THRESH_MS, MIN_PERTURBATION_THRESH_MM, DOSE_PANEL_C_MODE
+    if args.dose_panel_c:
+        DOSE_PANEL_C_MODE = args.dose_panel_c
+    if args.min_arrival is not None and args.min_arrival > 0:
+        MIN_REACH_ARRIVAL_MS = float(args.min_arrival)
+    if args.arrival_outlier_thresh is not None and args.arrival_outlier_thresh > 0:
+        ARRIVAL_OUTLIER_THRESH_MS = float(args.arrival_outlier_thresh)
+    if args.min_perturbation_thresh is not None and args.min_perturbation_thresh > 0:
+        MIN_PERTURBATION_THRESH_MM = float(args.min_perturbation_thresh)
     if args.target_diameter is not None and args.target_diameter > 0:
         TARGET_DIAMETER_MM = float(args.target_diameter)
     if args.target_stability_thresh is not None and args.target_stability_thresh > 0:
@@ -5339,6 +5988,25 @@ def main() -> None:
                 _log(f"Removed redundant single-target duplicate: {stale_file.name}")
             except Exception:
                 pass
+
+    # Dedicated Bilateral Kinematic Dose-Response Comparison Figure (Target A Left vs. Target B Right)
+    if "A" in results_all and "B" in results_all:
+        cond_nums_ab = []
+        for r in (results_all["A"], results_all["B"]):
+            for c in r.get("conditions", []):
+                comb_brs = getattr(c, "combined_br_indices", None)
+                if comb_brs:
+                    cond_nums_ab.extend(comb_brs)
+                else:
+                    cond_nums_ab.append(c.cond_num)
+        cond_tag_ab = "_".join(map(str, sorted(set(cond_nums_ab)))) if cond_nums_ab else "dose"
+        out_bilateral = save_dir / f"bilateral_dose_response_Target_A_vs_B_conds_{cond_tag_ab}.{FIG_FORMAT.lower()}"
+        plot_bilateral_kinematic_comparison_figure(
+            target_a_data=results_all["A"],
+            target_b_data=results_all["B"],
+            fixed_params_summary=global_fixed_summary,
+            save_path=out_bilateral,
+        )
 
     _log("Behavioral RSA & Trajectory Variability Pipeline Complete.")
 

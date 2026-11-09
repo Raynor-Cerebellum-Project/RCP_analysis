@@ -1,0 +1,1093 @@
+================================================================================
+VELES RUN START: 09/14/2026 16:14:29
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [12]
+Scripts:
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 16:14:30] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/14/2026 16:14:39] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FAIL: 09/14/2026 16:14:39 (exit code 1)
+================================================================================
+VELES RUN START: 09/14/2026 16:20:16
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [12]
+Scripts:
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 16:20:16] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/14/2026 16:20:39] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/14/2026 16:20:39
+[09/14/2026 16:20:39] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/14/2026 16:20:47] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FAIL: 09/14/2026 16:20:47 (exit code 1)
+================================================================================
+VELES RUN START: 09/14/2026 16:24:29
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [12]
+Scripts:
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 16:24:29] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/14/2026 16:24:50] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/14/2026 16:24:50
+[09/14/2026 16:24:51] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/14/2026 16:24:59] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FAIL: 09/14/2026 16:24:59 (exit code 1)
+================================================================================
+VELES RUN START: 09/14/2026 16:25:52
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+================================================================================
+[09/14/2026 16:25:52] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+================================================================================
+VELES RUN START: 09/14/2026 16:31:45
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [12]
+Scripts:
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 16:31:57] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] SKIPPED: Dependency discrepancy not approved by user
+[09/14/2026 16:32:04] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] SKIPPED: Dependency discrepancy not approved by user
+[09/14/2026 16:32:07] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] SKIPPED: Dependency discrepancy not approved by user
+[09/14/2026 16:32:12] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] SKIPPED: Dependency discrepancy not approved by user
+================================================================================
+VELES RUN START: 09/14/2026 16:32:18
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [12]
+Scripts:
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 16:32:20] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/14/2026 16:35:31] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/14/2026 16:35:31
+[09/14/2026 16:35:56] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/14/2026 16:35:56
+[09/14/2026 16:51:23] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/14/2026 16:51:36] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/14/2026 16:51:36
+[09/14/2026 16:53:36] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/14/2026 16:54:35] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/14/2026 16:54:35
+[09/14/2026 16:54:47] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/14/2026 16:56:29] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/14/2026 16:56:29
+================================================================================
+VELES RUN START: 09/14/2026 17:03:00
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [9]
+Scripts:
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 17:03:00] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/14/2026 17:05:50] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/14/2026 17:05:50
+[09/14/2026 17:05:50] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/14/2026 17:06:03] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/14/2026 17:06:03
+[09/14/2026 17:06:03] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/14/2026 17:07:03] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/14/2026 17:07:03
+[09/14/2026 17:07:03] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/14/2026 17:08:42] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/14/2026 17:08:42
+================================================================================
+VELES RUN START: 09/14/2026 18:03:45
+Monkey: Nike
+Sessions to run: ['NRR_RW032', 'NRR_RW022', 'NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 18:03:45] [NRR_RW032] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+================================================================================
+VELES RUN START: 09/14/2026 18:04:13
+Monkey: Nike
+Sessions to run: ['NRR_RW032', 'NRR_RW022', 'NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - preprocessing_scripts/NPRW_Intan_analysis_mf.py
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/14/2026 18:04:13] [NRR_RW032] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] IN-PROGRESS
+[09/14/2026 19:25:40] [NRR_RW032] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] FINISHED: 09/14/2026 19:25:40
+[09/14/2026 19:25:40] [NRR_RW032] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/14/2026 19:33:30] [NRR_RW032] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/14/2026 19:33:30
+[09/14/2026 19:33:30] [NRR_RW032] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/14/2026 20:06:09] [NRR_RW032] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/14/2026 20:06:09
+[09/14/2026 20:06:09] [NRR_RW032] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/14/2026 20:07:35] [NRR_RW032] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/14/2026 20:07:35
+[09/14/2026 20:07:35] [NRR_RW032] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/14/2026 20:14:49] [NRR_RW032] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/14/2026 20:14:49
+[09/14/2026 20:14:49] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/14/2026 20:38:25] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/14/2026 20:38:25
+[09/14/2026 20:38:25] [NRR_RW022] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] IN-PROGRESS
+[09/14/2026 22:28:19] [NRR_RW022] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] FINISHED: 09/14/2026 22:28:19
+[09/14/2026 22:28:19] [NRR_RW022] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+================================================================================
+VELES RUN START: 09/16/2026 13:12:34
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: []
+Scripts:
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/16/2026 13:12:34] [NRR_RW022] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/16/2026 13:22:48] [NRR_RW022] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/16/2026 13:22:48
+[09/16/2026 13:22:48] [NRR_RW022] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS[09/16/2026 14:15:31] [NRR_RW022] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/16/2026 14:15:31
+[09/16/2026 14:15:31] [NRR_RW022] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/16/2026 14:17:37] [NRR_RW022] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/16/2026 14:17:37
+[09/16/2026 14:17:38] [NRR_RW022] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/16/2026 14:27:51] [NRR_RW022] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/16/2026 14:27:51
+[09/16/2026 14:27:51] [NRR_RW022] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/16/2026 14:50:59] [NRR_RW022] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/16/2026 14:50:59
+
+
+================================================================================
+VELES RUN START: 09/16/2026 13:51:34
+Monkey: Nike
+Sessions to run: ['NRR_RW032']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/16/2026 13:51:34] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/16/2026 14:17:05] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/16/2026 14:17:05
+
+================================================================================
+VELES RUN START: 09/16/2026 15:52:01
+Monkey: Nike
+Sessions to run: ['NRR_RW032']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/16/2026 15:52:01] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/16/2026 15:52:10] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] FAIL: 09/16/2026 15:52:10 (exit code 1)
+
+================================================================================
+VELES RUN START: 09/16/2026 15:54:57
+Monkey: Nike
+Sessions to run: ['NRR_RW032']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/16/2026 15:54:57] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/16/2026 16:19:30] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/16/2026 16:19:30
+
+================================================================================
+VELES RUN START: 09/16/2026 16:21:21
+Monkey: Nike
+Sessions to run: ['NRR_RW032']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/16/2026 16:21:21] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/16/2026 16:43:29] [NRR_RW032] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/16/2026 16:43:29
+
+================================================================================
+VELES RUN START: 09/16/2026 16:21:43
+Monkey: Nike
+Sessions to run: ['NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - preprocessing_scripts/NPRW_Intan_analysis_mf.py
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/16/2026 16:21:43] [NRR_RW012] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] IN-PROGRESS
+[09/16/2026 18:50:04] [NRR_RW012] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] FINISHED: 09/16/2026 18:50:04
+[09/16/2026 18:50:04] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/16/2026 18:59:28] [NRR_RW012] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/16/2026 18:59:28
+[09/16/2026 18:59:29] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/16/2026 20:02:37] [NRR_RW012] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/16/2026 20:02:37
+[09/16/2026 20:02:37] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/16/2026 20:06:25] [NRR_RW012] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/16/2026 20:06:25
+[09/16/2026 20:06:25] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/16/2026 20:25:02] [NRR_RW012] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/16/2026 20:25:02
+[09/16/2026 20:25:02] [NRR_RW012] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[09/16/2026 20:26:19] [NRR_RW012] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 09/16/2026 20:26:19
+[09/16/2026 20:26:19] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/16/2026 21:00:54] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/16/2026 21:00:54
+[09/16/2026 21:00:54] [NRR_RW011] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] IN-PROGRESS
+[09/16/2026 23:05:43] [NRR_RW011] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] FINISHED: 09/16/2026 23:05:43
+[09/16/2026 23:05:43] [NRR_RW011] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/16/2026 23:13:53] [NRR_RW011] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/16/2026 23:13:53
+[09/16/2026 23:13:53] [NRR_RW011] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/17/2026 00:09:16] [NRR_RW011] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/17/2026 00:09:16
+[09/17/2026 00:09:16] [NRR_RW011] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/17/2026 00:12:22] [NRR_RW011] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/17/2026 00:12:22
+[09/17/2026 00:12:22] [NRR_RW011] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/17/2026 00:29:33] [NRR_RW011] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/17/2026 00:29:33
+[09/17/2026 00:29:34] [NRR_RW011] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[09/17/2026 00:30:29] [NRR_RW011] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 09/17/2026 00:30:29
+[09/17/2026 00:30:30] [NRR_RW011] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/17/2026 01:05:26] [NRR_RW011] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/17/2026 01:05:26
+
+================================================================================
+VELES RUN START: 09/17/2026 13:48:50
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/17/2026 13:48:50] [NRR_RW022] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/17/2026 14:12:29] [NRR_RW022] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/17/2026 14:12:29
+
+================================================================================
+VELES RUN START: 09/17/2026 14:24:26
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_stim_response_overlays.py
+================================================================================
+[09/17/2026 14:24:38] [NRR_RW012] [analysis_scripts/plot_stim_response_overlays.py] IN-PROGRESS
+[09/17/2026 14:58:53] [NRR_RW012] [analysis_scripts/plot_stim_response_overlays.py] FAIL: 09/17/2026 14:58:53 (exit code 1)
+
+================================================================================
+VELES RUN START: 09/17/2026 16:03:00
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_stim_response_overlays.py
+================================================================================
+[09/17/2026 16:03:03] [NRR_RW012] [analysis_scripts/plot_stim_response_overlays.py] IN-PROGRESS
+[09/17/2026 16:37:22] [NRR_RW012] [analysis_scripts/plot_stim_response_overlays.py] FAIL: 09/17/2026 16:37:22 (exit code 1)
+
+================================================================================
+VELES RUN START: 09/18/2026 16:40:25
+Monkey: Nike
+Sessions to run: ['NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_stim_response_overlays.py
+================================================================================
+[09/18/2026 16:40:29] [NRR_RW012] [analysis_scripts/plot_stim_response_overlays.py] IN-PROGRESS
+[09/18/2026 16:40:32] [NRR_RW012] [analysis_scripts/plot_stim_response_overlays.py] FAIL: 09/18/2026 16:40:32 (exit code 1)
+[09/18/2026 16:40:32] [NRR_RW011] [analysis_scripts/plot_stim_response_overlays.py] IN-PROGRESS
+[09/18/2026 16:40:35] [NRR_RW011] [analysis_scripts/plot_stim_response_overlays.py] FAIL: 09/18/2026 16:40:35 (exit code 1)
+
+================================================================================
+VELES RUN START: 09/18/2026 16:41:30
+Monkey: Nike
+Sessions to run: ['NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_stim_response_overlays.py
+================================================================================
+[09/18/2026 16:41:33] [NRR_RW012] [analysis_scripts/plot_stim_response_overlays.py] IN-PROGRESS
+[09/18/2026 17:01:46] [NRR_RW012] [analysis_scripts/plot_stim_response_overlays.py] FINISHED: 09/18/2026 17:01:46
+[09/18/2026 17:01:47] [NRR_RW011] [analysis_scripts/plot_stim_response_overlays.py] IN-PROGRESS
+[09/18/2026 17:18:32] [NRR_RW011] [analysis_scripts/plot_stim_response_overlays.py] FINISHED: 09/18/2026 17:18:32
+
+================================================================================
+VELES RUN START: 09/18/2026 16:54:01
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/18/2026 16:54:01] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/18/2026 16:54:06] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/18/2026 16:54:06
+
+================================================================================
+VELES RUN START: 09/18/2026 17:00:59
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/18/2026 17:00:59] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/18/2026 17:01:04] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/18/2026 17:01:04
+
+================================================================================
+VELES RUN START: 09/18/2026 17:07:48
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/18/2026 17:07:48] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/18/2026 17:10:44] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/18/2026 17:10:44
+
+================================================================================
+VELES RUN START: 09/18/2026 17:42:11
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/18/2026 17:42:11] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/18/2026 17:44:53] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/18/2026 17:44:53
+
+================================================================================
+VELES RUN START: 09/21/2026 10:52:25
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/21/2026 10:52:25] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/21/2026 10:54:21] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/21/2026 10:54:21
+
+================================================================================
+VELES RUN START: 09/21/2026 14:19:31
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_stim_response_overlays.py
+================================================================================
+[09/21/2026 14:19:35] [NRR_RW012] [analysis_scripts/plot_stim_response_overlays.py] IN-PROGRESS
+[09/21/2026 14:39:47] [NRR_RW012] [analysis_scripts/plot_stim_response_overlays.py] FINISHED: 09/21/2026 14:39:47
+
+================================================================================
+VELES RUN START: 09/21/2026 14:24:02
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/21/2026 14:24:02] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/21/2026 14:26:37] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/21/2026 14:26:37
+
+================================================================================
+VELES RUN START: 09/21/2026 16:53:03
+Monkey: Nike
+Sessions to run: ['NRR_RW022', 'NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/21/2026 16:53:03] [NRR_RW022] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/21/2026 16:53:09] [NRR_RW022] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/21/2026 16:53:09
+[09/21/2026 16:53:09] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/21/2026 16:53:11] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/21/2026 16:53:11
+[09/21/2026 16:53:11] [NRR_RW011] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/21/2026 16:53:18] [NRR_RW011] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/21/2026 16:53:18
+
+================================================================================
+VELES RUN START: 09/21/2026 16:58:53
+Monkey: Nike
+Sessions to run: ['NRR_RW022', 'NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/21/2026 16:58:53] [NRR_RW022] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/21/2026 17:01:18] [NRR_RW022] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/21/2026 17:01:18
+[09/21/2026 17:01:18] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/21/2026 17:03:55] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/21/2026 17:03:55
+[09/21/2026 17:03:55] [NRR_RW011] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/21/2026 17:06:35] [NRR_RW011] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/21/2026 17:06:35
+
+================================================================================
+VELES RUN START: 09/21/2026 17:08:43
+Monkey: Nike
+Sessions to run: ['NRR_RW026']
+Process only: []
+Scripts:
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/21/2026 17:08:43] [NRR_RW026] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+
+================================================================================
+VELES RUN START: 09/21/2026 17:11:03
+Monkey: Nike
+Sessions to run: ['NRR_RW026']
+Process only: []
+Scripts:
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/21/2026 17:11:03] [NRR_RW026] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/21/2026 17:34:20] [NRR_RW026] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/21/2026 17:34:20
+[09/21/2026 17:34:20] [NRR_RW026] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/21/2026 18:52:07] [NRR_RW026] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/21/2026 18:52:07
+[09/21/2026 18:52:07] [NRR_RW026] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/21/2026 18:55:35] [NRR_RW026] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/21/2026 18:55:35
+[09/21/2026 18:55:36] [NRR_RW026] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/21/2026 19:09:48] [NRR_RW026] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/21/2026 19:09:48
+[09/21/2026 19:09:48] [NRR_RW026] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[09/21/2026 19:11:22] [NRR_RW026] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 09/21/2026 19:11:22
+[09/21/2026 19:11:22] [NRR_RW026] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/21/2026 19:18:57] [NRR_RW026] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/21/2026 19:18:57
+
+================================================================================
+VELES RUN START: 09/21/2026 17:17:46
+Monkey: Nike
+Sessions to run: ['NRR_RW035', 'NRR_RW034', 'NRR_RW032', 'NRR_RW029']
+Process only: []
+Scripts:
+  - preprocessing_scripts/align_dlc_two_cams_to_br.py
+  - preprocessing_scripts/align_VOG_to_br.py
+  - preprocessing_scripts/NPRW_Intan_analysis_mf.py
+  - preprocessing_scripts/compute_br_to_intan_shifts.py
+  - preprocessing_scripts/UA_BR_analysis_ssmf.py
+  - preprocessing_scripts/make_aligned_npz_and_mat.py
+  - preprocessing_scripts/extract_peri_stim.py
+  - preprocessing_scripts/inspect_kinematics_trajectories.py
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/21/2026 17:17:46] [NRR_RW035] [preprocessing_scripts/align_dlc_two_cams_to_br.py] IN-PROGRESS
+[09/21/2026 17:18:40] [NRR_RW035] [preprocessing_scripts/align_dlc_two_cams_to_br.py] FINISHED: 09/21/2026 17:18:40
+[09/21/2026 17:18:40] [NRR_RW035] [preprocessing_scripts/align_VOG_to_br.py] IN-PROGRESS
+[09/21/2026 17:18:43] [NRR_RW035] [preprocessing_scripts/align_VOG_to_br.py] FINISHED: 09/21/2026 17:18:43
+[09/21/2026 17:18:43] [NRR_RW035] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] IN-PROGRESS
+[09/21/2026 18:16:14] [NRR_RW035] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] FINISHED: 09/21/2026 18:16:14
+[09/21/2026 18:16:14] [NRR_RW035] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/21/2026 18:20:40] [NRR_RW035] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/21/2026 18:20:40
+[09/21/2026 18:20:40] [NRR_RW035] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/21/2026 18:43:13] [NRR_RW035] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/21/2026 18:43:13
+[09/21/2026 18:43:13] [NRR_RW035] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/21/2026 18:44:14] [NRR_RW035] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/21/2026 18:44:14
+[09/21/2026 18:44:15] [NRR_RW035] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/21/2026 18:47:19] [NRR_RW035] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/21/2026 18:47:19
+[09/21/2026 18:47:19] [NRR_RW035] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[09/21/2026 18:47:29] [NRR_RW035] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 09/21/2026 18:47:29
+[09/21/2026 18:47:30] [NRR_RW035] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/21/2026 18:47:51] [NRR_RW035] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/21/2026 18:47:51
+[09/21/2026 18:47:51] [NRR_RW034] [preprocessing_scripts/align_dlc_two_cams_to_br.py] IN-PROGRESS
+[09/21/2026 18:49:35] [NRR_RW034] [preprocessing_scripts/align_dlc_two_cams_to_br.py] FINISHED: 09/21/2026 18:49:35
+[09/21/2026 18:49:35] [NRR_RW034] [preprocessing_scripts/align_VOG_to_br.py] IN-PROGRESS
+[09/21/2026 18:49:38] [NRR_RW034] [preprocessing_scripts/align_VOG_to_br.py] FINISHED: 09/21/2026 18:49:38
+[09/21/2026 18:49:38] [NRR_RW034] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] IN-PROGRESS
+[09/21/2026 21:28:57] [NRR_RW034] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] FINISHED: 09/21/2026 21:28:57
+[09/21/2026 21:28:58] [NRR_RW034] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/21/2026 21:48:26] [NRR_RW034] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/21/2026 21:48:26
+[09/21/2026 21:48:26] [NRR_RW034] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/21/2026 22:30:35] [NRR_RW034] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/21/2026 22:30:35
+[09/21/2026 22:30:36] [NRR_RW034] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/21/2026 22:32:24] [NRR_RW034] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/21/2026 22:32:24
+[09/21/2026 22:32:24] [NRR_RW034] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/21/2026 22:39:20] [NRR_RW034] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/21/2026 22:39:20
+[09/21/2026 22:39:20] [NRR_RW034] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[09/21/2026 22:40:02] [NRR_RW034] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 09/21/2026 22:40:02
+[09/21/2026 22:40:02] [NRR_RW034] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/21/2026 22:41:59] [NRR_RW034] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/21/2026 22:41:59
+[09/21/2026 22:41:59] [NRR_RW032] [preprocessing_scripts/align_dlc_two_cams_to_br.py] IN-PROGRESS
+[09/21/2026 22:43:03] [NRR_RW032] [preprocessing_scripts/align_dlc_two_cams_to_br.py] FINISHED: 09/21/2026 22:43:03
+[09/21/2026 22:43:03] [NRR_RW032] [preprocessing_scripts/align_VOG_to_br.py] IN-PROGRESS
+[09/21/2026 22:43:06] [NRR_RW032] [preprocessing_scripts/align_VOG_to_br.py] FINISHED: 09/21/2026 22:43:06
+[09/21/2026 22:43:06] [NRR_RW032] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] IN-PROGRESS
+[09/22/2026 00:04:09] [NRR_RW032] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] FINISHED: 09/22/2026 00:04:09
+[09/22/2026 00:04:09] [NRR_RW032] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/22/2026 00:11:58] [NRR_RW032] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/22/2026 00:11:58
+[09/22/2026 00:11:59] [NRR_RW032] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/22/2026 00:44:51] [NRR_RW032] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/22/2026 00:44:51
+[09/22/2026 00:44:51] [NRR_RW032] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/22/2026 00:46:16] [NRR_RW032] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/22/2026 00:46:16
+[09/22/2026 00:46:17] [NRR_RW032] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/22/2026 00:53:34] [NRR_RW032] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/22/2026 00:53:34
+[09/22/2026 00:53:34] [NRR_RW032] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[09/22/2026 00:54:12] [NRR_RW032] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 09/22/2026 00:54:12
+[09/22/2026 00:54:13] [NRR_RW032] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/22/2026 00:56:04] [NRR_RW032] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/22/2026 00:56:04
+[09/22/2026 00:56:04] [NRR_RW029] [preprocessing_scripts/align_dlc_two_cams_to_br.py] IN-PROGRESS
+[09/22/2026 00:58:55] [NRR_RW029] [preprocessing_scripts/align_dlc_two_cams_to_br.py] FINISHED: 09/22/2026 00:58:55
+[09/22/2026 00:58:55] [NRR_RW029] [preprocessing_scripts/align_VOG_to_br.py] IN-PROGRESS
+[09/22/2026 00:58:57] [NRR_RW029] [preprocessing_scripts/align_VOG_to_br.py] FINISHED: 09/22/2026 00:58:57
+[09/22/2026 00:58:57] [NRR_RW029] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] IN-PROGRESS
+[09/22/2026 04:22:05] [NRR_RW029] [preprocessing_scripts/NPRW_Intan_analysis_mf.py] FINISHED: 09/22/2026 04:22:05
+[09/22/2026 04:22:05] [NRR_RW029] [preprocessing_scripts/compute_br_to_intan_shifts.py] IN-PROGRESS
+[09/22/2026 04:40:25] [NRR_RW029] [preprocessing_scripts/compute_br_to_intan_shifts.py] FINISHED: 09/22/2026 04:40:25
+[09/22/2026 04:40:25] [NRR_RW029] [preprocessing_scripts/UA_BR_analysis_ssmf.py] IN-PROGRESS
+[09/22/2026 05:54:50] [NRR_RW029] [preprocessing_scripts/UA_BR_analysis_ssmf.py] FINISHED: 09/22/2026 05:54:50
+[09/22/2026 05:54:52] [NRR_RW029] [preprocessing_scripts/make_aligned_npz_and_mat.py] IN-PROGRESS
+[09/22/2026 05:58:19] [NRR_RW029] [preprocessing_scripts/make_aligned_npz_and_mat.py] FINISHED: 09/22/2026 05:58:19
+[09/22/2026 05:58:20] [NRR_RW029] [preprocessing_scripts/extract_peri_stim.py] IN-PROGRESS
+[09/22/2026 06:11:21] [NRR_RW029] [preprocessing_scripts/extract_peri_stim.py] FINISHED: 09/22/2026 06:11:21
+[09/22/2026 06:11:21] [NRR_RW029] [preprocessing_scripts/inspect_kinematics_trajectories.py] IN-PROGRESS
+[09/22/2026 06:12:25] [NRR_RW029] [preprocessing_scripts/inspect_kinematics_trajectories.py] FINISHED: 09/22/2026 06:12:25
+[09/22/2026 06:12:25] [NRR_RW029] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/22/2026 06:16:40] [NRR_RW029] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/22/2026 06:16:40
+
+================================================================================
+VELES RUN START: 09/22/2026 17:00:34
+Monkey: Nike
+Sessions to run: ['NRR_RW022', 'NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/22/2026 17:00:34] [NRR_RW022] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/22/2026 17:02:34] [NRR_RW022] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/22/2026 17:02:34
+[09/22/2026 17:02:34] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/22/2026 17:04:47] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/22/2026 17:04:47
+[09/22/2026 17:04:47] [NRR_RW011] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/22/2026 17:06:59] [NRR_RW011] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/22/2026 17:06:59
+
+================================================================================
+VELES RUN START: 09/23/2026 11:23:13
+Monkey: Nike
+Sessions to run: ['NRR_RW022', 'NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/23/2026 11:23:13] [NRR_RW022] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 11:25:24] [NRR_RW022] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/23/2026 11:25:24
+[09/23/2026 11:25:24] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 11:27:49] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/23/2026 11:27:49
+[09/23/2026 11:27:49] [NRR_RW011] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 11:30:16] [NRR_RW011] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/23/2026 11:30:16
+
+================================================================================
+VELES RUN START: 09/23/2026 12:04:42
+Monkey: Nike
+Sessions to run: ['NRR_RW022', 'NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - analysis_scripts/cluster_stim_responses.py
+================================================================================
+[09/23/2026 12:04:42] [NRR_RW022] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 12:06:53] [NRR_RW022] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/23/2026 12:06:53
+[09/23/2026 12:06:53] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 12:09:13] [NRR_RW012] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/23/2026 12:09:13
+[09/23/2026 12:09:13] [NRR_RW011] [analysis_scripts/cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 12:11:35] [NRR_RW011] [analysis_scripts/cluster_stim_responses.py] FINISHED: 09/23/2026 12:11:35
+
+================================================================================
+VELES RUN START: 09/23/2026 15:36:45
+Monkey: Nike
+Sessions to run: ['NRR_RW022', 'NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_firing_rates.py
+================================================================================
+[09/23/2026 15:36:45] [NRR_RW022] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/23/2026 16:00:56] [NRR_RW022] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/23/2026 16:00:56
+[09/23/2026 16:11:07] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/23/2026 16:46:58] [NRR_RW012] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/23/2026 16:46:58
+[09/23/2026 16:46:58] [NRR_RW011] [analysis_scripts/plot_firing_rates.py] IN-PROGRESS
+[09/23/2026 17:23:18] [NRR_RW011] [analysis_scripts/plot_firing_rates.py] FINISHED: 09/23/2026 17:23:18
+
+================================================================================
+VELES RUN START: 09/23/2026 15:59:40
+Monkey: Nike
+Sessions to run: ['NRR_RW022', 'NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/23/2026 15:59:40] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 15:59:44] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/23/2026 15:59:44
+[09/23/2026 15:59:44] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 15:59:50] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/23/2026 15:59:50
+[09/23/2026 15:59:50] [NRR_RW011] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 15:59:56] [NRR_RW011] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/23/2026 15:59:56
+
+================================================================================
+VELES RUN START: 09/23/2026 16:03:19
+Monkey: Nike
+Sessions to run: ['NRR_RW022', 'NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/23/2026 16:03:19] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 16:05:50] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/23/2026 16:05:50
+[09/23/2026 16:05:50] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 16:08:32] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/23/2026 16:08:32
+[09/23/2026 16:08:32] [NRR_RW011] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 16:11:19] [NRR_RW011] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/23/2026 16:11:19
+
+================================================================================
+VELES RUN START: 09/23/2026 16:26:51
+Monkey: Nike
+Sessions to run: ['NRR_RW022', 'NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/23/2026 16:26:51] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 16:30:29] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/23/2026 16:30:29
+[09/23/2026 16:30:29] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 16:35:15] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/23/2026 16:35:15
+[09/23/2026 16:35:15] [NRR_RW011] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 16:41:45] [NRR_RW011] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/23/2026 16:41:45
+
+================================================================================
+VELES RUN START: 09/23/2026 16:41:56
+Monkey: Nike
+Sessions to run: ['NRR_RW022', 'NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/23/2026 16:41:56] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 16:46:51] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/23/2026 16:46:51
+[09/23/2026 16:46:51] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 16:54:34] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/23/2026 16:54:34
+[09/23/2026 16:54:34] [NRR_RW011] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+
+================================================================================
+VELES RUN START: 09/23/2026 17:04:56
+Monkey: Nike
+Sessions to run: ['NRR_RW022', 'NRR_RW012', 'NRR_RW011']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/23/2026 17:04:56] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 17:09:48] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/23/2026 17:09:48
+[09/23/2026 17:09:48] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 17:17:28] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/23/2026 17:17:28
+[09/23/2026 17:17:28] [NRR_RW011] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/23/2026 17:25:24] [NRR_RW011] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/23/2026 17:25:24
+
+================================================================================
+VELES RUN START: 09/24/2026 14:17:47
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/24/2026 14:17:48] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/24/2026 14:24:39] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/24/2026 14:24:39
+
+================================================================================
+VELES RUN START: 09/24/2026 14:28:07
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/24/2026 14:28:07] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+
+================================================================================
+VELES RUN START: 09/24/2026 14:29:14
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/24/2026 14:29:14] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/24/2026 14:35:28] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/24/2026 14:35:28
+
+================================================================================
+VELES RUN START: 09/24/2026 14:46:42
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/24/2026 14:46:42] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+
+================================================================================
+VELES RUN START: 09/24/2026 14:51:43
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/24/2026 14:51:43] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/24/2026 14:58:07] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/24/2026 14:58:07
+
+================================================================================
+VELES RUN START: 09/24/2026 14:55:55
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/24/2026 14:55:55] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/24/2026 15:00:06] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/24/2026 15:00:06
+
+================================================================================
+VELES RUN START: 09/24/2026 15:01:40
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/24/2026 15:01:40] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/24/2026 15:05:18] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/24/2026 15:05:18
+
+================================================================================
+VELES RUN START: 09/24/2026 15:01:44
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/24/2026 15:01:44] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/24/2026 15:07:50] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/24/2026 15:07:50
+
+================================================================================
+VELES RUN START: 09/24/2026 15:42:16
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - scripts/nikita_scripts/plotting_scripts/plot_nprw_hpf_traces.py
+================================================================================
+[09/24/2026 15:42:16] [NRR_RW012] [scripts/nikita_scripts/plotting_scripts/plot_nprw_hpf_traces.py] IN-PROGRESS
+[09/24/2026 15:44:48] [NRR_RW012] [scripts/nikita_scripts/plotting_scripts/plot_nprw_hpf_traces.py] FINISHED: 09/24/2026 15:44:48
+
+================================================================================
+VELES RUN START: 09/24/2026 15:52:50
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: []
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/24/2026 15:52:50] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+
+================================================================================
+VELES RUN START: 09/24/2026 15:56:18
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 8, 9, 10, 11, 12]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/24/2026 15:56:18] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+
+================================================================================
+VELES RUN START: 09/24/2026 15:59:33
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 8, 9, 10, 11, 12]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/24/2026 15:59:33] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/24/2026 16:01:56] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/24/2026 16:01:56
+
+================================================================================
+VELES RUN START: 09/24/2026 16:02:47
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 8, 9, 10, 11, 12]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/24/2026 16:02:47] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/24/2026 16:04:56] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/24/2026 16:04:56
+
+================================================================================
+VELES RUN START: 09/24/2026 16:22:57
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 8, 9, 10, 11, 12]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/24/2026 16:22:57] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/24/2026 16:25:05] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/24/2026 16:25:05
+
+================================================================================
+VELES RUN START: 09/24/2026 16:29:26
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: [11, 12, 13, 14, 15, 16, 17]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/24/2026 16:29:26] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/24/2026 16:30:20] [NRR_RW022] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/24/2026 16:30:20
+
+================================================================================
+VELES RUN START: 09/24/2026 16:34:11
+Monkey: Nike
+Sessions to run: ['NRR_RW032']
+Process only: [20, 21, 22]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/24/2026 16:34:11] [NRR_RW032] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/24/2026 16:34:30] [NRR_RW032] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/24/2026 16:34:30
+
+================================================================================
+VELES RUN START: 09/25/2026 14:51:48
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 8, 9, 10, 11, 12]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/25/2026 14:51:48] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/25/2026 14:51:55] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/25/2026 14:51:55
+
+================================================================================
+VELES RUN START: 09/25/2026 14:54:04
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 8, 9, 10, 11, 12]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/25/2026 14:54:04] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/25/2026 14:56:17] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/25/2026 14:56:17
+
+================================================================================
+VELES RUN START: 09/25/2026 17:27:11
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 8, 9, 10, 11, 12]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/25/2026 17:27:11] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/25/2026 17:29:18] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/25/2026 17:29:18
+
+================================================================================
+VELES RUN START: 09/29/2026 14:47:23
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 12]
+Scripts:
+  - preprocessing_scripts/analyze_lfp_bands.py
+  - scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py
+================================================================================
+[09/29/2026 14:47:33] [NRR_RW012] [preprocessing_scripts/analyze_lfp_bands.py] IN-PROGRESS
+[09/29/2026 15:32:15] [NRR_RW012] [preprocessing_scripts/analyze_lfp_bands.py] FINISHED: 09/29/2026 15:32:15
+[09/29/2026 16:13:05] [NRR_RW012] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] IN-PROGRESS
+
+================================================================================
+VELES RUN START: 09/29/2026 14:48:36
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: [11, 17]
+Scripts:
+  - preprocessing_scripts/analyze_lfp_bands.py
+  - scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py
+================================================================================
+[09/29/2026 14:48:36] [NRR_RW022] [preprocessing_scripts/analyze_lfp_bands.py] IN-PROGRESS
+[09/29/2026 15:17:40] [NRR_RW022] [preprocessing_scripts/analyze_lfp_bands.py] FINISHED: 09/29/2026 15:17:40
+[09/29/2026 15:17:40] [NRR_RW022] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] IN-PROGRESS
+[09/29/2026 15:48:47] [NRR_RW022] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] FINISHED: 09/29/2026 15:48:47
+
+================================================================================
+VELES RUN START: 09/29/2026 16:39:36
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: [11, 17]
+Scripts:
+  - preprocessing_scripts/analyze_lfp_bands.py
+  - scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py
+================================================================================
+[09/29/2026 16:39:36] [NRR_RW022] [preprocessing_scripts/analyze_lfp_bands.py] IN-PROGRESS
+[09/29/2026 16:40:55] [NRR_RW022] [preprocessing_scripts/analyze_lfp_bands.py] FINISHED: 09/29/2026 16:40:55
+[09/29/2026 16:40:55] [NRR_RW022] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] IN-PROGRESS
+[09/29/2026 16:45:28] [NRR_RW022] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] FAIL: 09/29/2026 16:45:28 (exit code 1)
+
+================================================================================
+VELES RUN START: 09/29/2026 16:39:58
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 12]
+Scripts:
+  - preprocessing_scripts/analyze_lfp_bands.py
+  - scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py
+================================================================================
+[09/29/2026 16:44:28] [NRR_RW012] [preprocessing_scripts/analyze_lfp_bands.py] IN-PROGRESS
+[09/29/2026 16:47:49] [NRR_RW012] [preprocessing_scripts/analyze_lfp_bands.py] FINISHED: 09/29/2026 16:47:49
+[09/29/2026 16:53:40] [NRR_RW012] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] IN-PROGRESS
+
+================================================================================
+VELES RUN START: 09/30/2026 11:52:11
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 12]
+Scripts:
+  - preprocessing_scripts/analyze_lfp_bands.py
+  - scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py
+================================================================================
+[09/30/2026 11:52:14] [NRR_RW012] [preprocessing_scripts/analyze_lfp_bands.py] IN-PROGRESS
+[09/30/2026 11:52:17] [NRR_RW012] [preprocessing_scripts/analyze_lfp_bands.py] FINISHED: 09/30/2026 11:52:17
+[09/30/2026 11:52:55] [NRR_RW012] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] SKIPPED: Dependency discrepancy not approved by user
+
+================================================================================
+VELES RUN START: 09/30/2026 11:52:59
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 12]
+Scripts:
+  - preprocessing_scripts/analyze_lfp_bands.py
+  - scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py
+================================================================================
+[09/30/2026 11:53:01] [NRR_RW012] [preprocessing_scripts/analyze_lfp_bands.py] IN-PROGRESS
+[09/30/2026 11:58:23] [NRR_RW012] [preprocessing_scripts/analyze_lfp_bands.py] FINISHED: 09/30/2026 11:58:23
+[09/30/2026 11:58:52] [NRR_RW012] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] IN-PROGRESS
+[09/30/2026 12:05:00] [NRR_RW012] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] FINISHED: 09/30/2026 12:05:00
+
+================================================================================
+VELES RUN START: 09/30/2026 14:02:46
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 12]
+Scripts:
+  - preprocessing_scripts/analyze_lfp_bands.py
+  - scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py
+================================================================================
+[09/30/2026 14:02:48] [NRR_RW012] [preprocessing_scripts/analyze_lfp_bands.py] SKIPPED: Dependency discrepancy not approved by user
+[09/30/2026 14:02:48] [NRR_RW012] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] SKIPPED: Dependency discrepancy not approved by user
+
+================================================================================
+VELES RUN START: 09/30/2026 14:02:58
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 12]
+Scripts:
+  - scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py
+================================================================================
+[09/30/2026 14:02:59] [NRR_RW012] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] IN-PROGRESS
+[09/30/2026 14:10:58] [NRR_RW012] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] FINISHED: 09/30/2026 14:10:58
+
+================================================================================
+VELES RUN START: 09/30/2026 14:23:29
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 12]
+Scripts:
+  - scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py
+================================================================================
+[09/30/2026 14:23:52] [NRR_RW012] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] IN-PROGRESS
+[09/30/2026 14:34:20] [NRR_RW012] [scripts/nikita_scripts/lfp_processing/plot_lfp_cleaner.py] FINISHED: 09/30/2026 14:34:20
+
+================================================================================
+VELES RUN START: 09/30/2026 14:27:17
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 12]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/30/2026 14:27:17] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/30/2026 14:28:07] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/30/2026 14:28:07
+
+================================================================================
+VELES RUN START: 09/30/2026 14:37:40
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 12]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/30/2026 14:37:40] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/30/2026 14:38:25] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/30/2026 14:38:25
+
+================================================================================
+VELES RUN START: 09/30/2026 14:53:49
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 12]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/30/2026 14:53:49] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/30/2026 14:54:33] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/30/2026 14:54:33
+
+================================================================================
+VELES RUN START: 09/30/2026 15:17:54
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 12]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/30/2026 15:17:55] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/30/2026 15:18:38] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/30/2026 15:18:38
+
+================================================================================
+VELES RUN START: 09/30/2026 16:31:23
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 12]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/30/2026 16:31:23] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/30/2026 16:31:38] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/30/2026 16:31:38
+
+================================================================================
+VELES RUN START: 09/30/2026 16:32:11
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 12]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/30/2026 16:32:11] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/30/2026 16:32:55] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/30/2026 16:32:55
+
+================================================================================
+VELES RUN START: 09/30/2026 16:36:23
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 12]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/30/2026 16:36:23] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/30/2026 16:37:09] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/30/2026 16:37:09
+
+================================================================================
+VELES RUN START: 09/30/2026 16:52:53
+Monkey: Nike
+Sessions to run: ['NRR_RW012']
+Process only: [7, 8, 9, 10, 11, 12]
+Scripts:
+  - analysis_scripts/plot_cluster_stim_responses.py
+================================================================================
+[09/30/2026 16:52:53] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] IN-PROGRESS
+[09/30/2026 16:55:10] [NRR_RW012] [analysis_scripts/plot_cluster_stim_responses.py] FINISHED: 09/30/2026 16:55:10

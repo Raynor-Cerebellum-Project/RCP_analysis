@@ -22,6 +22,8 @@ SCRIPT_STATUS_COLUMNS: dict[str, str] = {
     "UA_BR_analysis_ssmf.py": "UA_BR_analysis",
     "make_aligned_npz_and_mat.py": "make_aligned",
     "extract_peri_stim.py": "extract_peri",
+    "sort_nprw_kilosort4.py": "sort_nprw",
+    "segment_sorted_units_by_condition.py": "segment_sorted",
     "inspect_kinematics_trajectories.py": "manual_inspection",
     "analyze_lfp_bands.py": "lfp_bands",
     "plot_lfp_cleaner.py": "plot_lfp",
@@ -38,6 +40,7 @@ SCRIPT_STATUS_COLUMNS: dict[str, str] = {
     "plot_bin_counts_per_target.py": "plot_bin_counts",
     "plot_behavioral_rsa.py": "behavioral_rsa",
     "plot_lfp_rsa.py": "lfp_rsa",
+    "plot_inta_reaching.py": "plot_inta_reaching",
 }
 
 # Direct upstream dependencies for each status column
@@ -51,6 +54,8 @@ COLUMN_DEPENDENCIES: dict[str, list[str]] = {
     "UA_BR_analysis": ["compute_shifts"],
     "make_aligned": ["UA_BR_analysis"],
     "extract_peri": ["make_aligned"],
+    "sort_nprw": ["compute_shifts"],
+    "segment_sorted": ["sort_nprw", "extract_peri"],
 
     # LFP scripts depend only on OCR and DLC
     "lfp_bands": ["OCR", "DLC"],
@@ -71,6 +76,7 @@ COLUMN_DEPENDENCIES: dict[str, list[str]] = {
     "plot_peak_csv_summaries": ["extract_peri"],
     "plot_bin_counts": ["extract_peri"],
     "behavioral_rsa": [],
+    "plot_inta_reaching": ["extract_peri", "segment_sorted"],
 }
 
 

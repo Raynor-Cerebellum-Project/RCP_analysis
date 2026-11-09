@@ -57,7 +57,7 @@ PROCESS_ONLY = [11, 12, 14, 15, 16, 17, 18] # s22 - 1to40 pulse stim vs control
 
 # PROCESS_ONLY = [15]
 # PROCESS_ONLY = [6, 7]
-# PROCESS_ONLY = [15, 16]
+# PROCESS_ONLY = [15, 16] 
 
 # PROCESS_ONLY = [8]
 
@@ -66,8 +66,10 @@ PROCESS_ONLY = [11, 12, 14, 15, 16, 17, 18] # s22 - 1to40 pulse stim vs control
 # PROCESS_ONLY = [3, 8, 11]
 # PROCESS_ONLY = [3, 29, 30, 31]
 # PROCESS_ONLY = [17,18]
-# PROCESS_ONLY = [3, 12]
-# PROCESS_ONLY = []
+# PROCESS_ONLY = [3]
+# PROCESS_ONLY = [18]
+# PROCESS_ONLY = [17]
+# PROCESS_ONLY = [4]
 
 SCRIPTS = [
     # "preprocessing_scripts/OCR_frame_correction.py",
@@ -80,6 +82,8 @@ SCRIPTS = [
     # "preprocessing_scripts/make_aligned_npz_and_mat.py",
     # "preprocessing_scripts/extract_peri_stim.py",
     # "preprocessing_scripts/inspect_kinematics_trajectories.py",
+    # "preprocessing_scripts/sort_nprw_kilosort4.py",
+    # "preprocessing_scripts/segment_sorted_units_by_condition.py",
     ### RUN ^ inspect_kinematics_trajectories.py to check for remaining bad traces -> add bad traces to /config/manual_trial_remove.csv
     ### RERUN extract_peri_stim.py
 
@@ -87,12 +91,13 @@ SCRIPTS = [
     # "analysis_scripts/plot_3d_kinematics.py",
     # "analysis_scripts/plot_behavioral_stim_perturbation.py",
     # "analysis_scripts/plot_target_tracking_stability.py",
-    "analysis_scripts/plot_behavioral_rsa.py",
+    # "analysis_scripts/plot_behavioral_rsa.py",
     # "analysis_scripts/plot_lfp_rsa.py",
     # "analysis_scripts/plot_ipca_artifact_correction.py",
     # "analysis_scripts/RSA_calculation.py",
     # "analysis_scripts/plot_firing_rates.py",
     # "analysis_scripts/plot_peri_stim_raster.py",
+    "analysis_scripts/plot_inta_reaching.py",
     # "analysis_scripts/plot_stim_group_responses.py",
     # "analysis_scripts/plot_stim_response_overlays.py",
     # "analysis_scripts/plot_cluster_stim_responses.py",
@@ -118,6 +123,8 @@ import subprocess
 from pathlib import Path
 import csv
 import sys
+import re
+from collections import defaultdict
 from datetime import datetime
 from RCP_analysis.python.functions.params_loading import load_experiment_params 
 from RCP_analysis.python.functions.pipeline_hierarchy import (
@@ -147,6 +154,142 @@ def _get_veles_log_file(base_dir: Path, monkey: str) -> Path:
         counter += 1
 
     return log_file
+
+
+RE_TIMED_LOG = re.compile(
+    r"^VELES_(?P<monkey>[^_]+)_(?P<date>\d{8})_(?P<time>\d{6}(?:_\d+)?)\.log$"
+)
+RE_DAILY_LOG = re.compile(
+    r"^VELES_(?P<monkey>[^_]+)_(?P<date>\d{8})\.log$"
+)
+RE_MONTHLY_LOG = re.compile(
+    r"^VELES_(?P<monkey>[^_]+)_(?P<month>\d{6})\.log$"
+)
+
+
+def _merge_log_files(target_file: Path, src_files: List[Path], desc: str) -> None:
+    """Merge a sequence of log files into target_file in chronological order and remove source files."""
+    if not src_files:
+        return
+
+    parts: List[str] = []
+    if target_file.exists():
+        try:
+            content = target_file.read_text(encoding="utf-8", errors="replace").strip()
+            if content:
+                parts.append(content)
+        except Exception as e:
+            print(f"[VELES: WARNING] Could not read existing target log {target_file.name}: {e}")
+
+    read_successfully: List[Path] = []
+    for sf in src_files:
+        try:
+            content = sf.read_text(encoding="utf-8", errors="replace").strip()
+            if content:
+                # If target already exists and already contains this exact block, avoid duplicating
+                already_present = any(content in p for p in parts)
+                if not already_present:
+                    parts.append(content)
+            read_successfully.append(sf)
+        except Exception as e:
+            print(f"[VELES: WARNING] Could not read source log {sf.name}: {e}")
+
+    if not read_successfully:
+        return
+
+    if not parts:
+        # All source files were empty; safely clean them up without creating an empty target file
+        for sf in read_successfully:
+            try:
+                sf.unlink()
+            except OSError:
+                pass
+        return
+
+    combined_text = "\n\n".join(parts) + "\n"
+
+    temp_file = target_file.with_name(f"{target_file.name}.tmp_{os.getpid()}")
+    try:
+        temp_file.write_text(combined_text, encoding="utf-8")
+        os.replace(temp_file, target_file)
+    except Exception as e:
+        print(f"[VELES: ERROR] Failed to write consolidated log {target_file.name}: {e}")
+        if temp_file.exists():
+            try:
+                temp_file.unlink()
+            except OSError:
+                pass
+        return
+
+    for sf in read_successfully:
+        try:
+            sf.unlink()
+        except OSError as e:
+            print(f"[VELES: WARNING] Could not remove merged log file {sf.name}: {e}")
+
+    print(f"[VELES] Concatenated {len(read_successfully)} {desc} -> {target_file.name}")
+
+
+def consolidate_veles_logs(
+    logs_dir: Optional[Path] = None,
+    current_dt: Optional[datetime] = None,
+) -> None:
+    """
+    Hierarchically consolidate VELES log files:
+    1. For previous days (date < current date), concatenate timed logs into daily logs:
+       VELES_{monkey}_{YYYYMMDD}_{HHMMSS}.log -> VELES_{monkey}_{YYYYMMDD}.log
+    2. Once in a new month (month < current month), concatenate daily logs for previous months into monthly logs:
+       VELES_{monkey}_{YYYYMMDD}.log -> VELES_{monkey}_{YYYYMM}.log
+    """
+    if current_dt is None:
+        current_dt = datetime.now()
+    if logs_dir is None:
+        logs_dir = Path(__file__).resolve().parent / "logs"
+
+    if not logs_dir.exists():
+        return
+
+    today_str = current_dt.strftime("%Y%m%d")
+    today_month_str = current_dt.strftime("%Y%m")
+
+    # Step 1: Consolidate timed logs for previous days into daily logs
+    timed_logs_by_day = defaultdict(list)
+    for item in logs_dir.iterdir():
+        if not item.is_file():
+            continue
+        m = RE_TIMED_LOG.match(item.name)
+        if m:
+            monkey = m.group("monkey")
+            date_str = m.group("date")
+            if date_str < today_str:
+                timed_logs_by_day[(monkey, date_str)].append(item)
+
+    for (monkey, date_str), src_files in sorted(timed_logs_by_day.items()):
+        src_files.sort(key=lambda p: p.name)
+        daily_file = logs_dir / f"VELES_{monkey}_{date_str}.log"
+        log_label = "log" if len(src_files) == 1 else "logs"
+        desc = f"timed {log_label} for {monkey} on {date_str}"
+        _merge_log_files(daily_file, src_files, desc)
+
+    # Step 2: Consolidate daily logs for previous months into monthly logs
+    daily_logs_by_month = defaultdict(list)
+    for item in logs_dir.iterdir():
+        if not item.is_file():
+            continue
+        m = RE_DAILY_LOG.match(item.name)
+        if m:
+            monkey = m.group("monkey")
+            date_str = m.group("date")
+            month_str = date_str[:6]
+            if month_str < today_month_str:
+                daily_logs_by_month[(monkey, month_str)].append(item)
+
+    for (monkey, month_str), src_files in sorted(daily_logs_by_month.items()):
+        src_files.sort(key=lambda p: p.name)
+        monthly_file = logs_dir / f"VELES_{monkey}_{month_str}.log"
+        log_label = "log" if len(src_files) == 1 else "logs"
+        desc = f"daily {log_label} for {monkey} in {month_str}"
+        _merge_log_files(monthly_file, src_files, desc)
 
 
 def parse_process_only_inputs(raw_inputs: Any) -> Optional[List[Any]]:
@@ -371,6 +514,9 @@ def run_scripts(
     PARAMS = load_experiment_params(params_path, repo_root=base_dir, first_run=True)
     data_root = f"{PARAMS.data_root}/{active_monkey}"
 
+    # Consolidate previous days' and months' logs
+    consolidate_veles_logs(base_dir / "logs")
+
     # Generate unique per-instance log file for this run
     log_file = _get_veles_log_file(base_dir, active_monkey)
     print(f"[VELES] Logging run to: {log_file}")
@@ -514,11 +660,21 @@ def main():
         default=None,
         help="Optional session(s) to process (e.g. -s NRR_RW012). Overrides SESSIONS_TO_RUN in VELES.py.",
     )
+    parser.add_argument(
+        "--consolidate-logs-only",
+        action="store_true",
+        dest="consolidate_logs_only",
+        help="Only consolidate past logs into daily and monthly logs without running pipeline scripts.",
+    )
     parsed_args, _ = parser.parse_known_args()
 
-    parsed_po = parse_process_only_inputs(parsed_args.process_only)
-
     BASE = Path(__file__).resolve().parents[0]
+
+    if parsed_args.consolidate_logs_only:
+        consolidate_veles_logs(BASE / "logs")
+        return
+
+    parsed_po = parse_process_only_inputs(parsed_args.process_only)
     SCRIPTS_FOLDER = BASE
     run_scripts(
         BASE,

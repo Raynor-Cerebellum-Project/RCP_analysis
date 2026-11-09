@@ -1,0 +1,37 @@
+================================================================================
+VELES RUN START: 11/04/2026 11:51:03
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: [11, 12, 14, 15, 16, 17, 18]
+Scripts:
+  - analysis_scripts/plot_inta_reaching.py
+================================================================================
+[11/04/2026 11:51:03] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] IN-PROGRESS
+[11/04/2026 11:53:16] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] FINISHED: 11/04/2026 11:53:16
+
+================================================================================
+VELES RUN START: 11/04/2026 13:05:56
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: [18]
+Scripts:
+  - analysis_scripts/plot_inta_reaching.py
+================================================================================
+[11/04/2026 13:06:04] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] SKIPPED: Dependency discrepancy not approved by user
+
+================================================================================
+VELES RUN START: 11/04/2026 13:06:32
+Monkey: Nike
+Sessions to run: ['NRR_RW022']
+Process only: [18]
+Scripts:
+  - preprocessing_scripts/sort_nprw_kilosort4.py
+  - preprocessing_scripts/segment_sorted_units_by_condition.py
+  - analysis_scripts/plot_inta_reaching.py
+================================================================================
+[11/04/2026 13:06:32] [NRR_RW022] [preprocessing_scripts/sort_nprw_kilosort4.py] IN-PROGRESS
+[11/04/2026 16:01:59] [NRR_RW022] [preprocessing_scripts/sort_nprw_kilosort4.py] FINISHED: 11/04/2026 16:01:59
+[11/04/2026 16:01:59] [NRR_RW022] [preprocessing_scripts/segment_sorted_units_by_condition.py] IN-PROGRESS
+[11/04/2026 16:02:12] [NRR_RW022] [preprocessing_scripts/segment_sorted_units_by_condition.py] FINISHED: 11/04/2026 16:02:12
+[11/04/2026 16:02:13] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] IN-PROGRESS
+[11/04/2026 16:04:16] [NRR_RW022] [analysis_scripts/plot_inta_reaching.py] FINISHED: 11/04/2026 16:04:16
